@@ -55,7 +55,7 @@ export function MessageList(): React.ReactElement {
             {/* Active Item */}
             {active && (
                 <MessageItem
-                    key={active.id}
+                    key={`active-${active.id}`}
                     item={active}
                     isLast={true}
                 />

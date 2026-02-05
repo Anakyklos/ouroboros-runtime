@@ -9,7 +9,7 @@
   "scripts": {
     "setup": "tsx setup_ouroboros.ts",
     "daemon": "tsx cli/src/daemon/main.ts",
-    "tui": "bun run cli/src/tui/entry.tsx",
+    "tui": "bun run cli/src/main.ts",
     "test": "bun test",
     "test:bridge": "tsx scripts/test-bridge.ts",
     "run:agent": "tsx scripts/run_agent.ts",
