@@ -164,21 +164,18 @@ Be concise and specific.`,
      */
     private executeGemini(query: string, model: GeminiModel, timeoutSec: number): Promise<string> {
         return new Promise((resolve, reject) => {
-            // Use --prompt for non-interactive mode
-            const args = ["--prompt", query];
-            if (model === "pro") {
-                args.push("--model", "gemini-2.5-pro");
-            }
+            // Use -p for non-interactive mode, -m for model selection
+            const modelName = model === "pro" ? "gemini-2.5-pro" : "gemini-2.0-flash";
+            const args = ["-p", query, "-m", modelName];
 
             const isWindows = process.platform === "win32";
-            // On Windows, pip installs .exe wrappers. Unix uses script files.
-            // We use shell: false to prevent argument splitting issues.
-            const command = isWindows ? "gemini.cmd" : "gemini";
+            const command = "gemini";
 
             const proc = spawn(command, args, {
                 cwd: this.config.workDir,
-                shell: false,
-                env: { ...process.env, PAGER: undefined }, // Let CLI handle paging or lack thereof
+                shell: isWindows,
+                stdio: ["pipe", "pipe", "pipe"],
+                env: { ...process.env, PAGER: "cat" },
             });
 
             let stdout = "";

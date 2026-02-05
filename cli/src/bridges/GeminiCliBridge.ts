@@ -137,13 +137,15 @@ export class GeminiCliBridge {
             const command = this.config.binaryPath ?? "gemini";
 
             // Use -p for non-interactive mode, -m for model selection
-            // On Windows with shell:true, quote the prompt to prevent word splitting
-            const quotedPrompt = isWindows ? `"${prompt.replace(/"/g, '\\"')}"` : prompt;
-            const args = ["-p", quotedPrompt, "-m", MODEL_MAP[model]];
+            // When shell: true, we pass the entire command as a single string on Windows
+            const args = isWindows
+                ? ["-p", prompt, "-m", MODEL_MAP[model]] // shell handles escaping
+                : ["-p", prompt, "-m", MODEL_MAP[model]];
 
             const proc = spawn(command, args, {
                 cwd,
                 shell: isWindows,
+                stdio: ["pipe", "pipe", "pipe"],
                 env: { ...process.env, PAGER: "cat" },
             });
 

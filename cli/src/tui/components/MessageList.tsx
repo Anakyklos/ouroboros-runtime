@@ -44,18 +44,15 @@ export function MessageList(): React.ReactElement {
         <Box flexDirection="column" flexGrow={1}>
             <Static items={history}>
                 {(item) => (
-                    <MessageItem
-                        key={item.id}
-                        item={item}
-                        isLast={false}
-                    />
+                    <Box key={item.id}>
+                        <MessageItem item={item} isLast={false} />
+                    </Box>
                 )}
             </Static>
 
             {/* Active Item */}
             {active && (
                 <MessageItem
-                    key={`active-${active.id}`}
                     item={active}
                     isLast={true}
                 />
