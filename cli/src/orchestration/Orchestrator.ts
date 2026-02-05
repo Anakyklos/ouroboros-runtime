@@ -64,7 +64,10 @@ export class Orchestrator {
                 const prompt = this.buildPrompt(task, lastError, contextHistory);
 
                 // 2. Validate phase gate (blocks EXECUTION without spec)
-                this.validatePhase(phase);
+                // Skip if configured for simple tasks
+                if (!this.config.skipPhaseValidation) {
+                    this.validatePhase(phase);
+                }
 
                 // 3. Execute via ZAIProvider
                 this.log(`\n🔄 Attempt ${retryCount + 1}/${this.config.maxRetries}`);
@@ -273,7 +276,13 @@ IMPORTANT: Analyze the error carefully before proceeding.
             prompt = this.fixIssues(prompt, previousError);
         }
 
-        // Apply Anti-Vibe protocol
+        // Apply Anti-Vibe protocol (or skip for simple tasks)
+        if (this.config.skipPhaseValidation) {
+            // Simple mode: just return the prompt with persona hint
+            const phase = PERSONA_PHASE_MAP[task.persona];
+            return `[Mode: ${phase}]\n\n${prompt}`;
+        }
+
         const phase = PERSONA_PHASE_MAP[task.persona];
         return buildAntiVibePrompt(prompt, phase);
     }
@@ -293,17 +302,12 @@ IMPORTANT: Analyze the error carefully before proceeding.
 
     /**
      * Execute with timeout protection.
+     * Note: Timeout is now managed by ActivityTimeoutExecutor in the provider.
      */
     private async executeWithTimeout(prompt: string): Promise<ExecutionResult> {
-        const timeoutPromise = new Promise<ExecutionResult>((_, reject) => {
-            setTimeout(() => {
-                reject(new Error(`Execution timed out after ${this.config.timeoutMs}ms`));
-            }, this.config.timeoutMs);
-        });
-
-        const executionPromise = this.provider.execute(prompt);
-
-        return Promise.race([executionPromise, timeoutPromise]);
+        // Timeout is handled by ActivityTimeoutExecutor in ZAIProvider
+        // This method is kept for backwards compatibility
+        return this.provider.execute(prompt);
     }
 
     /**

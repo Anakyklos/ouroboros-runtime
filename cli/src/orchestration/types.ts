@@ -104,6 +104,8 @@ export interface OrchestratorConfig {
     verbose: boolean;
     /** Timeout em ms para cada execução */
     timeoutMs: number;
+    /** Se true, pula validação Anti-Vibe (para tarefas simples de teste) */
+    skipPhaseValidation: boolean;
 }
 
 /**
@@ -180,7 +182,8 @@ export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
     maxRetries: 3,
     requireApproval: true,
     verbose: true,
-    timeoutMs: 120_000, // 2 minutos
+    timeoutMs: 300_000, // 5 minutos - GLM 4.7 pode demorar para tarefas com arquivos
+    skipPhaseValidation: false, // true para tarefas simples de teste
 };
 
 /**

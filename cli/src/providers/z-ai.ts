@@ -8,6 +8,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { ActivityTimeoutExecutor } from "./ActivityTimeoutExecutor.js";
 import {
     getOuroborosConfig,
     getOuroborosEnv,
@@ -55,7 +56,7 @@ export class ZAIProvider {
         // 2. Configure execution environment
         this.openCodePath = getOuroborosOpenCodePath();
         this.env = getOuroborosEnv();
-        this.model = options.model || "glm-4.7";
+        this.model = options.model || "zai-coding-plan/glm-4.7";
         this.verbose = options.verbose || false;
 
         if (this.verbose) {
@@ -66,58 +67,39 @@ export class ZAIProvider {
     }
 
     /**
-     * Execute a prompt through the opencode CLI.
+     * Execute a prompt through the opencode CLI in non-interactive mode.
+     * Uses ActivityTimeoutExecutor for intelligent timeout handling.
      */
     async execute(prompt: string): Promise<ExecutionResult> {
-        return new Promise((resolve) => {
-            const args = [
-                "--model", this.model,
-                "--prompt", prompt,
-            ];
+        // Escape prompt for shell - replace quotes and escape special chars
+        const escapedPrompt = prompt.replace(/"/g, '\\"').replace(/\n/g, ' ');
 
-            if (this.verbose) {
-                console.log(`\n📝 Executing prompt: "${prompt.substring(0, 50)}..."`);
-            }
+        // Build command as single string for PowerShell execution
+        const command = `& "${this.openCodePath}" run --model "${this.model}" "${escapedPrompt}"`;
 
-            const proc = spawn(this.openCodePath, args, {
-                env: this.env,
-                cwd: this.config.root, // Agent works within .ouroboros
-                shell: true,
-            });
+        if (this.verbose) {
+            console.log(`\n📝 Executing prompt: "${prompt.substring(0, 50)}..."`);
+        }
 
-            let output = "";
-            let error = "";
-
-            proc.stdout.on("data", (data) => {
-                output += data.toString();
-                if (this.verbose) {
-                    process.stdout.write(data);
-                }
-            });
-
-            proc.stderr.on("data", (data) => {
-                error += data.toString();
-                if (this.verbose) {
-                    process.stderr.write(data);
-                }
-            });
-
-            proc.on("close", (code) => {
-                resolve({
-                    success: code === 0,
-                    output: output.trim(),
-                    error: error.trim() || undefined,
-                });
-            });
-
-            proc.on("error", (err) => {
-                resolve({
-                    success: false,
-                    output: "",
-                    error: err.message,
-                });
-            });
+        // Use ActivityTimeoutExecutor for intelligent timeout
+        const executor = new ActivityTimeoutExecutor({
+            inactivityTimeoutMs: 120_000,  // 2 min sem atividade
+            absoluteTimeoutMs: 600_000,    // 10 min absoluto
+            onActivity: this.verbose ? (chunk) => process.stdout.write(chunk) : undefined,
+            onStatus: this.verbose ? (msg) => console.log(`[Z.AI] ${msg}`) : undefined,
         });
+
+        const result = await executor.run(command, {
+            env: this.env,
+            cwd: this.config.workspace,
+            shell: "powershell.exe",
+        });
+
+        return {
+            success: result.success,
+            output: result.output,
+            error: result.error,
+        };
     }
 
     /**
@@ -127,15 +109,13 @@ export class ZAIProvider {
         prompt: string,
         onData: (chunk: string) => void
     ): ChildProcess {
-        const args = [
-            "--model", this.model,
-            "--prompt", prompt,
-        ];
+        const escapedPrompt = prompt.replace(/"/g, '\\"').replace(/\n/g, ' ');
+        const command = `& "${this.openCodePath}" run --model "${this.model}" "${escapedPrompt}"`;
 
-        const proc = spawn(this.openCodePath, args, {
+        const proc = spawn(command, [], {
             env: this.env,
-            cwd: this.config.root,
-            shell: true,
+            cwd: this.config.workspace,
+            shell: "powershell.exe",
         });
 
         proc.stdout.on("data", (data) => {
