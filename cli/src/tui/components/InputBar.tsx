@@ -1,10 +1,5 @@
-/**
- * InputBar Component
- * User input capture with command support
- */
-
 import React, { useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text } from 'ink';
 import TextInput from 'ink-text-input';
 import { useTuiStore } from '../store.js';
 
@@ -15,33 +10,30 @@ interface InputBarProps {
 export function InputBar({ onSubmit }: InputBarProps): React.ReactElement {
     const [value, setValue] = useState('');
     const status = useTuiStore((s) => s.status);
-    const isDisabled = status === 'thinking' || status === 'executing';
+
+    const isBusy = status === 'thinking' || status === 'executing';
 
     const handleSubmit = (input: string) => {
         const trimmed = input.trim();
-        if (trimmed && !isDisabled) {
+        if (trimmed && !isBusy) {
             onSubmit(trimmed);
             setValue('');
         }
     };
 
     return (
-        <Box
-            borderStyle="single"
-            borderColor={isDisabled ? 'gray' : 'blue'}
-            paddingX={1}
-        >
-            <Text color="blue" bold>⌨️ </Text>
-            {isDisabled ? (
-                <Text dimColor>Agent is working...</Text>
-            ) : (
-                <TextInput
-                    value={value}
-                    onChange={setValue}
-                    onSubmit={handleSubmit}
-                    placeholder="Type a message or /help for commands..."
-                />
-            )}
+        <Box paddingX={0} marginTop={0}>
+            {/* Minimalist Prompt */}
+            <Text color={isBusy ? "gray" : "cyan"} bold>
+                {isBusy ? "⟳ " : "› "}
+            </Text>
+
+            <TextInput
+                value={value}
+                onChange={setValue}
+                onSubmit={handleSubmit}
+                placeholder={isBusy ? "Wait..." : "Type a message..."}
+            />
         </Box>
     );
 }
