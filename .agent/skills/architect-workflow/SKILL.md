@@ -87,3 +87,30 @@ Continuando trabalho no Ouroboros. Estado atual:
 2. **Envie código real**: Não descrições, envie o arquivo
 3. **Pergunte antes de fazer**: Especialmente em decisões arquiteturais
 4. **Use /clear quando indicado**: Libera tokens para implementação
+
+## Integração GitHub (CRÍTICO)
+
+O GitHub do usuário está conectado ao Gemini. O Architect pode acessar repositórios via opção "Importar código".
+
+### Limitação Importante
+> **O Architect só vê o código no momento da importação!**
+> 
+> Modificações feitas após a importação NÃO são visíveis.
+> Você DEVE reimportar o código a cada nova consulta.
+
+### Workflow com GitHub
+1. Fazer commit das alterações: `git add . && git commit -m "msg"`
+2. Push para GitHub: `git push origin main`
+3. No Gemini, clicar em **"+"** → **"Importar código"**
+4. Selecionar repositório: `ouroboros-runtime` (ou nome escolhido)
+5. Enviar mensagem de consulta
+
+### Antes de cada consulta importante
+```bash
+# Sempre garantir que o código está atualizado no GitHub
+git add .
+git commit -m "feat: [descrição]"
+git push origin main
+```
+
+Depois reimportar no Gemini para o Architect ter a versão mais recente.

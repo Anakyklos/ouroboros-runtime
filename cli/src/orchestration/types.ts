@@ -88,6 +88,8 @@ export interface OrchestratorTask {
     context?: string;
     /** Working directory para execução */
     workDir?: string;
+    /** Estratégia de validação programática (opcional) */
+    validationStrategy?: ValidationStrategy;
 }
 
 /**
@@ -127,23 +129,48 @@ export const ESCALATION_CHAIN: Record<PersonaType, PersonaType | null> = {
 };
 
 /**
- * Interface para estratégias de validação programática.
- * Permite validar resultado sem depender de heurísticas de texto.
+ * Contexto de validação passado para a estratégia.
+ * Inspirado no OpenClaw - fornece contexto completo para validação.
  */
-export interface ValidationStrategy {
-    /** Nome da estratégia */
-    name: string;
-    /** Executa validação e retorna sucesso/falha com detalhes */
-    validate(output: string, context?: string): Promise<ValidationResult>;
+export interface ValidationContext {
+    /** Diretório de trabalho para execução de comandos */
+    workDir: string;
+    /** ID da task sendo validada */
+    taskId: string;
+    /** Output do agente a ser validado */
+    output: string;
+    /** Contexto adicional (opcional) */
+    additionalContext?: string;
 }
 
 /**
  * Resultado de uma validação.
  */
 export interface ValidationResult {
+    /** Se a validação passou */
     isValid: boolean;
+    /** Mensagem descritiva do resultado */
     message: string;
+    /** Exit code do comando (para CommandValidationStrategy) */
+    exitCode?: number;
+    /** Detalhes adicionais */
     details?: Record<string, unknown>;
+}
+
+/**
+ * Interface para estratégias de validação programática.
+ * Permite validar resultado sem depender de heurísticas de texto.
+ * 
+ * Padrão Strategy - cada implementação define sua lógica:
+ * - CommandValidationStrategy: executa comando shell, valida exit code
+ * - TypeCheckValidationStrategy: roda bun check (futuro)
+ * - TestValidationStrategy: roda suite de testes (futuro)
+ */
+export interface ValidationStrategy {
+    /** Nome da estratégia */
+    name: string;
+    /** Executa validação com contexto completo */
+    validate(context: ValidationContext): Promise<ValidationResult>;
 }
 
 /**

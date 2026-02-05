@@ -15,6 +15,15 @@ export {
     createMemoryManager,
 } from "./MemoryManager.js";
 
+// Validation Strategies
+export {
+    CommandValidationStrategy,
+    createTestValidationStrategy,
+    createTypeCheckValidationStrategy,
+    createLintValidationStrategy,
+    createCustomValidationStrategy,
+} from "./strategies/index.js";
+
 export {
     PersonaType,
     TaskStatus,
@@ -29,4 +38,6 @@ export {
     type ContextEntry,
     type ValidationStrategy,
     type ValidationResult,
+    type ValidationContext,
 } from "./types.js";
+

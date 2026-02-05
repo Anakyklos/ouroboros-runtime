@@ -79,10 +79,43 @@ export class Orchestrator {
                     persona: task.persona,
                 });
 
-                // 5. Evaluate result
+                // 5. Evaluate result (heurística de texto)
                 const evaluation = this.evaluateResult(result);
 
                 if (evaluation.status === TaskStatus.SUCCESS) {
+                    // 5.1 NOVO: Validação programática (se disponível)
+                    // Protocolo Anti-Vibe: "Trust but Verify"
+                    if (task.validationStrategy) {
+                        this.log(`🔬 Running programmatic validation: ${task.validationStrategy.name}`);
+
+                        const validationResult = await task.validationStrategy.validate({
+                            workDir: task.workDir || process.cwd(),
+                            taskId: task.id,
+                            output: result.output,
+                            additionalContext: task.context,
+                        });
+
+                        if (!validationResult.isValid) {
+                            this.log(`❌ Validation failed (exit code ${validationResult.exitCode}): ${validationResult.message}`);
+                            lastError = validationResult.message;
+
+                            // Add validation failure to context history
+                            contextHistory.push({
+                                timestamp: new Date(),
+                                prompt: `[VALIDATION] ${task.validationStrategy.name}`,
+                                output: "",
+                                error: validationResult.message,
+                                persona: task.persona,
+                            });
+
+                            retryCount++;
+                            continue; // Volta para o loop de retry
+                        }
+
+                        this.log(`✅ Validation passed: ${validationResult.message}`);
+                    }
+
+                    // 5.2 Sucesso confirmado (heurística + validação programática)
                     this.log(`✅ Task completed successfully!`);
                     const taskResult: TaskResult = {
                         status: TaskStatus.SUCCESS,
