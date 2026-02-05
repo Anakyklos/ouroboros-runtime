@@ -119,12 +119,12 @@ export class MemoryManager {
     /**
      * Salva resultado de task no log diário.
      */
-    saveTaskResult(taskId: string, result: TaskResult): void {
+    async saveTaskResult(taskId: string, result: TaskResult): Promise<void> {
         const logPath = getDailyLogPath(this.projectRoot);
         const markdown = taskResultToMarkdown(taskId, result);
 
         // Append to daily log
-        fs.appendFileSync(logPath, markdown, "utf-8");
+        await fs.promises.appendFile(logPath, markdown, "utf-8");
         console.log(`[MemoryManager] 📝 Saved task ${taskId} to ${logPath}`);
     }
 
