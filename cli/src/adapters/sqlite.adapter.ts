@@ -12,9 +12,19 @@ import type { StoragePort, Session, AuditEntry } from '../ports/storage.port.js'
 export class SqliteAdapter implements StoragePort {
     private db: Database.Database | null = null;
     private dbPath: string;
+    // Cache prepared statements to improve performance
+    private statements: Record<string, Database.Statement> = {};
 
     constructor(dbPath: string = '.ouroboros/daemon.db') {
         this.dbPath = dbPath;
+    }
+
+    private getStatement(key: string, sql: string): Database.Statement {
+        const db = this.ensureDb();
+        if (!this.statements[key]) {
+            this.statements[key] = db.prepare(sql);
+        }
+        return this.statements[key];
     }
 
     async initialize(): Promise<void> {
@@ -51,6 +61,7 @@ export class SqliteAdapter implements StoragePort {
     async close(): Promise<void> {
         this.db?.close();
         this.db = null;
+        this.statements = {};
     }
 
     private ensureDb(): Database.Database {
@@ -61,7 +72,6 @@ export class SqliteAdapter implements StoragePort {
     }
 
     async createSession(data: Omit<Session, 'id' | 'createdAt' | 'updatedAt'>): Promise<Session> {
-        const db = this.ensureDb();
         const now = new Date();
         const session: Session = {
             id: randomUUID(),
@@ -70,10 +80,12 @@ export class SqliteAdapter implements StoragePort {
             ...data,
         };
 
-        db.prepare(`
+        const stmt = this.getStatement('createSession', `
             INSERT INTO sessions (id, created_at, updated_at, status, context_snapshot, metadata)
             VALUES (?, ?, ?, ?, ?, ?)
-        `).run(
+        `);
+
+        stmt.run(
             session.id,
             session.createdAt.toISOString(),
             session.updatedAt.toISOString(),
@@ -86,8 +98,8 @@ export class SqliteAdapter implements StoragePort {
     }
 
     async getSession(id: string): Promise<Session | null> {
-        const db = this.ensureDb();
-        const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as {
+        const stmt = this.getStatement('getSession', 'SELECT * FROM sessions WHERE id = ?');
+        const row = stmt.get(id) as {
             id: string;
             created_at: string;
             updated_at: string;
@@ -132,18 +144,17 @@ export class SqliteAdapter implements StoragePort {
     }
 
     async listSessions(filter?: { status?: Session['status'] }): Promise<Session[]> {
-        const db = this.ensureDb();
-        let query = 'SELECT * FROM sessions';
+        let stmt: Database.Statement;
         const params: unknown[] = [];
 
         if (filter?.status) {
-            query += ' WHERE status = ?';
+            stmt = this.getStatement('listSessionsByStatus', 'SELECT * FROM sessions WHERE status = ? ORDER BY created_at DESC');
             params.push(filter.status);
+        } else {
+            stmt = this.getStatement('listSessionsAll', 'SELECT * FROM sessions ORDER BY created_at DESC');
         }
 
-        query += ' ORDER BY created_at DESC';
-
-        const rows = db.prepare(query).all(...params) as Array<{
+        const rows = stmt.all(...params) as Array<{
             id: string;
             created_at: string;
             updated_at: string;
@@ -163,22 +174,23 @@ export class SqliteAdapter implements StoragePort {
     }
 
     async deleteSession(id: string): Promise<void> {
-        const db = this.ensureDb();
-        db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+        const stmt = this.getStatement('deleteSession', 'DELETE FROM sessions WHERE id = ?');
+        stmt.run(id);
     }
 
     async appendLog(entry: Omit<AuditEntry, 'id' | 'timestamp'>): Promise<AuditEntry> {
-        const db = this.ensureDb();
         const log: AuditEntry = {
             id: randomUUID(),
             timestamp: new Date(),
             ...entry,
         };
 
-        db.prepare(`
+        const stmt = this.getStatement('appendLog', `
             INSERT INTO audit_logs (id, session_id, timestamp, type, content)
             VALUES (?, ?, ?, ?, ?)
-        `).run(
+        `);
+
+        stmt.run(
             log.id,
             log.sessionId,
             log.timestamp.toISOString(),
@@ -190,20 +202,13 @@ export class SqliteAdapter implements StoragePort {
     }
 
     async getLogs(sessionId: string, options?: { limit?: number; offset?: number }): Promise<AuditEntry[]> {
-        const db = this.ensureDb();
-        let query = 'SELECT * FROM audit_logs WHERE session_id = ? ORDER BY timestamp DESC';
-        const params: unknown[] = [sessionId];
+        // SQLite supports LIMIT -1 for no limit
+        const limit = options?.limit ?? -1;
+        const offset = options?.offset ?? 0;
 
-        if (options?.limit) {
-            query += ' LIMIT ?';
-            params.push(options.limit);
-        }
-        if (options?.offset) {
-            query += ' OFFSET ?';
-            params.push(options.offset);
-        }
+        const stmt = this.getStatement('getLogs', 'SELECT * FROM audit_logs WHERE session_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?');
 
-        const rows = db.prepare(query).all(...params) as Array<{
+        const rows = stmt.all(sessionId, limit, offset) as Array<{
             id: string;
             session_id: string;
             timestamp: string;
