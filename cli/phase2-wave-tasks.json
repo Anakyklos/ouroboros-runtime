@@ -1,0 +1,31 @@
+[
+    {
+        "id": "migrate-orchestrator-eventbus",
+        "instruction": "Modifique o Orchestrator em cli/src/orchestration/Orchestrator.ts para usar EventBus ao invés de console.log direto. Passos: 1) Import EventBus from '../daemon/event-bus.js' 2) Adicione constructor arg opcional 'eventBus?: EventBus' 3) Substitua cada console.log por this.eventBus.log() mantendo os mesmos níveis 4) Se eventBus não for passado, crie um local com handler que chama console.log. NÃO quebre a API existente - mantenha compatibilidade backward.",
+        "persona": "DEVELOPER"
+    },
+    {
+        "id": "add-orchestrator-pause",
+        "instruction": "Adicione capacidade de pause/resume ao loopUntilSuccess em Orchestrator.ts. Passos: 1) Adicione propriedade private isPaused = false 2) Adicione métodos pause() e resume() 3) No loop principal, check isPaused antes de cada iteração 4) Se isPaused, await até resume (use Promise + resolve guardado). Isso permite pausar execução quando daemon receber interrupt.",
+        "persona": "DEVELOPER",
+        "dependsOn": [
+            "migrate-orchestrator-eventbus"
+        ]
+    },
+    {
+        "id": "integrate-session-orchestrator",
+        "instruction": "Modifique SessionManager em cli/src/daemon/session-manager.ts para usar Orchestrator. Passos: 1) Import Orchestrator e createTask 2) No sendInput, crie uma task e execute via orchestrator 3) No interruptSession, chame orchestrator.pause() 4) Adicione método resumeSession que chama orchestrator.resume(). A sessão agora orquestra execução real.",
+        "persona": "DEVELOPER",
+        "dependsOn": [
+            "add-orchestrator-pause"
+        ]
+    },
+    {
+        "id": "test-session-orchestration",
+        "instruction": "Crie teste de integração cli/src/daemon/test-session-orchestration.ts que: 1) Inicia daemon 2) Cria sessão via RPC 3) Envia input via agent.input 4) Verifica que task foi executada 5) Interrompe sessão 6) Shutdown daemon. Use asserts para validar cada passo.",
+        "persona": "DEVELOPER",
+        "dependsOn": [
+            "integrate-session-orchestrator"
+        ]
+    }
+]

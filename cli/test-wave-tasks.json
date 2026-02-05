@@ -1,0 +1,21 @@
+[
+    {
+        "id": "create-hello",
+        "instruction": "Crie um arquivo hello_wave.txt com o texto: Wave 1 - Hello!",
+        "persona": "DEVELOPER"
+    },
+    {
+        "id": "create-world",
+        "instruction": "Crie um arquivo world_wave.txt com o texto: Wave 1 - World!",
+        "persona": "DEVELOPER"
+    },
+    {
+        "id": "create-combined",
+        "instruction": "Crie um arquivo combined_wave.txt com o texto: Wave 2 - Combined!",
+        "persona": "DEVELOPER",
+        "dependsOn": [
+            "create-hello",
+            "create-world"
+        ]
+    }
+]

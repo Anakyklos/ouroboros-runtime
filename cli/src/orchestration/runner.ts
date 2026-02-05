@@ -2,7 +2,7 @@
 /**
  * 🤖 Ouroboros Runner
  * 
- * Ponto de entrada para delegar tarefas aos subagentes OpenCode.
+ * Ponto de entrada para delegar tarefas aos subagentes Z.AI.
  * O Antigravity (eu) só deve intervir quando o status for NEEDS_HUMAN.
  * 
  * Uso:
@@ -44,7 +44,7 @@ async function main() {
         console.log(`
 ${colors.bright}🐍 Ouroboros Runner${colors.reset}
 
-Delega tarefas para subagentes OpenCode. Você (humano) só intervém no final.
+Delega tarefas para subagentes Z.AI. Você (humano) só intervém no final.
 
 ${colors.cyan}Uso:${colors.reset}
   bun run runner.ts "Criar função de validação de email"
@@ -86,6 +86,43 @@ ${colors.magenta}Escalation Chain:${colors.reset}
         }
     }
 
+    // Criar orchestrator
+    const orchestrator = new Orchestrator({
+        maxRetries: 3,
+        verbose: true,
+        requireApproval: false, // TODO: Integrar HumanLayer
+        skipPhaseValidation: true, // Modo simples para testes
+    });
+
+    // 🌊 Wave Mode - execução paralela
+    if (waveFile) {
+        if (!fs.existsSync(waveFile)) {
+            log("❌", `Arquivo não encontrado: ${waveFile}`, colors.red);
+            process.exit(1);
+        }
+
+        log("🌊", `Wave Coding Mode`, colors.bright);
+        log("📄", `Arquivo: ${waveFile}`, colors.cyan);
+
+        const tasks: WaveTask[] = JSON.parse(fs.readFileSync(waveFile, "utf-8"));
+        log("📝", `Tasks: ${tasks.length}`, colors.yellow);
+        console.log("\n" + "=".repeat(60) + "\n");
+
+        const executor = new WaveExecutor(orchestrator, { verbose: true });
+        const startTime = Date.now();
+        const result = await executor.execute(tasks);
+        const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+
+        console.log("\n" + "=".repeat(60) + "\n");
+        log("🌊", `Wave Execution Complete em ${duration}s`, colors.bright);
+        log("✅", `Success: ${result.successfulTasks.length}`, colors.green);
+        log("❌", `Failed: ${result.failedTasks.length}`, colors.red);
+        log("⏭️", `Skipped: ${result.skippedTasks.length}`, colors.yellow);
+
+        return result;
+    }
+
+    // Modo single task requer instrução
     if (!instruction) {
         log("❌", "Nenhuma instrução fornecida", colors.red);
         process.exit(1);
@@ -95,14 +132,6 @@ ${colors.magenta}Escalation Chain:${colors.reset}
     log("📝", `Instrução: "${instruction}"`, colors.cyan);
     log("🎭", `Persona inicial: ${persona}`, colors.yellow);
     log("📂", `WorkDir: ${workDir}`, colors.reset);
-
-    // Criar orchestrator
-    const orchestrator = new Orchestrator({
-        maxRetries: 3,
-        verbose: true,
-        requireApproval: false, // TODO: Integrar HumanLayer
-        skipPhaseValidation: true, // Modo simples para testes
-    });
 
     // Criar task
     const task = createTask(instruction, persona);

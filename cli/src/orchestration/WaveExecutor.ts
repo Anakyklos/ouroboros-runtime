@@ -14,7 +14,7 @@
  */
 
 import { Orchestrator } from "./Orchestrator.js";
-import type { TaskResult, TaskStatus } from "./types.js";
+import { TaskStatus, PersonaType, type TaskResult, type OrchestratorTask } from "./types.js";
 import type {
     WaveTask,
     WaveConfig,
@@ -22,6 +22,9 @@ import type {
     WaveExecutionResult,
 } from "./wave-types.js";
 import { DEFAULT_WAVE_CONFIG } from "./wave-types.js";
+
+export type { WaveConfig } from "./wave-types.js";
+export { DEFAULT_WAVE_CONFIG };
 
 export class WaveExecutor {
     private orchestrator: Orchestrator;
@@ -107,9 +110,20 @@ export class WaveExecutor {
         this.log(`   ⏭️ Skipped: ${skippedTasks.length}`);
         this.log(`   ⏱️ Duration: ${(totalDurationMs / 1000).toFixed(1)}s`);
 
+        // Build results map
+        const resultsMap = new Map<string, WaveTaskResult>();
+        for (const wave of results) {
+            for (const r of wave) {
+                resultsMap.set(r.taskId, r);
+            }
+        }
+
         return {
+            success: failedTasks.length === 0,
             waves: results,
-            totalDurationMs,
+            results: resultsMap,
+            totalDuration: totalDurationMs,
+            completedTasks: successfulTasks,
             successfulTasks,
             failedTasks,
             skippedTasks,
@@ -173,13 +187,46 @@ export class WaveExecutor {
             const chunkResults = await Promise.all(
                 chunk.map(async (task): Promise<WaveTaskResult> => {
                     this.log(`   ▶️ Starting: ${task.id}`);
-                    const result = await this.orchestrator.loopUntilSuccess(task);
-                    const emoji = result.status === "SUCCESS" ? "✅" : "❌";
+
+                    let taskResult: TaskResult;
+
+                    const startMs = Date.now();
+                    try {
+                        // Se task tem execute() customizado, usar ele
+                        if (task.execute) {
+                            const customResult = await task.execute();
+                            taskResult = {
+                                status: customResult.success ? TaskStatus.SUCCESS : TaskStatus.FAILURE,
+                                output: customResult.output ?? "",
+                                retryCount: 0,
+                                persona: PersonaType.DEVELOPER,
+                                durationMs: Date.now() - startMs,
+                                contextHistory: [],
+                            };
+                        } else if (task.instruction) {
+                            // Fallback para orchestrator (se tiver instruction)
+                            taskResult = await this.orchestrator.loopUntilSuccess(task as OrchestratorTask);
+                        } else {
+                            throw new Error('WaveTask must have either execute() or instruction');
+                        }
+                    } catch (error) {
+                        taskResult = {
+                            status: TaskStatus.FAILURE,
+                            output: error instanceof Error ? error.message : String(error),
+                            retryCount: 0,
+                            persona: PersonaType.DEVELOPER,
+                            durationMs: Date.now() - startMs,
+                            contextHistory: [],
+                            error: error instanceof Error ? error.message : String(error),
+                        };
+                    }
+
+                    const emoji = taskResult.status === "SUCCESS" ? "✅" : "❌";
                     this.log(`   ${emoji} Finished: ${task.id}`);
 
                     return {
                         taskId: task.id,
-                        result,
+                        result: taskResult,
                         waveIndex,
                     };
                 })

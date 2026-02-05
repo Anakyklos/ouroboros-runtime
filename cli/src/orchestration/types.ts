@@ -4,7 +4,6 @@
  * Tipos centralizados para o sistema de orquestração multi-agente.
  */
 
-import type { ExecutionResult } from "../providers/z-ai.js";
 import type { WorkflowPhase } from "../utils/anti-vibe.js";
 
 // --- ENUMS ---

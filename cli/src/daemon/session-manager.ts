@@ -1,0 +1,186 @@
+/**
+ * 📋 Session Manager
+ * 
+ * Gerencia ciclo de vida das sessões.
+ * Cada sessão representa uma execução de agente que pode ser pausada/resumida.
+ */
+
+import type { StoragePort, Session } from '../ports/storage.port.js';
+import type { EventBus } from './event-bus.js';
+import { Orchestrator, createTask } from '../orchestration/index.js';
+import { PersonaType } from '../orchestration/types.js';
+
+export class SessionManager {
+    private storage: StoragePort;
+    private eventBus: EventBus;
+    private activeOrchestrators: Map<string, Orchestrator> = new Map();
+    private activeTasks: Map<string, Promise<void>> = new Map();
+
+    constructor(storage: StoragePort, eventBus: EventBus) {
+        this.storage = storage;
+        this.eventBus = eventBus;
+    }
+
+    async createSession(data: Omit<Session, 'id' | 'createdAt' | 'updatedAt'>): Promise<Session> {
+        const session = await this.storage.createSession(data);
+
+        // Create orchestrator for this session
+        const orchestrator = new Orchestrator(
+            { verbose: true, skipPhaseValidation: true },
+            this.eventBus
+        );
+        this.activeOrchestrators.set(session.id, orchestrator);
+
+        this.eventBus.emit('task', {
+            type: 'started',
+            sessionId: session.id,
+            data: { status: session.status },
+        });
+
+        this.eventBus.log('info', `Session created: ${session.id}`, 'SessionManager');
+
+        return session;
+    }
+
+    async getSession(id: string): Promise<Session | null> {
+        return this.storage.getSession(id);
+    }
+
+    async listSessions(status?: string): Promise<Session[]> {
+        const filter = status ? { status: status as Session['status'] } : undefined;
+        return this.storage.listSessions(filter);
+    }
+
+    async attachSession(id: string): Promise<Session> {
+        const session = await this.storage.getSession(id);
+
+        if (!session) {
+            throw new Error(`Session not found: ${id}`);
+        }
+
+        if (session.status === 'completed' || session.status === 'failed') {
+            throw new Error(`Cannot attach to ${session.status} session`);
+        }
+
+        // Ensure orchestrator exists for attached session
+        if (!this.activeOrchestrators.has(id)) {
+            const orchestrator = new Orchestrator(
+                { verbose: true, skipPhaseValidation: true },
+                this.eventBus
+            );
+            this.activeOrchestrators.set(id, orchestrator);
+        }
+
+        this.eventBus.log('info', `Client attached to session: ${id}`, 'SessionManager');
+
+        return session;
+    }
+
+    async updateSession(id: string, data: Partial<Session>): Promise<void> {
+        await this.storage.updateSession(id, data);
+
+        if (data.status) {
+            this.eventBus.emit('task', {
+                type: data.status === 'completed' ? 'completed' :
+                    data.status === 'failed' ? 'failed' : 'progress',
+                sessionId: id,
+                data: { status: data.status },
+            });
+        }
+    }
+
+    async sendInput(sessionId: string, prompt: string): Promise<{ taskId: string }> {
+        const orchestrator = this.activeOrchestrators.get(sessionId);
+
+        if (!orchestrator) {
+            throw new Error(`No active orchestrator for session: ${sessionId}`);
+        }
+
+        // Log input
+        await this.storage.appendLog({
+            sessionId,
+            type: 'input',
+            content: prompt,
+        });
+
+        // Create task and execute
+        const task = createTask(prompt, PersonaType.DEVELOPER, {
+            id: `task_${sessionId}_${Date.now()}`,
+        });
+
+        // Execute asynchronously
+        const execution = orchestrator.loopUntilSuccess(task).then(async (result) => {
+            // Log output
+            await this.storage.appendLog({
+                sessionId,
+                type: result.status === 'SUCCESS' ? 'output' : 'error',
+                content: result.output || result.error || 'No output',
+            });
+
+            // Update session status
+            await this.updateSession(sessionId, {
+                status: result.status === 'SUCCESS' ? 'completed' :
+                    result.status === 'NEEDS_HUMAN' ? 'paused' : 'failed',
+            });
+
+            this.eventBus.log('info', `Task ${task.id} finished: ${result.status}`, 'SessionManager');
+        });
+
+        this.activeTasks.set(task.id, execution);
+
+        this.eventBus.log('info', `Task started for session ${sessionId}: ${task.id}`, 'SessionManager');
+
+        return { taskId: task.id };
+    }
+
+    async interruptSession(sessionId: string): Promise<void> {
+        const orchestrator = this.activeOrchestrators.get(sessionId);
+
+        if (orchestrator) {
+            orchestrator.pause();
+        }
+
+        await this.storage.updateSession(sessionId, { status: 'paused' });
+
+        this.eventBus.emit('task', {
+            type: 'progress',
+            sessionId,
+            data: { action: 'interrupted' },
+        });
+
+        this.eventBus.log('info', `Session interrupted: ${sessionId}`, 'SessionManager');
+    }
+
+    async resumeSession(sessionId: string): Promise<void> {
+        const orchestrator = this.activeOrchestrators.get(sessionId);
+
+        if (orchestrator) {
+            orchestrator.resume();
+        }
+
+        await this.storage.updateSession(sessionId, { status: 'active' });
+
+        this.eventBus.emit('task', {
+            type: 'progress',
+            sessionId,
+            data: { action: 'resumed' },
+        });
+
+        this.eventBus.log('info', `Session resumed: ${sessionId}`, 'SessionManager');
+    }
+
+    /**
+     * Cleanup resources for a session
+     */
+    async cleanupSession(sessionId: string): Promise<void> {
+        this.activeOrchestrators.delete(sessionId);
+
+        // Wait for any pending tasks
+        for (const [taskId, promise] of this.activeTasks) {
+            if (taskId.includes(sessionId)) {
+                await promise.catch(() => { /* ignore errors */ });
+                this.activeTasks.delete(taskId);
+            }
+        }
+    }
+}

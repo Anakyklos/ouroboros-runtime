@@ -1,7 +1,7 @@
 /**
  * 🐍 Ouroboros Path Utilities
  * 
- * Provides cross-platform path resolution for the isolated Python environment.
+ * Provides cross-platform path resolution for the isolated environment.
  */
 
 import { existsSync } from "node:fs";
@@ -67,10 +67,8 @@ export function getLogsPath(projectRoot?: string): string {
  * Checks if the Ouroboros environment is properly set up.
  */
 export function isOuroborosReady(projectRoot?: string): boolean {
-    const pythonPath = getPythonPath(projectRoot);
     const workspacePath = getWorkspacePath(projectRoot);
-
-    return existsSync(pythonPath) && existsSync(workspacePath);
+    return existsSync(workspacePath);
 }
 
 /**
@@ -88,8 +86,6 @@ export interface OuroborosConfig {
 /**
  * Returns the VALIDATED absolute path to the Python executable.
  * THROWS an error if the environment is not set up.
- * 
- * This is the main function providers should use to get the Python path.
  */
 export function getOuroborosPythonPath(projectRoot?: string): string {
     const pythonPath = getPythonPath(projectRoot);
@@ -107,7 +103,6 @@ export function getOuroborosPythonPath(projectRoot?: string): string {
 
 /**
  * Returns the VALIDATED absolute path to the pip executable.
- * THROWS an error if the environment is not set up.
  */
 export function getOuroborosPipPath(projectRoot?: string): string {
     const pipPath = getPipPath(projectRoot);
@@ -121,39 +116,6 @@ export function getOuroborosPipPath(projectRoot?: string): string {
     }
 
     return pipPath;
-}
-
-/**
- * Returns the absolute path to the opencode CLI executable.
- * NOTE: opencode is a Go binary installed via npm, NOT a Python package.
- */
-export function getOpenCodePath(projectRoot?: string): string {
-    const ouroborosRoot = getOuroborosRoot(projectRoot);
-    const isWindows = process.platform === "win32";
-
-    const openCodePath = isWindows
-        ? join(ouroborosRoot, "npm", "node_modules", ".bin", "opencode.cmd")
-        : join(ouroborosRoot, "npm", "node_modules", ".bin", "opencode");
-
-    return openCodePath;
-}
-
-/**
- * Returns the VALIDATED absolute path to the opencode CLI executable.
- * THROWS an error if not found.
- */
-export function getOuroborosOpenCodePath(projectRoot?: string): string {
-    const openCodePath = getOpenCodePath(projectRoot);
-
-    if (!existsSync(openCodePath)) {
-        throw new Error(
-            `🐍 Ouroboros opencode CLI not found!\n` +
-            `   Expected at: ${openCodePath}\n` +
-            `   Run: npm install opencode-ai --prefix .ouroboros/npm`
-        );
-    }
-
-    return openCodePath;
 }
 
 /**
@@ -176,30 +138,6 @@ export function getOuroborosEnv(projectRoot?: string): NodeJS.ProcessEnv {
 }
 
 /**
- * Extended configuration including opencode CLI.
- */
-export interface OuroborosConfig {
-    root: string;
-    python: string;
-    pip: string;
-    openCode: string;
-    workspace: string;
-    logs: string;
-    isReady: boolean;
-}
-
-/**
- * Checks if the full Ouroboros environment is ready (including opencode).
- */
-export function isFullOuroborosReady(projectRoot?: string): boolean {
-    const pythonPath = getPythonPath(projectRoot);
-    const openCodePath = getOpenCodePath(projectRoot);
-    const workspacePath = getWorkspacePath(projectRoot);
-
-    return existsSync(pythonPath) && existsSync(openCodePath) && existsSync(workspacePath);
-}
-
-/**
  * Returns full Ouroboros configuration.
  */
 export function getOuroborosConfig(projectRoot?: string): OuroborosConfig {
@@ -207,9 +145,8 @@ export function getOuroborosConfig(projectRoot?: string): OuroborosConfig {
         root: getOuroborosRoot(projectRoot),
         python: getPythonPath(projectRoot),
         pip: getPipPath(projectRoot),
-        openCode: getOpenCodePath(projectRoot),
         workspace: getWorkspacePath(projectRoot),
         logs: getLogsPath(projectRoot),
-        isReady: isFullOuroborosReady(projectRoot),
+        isReady: isOuroborosReady(projectRoot),
     };
 }

@@ -1,0 +1,101 @@
+/**
+ * 📡 EventBus
+ * 
+ * Sistema de eventos para desacoplar componentes.
+ * Substitui console.log direto por eventos tipados.
+ */
+
+type EventCallback<T = unknown> = (data: T) => void;
+
+export interface LogEvent {
+    level: 'debug' | 'info' | 'warn' | 'error';
+    message: string;
+    timestamp: Date;
+    source?: string;
+}
+
+export interface TaskEvent {
+    type: 'started' | 'progress' | 'completed' | 'failed';
+    sessionId: string;
+    data?: unknown;
+}
+
+export interface DaemonEvent {
+    type: 'starting' | 'ready' | 'shutting_down' | 'stopped';
+    port?: number;
+}
+
+export interface ThoughtEvent {
+    type: 'reasoning' | 'tool_call' | 'tool_result' | 'decision';
+    sessionId?: string;
+    content: string;
+    metadata?: Record<string, unknown>;
+    timestamp: Date;
+}
+
+// Union of all event types
+export type EventMap = {
+    log: LogEvent;
+    task: TaskEvent;
+    daemon: DaemonEvent;
+    thought: ThoughtEvent;
+};
+
+export class EventBus {
+    private listeners: Map<string, Set<EventCallback>> = new Map();
+
+    /**
+     * Subscribe to an event type
+     */
+    on<K extends keyof EventMap>(event: K, callback: EventCallback<EventMap[K]>): () => void {
+        if (!this.listeners.has(event)) {
+            this.listeners.set(event, new Set());
+        }
+        this.listeners.get(event)!.add(callback as EventCallback);
+
+        // Return unsubscribe function
+        return () => this.off(event, callback);
+    }
+
+    /**
+     * Unsubscribe from an event type
+     */
+    off<K extends keyof EventMap>(event: K, callback: EventCallback<EventMap[K]>): void {
+        this.listeners.get(event)?.delete(callback as EventCallback);
+    }
+
+    /**
+     * Emit an event
+     */
+    emit<K extends keyof EventMap>(event: K, data: EventMap[K]): void {
+        this.listeners.get(event)?.forEach(callback => {
+            try {
+                callback(data);
+            } catch (err) {
+                console.error(`[EventBus] Error in ${event} handler:`, err);
+            }
+        });
+    }
+
+    /**
+     * Log helper - emits a log event
+     */
+    log(level: LogEvent['level'], message: string, source?: string): void {
+        this.emit('log', {
+            level,
+            message,
+            timestamp: new Date(),
+            source,
+        });
+    }
+
+    /**
+     * Clear all listeners (for testing)
+     */
+    clear(): void {
+        this.listeners.clear();
+    }
+}
+
+// Singleton instance for global access
+export const globalEventBus = new EventBus();

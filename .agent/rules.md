@@ -56,15 +56,83 @@ Para comunicar com o Architect:
 |------------|-------|-----|
 | **Gemini Architect** | Raciocínio profundo, arquitetura | Specs, design, revisão de código |
 | **Perplexity** | Informações atualizadas da web | APIs, docs, pesquisa de soluções |
-| **OpenCode** | Execução de código | Subagentes para implementação |
+| **Z.AI DirectAPI** | Execução de código | Subagentes para implementação |
 
 ### Regras
 - Architect = cérebro estratégico (pensamento)
 - Perplexity = memória atualizada (dados)
-- OpenCode = braços executores (ação)
+- Z.AI = braços executores (ação via AgentLoop)
 - Posso criar **novos Gems** se necessário para funções específicas
 
 ## Memória
 - Documentar decisões importantes em `.agent/memory/`
 - Manter specs e planos atualizados
 - Criar walkthroughs para tarefas complexas
+
+---
+
+## Skill Activation Protocol 🧠
+
+### Regra de Ouro
+> **Antes de executar qualquer tarefa complexa:**
+> 1. Identificar keywords/situação
+> 2. Consultar skill correspondente em `.agent/skills/`
+> 3. Seguir padrões descritos na skill
+> 4. Usar workflows em `.agent/workflows/`
+
+### Mapeamento Automático de Skills
+
+| Situação | Skill/Workflow | Ação |
+|----------|----------------|------|
+| Implementar código | `/implementation` | Two-stage review |
+| Múltiplas tasks independentes | `/multi-agent-task` | Parallel dispatch |
+| Feature complexa | `/architect-spec` | Architect + subagent |
+| Criar MCP/tool | `core/mcp-builder` | Tool design patterns |
+| Context grande (>50k tokens) | `optimization/memory-systems` | Memory layers |
+
+### Triggers por Keyword
+
+- **"implementar", "criar", "develop"** → Workflow `/implementation`
+- **"paralelo", "independentes", "múltiplas"** → Workflow `/multi-agent-task`  
+- **"arquitetura", "design", "spec"** → Workflow `/architect-spec`
+- **"MCP", "tool", "function"** → Skill `mcp-builder`
+- **"otimizar", "performance"** → Skill `agent-optimization`
+
+### Referência Completa
+Ver: [SKILL_ACTIVATION_MAP.md](.agent/skills/SKILL_ACTIVATION_MAP.md)
+
+---
+
+## Workflows Disponíveis
+
+| Comando | Workflow | Uso |
+|---------|----------|-----|
+| `/implementation` | [implementation.md](.agent/workflows/implementation.md) | Implementação padrão |
+| `/multi-agent-task` | [multi-agent-task.md](.agent/workflows/multi-agent-task.md) | Tasks paralelas |
+| `/architect-spec` | [architect-spec.md](.agent/workflows/architect-spec.md) | Architect + review |
+
+### Prompts Templates
+- `.agent/prompts/implementer.md` - Dispatch implementação
+- `.agent/prompts/spec-reviewer.md` - Review de spec  
+- `.agent/prompts/code-quality-reviewer.md` - Review de qualidade
+
+---
+
+## Skills Disponíveis
+
+### Core (Sempre Consultar)
+- `core/subagent-development` - Implementação com two-stage review
+- `core/multi-agent-patterns` - Arquiteturas de orquestração
+- `core/autonomous-agent-patterns` - Agent loop, permissions
+- `core/parallel-dispatching` - Quando parallelizar
+- `core/mcp-builder` - Criar MCPs/tools
+
+### Optimization
+- `optimization/memory-systems` - Persistência cross-session
+- `optimization/agent-optimization` - Performance tuning
+
+### Existing
+- `architect-workflow` - Gem Architect Anti-Vibe
+- `gemini-browser` / `gemini-chat` - Automação Gemini
+- `perplexity-search` - Pesquisa web
+

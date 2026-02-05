@@ -2,7 +2,7 @@
  * 🎯 Orchestrator
  * 
  * Sistema de orquestração multi-agente com loop de auto-correção.
- * Coordena subagentes OpenCode seguindo o protocolo Anti-Vibe.
+ * Coordena subagentes seguindo o protocolo Anti-Vibe.
  */
 
 import {
@@ -20,26 +20,77 @@ import {
     type ValidationStrategy,
     type ValidationResult,
 } from "./types.js";
-import { ZAIProvider, type ExecutionResult } from "../providers/z-ai.js";
+import { AgentLoop, createAgent, type AgentResult } from "../providers/agent-loop.js";
 import {
     WorkflowPhase,
     buildAntiVibePrompt,
     validatePhaseGate,
 } from "../utils/anti-vibe.js";
 import { MemoryManager } from "./MemoryManager.js";
+import { MemoryRetriever, createMemoryRetriever } from "./MemoryRetriever.js";
+import { EventBus, globalEventBus } from "../daemon/event-bus.js";
+import { getWorkspacePath } from "../utils/ouroboros.js";
 
 /**
  * Orchestrator - Coordena execução de subagentes com auto-correção.
  */
 export class Orchestrator {
-    private provider: ZAIProvider;
+    private agentLoop: AgentLoop | null = null;
     private config: OrchestratorConfig;
     private memory: MemoryManager;
+    private eventBus: EventBus;
+    private isPaused = false;
+    private resumeResolver: (() => void) | null = null;
+    private memoryRetriever: MemoryRetriever;
 
-    constructor(config: Partial<OrchestratorConfig> = {}) {
+    constructor(config: Partial<OrchestratorConfig> = {}, eventBus?: EventBus) {
         this.config = { ...DEFAULT_ORCHESTRATOR_CONFIG, ...config };
-        this.provider = new ZAIProvider({ verbose: this.config.verbose });
         this.memory = new MemoryManager();
+        this.memoryRetriever = createMemoryRetriever();
+        this.eventBus = eventBus ?? globalEventBus;
+    }
+
+    /**
+     * Initialize the agent loop with API key.
+     * Must be called before executing tasks.
+     */
+    initialize(apiKey: string): void {
+        this.agentLoop = createAgent({
+            apiKey,
+            workingDirectory: getWorkspacePath(),
+            verbose: this.config.verbose,
+        });
+        this.log('info', '✅ Orchestrator initialized with DirectZAI');
+    }
+
+    /**
+     * Pause execution loop.
+     */
+    pause(): void {
+        this.isPaused = true;
+        this.log('info', '⏸️ Paused');
+    }
+
+    /**
+     * Resume execution loop.
+     */
+    resume(): void {
+        this.isPaused = false;
+        if (this.resumeResolver) {
+            this.resumeResolver();
+            this.resumeResolver = null;
+        }
+        this.log('info', '▶️ Resumed');
+    }
+
+    /**
+     * Wait until resumed (if paused).
+     */
+    private async waitIfPaused(): Promise<void> {
+        if (!this.isPaused) return;
+        await new Promise<void>((resolve) => {
+            this.resumeResolver = resolve;
+        });
     }
 
     /**
@@ -53,11 +104,13 @@ export class Orchestrator {
         const startTime = Date.now();
         const contextHistory: ContextEntry[] = [];
 
-        this.log(`🎯 Starting task: ${task.id}`);
-        this.log(`   Persona: ${task.persona}`);
-        this.log(`   Max retries: ${this.config.maxRetries}`);
+        this.log('info', `🎯 Starting task: ${task.id}`);
+        this.log('info', `   Persona: ${task.persona}`);
+        this.log('info', `   Max retries: ${this.config.maxRetries}`);
 
         while (retryCount < this.config.maxRetries) {
+            // Check pause state before each iteration
+            await this.waitIfPaused();
             try {
                 // 1. Build prompt com Anti-Vibe protocol
                 const phase = PERSONA_PHASE_MAP[task.persona];
@@ -69,16 +122,16 @@ export class Orchestrator {
                     this.validatePhase(phase);
                 }
 
-                // 3. Execute via ZAIProvider
-                this.log(`\n🔄 Attempt ${retryCount + 1}/${this.config.maxRetries}`);
+                // 3. Execute via AgentLoop
+                this.log('info', `\n🔄 Attempt ${retryCount + 1}/${this.config.maxRetries}`);
                 const result = await this.executeWithTimeout(prompt);
 
                 // 4. Add to context history (evita loop de amnésia)
                 contextHistory.push({
                     timestamp: new Date(),
                     prompt,
-                    output: result.output,
-                    error: result.error,
+                    output: result.content,
+                    error: undefined,
                     persona: task.persona,
                 });
 
@@ -89,17 +142,17 @@ export class Orchestrator {
                     // 5.1 NOVO: Validação programática (se disponível)
                     // Protocolo Anti-Vibe: "Trust but Verify"
                     if (task.validationStrategy) {
-                        this.log(`🔬 Running programmatic validation: ${task.validationStrategy.name}`);
+                        this.log('info', `🔬 Running programmatic validation: ${task.validationStrategy.name}`);
 
                         const validationResult = await task.validationStrategy.validate({
                             workDir: task.workDir || process.cwd(),
                             taskId: task.id,
-                            output: result.output,
+                            output: result.content,
                             additionalContext: task.context,
                         });
 
                         if (!validationResult.isValid) {
-                            this.log(`❌ Validation failed (exit code ${validationResult.exitCode}): ${validationResult.message}`);
+                            this.log('error', `❌ Validation failed (exit code ${validationResult.exitCode}): ${validationResult.message}`);
                             lastError = validationResult.message;
 
                             // Add validation failure to context history
@@ -115,14 +168,14 @@ export class Orchestrator {
                             continue; // Volta para o loop de retry
                         }
 
-                        this.log(`✅ Validation passed: ${validationResult.message}`);
+                        this.log('info', `✅ Validation passed: ${validationResult.message}`);
                     }
 
                     // 5.2 Sucesso confirmado (heurística + validação programática)
-                    this.log(`✅ Task completed successfully!`);
+                    this.log('info', `✅ Task completed successfully!`);
                     const taskResult: TaskResult = {
                         status: TaskStatus.SUCCESS,
-                        output: result.output,
+                        output: result.content,
                         retryCount,
                         persona: task.persona,
                         durationMs: Date.now() - startTime,
@@ -134,8 +187,8 @@ export class Orchestrator {
                 }
 
                 // 6. Handle failure - extract error and prepare retry
-                lastError = evaluation.error || result.error || "Unknown error";
-                this.log(`❌ Attempt failed: ${lastError}`);
+                lastError = evaluation.error || "Unknown error";
+                this.log('warn', `❌ Attempt failed: ${lastError}`);
 
                 // 7. Auto-fix issues
                 const fixedInstruction = this.fixIssues(task.instruction, lastError);
@@ -145,7 +198,7 @@ export class Orchestrator {
 
             } catch (err) {
                 lastError = err instanceof Error ? err.message : String(err);
-                this.log(`💥 Exception: ${lastError}`);
+                this.log('error', `💥 Exception: ${lastError}`);
                 contextHistory.push({
                     timestamp: new Date(),
                     prompt: task.instruction,
@@ -160,7 +213,7 @@ export class Orchestrator {
         // Max retries exceeded - try escalation before going to human
         const escalateTo = ESCALATION_CHAIN[task.persona];
         if (escalateTo) {
-            this.log(`\n🔼 Escalating from ${task.persona} to ${escalateTo}`);
+            this.log('info', `\n🔼 Escalating from ${task.persona} to ${escalateTo}`);
             const escalatedTask: OrchestratorTask = {
                 ...task,
                 id: `${task.id}_escalated`,
@@ -171,7 +224,7 @@ export class Orchestrator {
         }
 
         // No escalation possible - go to human
-        this.log(`\n🆘 Max retries exceeded. Escalating to human.`);
+        this.log('warn', `\n🆘 Max retries exceeded. Escalating to human.`);
         const failResult: TaskResult = {
             status: TaskStatus.NEEDS_HUMAN,
             output: "",
@@ -190,24 +243,24 @@ export class Orchestrator {
      * Avalia resultado do subagente.
      * Detecta sucesso/falha baseado em indicadores no output.
      */
-    evaluateResult(result: ExecutionResult): { status: TaskStatus; error?: string } {
-        const output = result.output.toLowerCase();
+    evaluateResult(result: AgentResult): { status: TaskStatus; error?: string } {
+        const output = result.content.toLowerCase();
 
         // Check explicit failure first
         if (!result.success) {
             return {
                 status: TaskStatus.FAILURE,
-                error: result.error || "Execution failed with non-zero exit code",
+                error: "Execution failed",
             };
         }
 
         // Check for failure indicators in output
         for (const indicator of FAILURE_INDICATORS) {
-            if (result.output.includes(indicator)) {
+            if (result.content.includes(indicator)) {
                 // Extract error context (line containing the indicator)
-                const errorLine = result.output
+                const errorLine = result.content
                     .split("\n")
-                    .find(line => line.includes(indicator));
+                    .find((line: string) => line.includes(indicator));
                 return {
                     status: TaskStatus.FAILURE,
                     error: errorLine || `Output contains failure indicator: ${indicator}`,
@@ -254,9 +307,15 @@ IMPORTANT: Analyze the error carefully before proceeding.
     private buildPrompt(
         task: OrchestratorTask,
         previousError?: string,
-        contextHistory: ContextEntry[] = []
+        contextHistory: ContextEntry[] = [],
+        memoryContext?: string
     ): string {
         let prompt = task.instruction;
+
+        // Add retrieved memory context (from MemoryRetriever)
+        if (memoryContext) {
+            prompt = `${memoryContext}\n\n---\n\n${prompt}`;
+        }
 
         // Add context if provided
         if (task.context) {
@@ -301,21 +360,21 @@ IMPORTANT: Analyze the error carefully before proceeding.
     }
 
     /**
-     * Execute with timeout protection.
-     * Note: Timeout is now managed by ActivityTimeoutExecutor in the provider.
+     * Execute prompt via AgentLoop.
      */
-    private async executeWithTimeout(prompt: string): Promise<ExecutionResult> {
-        // Timeout is handled by ActivityTimeoutExecutor in ZAIProvider
-        // This method is kept for backwards compatibility
-        return this.provider.execute(prompt);
+    private async executeWithTimeout(prompt: string): Promise<AgentResult> {
+        if (!this.agentLoop) {
+            throw new Error('Orchestrator not initialized. Call initialize(apiKey) first.');
+        }
+        return this.agentLoop.run(prompt);
     }
 
     /**
      * Log message if verbose mode enabled.
      */
-    private log(message: string): void {
+    private log(level: 'debug' | 'info' | 'warn' | 'error', message: string): void {
         if (this.config.verbose) {
-            console.log(`[Orchestrator] ${message}`);
+            this.eventBus.log(level, message, 'Orchestrator');
         }
     }
 }

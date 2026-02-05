@@ -9,10 +9,19 @@ import type { OrchestratorTask, TaskResult } from "./types.js";
 
 /**
  * Task com suporte a dependências para wave execution.
+ * Pode ter um execute() customizado OU usar instruction/persona para orchestrator.
  */
-export interface WaveTask extends OrchestratorTask {
+export interface WaveTask extends Partial<OrchestratorTask> {
+    /** ID único da task (obrigatório) */
+    id: string;
+    /** Nome legível (opcional) */
+    name?: string;
+    /** Descrição da task (opcional) */
+    description?: string;
     /** IDs de tasks que devem completar antes desta */
     dependsOn?: string[];
+    /** Função de execução customizada (se não usar orchestrator) */
+    execute?: () => Promise<{ success: boolean; output?: string }>;
 }
 
 /**
@@ -43,13 +52,19 @@ export interface WaveTaskResult {
  * Resultado completo da execução de todas as waves.
  */
 export interface WaveExecutionResult {
+    /** Se todas as tasks completaram com sucesso */
+    success: boolean;
     /** Resultados agrupados por wave */
     waves: WaveTaskResult[][];
+    /** Resultados indexados por task ID */
+    results: Map<string, WaveTaskResult>;
     /** Duração total em ms */
-    totalDurationMs: number;
+    totalDuration: number;
+    /** Tasks que completaram com sucesso */
+    completedTasks: string[];
     /** Tasks que falharam */
     failedTasks: string[];
-    /** Tasks que sucederam */
+    /** Tasks que sucederam (alias de completedTasks) */
     successfulTasks: string[];
     /** Tasks que não foram executadas (devido a dependência falha) */
     skippedTasks: string[];
