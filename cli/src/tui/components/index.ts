@@ -1,10 +1,4 @@
-/**
- * Components Index
- * Re-exports all TUI components
- */
-
-export { Layout } from './Layout.js';
-export { ChatPane } from './ChatPane.js';
-export { LogPane } from './LogPane.js';
-export { InputBar } from './InputBar.js';
-export { StatusBar } from './StatusBar.js';
+export * from './Layout.js';
+export * from './InputBar.js';
+export * from './MessageList.js';
+export * from './MessageItem.js';
