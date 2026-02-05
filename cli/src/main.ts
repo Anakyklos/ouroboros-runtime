@@ -12,7 +12,7 @@
 import chalk from "chalk";
 import ora from "ora";
 
-import { runBootWizard, type BootConfig } from "./boot/BootWizard.js";
+import { runBootWizard, showWelcomeBanner, type BootConfig } from "./boot/BootWizard.js";
 import { createGatewayOrchestrator } from "./orchestration/GatewayOrchestrator.js";
 import { createConcierge, type ConciergeClient } from "./concierge/ConciergeClient.js";
 import { globalEventBus } from "./daemon/event-bus.js";
@@ -183,6 +183,9 @@ async function handleMessage(input: string): Promise<void> {
 // ============================================================================
 
 async function main() {
+    // Show big logo banner
+    showWelcomeBanner();
+
     // Graceful shutdown
     process.on('SIGINT', () => {
         console.log(chalk.yellow('\n\nShutting down...'));

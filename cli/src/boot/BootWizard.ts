@@ -109,13 +109,24 @@ async function saveConfig(config: BootConfig): Promise<void> {
 // Main Wizard
 // ============================================================================
 
-function showWelcomeBanner(): void {
+export function showWelcomeBanner(): void {
     console.log('\n');
-    console.log(chalk.cyan('╔══════════════════════════════════════════════════════════╗'));
-    console.log(chalk.cyan('║') + chalk.yellow.bold('          🐍 OUROBOROS SETUP WIZARD 🐍                     ') + chalk.cyan('║'));
-    console.log(chalk.cyan('║') + chalk.gray('          First-time configuration                         ') + chalk.cyan('║'));
-    console.log(chalk.cyan('╚══════════════════════════════════════════════════════════╝'));
-    console.log('\n');
+
+    // Elegant ASCII art banner with emerald gradient
+    const emerald = chalk.hex('#10B981');
+    const emeraldMuted = chalk.hex('#059669');
+    const emeraldDark = chalk.hex('#047857');
+    const silver = chalk.hex('#94A3B8');
+
+    // Gradient effect: dark → muted → bright
+    console.log(emeraldDark('   ██████╗ ██╗   ██╗██████╗  ██████╗ ██████╗  ██████╗ ██████╗  ██████╗ ███████╗'));
+    console.log(emeraldDark('  ██╔═══██╗██║   ██║██╔══██╗██╔═══██╗██╔══██╗██╔═══██╗██╔══██╗██╔═══██╗██╔════╝'));
+    console.log(emeraldMuted('  ██║   ██║██║   ██║██████╔╝██║   ██║██████╔╝██║   ██║██████╔╝██║   ██║███████╗'));
+    console.log(emerald('  ██║   ██║██║   ██║██╔══██╗██║   ██║██╔══██╗██║   ██║██╔══██╗██║   ██║╚════██║'));
+    console.log(emerald('  ╚██████╔╝╚██████╔╝██║  ██║╚██████╔╝██████╔╝╚██████╔╝██║  ██║╚██████╔╝███████║'));
+    console.log(emerald.bold('   ╚═════╝  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝'));
+    console.log();
+    console.log(silver('                        🐍 Autonomous Agent Runtime\n'));
 }
 
 export async function runBootWizard(): Promise<BootConfig> {

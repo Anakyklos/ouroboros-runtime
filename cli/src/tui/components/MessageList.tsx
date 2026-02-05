@@ -4,7 +4,7 @@ import { useTuiStore } from '../store.js';
 import { MessageItem, type TimelineItem } from './MessageItem.js';
 import type { LogEntry, ChatMessage } from '../types.js';
 
-export function MessageList(): React.ReactElement {
+export function MessageList() {
     const messages = useTuiStore((s) => s.messages);
     const logs = useTuiStore((s) => s.logs);
 

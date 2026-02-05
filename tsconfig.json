@@ -11,7 +11,8 @@
         "rootDir": ".",
         "jsx": "react-jsx",
         "types": [
-            "node"
+            "node",
+            "react"
         ]
     },
     "include": [

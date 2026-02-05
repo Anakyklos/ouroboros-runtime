@@ -137,10 +137,8 @@ export class GeminiCliBridge {
             const command = this.config.binaryPath ?? "gemini";
 
             // Use -p for non-interactive mode, -m for model selection
-            // When shell: true, we pass the entire command as a single string on Windows
-            const args = isWindows
-                ? ["-p", prompt, "-m", MODEL_MAP[model]] // shell handles escaping
-                : ["-p", prompt, "-m", MODEL_MAP[model]];
+            // Pass prompt via stdin to avoid argument escaping issues
+            const args = ["-p", "-m", MODEL_MAP[model]];
 
             const proc = spawn(command, args, {
                 cwd,
@@ -150,6 +148,12 @@ export class GeminiCliBridge {
             });
 
             this.activeProcess = proc;
+
+            // Write prompt to stdin and close
+            if (proc.stdin) {
+                proc.stdin.write(prompt);
+                proc.stdin.end();
+            }
 
             let stdout = "";
             let stderr = "";
