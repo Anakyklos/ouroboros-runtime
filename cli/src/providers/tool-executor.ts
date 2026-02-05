@@ -48,111 +48,75 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
             parameters: {
                 type: 'object',
                 properties: {
-                    path: {
-                        type: 'string',
-                        description: 'Absolute or relative path to the file',
-                    },
-                    start_line: {
-                        type: 'number',
-                        description: 'Optional start line (1-indexed)',
-                    },
-                    end_line: {
-                        type: 'number',
-                        description: 'Optional end line (1-indexed, inclusive)',
-                    },
+                    path: { type: 'string', description: 'Path to the file to read' },
+                    start_line: { type: 'integer', description: 'Optional start line number (1-based)' },
+                    end_line: { type: 'integer', description: 'Optional end line number' }
                 },
-                required: ['path'],
-            },
-        },
+                required: ['path']
+            }
+        }
     },
     {
         type: 'function',
         function: {
             name: 'write_file',
-            description: 'Write content to a file. Creates the file if it does not exist. Creates parent directories if needed.',
+            description: 'Write content to a file. Overwrites if exists, creates if not.',
             parameters: {
                 type: 'object',
                 properties: {
-                    path: {
-                        type: 'string',
-                        description: 'Absolute or relative path to the file',
-                    },
-                    content: {
-                        type: 'string',
-                        description: 'Content to write to the file',
-                    },
+                    path: { type: 'string', description: 'Path to the file to write' },
+                    content: { type: 'string', description: 'Content to write' }
                 },
-                required: ['path', 'content'],
-            },
-        },
+                required: ['path', 'content']
+            }
+        }
     },
     {
         type: 'function',
         function: {
             name: 'run_command',
-            description: 'Execute a shell command. Returns stdout and stderr.',
+            description: 'Run a shell command. Use for ls, git, grep, etc.',
             parameters: {
                 type: 'object',
                 properties: {
-                    command: {
-                        type: 'string',
-                        description: 'The command to execute',
-                    },
-                    cwd: {
-                        type: 'string',
-                        description: 'Optional working directory for the command',
-                    },
+                    command: { type: 'string', description: 'Shell command to execute' },
+                    cwd: { type: 'string', description: 'Optional working directory' }
                 },
-                required: ['command'],
-            },
-        },
+                required: ['command']
+            }
+        }
     },
     {
         type: 'function',
         function: {
             name: 'list_directory',
-            description: 'List files and directories in a path. Returns file names with type indicators.',
+            description: 'List files and directories in a path.',
             parameters: {
                 type: 'object',
                 properties: {
-                    path: {
-                        type: 'string',
-                        description: 'Path to the directory',
-                    },
-                    recursive: {
-                        type: 'boolean',
-                        description: 'Whether to list recursively (default: false)',
-                    },
+                    path: { type: 'string', description: 'Directory path to list' },
+                    recursive: { type: 'boolean', description: 'List recursively (default: false)' }
                 },
-                required: ['path'],
-            },
-        },
+                required: ['path']
+            }
+        }
     },
     {
         type: 'function',
         function: {
             name: 'grep_search',
-            description: 'Search for a pattern in files. Returns matching lines with file paths and line numbers.',
+            description: 'Search for a text pattern in files.',
             parameters: {
                 type: 'object',
                 properties: {
-                    pattern: {
-                        type: 'string',
-                        description: 'The search pattern (supports regex)',
-                    },
-                    path: {
-                        type: 'string',
-                        description: 'Path to search in (file or directory)',
-                    },
-                    include: {
-                        type: 'string',
-                        description: 'Optional glob pattern to filter files (e.g., "*.ts")',
-                    },
+                    pattern: { type: 'string', description: 'Regex pattern to search' },
+                    path: { type: 'string', description: 'Directory or file to search in' },
+                    include: { type: 'string', description: 'Glob pattern for file names to include (e.g. *.ts)' }
                 },
-                required: ['pattern', 'path'],
-            },
-        },
-    },
+                required: ['pattern', 'path']
+            }
+        }
+    }
 ];
 
 // ============================================================
@@ -160,8 +124,8 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 // ============================================================
 
 export class ToolExecutor {
+    private config: ToolExecutorConfig;
     private handlers: Map<string, ToolHandler> = new Map();
-    private config: Required<ToolExecutorConfig>;
     private eventBus: EventBus;
 
     constructor(config: ToolExecutorConfig, eventBus?: EventBus) {
@@ -228,9 +192,9 @@ export class ToolExecutor {
             const result = await handler(args);
 
             // Truncate if too large
-            if (result.output.length > this.config.maxOutputSize) {
-                result.output = result.output.slice(0, this.config.maxOutputSize) +
-                    `\n\n[Output truncated at ${this.config.maxOutputSize} bytes]`;
+            if (result.output.length > this.config.maxOutputSize!) {
+                result.output = result.output.slice(0, this.config.maxOutputSize!) +
+                    `\n\n[Output truncated at ${this.config.maxOutputSize!} bytes]`;
             }
 
             return result;
@@ -281,11 +245,15 @@ export class ToolExecutor {
 
         // Create parent directories
         const dir = path.dirname(filePath);
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
+
+        // Check if exists to avoid mkdir overhead if possible
+        try {
+            await fs.promises.access(dir);
+        } catch {
+            await fs.promises.mkdir(dir, { recursive: true });
         }
 
-        fs.writeFileSync(filePath, content, 'utf-8');
+        await fs.promises.writeFile(filePath, content, 'utf-8');
 
         this.log('info', `Wrote ${content.length} chars to ${filePath}`);
         return { success: true, output: `File written: ${filePath}` };
@@ -319,7 +287,7 @@ export class ToolExecutor {
                 resolve({
                     success: false,
                     output: stdout,
-                    error: `Command timed out after ${this.config.commandTimeout}ms`,
+                    error: `Command timed out after ${this.config.commandTimeout!}ms`,
                 });
             }, this.config.commandTimeout);
 
