@@ -5,7 +5,7 @@
  * Cada sessão representa uma execução de agente que pode ser pausada/resumida.
  */
 
-import type { StoragePort, Session } from '../ports/storage.port.js';
+import type { StoragePort, Session, SessionSummary } from '../ports/storage.port.js';
 import type { EventBus } from './event-bus.js';
 import { Orchestrator, createTask } from '../orchestration/index.js';
 import { PersonaType } from '../orchestration/types.js';
@@ -46,7 +46,7 @@ export class SessionManager {
         return this.storage.getSession(id);
     }
 
-    async listSessions(status?: string): Promise<Session[]> {
+    async listSessions(status?: string): Promise<SessionSummary[]> {
         const filter = status ? { status: status as Session['status'] } : undefined;
         return this.storage.listSessions(filter);
     }
