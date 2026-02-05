@@ -14,6 +14,8 @@ export interface Session {
     metadata: Record<string, unknown>;
 }
 
+export type SessionSummary = Omit<Session, 'contextSnapshot'>;
+
 export interface AuditEntry {
     id: string;
     sessionId: string;
@@ -27,7 +29,7 @@ export interface StoragePort {
     createSession(data: Omit<Session, 'id' | 'createdAt' | 'updatedAt'>): Promise<Session>;
     getSession(id: string): Promise<Session | null>;
     updateSession(id: string, data: Partial<Session>): Promise<void>;
-    listSessions(filter?: { status?: Session['status'] }): Promise<Session[]>;
+    listSessions(filter?: { status?: Session['status'] }): Promise<SessionSummary[]>;
     deleteSession(id: string): Promise<void>;
 
     // Audit logging

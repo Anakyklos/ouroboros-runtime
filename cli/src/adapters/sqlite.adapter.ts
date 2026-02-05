@@ -7,7 +7,7 @@
 
 import Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
-import type { StoragePort, Session, AuditEntry } from '../ports/storage.port.js';
+import type { StoragePort, Session, SessionSummary, AuditEntry } from '../ports/storage.port.js';
 
 export class SqliteAdapter implements StoragePort {
     private db: Database.Database | null = null;
@@ -143,15 +143,18 @@ export class SqliteAdapter implements StoragePort {
         db.prepare(`UPDATE sessions SET ${updates.join(', ')} WHERE id = ?`).run(...values);
     }
 
-    async listSessions(filter?: { status?: Session['status'] }): Promise<Session[]> {
+    async listSessions(filter?: { status?: Session['status'] }): Promise<SessionSummary[]> {
         let stmt: Database.Statement;
         const params: unknown[] = [];
 
+        // Optimize: Select only summary fields, excluding large context_snapshot
+        const queryCols = 'id, created_at, updated_at, status, metadata';
+
         if (filter?.status) {
-            stmt = this.getStatement('listSessionsByStatus', 'SELECT * FROM sessions WHERE status = ? ORDER BY created_at DESC');
+            stmt = this.getStatement('listSessionsByStatus', `SELECT ${queryCols} FROM sessions WHERE status = ? ORDER BY created_at DESC`);
             params.push(filter.status);
         } else {
-            stmt = this.getStatement('listSessionsAll', 'SELECT * FROM sessions ORDER BY created_at DESC');
+            stmt = this.getStatement('listSessionsAll', `SELECT ${queryCols} FROM sessions ORDER BY created_at DESC`);
         }
 
         const rows = stmt.all(...params) as Array<{
@@ -159,7 +162,6 @@ export class SqliteAdapter implements StoragePort {
             created_at: string;
             updated_at: string;
             status: Session['status'];
-            context_snapshot: string;
             metadata: string;
         }>;
 
@@ -168,7 +170,6 @@ export class SqliteAdapter implements StoragePort {
             createdAt: new Date(row.created_at),
             updatedAt: new Date(row.updated_at),
             status: row.status,
-            contextSnapshot: row.context_snapshot,
             metadata: JSON.parse(row.metadata),
         }));
     }
