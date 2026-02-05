@@ -1,0 +1,31 @@
+{
+    "mcpServers": {
+        "opencode": {
+            "command": "node",
+            "args": [
+                "./integrations/opencode-mcp/dist/index.js"
+            ],
+            "env": {
+                "PATH": "/usr/local/bin:/usr/bin:/bin"
+            },
+            "disabled": false,
+            "autoApprove": []
+        }
+    },
+    "approvals": {
+        "prompts": {
+            "opencode_exec": "⚠️  DANGER: Opencode is attempting to WRITE code/files. Approve execution?"
+        }
+    },
+    "tools": {
+        "opencode_exec": {
+            "requireApproval": true
+        },
+        "spawn_subagent": {
+            "requireApproval": false
+        },
+        "read_workspace": {
+            "requireApproval": false
+        }
+    }
+}

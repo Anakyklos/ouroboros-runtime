@@ -1,0 +1,53 @@
+# ==============================================
+# OUROBOROS ISOLATION (CRÍTICO)
+# ==============================================
+.ouroboros/
+
+# ==============================================
+# PYTHON
+# ==============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Generic venv (caso alguém crie fora do .ouroboros)
+venv/
+.venv/
+ENV/
+
+# ==============================================
+# NODE / BUN
+# ==============================================
+node_modules/
+*.log
+npm-debug.log*
+
+# ==============================================
+# IDE & OS
+# ==============================================
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# ==============================================
+# ENVIRONMENT & SECRETS
+# ==============================================
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
