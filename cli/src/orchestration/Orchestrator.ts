@@ -114,12 +114,12 @@ export class Orchestrator {
             try {
                 // 1. Build prompt com Anti-Vibe protocol
                 const phase = PERSONA_PHASE_MAP[task.persona];
-                const prompt = this.buildPrompt(task, lastError, contextHistory);
+                const prompt = await this.buildPrompt(task, lastError, contextHistory);
 
                 // 2. Validate phase gate (blocks EXECUTION without spec)
                 // Skip if configured for simple tasks
                 if (!this.config.skipPhaseValidation) {
-                    this.validatePhase(phase);
+                    await this.validatePhase(phase);
                 }
 
                 // 3. Execute via AgentLoop
@@ -304,12 +304,12 @@ IMPORTANT: Analyze the error carefully before proceeding.
      * Build prompt with Anti-Vibe context injection.
      * Inclui contextHistory para dar memória ao agente.
      */
-    private buildPrompt(
+    private async buildPrompt(
         task: OrchestratorTask,
         previousError?: string,
         contextHistory: ContextEntry[] = [],
         memoryContext?: string
-    ): string {
+    ): Promise<string> {
         let prompt = task.instruction;
 
         // Add retrieved memory context (from MemoryRetriever)
@@ -343,15 +343,15 @@ IMPORTANT: Analyze the error carefully before proceeding.
         }
 
         const phase = PERSONA_PHASE_MAP[task.persona];
-        return buildAntiVibePrompt(prompt, phase);
+        return await buildAntiVibePrompt(prompt, phase);
     }
 
     /**
      * Validate Anti-Vibe phase gate.
      */
-    private validatePhase(phase: WorkflowPhase): void {
+    private async validatePhase(phase: WorkflowPhase): Promise<void> {
         try {
-            validatePhaseGate(phase);
+            await validatePhaseGate(phase);
         } catch (err) {
             // Re-throw with more context
             const message = err instanceof Error ? err.message : String(err);

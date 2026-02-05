@@ -23,6 +23,7 @@
     "exclude": [
         "node_modules",
         ".ouroboros",
-        "dist"
+        "dist",
+        "**/*.test.ts"
     ]
 }
