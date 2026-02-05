@@ -134,40 +134,105 @@ export class WaveExecutor {
      * Agrupa tasks em waves baseado em dependências.
      * Tasks sem dependência ficam na wave 1.
      * Tasks com dependência ficam na wave após suas deps.
+     *
+     * Implementação otimizada usando Kahn's Algorithm (Topological Sort) - O(V+E)
      */
     groupIntoWaves(tasks: WaveTask[]): WaveTask[][] {
         const waves: WaveTask[][] = [];
-        const completed = new Set<string>();
-        let remaining = [...tasks];
-        const taskMap = new Map(tasks.map(t => [t.id, t]));
 
-        // Validar que todas as dependências existem
-        for (const task of tasks) {
-            for (const dep of task.dependsOn || []) {
-                if (!taskMap.has(dep)) {
-                    throw new Error(`Task "${task.id}" depends on unknown task "${dep}"`);
+        // Maps for O(1) lookups
+        const taskMap = new Map<string, WaveTask>();
+        const taskIndex = new Map<string, number>();
+        const inDegree = new Map<string, number>();
+        const adjList = new Map<string, string[]>();
+
+        // 1. Build Graph & Initialize Degrees
+        for (let i = 0; i < tasks.length; i++) {
+            const task = tasks[i];
+            taskMap.set(task.id, task);
+            taskIndex.set(task.id, i);
+
+            // Ensure every task has an entry in inDegree
+            if (!inDegree.has(task.id)) {
+                inDegree.set(task.id, 0);
+            }
+
+            // Process dependencies
+            if (task.dependsOn) {
+                for (const depId of task.dependsOn) {
+                    if (depId === task.id) {
+                         throw new Error(`Task "${task.id}" depends on itself`);
+                    }
+                    // If dependency doesn't exist in tasks list (yet or ever)
+                    // Note: We'll validate strictly in a second pass or rely on lookups failing
+
+                    if (!adjList.has(depId)) {
+                        adjList.set(depId, []);
+                    }
+                    adjList.get(depId)!.push(task.id);
+                    inDegree.set(task.id, (inDegree.get(task.id) || 0) + 1);
                 }
             }
         }
 
-        while (remaining.length > 0) {
-            // Encontrar tasks cujas dependências já foram completadas
-            const readyTasks = remaining.filter(t =>
-                !t.dependsOn?.length ||
-                t.dependsOn.every(dep => completed.has(dep))
-            );
+        // Validate dependencies exist
+        for (const task of tasks) {
+            if (task.dependsOn) {
+                for (const depId of task.dependsOn) {
+                    if (!taskMap.has(depId)) {
+                        throw new Error(`Task "${task.id}" depends on unknown task "${depId}"`);
+                    }
+                }
+            }
+        }
 
-            if (readyTasks.length === 0) {
-                const ids = remaining.map(t => t.id);
-                throw new Error(`Circular dependency detected! Remaining: ${ids.join(", ")}`);
+        // 2. Initialize Queue with 0 in-degree tasks
+        // Initial sort by original index is implicit if we iterate tasks array
+        let queue: WaveTask[] = [];
+        for (const task of tasks) {
+            if (inDegree.get(task.id) === 0) {
+                queue.push(task);
+            }
+        }
+
+        let processedCount = 0;
+
+        // 3. Process Queue
+        while (queue.length > 0) {
+            waves.push([...queue]); // Store current wave
+            processedCount += queue.length;
+
+            const nextQueue: WaveTask[] = [];
+
+            for (const task of queue) {
+                const dependents = adjList.get(task.id);
+                if (dependents) {
+                    for (const dependentId of dependents) {
+                        const currentInDegree = inDegree.get(dependentId)! - 1;
+                        inDegree.set(dependentId, currentInDegree);
+
+                        if (currentInDegree === 0) {
+                            nextQueue.push(taskMap.get(dependentId)!);
+                        }
+                    }
+                }
             }
 
-            waves.push(readyTasks);
+            // Sort next wave by original index to ensure stable output order
+            nextQueue.sort((a, b) => {
+                return (taskIndex.get(a.id)!) - (taskIndex.get(b.id)!);
+            });
 
-            for (const task of readyTasks) {
-                completed.add(task.id);
-            }
-            remaining = remaining.filter(t => !completed.has(t.id));
+            queue = nextQueue;
+        }
+
+        // 4. Check for cycles
+        if (processedCount !== tasks.length) {
+            // Find unprocessed tasks for error message
+             const unprocessed = tasks
+                .filter(t => (inDegree.get(t.id) || 0) > 0)
+                .map(t => t.id);
+             throw new Error(`Circular dependency detected! Remaining: ${unprocessed.join(", ")}`);
         }
 
         return waves;
