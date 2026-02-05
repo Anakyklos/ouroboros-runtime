@@ -138,7 +138,7 @@ export class WaveExecutor {
     groupIntoWaves(tasks: WaveTask[]): WaveTask[][] {
         const waves: WaveTask[][] = [];
         const completed = new Set<string>();
-        const remaining = [...tasks];
+        let remaining = [...tasks];
         const taskMap = new Map(tasks.map(t => [t.id, t]));
 
         // Validar que todas as dependências existem
@@ -166,8 +166,8 @@ export class WaveExecutor {
 
             for (const task of readyTasks) {
                 completed.add(task.id);
-                remaining.splice(remaining.indexOf(task), 1);
             }
+            remaining = remaining.filter(t => !completed.has(t.id));
         }
 
         return waves;
