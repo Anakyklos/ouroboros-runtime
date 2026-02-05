@@ -137,7 +137,9 @@ export class GeminiCliBridge {
             const command = this.config.binaryPath ?? "gemini";
 
             // Use -p for non-interactive mode, -m for model selection
-            const args = ["-p", prompt, "-m", MODEL_MAP[model]];
+            // On Windows with shell:true, quote the prompt to prevent word splitting
+            const quotedPrompt = isWindows ? `"${prompt.replace(/"/g, '\\"')}"` : prompt;
+            const args = ["-p", quotedPrompt, "-m", MODEL_MAP[model]];
 
             const proc = spawn(command, args, {
                 cwd,
