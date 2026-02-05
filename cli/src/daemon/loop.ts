@@ -9,6 +9,8 @@
 import { createGatewayOrchestrator } from "../orchestration/GatewayOrchestrator.js";
 import { globalEventBus } from "./event-bus.js";
 import { PersonaType } from "../orchestration/types.js";
+import { runBootWizard, type BootConfig } from "../boot/BootWizard.js";
+import { createConcierge, type ConciergeClient } from "../concierge/ConciergeClient.js";
 import inquirer from "inquirer";
 import chalk from "chalk";
 import boxen from "boxen";
@@ -16,14 +18,19 @@ import figlet from "figlet";
 import gradient from "gradient-string";
 import ora from "ora";
 
-// Initialize system
-const go = createGatewayOrchestrator({
+// Will be initialized after boot wizard
+let go: ReturnType<typeof createGatewayOrchestrator>;
+let bootConfig: BootConfig;
+let concierge: ConciergeClient;
+
+// Default config (will be reused after boot wizard)
+const defaultConfig = {
     gateway: { verbose: true },
     orchestrator: { maxRetries: 3, verbose: true },
-    architect: { model: "pro" },
+    architect: { model: "pro" as const },
     wave: { maxConcurrent: 3 },
-    memory: { embeddingModel: "gemini" }
-});
+    memory: { embeddingModel: "gemini" as const }
+};
 
 const sessionId = "cli-session-1";
 
@@ -58,6 +65,41 @@ const showHeader = () => {
 
 // --- Command Handlers ---
 
+async function handleAsk() {
+    const { userInput } = await inquirer.prompt([{
+        type: 'input',
+        name: 'userInput',
+        message: chalk.green('💬 What would you like to do?'),
+        validate: input => input.length > 0 ? true : 'Please enter something.'
+    }]);
+
+    const spinner = ora('Understanding your intent...').start();
+    const result = await concierge.classify(userInput);
+
+    if (result.intent === 'unknown' || result.confidence < 0.5) {
+        spinner.warn(`Could not classify (confidence: ${(result.confidence * 100).toFixed(0)}%). Showing menu.`);
+        return; // Will fall through to main menu
+    }
+
+    spinner.succeed(`Intent: ${result.intent} (${(result.confidence * 100).toFixed(0)}%)`);
+
+    // Route to appropriate handler with extracted query
+    switch (result.intent) {
+        case 'consult':
+            await handleConsultDirect(result.extractedQuery);
+            break;
+        case 'task':
+            await handleTaskDirect(result.extractedQuery);
+            break;
+        case 'wave':
+            await handleWaveDirect(result.extractedQuery);
+            break;
+        case 'memory':
+            await handleMemoryDirect(result.extractedQuery);
+            break;
+    }
+}
+
 async function handleConsult() {
     const { query } = await inquirer.prompt([{
         type: 'input',
@@ -65,7 +107,10 @@ async function handleConsult() {
         message: chalk.cyan('What would you like to consult the Architect about?'),
         validate: input => input.length > 0 ? true : 'Please enter a query.'
     }]);
+    await handleConsultDirect(query);
+}
 
+async function handleConsultDirect(query: string) {
     const spinner = ora('Architect is thinking...').start();
     try {
         const response = await go.consultArchitect(query);
@@ -78,9 +123,9 @@ async function handleConsult() {
             margin: 1,
             borderStyle: 'double'
         }));
-    } catch (e: any) {
+    } catch (e: unknown) {
         spinner.fail('Consultation failed');
-        console.error(chalk.red(e.message));
+        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
     }
 }
 
@@ -91,24 +136,41 @@ async function handleTask() {
         message: chalk.yellow('Describe the task to dispatch:'),
         validate: input => input.length > 0 ? true : 'Task description required.'
     }]);
+    await handleTaskDirect(desc);
+}
 
-    const spinner = ora('Dispatching task...').start();
+async function handleTaskDirect(desc: string) {
+    const spinner = ora('Dispatching task to Gemini...').start();
     try {
-        const result = await go.executeTask(sessionId, {
-            id: `task-${Date.now()}`,
-            persona: PersonaType.DEVELOPER,
-            instruction: desc
-        });
+        // Check if Gemini CLI is available
+        const availability = await go.checkBridgeAvailability();
+
+        if (!availability.gemini) {
+            spinner.fail('Gemini CLI not found in PATH');
+            console.log(chalk.yellow('Please install Gemini CLI first: pip install gemini-cli'));
+            return;
+        }
+
+        const result = await go.delegateToGemini(desc, 'flash');
         spinner.succeed('Task execution completed');
 
-        console.log(boxen(JSON.stringify(result, null, 2), {
-            title: '🚀 Task Result',
-            borderColor: 'green',
-            padding: 1
-        }));
-    } catch (e: any) {
+        if (result.success) {
+            console.log(boxen(result.content, {
+                title: '💎 Gemini Response',
+                borderColor: 'green',
+                padding: 1,
+                margin: 1
+            }));
+        } else {
+            console.log(boxen(chalk.red(result.error || 'Unknown error'), {
+                title: '❌ Task Failed',
+                borderColor: 'red',
+                padding: 1,
+            }));
+        }
+    } catch (e: unknown) {
         spinner.fail('Task execution failed');
-        console.error(chalk.red(e.message));
+        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
     }
 }
 
@@ -119,7 +181,10 @@ async function handleMemory() {
         message: chalk.blue('Search query for memory:'),
         validate: input => input.length > 0 ? true : 'Query required.'
     }]);
+    await handleMemoryDirect(query);
+}
 
+async function handleMemoryDirect(query: string) {
     const spinner = ora('Searching memory...').start();
     try {
         const memory = await go.getMemory().search(query);
@@ -130,9 +195,9 @@ async function handleMemory() {
             borderColor: 'blue',
             padding: 1
         }));
-    } catch (e: any) {
+    } catch (e: unknown) {
         spinner.fail('Memory search failed');
-        console.error(chalk.red(e.message));
+        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
     }
 }
 
@@ -143,18 +208,19 @@ async function handleWave() {
         message: chalk.magenta('Describe the objective for the Wave (Parallel execution):'),
         validate: input => input.length > 0 ? true : 'Objective required.'
     }]);
+    await handleWaveDirect(desc);
+}
 
+async function handleWaveDirect(desc: string) {
     console.log(chalk.gray("\nℹ️ Note: This will trigger the WaveExecutor simulation.\n"));
 
     const spinner = ora('Initializing Wave...').start();
-    // Simulate wave for now as direct wave access might need more setup
-    // Ideally we call go.orchestrateWave(desc) if it existed, or task with high complexity
     spinner.info('Wave functionality linked to Task Execution for now.');
 
     try {
         const result = await go.executeTask(sessionId, {
             id: `wave-${Date.now()}`,
-            persona: PersonaType.ARCHITECT, // Architect handles waves usually
+            persona: PersonaType.ARCHITECT,
             instruction: `[WAVE_MODE] ${desc}`
         });
         spinner.succeed('Wave execution finished');
@@ -163,9 +229,9 @@ async function handleWave() {
             borderColor: 'magenta',
             padding: 1
         }));
-    } catch (e: any) {
+    } catch (e: unknown) {
         spinner.fail('Wave failed');
-        console.error(chalk.red(e.message));
+        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
     }
 }
 
@@ -178,6 +244,8 @@ async function mainLoop() {
             name: 'action',
             message: 'Select an action:',
             choices: [
+                { name: '💬 Ask Ouroboros (Natural Language)', value: 'ask' },
+                new inquirer.Separator(),
                 { name: '🏛️  Consult Architect', value: 'consult' },
                 { name: '🚀 Dispatch Task', value: 'task' },
                 { name: '🌊 Execute Wave', value: 'wave' },
@@ -201,6 +269,7 @@ async function mainLoop() {
         } else {
             console.log(chalk.gray('─'.repeat(50)));
             switch (action) {
+                case 'ask': await handleAsk(); break;
                 case 'consult': await handleConsult(); break;
                 case 'task': await handleTask(); break;
                 case 'wave': await handleWave(); break;
@@ -217,14 +286,28 @@ async function main() {
     // Setup cleanup
     process.on('SIGINT', () => {
         console.log(chalk.yellow('\n\nGracefully shutting down...'));
-        go.stop();
+        if (go) go.stop();
         process.exit(0);
     });
 
-    // Initialize
+    // 1. Run Boot Wizard (first-run or validate existing config)
+    try {
+        bootConfig = await runBootWizard();
+    } catch (e) {
+        console.error(chalk.red('Boot wizard failed:'), e);
+        process.exit(1);
+    }
+
+    // 2. Initialize Concierge with Groq API key
+    concierge = createConcierge(bootConfig.groqApiKey);
+
+    // 3. Initialize GatewayOrchestrator with config
+    go = createGatewayOrchestrator(defaultConfig);
+
+    // 4. Initialize system
     const spinner = ora('Initializing Ouroboros System...').start();
     try {
-        const apiKey = process.env.DWAVE_API_KEY || "mock-key";
+        const apiKey = bootConfig.groqApiKey || process.env.DWAVE_API_KEY || "mock-key";
         go.initialize(apiKey);
         go.start();
         spinner.succeed('System Initialized');

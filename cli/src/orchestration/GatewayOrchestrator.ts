@@ -17,12 +17,14 @@
 import { Gateway, createGateway, type GatewayConfig } from "../daemon/Gateway.js";
 import { Orchestrator, createOrchestrator } from "./Orchestrator.js";
 import { SessionManager, type Session } from "./SessionManager.js";
-import { type OrchestratorTask, type TaskResult, type OrchestratorConfig, TaskStatus } from "./types.js";
+import { type OrchestratorTask, type TaskResult, type OrchestratorConfig, TaskStatus, PersonaType } from "./types.js";
 import { EventBus, globalEventBus } from "../daemon/event-bus.js";
 import { ArchitectClient, createArchitect, type ArchitectConfig } from "./ArchitectClient.js";
 import { MemoryRetriever, createMemoryRetriever, type MemoryConfig } from "./MemoryRetriever.js";
 import { WaveExecutor, createWaveExecutor, type WaveConfig } from "./WaveExecutor.js";
 import { type WaveTask, type WaveExecutionResult } from "./wave-types.js";
+import { AntigravityBridge, createAntigravityBridge, type AntigravityConfig } from "../bridges/AntigravityBridge.js";
+import { GeminiCliBridge, createGeminiCliBridge, type GeminiCliConfig } from "../bridges/GeminiCliBridge.js";
 
 export interface GatewayOrchestratorConfig {
     gateway: Partial<GatewayConfig>;
@@ -30,6 +32,8 @@ export interface GatewayOrchestratorConfig {
     architect: Partial<ArchitectConfig>;
     memory: Partial<MemoryConfig>;
     wave: Partial<WaveConfig>;
+    antigravity: Partial<AntigravityConfig>;
+    gemini: Partial<GeminiCliConfig>;
 }
 
 const DEFAULT_CONFIG: GatewayOrchestratorConfig = {
@@ -38,6 +42,8 @@ const DEFAULT_CONFIG: GatewayOrchestratorConfig = {
     architect: {},
     memory: {},
     wave: {},
+    antigravity: {},
+    gemini: {},
 };
 
 /**
@@ -59,6 +65,8 @@ export class GatewayOrchestrator {
     private architect: ArchitectClient;
     private memory: MemoryRetriever;
     private waveExecutor: WaveExecutor;
+    private antigravity: AntigravityBridge;
+    private gemini: GeminiCliBridge;
     private eventBus: EventBus;
     private config: GatewayOrchestratorConfig;
 
@@ -71,6 +79,8 @@ export class GatewayOrchestrator {
         this.architect = createArchitect(this.config.architect);
         this.memory = createMemoryRetriever(this.config.memory);
         this.waveExecutor = createWaveExecutor(this.orchestrator, this.config.wave);
+        this.antigravity = createAntigravityBridge(this.config.antigravity);
+        this.gemini = createGeminiCliBridge(this.config.gemini);
     }
 
     /**
@@ -248,6 +258,45 @@ export class GatewayOrchestrator {
 
     private log(level: "debug" | "info" | "warn" | "error", message: string): void {
         this.eventBus.log(level, message, "GatewayOrchestrator");
+    }
+
+    // --- CLI BRIDGE METHODS (Agent Delegation) ---
+
+    /**
+     * Delegate a task to Antigravity (AGY CLI).
+     */
+    async delegateToAntigravity(prompt: string, context?: string) {
+        this.log("info", `🚀 Delegating to Antigravity...`);
+        return this.antigravity.task(prompt, context);
+    }
+
+    /**
+     * Delegate a task to Gemini CLI.
+     */
+    async delegateToGemini(prompt: string, model: "flash" | "pro" = "flash") {
+        this.log("info", `💎 Delegating to Gemini (${model})...`);
+        return this.gemini.query(prompt, { model });
+    }
+
+    /**
+     * Get bridge instances for direct access.
+     */
+    getBridges() {
+        return {
+            antigravity: this.antigravity,
+            gemini: this.gemini,
+        };
+    }
+
+    /**
+     * Check which CLI agents are available.
+     */
+    async checkBridgeAvailability() {
+        const [agyAvailable, geminiAvailable] = await Promise.all([
+            this.antigravity.isAvailable(),
+            this.gemini.isAvailable(),
+        ]);
+        return { antigravity: agyAvailable, gemini: geminiAvailable };
     }
 }
 

@@ -39,6 +39,7 @@
     "fastify": "^5.7.4",
     "figlet": "^1.10.0",
     "gradient-string": "^3.0.0",
+    "groq-sdk": "^0.37.0",
     "inquirer": "^13.2.2",
     "ora": "^9.3.0"
   }
