@@ -71,15 +71,17 @@ export function getPhase(): WorkflowPhase {
 }
 
 /**
- * Load a context file safely.
+ * Load a context file safely (Async I/O).
  */
-export function loadContextFile(filename: string, contextDir: string = DEFAULT_CONTEXT_DIR): string | null {
+export async function loadContextFile(filename: string, contextDir: string = DEFAULT_CONTEXT_DIR): Promise<string | null> {
     const filePath = path.join(contextDir, filename);
-    if (fs.existsSync(filePath)) {
+    try {
+        await fs.promises.access(filePath, fs.constants.F_OK);
         console.log(`[Anti-Vibe] 📂 Loading context: ${filename}`);
-        return fs.readFileSync(filePath, 'utf-8');
+        return await fs.promises.readFile(filePath, 'utf-8');
+    } catch {
+        return null;
     }
-    return null;
 }
 
 /**
@@ -94,9 +96,9 @@ export function ensureContextDir(contextDir: string = DEFAULT_CONTEXT_DIR): void
 /**
  * Validate phase gate - prevents execution without spec.
  */
-export function validatePhaseGate(phase: WorkflowPhase, contextDir: string = DEFAULT_CONTEXT_DIR): void {
+export async function validatePhaseGate(phase: WorkflowPhase, contextDir: string = DEFAULT_CONTEXT_DIR): Promise<void> {
     if (phase === WorkflowPhase.EXECUTION) {
-        const specContent = loadContextFile(SPEC_FILE, contextDir);
+        const specContent = await loadContextFile(SPEC_FILE, contextDir);
         if (!specContent || specContent.length < 50) {
             throw new Error(
                 `⛔ [ANTI-VIBE BLOCK] Execution attempt denied. '${SPEC_FILE}' not found or empty. You must complete the SPECIFICATION phase first.`
@@ -108,24 +110,24 @@ export function validatePhaseGate(phase: WorkflowPhase, contextDir: string = DEF
 /**
  * Build prompt with Anti-Vibe protocol.
  */
-export function buildAntiVibePrompt(
+export async function buildAntiVibePrompt(
     userQuery: string,
     phase: WorkflowPhase = getPhase(),
     contextDir: string = DEFAULT_CONTEXT_DIR
-): string {
-    validatePhaseGate(phase, contextDir);
+): Promise<string> {
+    await validatePhaseGate(phase, contextDir);
 
     let systemInstruction = PERSONAS[phase];
     let injectedContext = "";
 
     // Context injection based on phase
     if (phase === WorkflowPhase.RESEARCH) {
-        const diag = loadContextFile(DIAG_FILE, contextDir);
+        const diag = await loadContextFile(DIAG_FILE, contextDir);
         if (diag) injectedContext += `\n\n--- PREVIOUS DIAGNOSIS ---\n${diag}\n`;
     }
 
     if (phase === WorkflowPhase.EXECUTION) {
-        const spec = loadContextFile(SPEC_FILE, contextDir);
+        const spec = await loadContextFile(SPEC_FILE, contextDir);
         injectedContext += `\n\n=== 📜 MASTER SPECIFICATION (THE LAW) ===\n${spec}\n=========================================\n`;
     }
 
