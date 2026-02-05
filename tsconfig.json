@@ -9,12 +9,14 @@
         "declaration": true,
         "outDir": "./dist",
         "rootDir": ".",
+        "jsx": "react-jsx",
         "types": [
             "node"
         ]
     },
     "include": [
         "cli/src/**/*.ts",
+        "cli/src/**/*.tsx",
         "scripts/**/*.ts",
         "*.ts"
     ],
