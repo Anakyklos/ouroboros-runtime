@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "🐍 Self-modifying AI agent with isolated Python environment",
   "main": "index.js",
+  "bin": {
+    "ouroboros": "./bin/ouroboros.js"
+  },
   "scripts": {
     "setup": "tsx setup_ouroboros.ts",
     "daemon": "tsx cli/src/daemon/main.ts",
