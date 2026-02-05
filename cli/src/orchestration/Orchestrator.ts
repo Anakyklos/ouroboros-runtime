@@ -182,7 +182,7 @@ export class Orchestrator {
                         contextHistory,
                     };
                     // Save to persistent memory (OpenClaw-inspired)
-                    this.memory.saveTaskResult(task.id, taskResult);
+                    await this.memory.saveTaskResult(task.id, taskResult);
                     return taskResult;
                 }
 
@@ -235,7 +235,7 @@ export class Orchestrator {
             contextHistory,
         };
         // Save failure to memory for learning
-        this.memory.saveTaskResult(task.id, failResult);
+        await this.memory.saveTaskResult(task.id, failResult);
         return failResult;
     }
 
