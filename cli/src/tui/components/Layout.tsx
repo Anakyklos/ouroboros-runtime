@@ -7,7 +7,7 @@ interface LayoutProps {
     onSubmit: (value: string) => void;
 }
 
-export function Layout({ onSubmit }: LayoutProps): React.ReactElement {
+export function Layout({ onSubmit }: LayoutProps) {
     return (
         <Box flexDirection="column" width="100%">
             <MessageList />

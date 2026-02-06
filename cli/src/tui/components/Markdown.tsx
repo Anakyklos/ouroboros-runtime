@@ -6,7 +6,12 @@ interface MarkdownProps {
     children: string;
 }
 
-export function Markdown({ children }: MarkdownProps): React.ReactElement {
+interface TokenProps {
+    token: any;
+    key?: number | string;
+}
+
+export function Markdown({ children }: MarkdownProps) {
     const tokens = marked.lexer(children);
 
     return (
@@ -18,7 +23,7 @@ export function Markdown({ children }: MarkdownProps): React.ReactElement {
     );
 }
 
-function MarkdownToken({ token }: { token: any }): React.ReactElement | null {
+function MarkdownToken({ token }: TokenProps) {
     switch (token.type) {
         case 'paragraph':
             return (
@@ -81,7 +86,7 @@ function MarkdownToken({ token }: { token: any }): React.ReactElement | null {
     }
 }
 
-function InlineToken({ token }: { token: any }): React.ReactElement {
+function InlineToken({ token }: TokenProps) {
     switch (token.type) {
         case 'strong':
             return <Text bold>{token.text}</Text>;

@@ -16,7 +16,7 @@ interface AppProps {
     onMessage?: (message: string) => void;
 }
 
-function App({ eventBus, onMessage }: AppProps): React.ReactElement {
+function App({ eventBus, onMessage }: AppProps) {
     const { exit } = useApp();
     const addMessage = useTuiStore((s) => s.addMessage);
     const addLog = useTuiStore((s) => s.addLog);
