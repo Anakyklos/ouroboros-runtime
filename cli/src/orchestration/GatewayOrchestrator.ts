@@ -25,6 +25,7 @@ import { WaveExecutor, createWaveExecutor, type WaveConfig } from "./WaveExecuto
 import { type WaveTask, type WaveExecutionResult } from "./wave-types.js";
 import { AntigravityBridge, createAntigravityBridge, type AntigravityConfig } from "../bridges/AntigravityBridge.js";
 import { GeminiCliBridge, createGeminiCliBridge, type GeminiCliConfig } from "../bridges/GeminiCliBridge.js";
+import { JulesBridge, createJulesBridge, type JulesConfig, type JulesSession, type JulesTaskResult } from "../bridges/JulesBridge.js";
 
 export interface GatewayOrchestratorConfig {
     gateway: Partial<GatewayConfig>;
@@ -34,6 +35,7 @@ export interface GatewayOrchestratorConfig {
     wave: Partial<WaveConfig>;
     antigravity: Partial<AntigravityConfig>;
     gemini: Partial<GeminiCliConfig>;
+    jules: Partial<JulesConfig> & { apiKey?: string };
 }
 
 const DEFAULT_CONFIG: GatewayOrchestratorConfig = {
@@ -44,6 +46,7 @@ const DEFAULT_CONFIG: GatewayOrchestratorConfig = {
     wave: {},
     antigravity: {},
     gemini: {},
+    jules: {},
 };
 
 /**
@@ -67,6 +70,7 @@ export class GatewayOrchestrator {
     private waveExecutor: WaveExecutor;
     private antigravity: AntigravityBridge;
     private gemini: GeminiCliBridge;
+    private jules: JulesBridge | null = null;
     private eventBus: EventBus;
     private config: GatewayOrchestratorConfig;
 
@@ -81,6 +85,11 @@ export class GatewayOrchestrator {
         this.waveExecutor = createWaveExecutor(this.orchestrator, this.config.wave);
         this.antigravity = createAntigravityBridge(this.config.antigravity);
         this.gemini = createGeminiCliBridge(this.config.gemini);
+
+        // Jules is optional (requires API key)
+        if (this.config.jules?.apiKey) {
+            this.jules = createJulesBridge(this.config.jules as JulesConfig & { apiKey: string });
+        }
     }
 
     /**
