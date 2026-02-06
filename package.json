@@ -13,7 +13,9 @@
     "test": "bun test",
     "test:bridge": "tsx scripts/test-bridge.ts",
     "run:agent": "tsx scripts/run_agent.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "health": "bun run scripts/health-check.ts",
+    "start:headless": "bun run cli/src/main.ts"
   },
   "keywords": [
     "ai",
@@ -40,6 +42,7 @@
     "boxen": "^8.0.1",
     "chalk": "^5.6.2",
     "date-fns": "^4.1.0",
+    "dotenv": "^17.2.4",
     "fastify": "^5.7.4",
     "figlet": "^1.10.0",
     "gradient-string": "^3.0.0",
