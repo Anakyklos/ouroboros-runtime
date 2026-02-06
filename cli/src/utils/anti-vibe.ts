@@ -76,9 +76,9 @@ export function getPhase(): WorkflowPhase {
 export async function loadContextFile(filename: string, contextDir: string = DEFAULT_CONTEXT_DIR): Promise<string | null> {
     const filePath = path.join(contextDir, filename);
     try {
-        await fs.promises.access(filePath, fs.constants.F_OK);
+        const content = await fs.promises.readFile(filePath, 'utf-8');
         console.log(`[Anti-Vibe] 📂 Loading context: ${filename}`);
-        return await fs.promises.readFile(filePath, 'utf-8');
+        return content;
     } catch {
         return null;
     }
@@ -87,10 +87,8 @@ export async function loadContextFile(filename: string, contextDir: string = DEF
 /**
  * Ensure context directory exists.
  */
-export function ensureContextDir(contextDir: string = DEFAULT_CONTEXT_DIR): void {
-    if (!fs.existsSync(contextDir)) {
-        fs.mkdirSync(contextDir, { recursive: true });
-    }
+export async function ensureContextDir(contextDir: string = DEFAULT_CONTEXT_DIR): Promise<void> {
+    await fs.promises.mkdir(contextDir, { recursive: true });
 }
 
 /**
@@ -138,8 +136,8 @@ export async function buildAntiVibePrompt(
 /**
  * Get Anti-Vibe configuration.
  */
-export function getAntiVibeConfig(): AntiVibeConfig {
-    ensureContextDir();
+export async function getAntiVibeConfig(): Promise<AntiVibeConfig> {
+    await ensureContextDir();
     return {
         phase: getPhase(),
         contextDir: DEFAULT_CONTEXT_DIR,
