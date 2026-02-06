@@ -11,6 +11,7 @@ import ora from 'ora';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import { loadEnv, getEnvConfig, isHeadlessMode } from '../utils/env-loader.js';
 
 // ============================================================================
 // Types
@@ -18,6 +19,7 @@ import { execSync } from 'child_process';
 
 export interface BootConfig {
     groqApiKey: string;
+    googleApiKey?: string;
     geminiInstalled: boolean;
     configPath: string;
     createdAt: string;
@@ -130,6 +132,22 @@ export function showWelcomeBanner(): void {
 }
 
 export async function runBootWizard(): Promise<BootConfig> {
+    // Carregar .env primeiro
+    loadEnv();
+
+    // Se estiver em modo headless, pular wizard
+    if (isHeadlessMode()) {
+        const envConfig = getEnvConfig();
+        console.log('🤖 Running in headless mode');
+        return {
+            groqApiKey: envConfig.groqApiKey,
+            googleApiKey: envConfig.googleApiKey,
+            geminiInstalled: checkGeminiCli(),
+            configPath: getConfigPath(),
+            createdAt: new Date().toISOString()
+        };
+    }
+
     // 1. Check for existing config
     const existingConfig = await loadConfig();
 
