@@ -7,6 +7,7 @@
 
 import { spawn, ChildProcess } from "child_process";
 import { EventBus, globalEventBus } from "../daemon/event-bus.js";
+import { getOuroborosEnv } from "../utils/ouroboros.js";
 
 // ============================================================================
 // Types
@@ -140,11 +141,13 @@ export class GeminiCliBridge {
             // Pass prompt via stdin to avoid argument escaping issues
             const args = ["-p", "-m", MODEL_MAP[model]];
 
+            const env = getOuroborosEnv();
+
             const proc = spawn(command, args, {
                 cwd,
                 shell: isWindows,
                 stdio: ["pipe", "pipe", "pipe"],
-                env: { ...process.env, PAGER: "cat" },
+                env: { ...env, PAGER: "cat" },
             });
 
             this.activeProcess = proc;

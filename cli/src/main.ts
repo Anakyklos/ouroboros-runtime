@@ -50,9 +50,22 @@ async function handleConsult(query: string): Promise<string> {
 async function handleTask(desc: string): Promise<string> {
     try {
         const availability = await go.checkBridgeAvailability();
+        const lowerDesc = desc.toLowerCase();
 
+        // Check for Antigravity delegation
+        if (lowerDesc.startsWith("(agy)") || lowerDesc.startsWith("(antigravity)")) {
+            if (!availability.antigravity) {
+                return "❌ Antigravity CLI not found. Ensure 'agy' is installed in .ouroboros/venv";
+            }
+            // Strip prefix
+            const cleanDesc = desc.replace(/^\((agy|antigravity)\)\s*/i, "");
+            const result = await go.delegateToAntigravity(cleanDesc);
+            return result.success ? result.content : `Error: ${result.error || 'Unknown'}`;
+        }
+
+        // Default to Gemini
         if (!availability.gemini) {
-            return "❌ Gemini CLI not found. Install with: pip install gemini-cli";
+            return "❌ Gemini CLI not found. Run 'bun run setup' to install.";
         }
 
         const result = await go.delegateToGemini(desc, 'flash');
@@ -76,7 +89,8 @@ async function handleHelp(): Promise<string> {
 🐍 **Ouroboros Commands**
 
 /consult <query>  - Ask the Architect for guidance
-/task <desc>      - Dispatch a task to Gemini  
+/task <desc>      - Dispatch a task to Gemini
+                    Prefix with (agy) to use Antigravity
 /memory <query>   - Search memory/context
 /help             - Show this help message
 /exit             - Exit Ouroboros

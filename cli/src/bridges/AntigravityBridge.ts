@@ -7,6 +7,7 @@
 
 import { spawn, ChildProcess } from "child_process";
 import { EventBus, globalEventBus } from "../daemon/event-bus.js";
+import { getOuroborosEnv } from "../utils/ouroboros.js";
 
 // ============================================================================
 // Types
@@ -137,10 +138,12 @@ export class AntigravityBridge {
             // AGY uses positional argument for prompt, not --prompt flag
             const args = [prompt];
 
+            const env = getOuroborosEnv();
+
             const proc = spawn(command, args, {
                 cwd,
                 shell: isWindows, // Enable shell on Windows to resolve PATH correctly
-                env: { ...process.env, PAGER: "cat" },
+                env: { ...env, PAGER: "cat" },
             });
 
             this.activeProcess = proc;
