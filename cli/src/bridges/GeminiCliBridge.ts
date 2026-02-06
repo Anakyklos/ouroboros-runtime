@@ -137,8 +137,8 @@ export class GeminiCliBridge {
             const isWindows = process.platform === "win32";
             const command = this.config.binaryPath ?? "gemini";
 
-            // Use -p for non-interactive mode, -m for model selection
-            // Pass prompt via stdin to avoid argument escaping issues
+            // Use -p to read from stdin (non-interactive mode), -m for model selection
+            // We pipe the prompt via stdin to avoid shell escaping issues with complex prompts
             const args = ["-p", "-m", MODEL_MAP[model]];
 
             const env = getOuroborosEnv();
@@ -150,13 +150,13 @@ export class GeminiCliBridge {
                 env: { ...env, PAGER: "cat" },
             });
 
-            this.activeProcess = proc;
-
-            // Write prompt to stdin and close
+            // Write prompt to stdin and close it
             if (proc.stdin) {
                 proc.stdin.write(prompt);
                 proc.stdin.end();
             }
+
+            this.activeProcess = proc;
 
             let stdout = "";
             let stderr = "";

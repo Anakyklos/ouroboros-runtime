@@ -47,7 +47,31 @@ export class Orchestrator {
         this.config = { ...DEFAULT_ORCHESTRATOR_CONFIG, ...config };
         this.memory = new MemoryManager();
         this.memoryRetriever = createMemoryRetriever();
-        this.eventBus = eventBus ?? globalEventBus;
+        
+        if (eventBus) {
+            this.eventBus = eventBus;
+        } else {
+            // No EventBus provided: create local instance with console logging
+            this.eventBus = new EventBus();
+            this.eventBus.on('log', (event) => {
+                const timestamp = event.timestamp.toISOString();
+                const prefix = `[${timestamp}] [${event.source || 'Orchestrator'}]`;
+                switch (event.level) {
+                    case 'debug':
+                        if (this.config.verbose) console.debug(prefix, event.message);
+                        break;
+                    case 'info':
+                        console.log(prefix, event.message);
+                        break;
+                    case 'warn':
+                        console.warn(prefix, event.message);
+                        break;
+                    case 'error':
+                        console.error(prefix, event.message);
+                        break;
+                }
+            });
+        }
     }
 
     /**
@@ -107,6 +131,28 @@ export class Orchestrator {
         this.log('info', `🎯 Starting task: ${task.id}`);
         this.log('info', `   Persona: ${task.persona}`);
         this.log('info', `   Max retries: ${this.config.maxRetries}`);
+
+        // Check for approval
+        if (this.config.requireApproval) {
+            this.log('info', `🔒 Waiting for approval for task: ${task.id}`);
+            if (this.config.onApprovalRequired) {
+                const approved = await this.config.onApprovalRequired(task);
+                if (!approved) {
+                    this.log('warn', `⛔ Task rejected by user: ${task.id}`);
+                    return {
+                        status: TaskStatus.FAILURE,
+                        output: "Task rejected by user approval",
+                        retryCount: 0,
+                        persona: task.persona,
+                        durationMs: Date.now() - startTime,
+                        contextHistory: []
+                    };
+                }
+                this.log('info', `✅ Task approved: ${task.id}`);
+            } else {
+                this.log('warn', `⚠️ requireApproval is true but no callback provided. Proceeding.`);
+            }
+        }
 
         while (retryCount < this.config.maxRetries) {
             // Check pause state before each iteration
@@ -382,8 +428,8 @@ IMPORTANT: Analyze the error carefully before proceeding.
 /**
  * Factory function para criar Orchestrator.
  */
-export function createOrchestrator(config?: Partial<OrchestratorConfig>): Orchestrator {
-    return new Orchestrator(config);
+export function createOrchestrator(config?: Partial<OrchestratorConfig>, eventBus?: EventBus): Orchestrator {
+    return new Orchestrator(config, eventBus);
 }
 
 /**

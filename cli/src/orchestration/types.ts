@@ -99,6 +99,8 @@ export interface OrchestratorConfig {
     maxRetries: number;
     /** Se true, requer aprovação HumanLayer antes de execução */
     requireApproval: boolean;
+    /** Callback para solicitar aprovação (se requireApproval=true) */
+    onApprovalRequired?: (task: OrchestratorTask) => Promise<boolean>;
     /** Habilita logs detalhados */
     verbose: boolean;
     /** Timeout em ms para cada execução */

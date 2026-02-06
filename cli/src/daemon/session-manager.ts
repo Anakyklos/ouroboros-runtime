@@ -16,9 +16,12 @@ export class SessionManager {
     private activeOrchestrators: Map<string, Orchestrator> = new Map();
     private activeTasks: Map<string, Promise<void>> = new Map();
 
-    constructor(storage: StoragePort, eventBus: EventBus) {
+    private apiKey?: string;
+
+    constructor(storage: StoragePort, eventBus: EventBus, apiKey?: string) {
         this.storage = storage;
         this.eventBus = eventBus;
+        this.apiKey = apiKey;
     }
 
     async createSession(data: Omit<Session, 'id' | 'createdAt' | 'updatedAt'>): Promise<Session> {
@@ -29,6 +32,13 @@ export class SessionManager {
             { verbose: true, skipPhaseValidation: true },
             this.eventBus
         );
+        
+        if (this.apiKey) {
+            orchestrator.initialize(this.apiKey);
+        } else {
+            this.eventBus.log('warn', 'Orchestrator not initialized: No API Key provided', 'SessionManager');
+        }
+
         this.activeOrchestrators.set(session.id, orchestrator);
 
         this.eventBus.emit('task', {
@@ -68,6 +78,11 @@ export class SessionManager {
                 { verbose: true, skipPhaseValidation: true },
                 this.eventBus
             );
+            
+            if (this.apiKey) {
+                orchestrator.initialize(this.apiKey);
+            }
+
             this.activeOrchestrators.set(id, orchestrator);
         }
 

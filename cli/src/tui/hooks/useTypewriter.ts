@@ -26,9 +26,8 @@ export function useTypewriter(text: string, speed = 10, isActive = true) {
 
         const interval = setInterval(() => {
             if (index.current < text.length) {
-                // Add minimal chunk (randomize slightly for realism?)
-                // For now, simple 1 char per tick or speed dependent
-                const charsToAdd = 1;
+                // Add more characters per tick for higher speed
+                const charsToAdd = 5;
                 const nextIndex = Math.min(index.current + charsToAdd, text.length);
                 setDisplayedText(text.slice(0, nextIndex));
                 index.current = nextIndex;

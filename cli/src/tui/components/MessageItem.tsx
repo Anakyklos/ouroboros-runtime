@@ -47,7 +47,7 @@ export function MessageItem({ item, isLast }: MessageItemProps) {
 
     // Agent Message - Emerald snake
     if (role === 'agent') {
-        const textToRender = useTypewriter(content, 10, isLast);
+        const textToRender = useTypewriter(content, 5, isLast);
 
         return (
             <Box flexDirection="column" marginTop={0} marginBottom={1} paddingLeft={2}>

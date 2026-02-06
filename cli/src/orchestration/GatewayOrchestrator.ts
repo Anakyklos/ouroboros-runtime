@@ -74,7 +74,7 @@ export class GatewayOrchestrator {
         this.config = { ...DEFAULT_CONFIG, ...config };
         this.eventBus = eventBus ?? globalEventBus;
         this.gateway = createGateway(this.config.gateway);
-        this.orchestrator = createOrchestrator(this.config.orchestrator);
+        this.orchestrator = createOrchestrator(this.config.orchestrator, this.eventBus);
         this.sessionManager = new SessionManager();
         this.architect = createArchitect(this.config.architect);
         this.memory = createMemoryRetriever(this.config.memory);

@@ -165,9 +165,8 @@ Be concise and specific.`,
     private executeGemini(query: string, model: GeminiModel, timeoutSec: number): Promise<string> {
         return new Promise((resolve, reject) => {
             // Use -p for non-interactive mode, -m for model selection
-            // Pass prompt via stdin to avoid argument escaping issues
             const modelName = model === "pro" ? "gemini-2.5-pro" : "gemini-2.0-flash";
-            const args = ["-p", "-m", modelName];
+            const args = ["-p", query, "-m", modelName];
 
             const isWindows = process.platform === "win32";
             const command = "gemini";
@@ -178,12 +177,6 @@ Be concise and specific.`,
                 stdio: ["pipe", "pipe", "pipe"],
                 env: { ...process.env, PAGER: "cat" },
             });
-
-            // Write query to stdin and close
-            if (proc.stdin) {
-                proc.stdin.write(query);
-                proc.stdin.end();
-            }
 
             let stdout = "";
             let stderr = "";

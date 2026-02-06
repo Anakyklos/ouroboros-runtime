@@ -20,6 +20,7 @@ import {
 // Re-export types for external use
 export type { MemoryConfig } from "./memory-config.js";
 import { EventBus, globalEventBus } from "../daemon/event-bus.js";
+import { GeminiEmbeddingClient } from "../adapters/gemini-embedding.js";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -127,10 +128,12 @@ export class MemoryRetriever {
     private eventBus: EventBus;
     private chunks: MemoryChunk[] = [];
     private initialized = false;
+    private embedder: GeminiEmbeddingClient;
 
     constructor(config: Partial<MemoryConfig> = {}, eventBus?: EventBus) {
         this.config = { ...DEFAULT_MEMORY_CONFIG, ...config };
         this.eventBus = eventBus ?? globalEventBus;
+        this.embedder = new GeminiEmbeddingClient(process.env.GOOGLE_API_KEY, this.eventBus);
     }
 
     /**
@@ -168,7 +171,7 @@ export class MemoryRetriever {
         // Chunk the content
         const textChunks = chunkText(content, this.config.chunkSize, this.config.chunkOverlap);
 
-        // Create memory chunks (without embeddings for v1)
+        // Create memory chunks (with embeddings)
         for (let i = 0; i < textChunks.length; i++) {
             const chunk = textChunks[i];
             const id = `${fileName}-${i}`;
@@ -176,10 +179,12 @@ export class MemoryRetriever {
             // Check if already indexed
             if (this.chunks.some(c => c.id === id)) continue;
 
+            const embedding = await this.embedder.embed(chunk.content);
+
             const memoryChunk: MemoryChunk = {
                 id,
                 content: chunk.content,
-                embedding: [], // TODO: Add Gemini embedding
+                embedding,
                 metadata: {
                     sourcePath: filePath,
                     date,
@@ -221,28 +226,30 @@ export class MemoryRetriever {
     /**
      * Search for relevant chunks using hybrid search.
      * 
-     * V1: Keyword-only search (no embeddings yet).
-     * V2: Will add vector similarity with Gemini embeddings.
+     * V2: Hybrid search (Keyword + Vector + Temporal).
      */
     async search(query: string, topK?: number): Promise<SearchResult[]> {
         if (!this.initialized) await this.initialize();
 
         const k = topK ?? this.config.topK;
         const queryKeywords = extractKeywords(query);
+        const queryEmbedding = await this.embedder.embed(query);
 
         // Score all chunks
         const results: SearchResult[] = this.chunks.map(chunk => {
             const chunkKeywords = extractKeywords(chunk.content);
             const kwScore = keywordScore(queryKeywords, chunkKeywords);
             const tempScore = temporalScore(chunk.metadata.date, this.config.temporalDecay);
+            const vecScore = GeminiEmbeddingClient.cosineSimilarity(queryEmbedding, chunk.embedding);
 
-            // Combine scores (v1: keyword + temporal only)
-            const combinedScore = (kwScore * 0.7) + (tempScore * 0.3);
+            // Combine scores (Hybrid: Vector + Keyword + Temporal)
+            // 40% Vector, 40% Keyword, 20% Temporal
+            const combinedScore = (vecScore * 0.4) + (kwScore * 0.4) + (tempScore * 0.2);
 
             return {
                 chunk,
                 score: combinedScore,
-                vectorScore: 0, // TODO: Add in v2
+                vectorScore: vecScore,
                 keywordScore: kwScore,
                 temporalScore: tempScore,
             };

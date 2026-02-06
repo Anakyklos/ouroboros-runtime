@@ -29,9 +29,9 @@ function MarkdownToken({ token }: TokenProps) {
             return (
                 <Box marginBottom={1}>
                     <Text>
-                        {token.tokens?.map((t: any, i: number) => (
+                        {token.tokens ? token.tokens.map((t: any, i: number) => (
                             <InlineToken key={i} token={t} />
-                        ))}
+                        )) : token.text}
                     </Text>
                 </Box>
             );
@@ -69,9 +69,9 @@ function MarkdownToken({ token }: TokenProps) {
                         <Box key={i} marginLeft={2}>
                             <Text>• </Text>
                             <Text>
-                                {item.tokens?.map((t: any, j: number) => (
+                                {item.tokens ? item.tokens.map((t: any, j: number) => (
                                      <InlineToken key={j} token={t} />
-                                ))}
+                                )) : item.text}
                             </Text>
                         </Box>
                     ))}

@@ -15,6 +15,7 @@ export interface DaemonConfig {
     port: number;
     host: string;
     sessionToken?: string;
+    apiKey?: string;
 }
 
 const DEFAULT_CONFIG: DaemonConfig = {
@@ -37,7 +38,7 @@ export class DaemonServer {
     ) {
         this.config = { ...DEFAULT_CONFIG, ...config };
         this.eventBus = eventBus;
-        this.sessionManager = new SessionManager(storage, eventBus);
+        this.sessionManager = new SessionManager(storage, eventBus, this.config.apiKey);
         this.rpcGateway = new RpcGateway(this.sessionManager);
 
         this.app = Fastify({
@@ -46,7 +47,6 @@ export class DaemonServer {
 
         this.setupRoutes();
     }
-
     private setupRoutes(): void {
         // Health check
         this.app.get('/health', async () => {

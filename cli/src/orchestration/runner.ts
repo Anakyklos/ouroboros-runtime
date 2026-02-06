@@ -12,6 +12,7 @@
  */
 
 import * as fs from "node:fs";
+import inquirer from "inquirer";
 import {
     Orchestrator,
     createTask,
@@ -90,7 +91,17 @@ ${colors.magenta}Escalation Chain:${colors.reset}
     const orchestrator = new Orchestrator({
         maxRetries: 3,
         verbose: true,
-        requireApproval: false, // TODO: Integrar HumanLayer
+        requireApproval: true,
+        onApprovalRequired: async (task) => {
+            console.log("\n"); // Spacing
+            const { confirmed } = await inquirer.prompt([{
+                type: "confirm",
+                name: "confirmed",
+                message: `[HumanLayer] Approve execution of task?\n   Instruction: "${task.instruction}"`,
+                default: true
+            }]);
+            return confirmed;
+        },
         skipPhaseValidation: true, // Modo simples para testes
     });
 

@@ -135,6 +135,10 @@ async function handleMessage(input: string): Promise<void> {
                 response = `Unknown command: /${cmd}. Type /help for available commands.`;
         }
 
+        if (!response) {
+            response = "Received empty response from agent.";
+        }
+
         store.addMessage({ role: 'agent', content: response, timestamp: new Date() });
         store.setStatus('idle');
         return;
@@ -180,6 +184,10 @@ async function handleMessage(input: string): Promise<void> {
                 response = await handleTask(result.extractedQuery); // Default to task
         }
 
+        if (!response) {
+            response = "Agent produced no output.";
+        }
+
         store.addMessage({ role: 'agent', content: response, timestamp: new Date() });
     } catch (e) {
         store.addMessage({
@@ -217,6 +225,11 @@ async function main() {
 
     // 2. Initialize Concierge
     concierge = createConcierge(bootConfig.groqApiKey);
+
+    // 2.5 Set Gemini API Key if available
+    if (bootConfig.googleApiKey) {
+        process.env.GOOGLE_API_KEY = bootConfig.googleApiKey;
+    }
 
     // 3. Initialize GatewayOrchestrator
     go = createGatewayOrchestrator(defaultConfig);

@@ -18,6 +18,7 @@ import { execSync } from 'child_process';
 
 export interface BootConfig {
     groqApiKey: string;
+    googleApiKey?: string;
     geminiInstalled: boolean;
     configPath: string;
     createdAt: string;
@@ -59,7 +60,9 @@ async function validateGroqKey(key: string): Promise<boolean> {
             spinner.succeed('Groq API key is valid!');
             return true;
         } else {
+            const errorText = await response.text();
             spinner.fail(`Invalid key: ${response.status} ${response.statusText}`);
+            console.error(chalk.red(`Groq API Error: ${errorText}`));
             return false;
         }
     } catch (error) {
@@ -146,8 +149,8 @@ export async function runBootWizard(): Promise<BootConfig> {
         }
     }
 
-    // 2. Show welcome banner
-    showWelcomeBanner();
+    // 2. Interactive Setup (only if config missing or invalid)
+    // Removed showWelcomeBanner() here to avoid duplication with main.ts
 
     // 3. Collect Groq API key
     let groqApiKey = '';
@@ -189,7 +192,18 @@ export async function runBootWizard(): Promise<BootConfig> {
         }
     }
 
-    // 4. Check Gemini CLI
+    // 4. Collect Google API Key (Optional)
+    console.log('\n');
+    const { googleKey } = await inquirer.prompt([
+        {
+            type: 'password',
+            name: 'googleKey',
+            message: 'Enter your Google API Key (optional, for embeddings):',
+            mask: '*',
+        }
+    ]);
+
+    // 5. Check Gemini CLI
     console.log('\n');
     const geminiSpinner = ora('Checking for Gemini CLI...').start();
     const geminiInstalled = checkGeminiCli();
@@ -200,9 +214,10 @@ export async function runBootWizard(): Promise<BootConfig> {
         geminiSpinner.warn('Gemini CLI not found (optional - some features will be limited)');
     }
 
-    // 5. Build and save config
+    // 6. Build and save config
     const config: BootConfig = {
         groqApiKey,
+        googleApiKey: googleKey || undefined,
         geminiInstalled,
         configPath: getConfigPath(),
         createdAt: new Date().toISOString()
