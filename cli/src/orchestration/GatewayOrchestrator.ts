@@ -24,7 +24,7 @@ import { MemoryRetriever, createMemoryRetriever, type MemoryConfig } from "./Mem
 import { WaveExecutor, createWaveExecutor, type WaveConfig } from "./WaveExecutor.js";
 import { type WaveTask, type WaveExecutionResult } from "./wave-types.js";
 import { AntigravityBridge, createAntigravityBridge, type AntigravityConfig } from "../bridges/AntigravityBridge.js";
-import { GeminiCliBridge, createGeminiCliBridge, type GeminiCliConfig } from "../bridges/GeminiCliBridge.js";
+import { GeminiCliBridge, createGeminiCliBridge, type GeminiCliConfig, type GeminiModel, type AuthStatus, type GeminiVersion } from "../bridges/GeminiCliBridge.js";
 import { JulesBridge, createJulesBridge, type JulesConfig, type JulesSession, type JulesTaskResult } from "../bridges/JulesBridge.js";
 
 export interface GatewayOrchestratorConfig {
@@ -282,9 +282,46 @@ export class GatewayOrchestrator {
     /**
      * Delegate a task to Gemini CLI.
      */
-    async delegateToGemini(prompt: string, model: "flash" | "pro" = "flash") {
+    async delegateToGemini(prompt: string, model: GeminiModel = "flash") {
         this.log("info", `💎 Delegating to Gemini (${model})...`);
         return this.gemini.query(prompt, { model });
+    }
+
+    /**
+     * Query Gemini with file context (inline injection).
+     */
+    async geminiQueryWithFiles(prompt: string, files: string[], model: GeminiModel = "flash") {
+        this.log("info", `💎 Gemini query with ${files.length} file(s)...`);
+        return this.gemini.queryWithFiles(prompt, files, { model });
+    }
+
+    /**
+     * Query Gemini using @ notation (let Gemini CLI resolve files).
+     */
+    async geminiQueryWithAtCommand(prompt: string, paths: string[], model: GeminiModel = "flash") {
+        this.log("info", `💎 Gemini @ query with ${paths.length} path(s)...`);
+        return this.gemini.queryWithAtCommand(prompt, paths, { model });
+    }
+
+    /**
+     * Get Gemini CLI authentication status.
+     */
+    async getGeminiAuthStatus(): Promise<AuthStatus> {
+        return this.gemini.getAuthStatus();
+    }
+
+    /**
+     * Get Gemini CLI version.
+     */
+    async getGeminiVersion(): Promise<GeminiVersion | null> {
+        return this.gemini.getVersion();
+    }
+
+    /**
+     * Set default Gemini model.
+     */
+    setGeminiModel(model: GeminiModel): void {
+        this.gemini.setModel(model);
     }
 
     /**
@@ -294,6 +331,7 @@ export class GatewayOrchestrator {
         return {
             antigravity: this.antigravity,
             gemini: this.gemini,
+            jules: this.jules,
         };
     }
 
@@ -301,11 +339,54 @@ export class GatewayOrchestrator {
      * Check which CLI agents are available.
      */
     async checkBridgeAvailability() {
-        const [agyAvailable, geminiAvailable] = await Promise.all([
+        const [agyAvailable, geminiAvailable, julesAvailable] = await Promise.all([
             this.antigravity.isAvailable(),
             this.gemini.isAvailable(),
+            this.jules?.isAvailable() ?? Promise.resolve(false),
         ]);
-        return { antigravity: agyAvailable, gemini: geminiAvailable };
+        return { antigravity: agyAvailable, gemini: geminiAvailable, jules: julesAvailable };
+    }
+
+    // --- JULES METHODS (Async GitHub PRs) ---
+
+    /**
+     * Delegate a task to Jules (async, creates GitHub PR).
+     * Returns the session object for tracking.
+     */
+    async delegateToJules(prompt: string, source?: string): Promise<JulesSession> {
+        if (!this.jules) {
+            throw new Error("Jules not configured. Set JULES_API_KEY in environment.");
+        }
+        this.log("info", `🌐 Delegating to Jules (async)...`);
+        return this.jules.createSession(prompt, source);
+    }
+
+    /**
+     * Wait for a Jules session to complete.
+     */
+    async awaitJulesSession(sessionId: string): Promise<JulesSession> {
+        if (!this.jules) {
+            throw new Error("Jules not configured. Set JULES_API_KEY in environment.");
+        }
+        return this.jules.waitForCompletion(sessionId);
+    }
+
+    /**
+     * Execute a task with Jules end-to-end (create + wait).
+     */
+    async executeJulesTask(prompt: string, source?: string): Promise<JulesTaskResult> {
+        if (!this.jules) {
+            throw new Error("Jules not configured. Set JULES_API_KEY in environment.");
+        }
+        this.log("info", `🌐 Executing Jules task (will create PR)...`);
+        return this.jules.executeTask(prompt, source);
+    }
+
+    /**
+     * Check if Jules is configured and available.
+     */
+    isJulesConfigured(): boolean {
+        return this.jules !== null;
     }
 }
 

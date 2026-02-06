@@ -18,6 +18,7 @@ import { createConcierge, type ConciergeClient } from "./concierge/ConciergeClie
 import { globalEventBus } from "./daemon/event-bus.js";
 import { renderTui } from "./tui/entry.js";
 import { useTuiStore } from "./tui/store.js";
+import { handleGeminiCommand, getGeminiHelpText, type GeminiCommandContext } from "./commands/gemini-commands.js";
 
 // ============================================================================
 // State
@@ -85,6 +86,7 @@ async function handleMemory(query: string): Promise<string> {
 }
 
 async function handleHelp(): Promise<string> {
+    const geminiHelp = getGeminiHelpText();
     return `
 🐍 **Ouroboros Commands**
 
@@ -94,6 +96,8 @@ async function handleHelp(): Promise<string> {
 /memory <query>   - Search memory/context
 /help             - Show this help message
 /exit             - Exit Ouroboros
+
+${geminiHelp}
 
 Or just type naturally - Ouroboros will understand your intent!
 `.trim();
@@ -127,6 +131,15 @@ async function handleMessage(input: string): Promise<void> {
                 break;
             case 'memory':
                 response = argStr ? await handleMemory(argStr) : 'Usage: /memory <query>';
+                break;
+            case 'gemini':
+                // Handle all /gemini:* commands
+                const geminiCtx: GeminiCommandContext = {
+                    bridge: go.getBridges().gemini,
+                    workDir: process.cwd(),
+                };
+                const result = await handleGeminiCommand(trimmed, geminiCtx);
+                response = result.output;
                 break;
             case 'exit':
                 console.log(chalk.green('\nGoodbye! 🐍'));
