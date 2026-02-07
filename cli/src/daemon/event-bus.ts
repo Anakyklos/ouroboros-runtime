@@ -33,12 +33,25 @@ export interface ThoughtEvent {
     timestamp: Date;
 }
 
+export interface WaveEvent {
+    type: 'wave_started' | 'wave_completed' | 'task_update';
+    waveId: string;
+    waveIndex: number;
+    totalWaves: number;
+    tasks: {
+        id: string;
+        name: string;
+        status: 'pending' | 'running' | 'completed' | 'failed';
+    }[];
+}
+
 // Union of all event types
 export type EventMap = {
     log: LogEvent;
     task: TaskEvent;
     daemon: DaemonEvent;
     thought: ThoughtEvent;
+    wave: WaveEvent;
 };
 
 export class EventBus {

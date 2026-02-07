@@ -33,6 +33,7 @@ export interface WaveTask {
 }
 
 export interface WaveState {
+    id?: string;
     index: number;
     total: number;
     tasks: WaveTask[];
