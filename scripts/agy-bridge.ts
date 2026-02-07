@@ -22,9 +22,46 @@ if (!command) {
     process.exit(1);
 }
 
+// Robust argument parser that respects quotes
+function parseCommand(cmd: string): string[] {
+    const args: string[] = [];
+    let current = '';
+    let inQuote = false;
+    let quoteChar = '';
+
+    for (let i = 0; i < cmd.length; i++) {
+        const char = cmd[i];
+
+        if (inQuote) {
+            if (char === quoteChar) {
+                inQuote = false;
+            } else {
+                current += char;
+            }
+        } else {
+            if (char === '"' || char === "'") {
+                inQuote = true;
+                quoteChar = char;
+            } else if (char === ' ') {
+                if (current.length > 0) {
+                    args.push(current);
+                    current = '';
+                }
+            } else {
+                current += char;
+            }
+        }
+    }
+    if (current.length > 0) {
+        args.push(current);
+    }
+    return args;
+}
+
 console.log(`🌉 Bridge: Executing "${command}"...`);
 
-const proc = spawn(command.split(" "), {
+const args = parseCommand(command);
+const proc = spawn(args, {
     stdout: "inherit",
     stderr: "inherit",
     env: { ...process.env, FORCE_COLOR: "1" }, // Preserve colors

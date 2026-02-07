@@ -15,4 +15,13 @@ describe("Antigravity Bridge", () => {
         const exitCode = await proc.exited;
         expect(exitCode).toBe(1);
     });
+
+    it("should handle quoted arguments correctly", async () => {
+        // We run a command that fails if arguments are split incorrectly.
+        // bash -c "exit 0" should pass.
+        // If split incorrectly: bash -c '"exit' '0"' -> bash error
+        const proc = Bun.spawn(["bun", "run", "scripts/agy-bridge.ts", "bash -c \"exit 0\""]);
+        const exitCode = await proc.exited;
+        expect(exitCode).toBe(0);
+    });
 });
