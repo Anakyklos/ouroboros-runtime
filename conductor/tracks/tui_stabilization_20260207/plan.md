@@ -6,15 +6,15 @@
 - [ ] Task: Conductor - User Manual Verification 'Analysis & Architecture Design' (Protocol in workflow.md)
 
 ## Phase 2: Core Refactoring (Jules Heavy)
-- [ ] Task: Create/Update `LogViewer` component to handle high-throughput logs efficiently.
-    - [ ] Write Tests for LogViewer
-    - [ ] Implement LogViewer
-- [ ] Task: Create/Update `StatusPanel` to show Agent State (Idle, Thinking, Running, Dispatching Jules).
-    - [ ] Write Tests for StatusPanel
-    - [ ] Implement StatusPanel
-- [ ] Task: Refactor Main TUI Layout to use the new modular components.
-    - [ ] Write Tests for Main Layout
-    - [ ] Implement Main Layout
+- [x] Task: Create/Update `LogViewer` component to handle high-throughput logs efficiently. c06b037
+    - [x] Write Tests for LogViewer
+    - [x] Implement LogViewer
+- [x] Task: Create/Update `StatusPanel` to show Agent State (Idle, Thinking, Running, Dispatching Jules). c06b037
+    - [x] Write Tests for StatusPanel
+    - [x] Implement StatusPanel
+- [x] Task: Refactor Main TUI Layout to use the new modular components. c06b037
+    - [x] Write Tests for Main Layout
+    - [x] Implement Main Layout
 - [ ] Task: Conductor - User Manual Verification 'Core Refactoring' (Protocol in workflow.md)
 
 ## Phase 3: Integration & Validation
