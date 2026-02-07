@@ -25,3 +25,15 @@ export interface TuiMetrics {
     cost: number;
     uptime: number;
 }
+
+export interface WaveTask {
+    id: string;
+    name: string;
+    status: 'pending' | 'running' | 'completed' | 'failed';
+}
+
+export interface WaveState {
+    index: number;
+    total: number;
+    tasks: WaveTask[];
+}

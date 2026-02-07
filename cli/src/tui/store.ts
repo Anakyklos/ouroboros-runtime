@@ -4,7 +4,7 @@
  */
 
 import { create } from 'zustand';
-import type { LogEntry, ChatMessage, TuiStatus, TuiMetrics } from './types.js';
+import type { LogEntry, ChatMessage, TuiStatus, TuiMetrics, WaveState } from './types.js';
 
 interface TuiState {
     // State
@@ -14,6 +14,7 @@ interface TuiState {
     metrics: TuiMetrics;
     inputValue: string;
     currentTask?: string;
+    activeWave?: WaveState;
 
     // Actions
     addLog: (log: Omit<LogEntry, 'id'>) => void;
@@ -22,6 +23,7 @@ interface TuiState {
     updateMetrics: (metrics: Partial<TuiMetrics>) => void;
     setInputValue: (value: string) => void;
     setCurrentTask: (task: string | undefined) => void;
+    setActiveWave: (wave: WaveState | undefined) => void;
     clearLogs: () => void;
 }
 
@@ -40,6 +42,7 @@ export const useTuiStore = create<TuiState>((set) => ({
     metrics: { tokens: 0, cost: 0, uptime: 0 },
     inputValue: '',
     currentTask: undefined,
+    activeWave: undefined,
 
     // Actions
     addLog: (log) => set((state) => ({
@@ -59,6 +62,8 @@ export const useTuiStore = create<TuiState>((set) => ({
     setInputValue: (inputValue) => set({ inputValue }),
 
     setCurrentTask: (currentTask) => set({ currentTask }),
+
+    setActiveWave: (activeWave) => set({ activeWave }),
 
     clearLogs: () => set({ logs: [] }),
 }));
