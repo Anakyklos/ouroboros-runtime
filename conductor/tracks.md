@@ -9,3 +9,6 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 - [x] **Track: Integração Conductor-Antigravity (Agy Bridge)**
   *Link: [./tracks/antigravity_bridge_20260207/](./tracks/antigravity_bridge_20260207/)*
+
+- [~] **Track: Hardening e Limpeza (Feedback Antigravity)**
+  *Link: [./tracks/hardening_20260207/](./tracks/hardening_20260207/)*
