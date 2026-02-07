@@ -18,7 +18,7 @@ export interface ChatMessage {
     timestamp: Date;
 }
 
-export type TuiStatus = 'idle' | 'thinking' | 'executing' | 'error';
+export type TuiStatus = 'idle' | 'thinking' | 'executing' | 'error' | 'dispatching';
 
 export interface TuiMetrics {
     tokens: number;

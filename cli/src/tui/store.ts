@@ -13,6 +13,7 @@ interface TuiState {
     status: TuiStatus;
     metrics: TuiMetrics;
     inputValue: string;
+    currentTask?: string;
 
     // Actions
     addLog: (log: Omit<LogEntry, 'id'>) => void;
@@ -20,6 +21,7 @@ interface TuiState {
     setStatus: (status: TuiStatus) => void;
     updateMetrics: (metrics: Partial<TuiMetrics>) => void;
     setInputValue: (value: string) => void;
+    setCurrentTask: (task: string | undefined) => void;
     clearLogs: () => void;
 }
 
@@ -37,6 +39,7 @@ export const useTuiStore = create<TuiState>((set) => ({
     status: 'idle',
     metrics: { tokens: 0, cost: 0, uptime: 0 },
     inputValue: '',
+    currentTask: undefined,
 
     // Actions
     addLog: (log) => set((state) => ({
@@ -54,6 +57,8 @@ export const useTuiStore = create<TuiState>((set) => ({
     })),
 
     setInputValue: (inputValue) => set({ inputValue }),
+
+    setCurrentTask: (currentTask) => set({ currentTask }),
 
     clearLogs: () => set({ logs: [] }),
 }));

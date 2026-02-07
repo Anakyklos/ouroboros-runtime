@@ -22,22 +22,23 @@ export class AntigravityAdapter {
             ...config,
         };
         this.eventBus = eventBus;
-        this.sessionId = \`agy_\${Date.now()}\`;
+        this.sessionId = `agy_${Date.now()}`;
         this.state = {
             sessionId: this.sessionId,
             status: 'idle',
         };
         
-        this.log('info', \`AntigravityAdapter initialized with session: \${this.sessionId}\`);
+        this.log('info', `AntigravityAdapter initialized with session: ${this.sessionId}`);
     }
 
     async execute(prompt: AntigravityPrompt): Promise<AntigravityResult> {
         const startTime = Date.now();
         this.state.status = 'running';
         this.state.startedAt = new Date();
+        let content = '';
 
         try {
-            const content = await this.runAgy(prompt);
+            content = await this.runAgy(prompt);
             
             this.state.status = 'completed';
             this.state.completedAt = new Date();
@@ -52,7 +53,7 @@ export class AntigravityAdapter {
             this.state.completedAt = new Date();
             
             const errorMsg = error instanceof Error ? error.message : String(error);
-            this.log('error', \`Antigravity execution failed: \${errorMsg}\`);
+            this.log('error', `Antigravity execution failed: ${errorMsg}`);
             
             return {
                 content,
@@ -71,7 +72,7 @@ export class AntigravityAdapter {
         if (this.process) {
             this.process.kill('SIGTERM');
             this.state.status = 'paused';
-            this.log('info', \`Interrupted session \${this.sessionId}\`);
+            this.log('info', `Interrupted session ${this.sessionId}`);
         }
     }
 
@@ -84,7 +85,7 @@ export class AntigravityAdapter {
             this.process.kill('SIGTERM');
         }
         this.state.status = 'completed';
-        this.log('info', \`Shutdown session \${this.sessionId}\`);
+        this.log('info', `Shutdown session ${this.sessionId}`);
     }
 
     private async runAgy(prompt: AntigravityPrompt): Promise<string> {
@@ -117,7 +118,7 @@ export class AntigravityAdapter {
 
             const timeout = setTimeout(() => {
                 this.process?.kill('SIGTERM');
-                reject(new Error(\`Timeout after \${this.config.timeoutSeconds}s\`));
+                reject(new Error(`Timeout after ${this.config.timeoutSeconds}s`));
             }, this.config.timeoutSeconds! * 1000);
 
             this.process.on('close', (code) => {
@@ -125,7 +126,7 @@ export class AntigravityAdapter {
                 if (code === 0) {
                     resolve(stdout.trim());
                 } else {
-                    reject(new Error(stderr || \`Exit code: \${code}\`));
+                    reject(new Error(stderr || `Exit code: ${code}`));
                 }
             });
 
