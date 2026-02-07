@@ -9,6 +9,6 @@
 - [x] Task: Conductor - User Manual Verification 'Bridge Implementation' (Protocol in workflow.md) 391afea
 
 ## Phase 2: Verification
-- [ ] Task: Test the bridge by running `bun run agy "echo 'Hello form Agy'"` via Conductor.
-- [ ] Task: Test running project tests `bun run agy "bun test cli/src/tui"` via Conductor.
-- [ ] Task: Conductor - User Manual Verification 'Verification' (Protocol in workflow.md)
+- [x] Task: Test the bridge by running `bun run agy "echo 'Hello form Agy'"` via Conductor. 5600dae
+- [x] Task: Test running project tests `bun run agy "bun test cli/src/tui"` via Conductor. 5600dae
+- [x] Task: Conductor - User Manual Verification 'Verification' (Protocol in workflow.md) 5600dae
