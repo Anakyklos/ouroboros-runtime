@@ -1,6 +1,6 @@
 # Implementation Plan - Antigravity Bridge
 
-## Phase 1: Bridge Implementation
+## Phase 1: Bridge Implementation [checkpoint: a79e394]
 - [x] Task: Analyze existing `cli/src/adapters/antigravity-adapter.ts` to understand how to invoke Agy. bb2c7ee
 - [x] Task: Create a standalone CLI script `scripts/agy-bridge.ts` that wraps command execution. 391afea
     - [x] Write Tests (Mocked)
