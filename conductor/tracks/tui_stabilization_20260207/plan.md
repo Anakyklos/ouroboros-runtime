@@ -17,9 +17,9 @@
     - [x] Implement Main Layout
 - [ ] Task: Conductor - User Manual Verification 'Core Refactoring' (Protocol in workflow.md)
 
-## Phase 3: Integration & Validation
-- [ ] Task: Hook up Zustand store to the new components.
-    - [ ] Write Tests for Store Integration
-    - [ ] Implement Store Integration
-- [ ] Task: Verify End-to-End TUI rendering with a mock agent loop.
-- [ ] Task: Conductor - User Manual Verification 'Integration & Validation' (Protocol in workflow.md)
+## Phase 3: Integration & Validation [checkpoint: 88c2222]
+- [x] Task: Hook up Zustand store to the new components. 88c2222
+    - [x] Write Tests for Store Integration
+    - [x] Implement Store Integration
+- [x] Task: Verify End-to-End TUI rendering with a mock agent loop. 88c2222
+- [x] Task: Conductor - User Manual Verification 'Integration & Validation' (Protocol in workflow.md) 88c2222
