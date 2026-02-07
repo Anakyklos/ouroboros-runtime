@@ -5,13 +5,13 @@
 - [x] Task: Update `TuiState` in `cli/src/tui/types.ts` to store Wave data. 4b5c6d
 - [x] Task: Conductor - User Manual Verification 'Modeling' (Protocol in workflow.md) 7f8d9e
 
-## Phase 2: UI Implementation (Jules)
+## Phase 2: UI Implementation (Jules) [Pending Merge]
 - [~] Task: Update `StatusPanel` to render Wave Progress Bar and Active Tasks list.
     - [ ] Write Tests
     - [ ] Implement UI
 - [ ] Task: Conductor - User Manual Verification 'UI' (Protocol in workflow.md)
 
 ## Phase 3: Integration
-- [ ] Task: Update `WaveExecutor` to emit fine-grained Wave events.
-- [ ] Task: Update `connectTuiToEventBus` adapter to map Wave events to Store.
-- [ ] Task: Conductor - User Manual Verification 'Integration' (Protocol in workflow.md)
+- [x] Task: Update `WaveExecutor` to emit fine-grained Wave events. 59e3c21
+- [x] Task: Update `connectTuiToEventBus` adapter to map Wave events to Store. 59e3c21
+- [x] Task: Conductor - User Manual Verification 'Integration' (Protocol in workflow.md) 59e3c21
