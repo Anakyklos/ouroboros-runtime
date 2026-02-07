@@ -2,11 +2,12 @@ import React from 'react';
 import { describe, it, expect } from 'bun:test';
 import { render } from 'ink-testing-library';
 import { Layout } from './Layout.js';
+import { stripAnsi } from '../../test-utils.js';
 
 describe('Layout', () => {
     it('renders all components', () => {
         const { lastFrame } = render(<Layout onSubmit={() => {}} />);
-        const output = lastFrame();
+        const output = stripAnsi(lastFrame());
 
         // Check Header
         expect(output).toContain('Ouroboros v1.0');

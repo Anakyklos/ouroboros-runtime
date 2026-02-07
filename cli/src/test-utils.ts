@@ -1,12 +1,10 @@
-export function describe(name: string, fn: () => void): void {
-    console.log(`Running: ${name}`);
-    fn();
-}
+/**
+ * Test Utilities
+ */
 
-export function it(name: string, fn: () => void | Promise<void>): void {
-    console.log(`  ${name}`);
-    fn();
-}
+// Simple regex to strip ANSI escape codes
+// eslint-disable-next-line no-control-regex
+const ansiRegex = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
 
 export function expect(value: unknown): {
     toBe: (expected: unknown) => void;
@@ -21,8 +19,5 @@ export function expect(value: unknown): {
 }
 
 export function stripAnsi(str: string): string {
-    return str.replace(
-        /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g,
-        ''
-    );
+    return str.replace(ansiRegex, '');
 }

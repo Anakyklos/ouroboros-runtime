@@ -55,15 +55,20 @@ export function connectTuiToEventBus(bus: EventBus): () => void {
             switch (event.type) {
                 case 'started':
                     store.setStatus('executing');
+                    if (event.data && typeof event.data === 'object' && 'description' in event.data) {
+                        store.setCurrentTask((event.data as any).description);
+                    }
                     break;
                 case 'progress':
                     store.setStatus('thinking');
                     break;
                 case 'completed':
                     store.setStatus('idle');
+                    store.setCurrentTask(undefined);
                     break;
                 case 'failed':
                     store.setStatus('error');
+                    store.setCurrentTask(undefined);
                     break;
             }
         })
