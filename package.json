@@ -15,7 +15,8 @@
     "run:agent": "tsx scripts/run_agent.ts",
     "build": "tsc",
     "health": "bun run scripts/health-check.ts",
-    "start:headless": "bun run cli/src/main.ts"
+    "start:headless": "bun run cli/src/main.ts",
+    "agy": "bun run scripts/agy-bridge.ts"
   },
   "keywords": [
     "ai",
