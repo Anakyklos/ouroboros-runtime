@@ -415,7 +415,9 @@ export class GeminiCliBridge {
             const command = this.config.binaryPath ?? "gemini";
 
             // Build args
-            const args = ["-p", "-m", MODEL_MAP[model]];
+            // We pass -p "" to force headless mode while reading the actual prompt from stdin
+            // This avoids shell argument length limits for large contexts
+            const args = ["-p", "", "-m", MODEL_MAP[model]];
 
             // Add optional flags
             if (this.config.sandbox) {

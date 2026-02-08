@@ -58,4 +58,21 @@ describe('TUI Adapter', () => {
         expect(state.status).toBe('idle');
         expect(state.currentTask).toBeUndefined();
     });
+
+    it('maps wave events to activeWave', () => {
+        connectTuiToEventBus(bus);
+
+        bus.emit('wave', {
+            type: 'wave_started',
+            waveId: 'wave-0',
+            waveIndex: 1,
+            totalWaves: 3,
+            tasks: [{ id: 'task-1', name: 'Task 1', status: 'pending' }]
+        });
+
+        const state = useTuiStore.getState();
+        expect(state.activeWave).toBeDefined();
+        expect(state.activeWave?.index).toBe(1);
+        expect(state.activeWave?.tasks[0].status).toBe('pending');
+    });
 });

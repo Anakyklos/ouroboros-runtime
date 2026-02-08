@@ -16,7 +16,11 @@
     "build": "tsc",
     "health": "bun run scripts/health-check.ts",
     "start:headless": "bun run cli/src/main.ts",
-    "agy": "bun run scripts/agy-bridge.ts"
+    "agy": "bun run scripts/agy-bridge.ts",
+    "mcp:gemini": "tsx scripts/gemini-mcp.ts",
+    "test:council": "npx tsx scripts/test-council-integration.ts",
+    "test:daemon": "npx tsx scripts/test-daemon-refactor.ts",
+    "test:glm": "bun test scripts/test-glm-integration.test.ts"
   },
   "keywords": [
     "ai",

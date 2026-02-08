@@ -3,7 +3,7 @@
  * Bridge between EventBus and Zustand store
  */
 
-import type { EventBus, LogEvent, ThoughtEvent, TaskEvent } from '../daemon/event-bus.js';
+import type { EventBus, LogEvent, ThoughtEvent, TaskEvent, WaveEvent } from '../daemon/event-bus.js';
 import { useTuiStore } from './store.js';
 
 /**
@@ -71,6 +71,18 @@ export function connectTuiToEventBus(bus: EventBus): () => void {
                     store.setCurrentTask(undefined);
                     break;
             }
+        })
+    );
+
+    // Wave events -> Store
+    unsubscribers.push(
+        bus.on('wave', (event: WaveEvent) => {
+            store.setActiveWave({
+                id: event.waveId,
+                index: event.waveIndex,
+                total: event.totalWaves,
+                tasks: event.tasks
+            });
         })
     );
 

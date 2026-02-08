@@ -8,7 +8,7 @@
 import Fastify, { FastifyInstance } from 'fastify';
 import { EventBus, globalEventBus } from './event-bus.js';
 import { RpcGateway } from './rpc-gateway.js';
-import { SessionManager } from './session-manager.js';
+import { GatewayOrchestrator } from '../orchestration/GatewayOrchestrator.js';
 import type { StoragePort } from '../ports/storage.port.js';
 
 export interface DaemonConfig {
@@ -28,7 +28,7 @@ export class DaemonServer {
     private config: DaemonConfig;
     private eventBus: EventBus;
     private rpcGateway: RpcGateway;
-    private sessionManager: SessionManager;
+    private gatewayOrchestrator: GatewayOrchestrator;
     private isRunning = false;
 
     constructor(
@@ -38,11 +38,16 @@ export class DaemonServer {
     ) {
         this.config = { ...DEFAULT_CONFIG, ...config };
         this.eventBus = eventBus;
-        this.sessionManager = new SessionManager(storage, eventBus, this.config.apiKey);
-        this.rpcGateway = new RpcGateway(this.sessionManager);
+        this.gatewayOrchestrator = new GatewayOrchestrator({}, eventBus);
+        
+        if (this.config.apiKey) {
+            this.gatewayOrchestrator.initialize(this.config.apiKey);
+        }
+        
+        this.rpcGateway = new RpcGateway(this.gatewayOrchestrator, storage, eventBus, this.config.apiKey);
 
         this.app = Fastify({
-            logger: false,  // We use our own EventBus logging
+            logger: false,
         });
 
         this.setupRoutes();

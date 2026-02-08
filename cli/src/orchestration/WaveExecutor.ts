@@ -22,6 +22,7 @@ import type {
     WaveExecutionResult,
 } from "./wave-types.js";
 import { DEFAULT_WAVE_CONFIG } from "./wave-types.js";
+import { globalEventBus } from "../daemon/event-bus.js";
 
 export type { WaveConfig } from "./wave-types.js";
 export { DEFAULT_WAVE_CONFIG };
@@ -56,6 +57,15 @@ export class WaveExecutor {
             this.log(`\n━━━ Wave ${waveIndex + 1}/${waves.length} ━━━`);
             this.log(`   Tasks: ${wave.map(t => t.id).join(", ")}`);
 
+            // Emit wave started
+            globalEventBus.emit('wave', {
+                type: 'wave_started',
+                waveId: `wave-${waveIndex}`,
+                waveIndex: waveIndex + 1,
+                totalWaves: waves.length,
+                tasks: wave.map(t => ({ id: t.id, name: t.id, status: 'pending' }))
+            });
+
             // Verificar se alguma dependência falhou
             const executableTasks = wave.filter(task => {
                 if (!task.dependsOn?.length) return true;
@@ -75,6 +85,19 @@ export class WaveExecutor {
             // Executar wave em paralelo (com limite de concorrência)
             const waveResults = await this.executeWave(executableTasks, waveIndex);
             results.push(waveResults);
+
+            // Emit wave completed
+            globalEventBus.emit('wave', {
+                type: 'wave_completed',
+                waveId: `wave-${waveIndex}`,
+                waveIndex: waveIndex + 1,
+                totalWaves: waves.length,
+                tasks: waveResults.map(r => ({
+                    id: r.taskId,
+                    name: r.taskId,
+                    status: r.result.status === "SUCCESS" ? 'completed' : 'failed'
+                }))
+            });
 
             // Atualizar listas de sucesso/falha
             for (const wr of waveResults) {
@@ -252,6 +275,15 @@ export class WaveExecutor {
             const chunkResults = await Promise.all(
                 chunk.map(async (task): Promise<WaveTaskResult> => {
                     this.log(`   ▶️ Starting: ${task.id}`);
+                    
+                    // Emit task started
+                    globalEventBus.emit('wave', {
+                        type: 'task_update',
+                        waveId: `wave-${waveIndex}`,
+                        waveIndex: waveIndex + 1,
+                        totalWaves: 0, // Ignored in task_update usually, or carry over
+                        tasks: [{ id: task.id, name: task.id, status: 'running' }]
+                    });
 
                     let taskResult: TaskResult;
 
@@ -288,6 +320,15 @@ export class WaveExecutor {
 
                     const emoji = taskResult.status === "SUCCESS" ? "✅" : "❌";
                     this.log(`   ${emoji} Finished: ${task.id}`);
+
+                    // Emit task completed
+                    globalEventBus.emit('wave', {
+                        type: 'task_update',
+                        waveId: `wave-${waveIndex}`,
+                        waveIndex: waveIndex + 1,
+                        totalWaves: 0,
+                        tasks: [{ id: task.id, name: task.id, status: taskResult.status === "SUCCESS" ? 'completed' : 'failed' }]
+                    });
 
                     return {
                         taskId: task.id,
