@@ -1,0 +1,112 @@
+{
+  "name": "feature-implementation",
+  "version": "1.0",
+  "description": "Implementa uma nova feature com pesquisa, especificação, implementação, testes e documentação",
+
+  "meta": {
+    "author": "amphisbaena",
+    "tags": ["feature", "full-cycle", "production"],
+    "estimatedDuration": "15-30 min"
+  },
+
+  "variables": [
+    {
+      "name": "feature_name",
+      "value": "",
+      "description": "Nome da feature a ser implementada",
+      "required": true
+    },
+    {
+      "name": "target_directory",
+      "value": "./",
+      "description": "Diretório alvo da implementação",
+      "required": false
+    }
+  ],
+
+  "steps": [
+    {
+      "id": "research",
+      "name": "Pesquisa de Contexto",
+      "agent": "amphisbaena",
+      "type": "single",
+      "prompt": "Pesquise o codebase para entender a arquitetura atual e como implementar: {{feature_name}}. Diretório alvo: {{target_directory}}. Identifique arquivos relacionados, padrões de design e dependências.",
+      "output": "research_report",
+      "timeout": 300,
+      "retryCount": 2
+    },
+    {
+      "id": "spec",
+      "name": "Criar Especificação Técnica",
+      "agent": "wyvern",
+      "type": "single",
+      "dependsOn": ["research"],
+      "prompt": "Com base no relatório de pesquisa: {{outputs.research.research_report}}\n\nCrie uma especificação técnica detalhada para: {{feature_name}}\n\nInclua: arquivos a modificar, APIs a criar, casos de teste, edge cases.",
+      "output": "tech_spec",
+      "timeout": 600,
+      "retryCount": 2
+    },
+    {
+      "id": "implementation",
+      "name": "Implementar Feature",
+      "agent": "leviathan",
+      "type": "wave",
+      "dependsOn": ["spec"],
+      "prompt": "WAVE: Implemente a feature conforme a especificação: {{outputs.spec.tech_spec}}\n\nDiretório: {{target_directory}}\n\nDivida em tasks paralelas quando possível (ex: implementação, testes unitários).",
+      "output": "implementation_result",
+      "timeout": 1200,
+      "retryCount": 3,
+      "retryBackoff": 5000
+    },
+    {
+      "id": "integration_tests",
+      "name": "Criar Testes de Integração",
+      "agent": "leviathan",
+      "type": "wave",
+      "dependsOn": ["implementation"],
+      "prompt": "WAVE: Crie testes de integração para a implementação: {{outputs.implementation.implementation_result}}\n\nFoque em cenários end-to-end, fluxos completos e edge cases.",
+      "output": "integration_test_result",
+      "timeout": 900,
+      "retryCount": 2
+    },
+    {
+      "id": "validation",
+      "name": "Validar Implementação",
+      "agent": "amphisbaena",
+      "type": "single",
+      "dependsOn": ["integration_tests"],
+      "prompt": "Valide se a implementação {{feature_name}} está correta executando os testes e verificando o código. Reporte: status dos testes, coverage, bugs encontrados, sugestões.",
+      "output": "validation_result",
+      "timeout": 600,
+      "retryCount": 2
+    },
+    {
+      "id": "documentation",
+      "name": "Atualizar Documentação",
+      "agent": "wyvern",
+      "type": "single",
+      "dependsOn": ["validation"],
+      "prompt": "Com base nos resultados: {{outputs.validation.validation_result}}\n\nAtualize a documentação (README, API docs, CHANGELOG) para incluir {{feature_name}}. Mantenha estilo consistente com docs existentes.",
+      "output": "docs_result",
+      "timeout": 600,
+      "retryCount": 2
+    }
+  ],
+
+  "success": [
+    {
+      "step": "validation",
+      "condition": "result.success == true"
+    },
+    {
+      "step": "documentation",
+      "condition": "result.success == true"
+    }
+  ],
+
+  "onFailure": {
+    "notify": ["wyvern", "amphisbaena"],
+    "action": "pause",
+    "maxRetries": 3
+  }
+}

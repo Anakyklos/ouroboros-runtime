@@ -20,7 +20,10 @@
     "mcp:gemini": "tsx scripts/gemini-mcp.ts",
     "test:council": "npx tsx scripts/test-council-integration.ts",
     "test:daemon": "npx tsx scripts/test-daemon-refactor.ts",
-    "test:glm": "bun test scripts/test-glm-integration.test.ts"
+    "test:glm": "bun test scripts/test-glm-integration.test.ts",
+    "council:watch": "bun run scripts/council-handoff.ts",
+    "council:turn": "bun run scripts/council-turn.ts",
+    "claude:ag": "bun run scripts/claude-ag.ts"
   },
   "keywords": [
     "ai",

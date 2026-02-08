@@ -298,7 +298,9 @@ Rules:
                                     message: 'No tasks to execute',
                                 };
                             } else {
+                                const apiKey = this.loadZAIKey();
                                 const orchestrator = new Orchestrator();
+                                orchestrator.initialize(apiKey);
                                 const waveExecutor = new WaveExecutor(orchestrator);
 
                                 const waveResult: WaveExecutionResult = await waveExecutor.execute(tasks);

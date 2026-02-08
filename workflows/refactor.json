@@ -1,0 +1,118 @@
+{
+  "name": "refactor",
+  "version": "1.0",
+  "description": "Refatora código com análise de impacto, implementação e testes de regressão",
+
+  "meta": {
+    "author": "amphisbaena",
+    "tags": ["refactor", "quality", "maintenance"],
+    "estimatedDuration": "20-40 min"
+  },
+
+  "variables": [
+    {
+      "name": "refactor_target",
+      "value": "",
+      "description": "O que refatorar (arquivo, módulo, função)",
+      "required": true
+    },
+    {
+      "name": "refactor_type",
+      "value": "quality",
+      "description": "Tipo de refatoração: quality, performance, maintainability, testability",
+      "required": false
+    },
+    {
+      "name": "refactor_scope",
+      "value": "module",
+      "description": "Escopo: function, module, system",
+      "required": false
+    }
+  ],
+
+  "steps": [
+    {
+      "id": "analyze",
+      "name": "Analisar Código Atual",
+      "agent": "amphisbaena",
+      "type": "single",
+      "prompt": "Analise o código atual: {{refactor_target}}\n\nTipo: {{refactor_type}}\nEscopo: {{refactor_scope}}\n\nIdentifique: code smells, complexidade ciclomática, duplicação, padrões anti, debt técnico. Reporte: métricas, problemas encontrados, prioridade.",
+      "output": "analysis_result",
+      "timeout": 900,
+      "retryCount": 2
+    },
+    {
+      "id": "impact_analysis",
+      "name": "Análise de Impacto",
+      "agent": "amphisbaena",
+      "type": "single",
+      "dependsOn": ["analyze"],
+      "prompt": "Com base na análise: {{outputs.analyze.analysis_result}}\n\nIdentifique todos os pontos onde {{refactor_target}} é usado. Calcule impacto: número de chamadas, dependências, risco de regressão. Reporte: lista de arquivos afetados, risco (alto/médio/baixo), recomendações.",
+      "output": "impact_result",
+      "timeout": 600,
+      "retryCount": 2
+    },
+    {
+      "id": "plan",
+      "name": "Criar Plano de Refatoração",
+      "agent": "wyvern",
+      "type": "single",
+      "dependsOn": ["impact_analysis"],
+      "prompt": "Com base na análise de impacto: {{outputs.impact_analysis.impact_result}}\n\nCrie um plano detalhado de refatoração. Inclua: passos sequenciais, rollback plan, testes necessários, estimativas. Foque em refatorações incrementais.",
+      "output": "refactor_plan",
+      "timeout": 600,
+      "retryCount": 2
+    },
+    {
+      "id": "implement",
+      "name": "Implementar Refatoração",
+      "agent": "leviathan",
+      "type": "wave",
+      "dependsOn": ["plan"],
+      "prompt": "WAVE: Implemente a refatoração conforme o plano: {{outputs.plan.refactor_plan}}\n\nAlvo: {{refactor_target}}\n\nExecute: alterações de código, atualizações de imports, refatoração de testes. Mantenha comportamento idêntico.",
+      "output": "implementation_result",
+      "timeout": 1200,
+      "retryCount": 3,
+      "retryBackoff": 5000
+    },
+    {
+      "id": "regression_tests",
+      "name": "Testes de Regressão",
+      "agent": "leviathan",
+      "type": "wave",
+      "dependsOn": ["implement"],
+      "prompt": "WAVE: Execute testes de regressão abrangentes.\n\nRefatoração: {{outputs.implement.implementation_result}}\n\nRoda: testes unitários, testes de integração, testes E2E. Foque em garantir que nada quebrou.",
+      "output": "regression_tests_result",
+      "timeout": 900,
+      "retryCount": 2
+    },
+    {
+      "id": "compare",
+      "name": "Comparar Antes/Depois",
+      "agent": "amphisbaena",
+      "type": "single",
+      "dependsOn": ["regression_tests"],
+      "prompt": "Compare métricas antes/depois da refatoração.\n\nAnálise original: {{outputs.analyze.analysis_result}}\n\nTestes: {{outputs.regression_tests.regression_tests_result}}\n\nReporte: melhorias (complexidade, performance, maintainability), regressões (se houver), qualidade da refatoração.",
+      "output": "comparison_result",
+      "timeout": 600,
+      "retryCount": 2
+    }
+  ],
+
+  "success": [
+    {
+      "step": "regression_tests",
+      "condition": "result.success == true"
+    },
+    {
+      "step": "compare",
+      "condition": "result.success == true"
+    }
+  ],
+
+  "onFailure": {
+    "notify": ["wyvern", "amphisbaena"],
+    "action": "pause",
+    "maxRetries": 3
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "name": "bug-fix",
+  "version": "1.0",
+  "description": "Identifica, isola e corrige bugs com testes de regressão",
+
+  "meta": {
+    "author": "amphisbaena",
+    "tags": ["bug", "fix", "regression"],
+    "estimatedDuration": "10-20 min"
+  },
+
+  "variables": [
+    {
+      "name": "bug_description",
+      "value": "",
+      "description": "Descrição detalhada do bug",
+      "required": true
+    },
+    {
+      "name": "affected_files",
+      "value": "",
+      "description": "Arquivos que parecem estar relacionados (opcional)",
+      "required": false
+    }
+  ],
+
+  "steps": [
+    {
+      "id": "reproduce",
+      "name": "Reproduzir Bug",
+      "agent": "amphisbaena",
+      "type": "single",
+      "prompt": "Tente reproduzir o bug: {{bug_description}}\n\nArquivos relacionados: {{affected_files}}\n\nSe não conseguir, peça mais detalhes ao usuário. Reporte: se conseguiu reproduzir, como reproduzir, sintomas observados.",
+      "output": "reproduction_result",
+      "timeout": 600,
+      "retryCount": 2
+    },
+    {
+      "id": "isolate",
+      "name": "Isolar Causa Raiz",
+      "agent": "amphisbaena",
+      "type": "single",
+      "dependsOn": ["reproduce"],
+      "prompt": "Com base na reprodução: {{outputs.reproduce.reproduction_result}}\n\nInvestigue e isole a causa raiz do bug. Use: análise de código, logs, debug. Reporte: localização exata (arquivo:linha), explicação técnica, hipótese da causa.",
+      "output": "isolation_result",
+      "timeout": 900,
+      "retryCount": 2
+    },
+    {
+      "id": "fix",
+      "name": "Implementar Correção",
+      "agent": "leviathan",
+      "type": "single",
+      "dependsOn": ["isolate"],
+      "prompt": "Com base na causa raiz: {{outputs.isolate.isolation_result}}\n\nImplemente a correção do bug. Foque em: mínimo impacto, não introduzir regressão, manter estilo de código.",
+      "output": "fix_result",
+      "timeout": 900,
+      "retryCount": 3
+    },
+    {
+      "id": "regression_tests",
+      "name": "Criar Testes de Regressão",
+      "agent": "leviathan",
+      "type": "wave",
+      "dependsOn": ["fix"],
+      "prompt": "WAVE: Crie testes de regressão para garantir que o bug não retorne e que a correção não quebra funcionalidades existentes.\n\nBug: {{bug_description}}\n\nCorreção: {{outputs.fix.fix_result}}\n\nCrie: testes unitários, testes de integração, edge cases.",
+      "output": "regression_tests_result",
+      "timeout": 600,
+      "retryCount": 2
+    },
+    {
+      "id": "verify_fix",
+      "name": "Verificar Correção",
+      "agent": "amphisbaena",
+      "type": "single",
+      "dependsOn": ["regression_tests"],
+      "prompt": "Verifique se a correção funciona executando os testes e tentando reproduzir o bug novamente.\n\nCorreção: {{outputs.fix.fix_result}}\n\nTestes: {{outputs.regression_tests.regression_tests_result}}\n\nReporte: bug corrigido? todos os testes passam? há regressões?",
+      "output": "verification_result",
+      "timeout": 600,
+      "retryCount": 2
+    }
+  ],
+
+  "success": [
+    {
+      "step": "verify_fix",
+      "condition": "result.success == true"
+    }
+  ],
+
+  "onFailure": {
+    "notify": ["wyvern", "amphisbaena"],
+    "action": "pause",
+    "maxRetries": 3
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "name": "code-review",
+  "version": "1.0",
+  "description": "Revisa código automaticamente com análise estática e testes",
+
+  "meta": {
+    "author": "amphisbaena",
+    "tags": ["review", "quality", "best-practices"],
+    "estimatedDuration": "10-15 min"
+  },
+
+  "variables": [
+    {
+      "name": "code_to_review",
+      "value": "",
+      "description": "Arquivo, diretório ou PR a revisar",
+      "required": true
+    },
+    {
+      "name": "review_focus",
+      "value": "general",
+      "description": "Foco da revisão: general, security, performance, testability",
+      "required": false
+    },
+    {
+      "name": "strictness",
+      "value": "normal",
+      "description": "Nível de rigor: loose, normal, strict",
+      "required": false
+    }
+  ],
+
+  "steps": [
+    {
+      "id": "static_analysis",
+      "name": "Análise Estática",
+      "agent": "amphisbaena",
+      "type": "single",
+      "prompt": "Execute análise estática detalhada do código: {{code_to_review}}\n\nFoco: {{review_focus}}\n\nVerifique: code smells, anti-patterns, segurança (injections, XSS), performance (loops, queries), testabilidade (coupling, cohesion). Reporte: issues encontrados, severidade, sugestões.",
+      "output": "static_analysis_result",
+      "timeout": 600,
+      "retryCount": 2
+    },
+    {
+      "id": "code_style",
+      "name": "Verificar Style e Convenções",
+      "agent": "amphisbaena",
+      "type": "single",
+      "prompt": "Verifique se o código segue as convenções do projeto: {{code_to_review}}\n\nVerifique: estilo (indentação, naming), padrões de arquitetura, documentação, comments. Reporte: violações, sugestões de melhoria.",
+      "output": "code_style_result",
+      "timeout": 300,
+      "retryCount": 2
+    },
+    {
+      "id": "test_coverage",
+      "name": "Analisar Coverage de Testes",
+      "agent": "amphisbaena",
+      "type": "single",
+      "prompt": "Analise a coverage de testes do código: {{code_to_review}}\n\nVerifique: testes unitários existentes, cobertura (%), casos não testados, edge cases. Reporte: coverage atual, lacunas, recomendações.",
+      "output": "test_coverage_result",
+      "timeout": 600,
+      "retryCount": 2
+    },
+    {
+      "id": "security_review",
+      "name": "Revisão de Segurança",
+      "agent": "amphisbaena",
+      "type": "single",
+      "dependsOn": ["static_analysis"],
+      "prompt": "Com base na análise: {{outputs.static_analysis.static_analysis_result}}\n\nFoque em vulnerabilidades específicas: SQL injection, XSS, CSRF, authentication, authorization, encryption, input validation. Reporte: vulnerabilidades, CVSS, fixes recomendados.",
+      "output": "security_review_result",
+      "timeout": 600,
+      "retryCount": 2
+    },
+    {
+      "id": "performance_review",
+      "name": "Revisão de Performance",
+      "agent": "amphisbaena",
+      "type": "single",
+      "dependsOn": ["static_analysis"],
+      "prompt": "Com base na análise: {{outputs.static_analysis.static_analysis_result}}\n\nFoque em problemas de performance: N+1 queries, loops ineficientes, memory leaks, blocking I/O, cache opportunities. Reporte: bottlenecks, otimizações sugeridas.",
+      "output": "performance_review_result",
+      "timeout": 600,
+      "retryCount": 2
+    },
+    {
+      "id": "generate_tests",
+      "name": "Gerar Testes Sugeridos",
+      "agent": "leviathan",
+      "type": "wave",
+      "dependsOn": ["test_coverage"],
+      "prompt": "WAVE: Com base na análise de coverage: {{outputs.test_coverage.test_coverage_result}}\n\nCrie testes para cobrir as lacunas identificadas. Foque em: casos de borda, caminhos não testados, edge cases.\n\nCódigo: {{code_to_review}}",
+      "output": "generated_tests_result",
+      "timeout": 900,
+      "retryCount": 2
+    },
+    {
+      "id": "final_report",
+      "name": "Gerar Relatório Final",
+      "agent": "wyvern",
+      "type": "single",
+      "dependsOn": ["static_analysis", "code_style", "test_coverage", "security_review", "performance_review", "generate_tests"],
+      "prompt": "Agregue todas as revisões em um relatório final claro e acionável.\n\nAnálises:\n- Static: {{outputs.static_analysis.static_analysis_result}}\n- Style: {{outputs.code_style.code_style_result}}\n- Tests: {{outputs.test_coverage.test_coverage_result}}\n- Security: {{outputs.security_review.security_review_result}}\n- Performance: {{outputs.performance_review.performance_review_result}}\n- Generated Tests: {{outputs.generate_tests.generated_tests_result}}\n\nEstrutura: executive summary, issues por severidade, action items, metrics. Seja conciso e prático.",
+      "output": "final_report_result",
+      "timeout": 600,
+      "retryCount": 2
+    }
+  ],
+
+  "success": [
+    {
+      "step": "final_report",
+      "condition": "result.success == true"
+    }
+  ],
+
+  "onFailure": {
+    "notify": ["wyvern", "amphisbaena"],
+    "action": "pause",
+    "maxRetries": 2
+  }
+}
