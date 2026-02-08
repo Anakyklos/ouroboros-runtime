@@ -4,6 +4,7 @@ import gradient from 'gradient-string';
 import { LogViewer } from './LogViewer.js';
 import { StatusPanel } from './StatusPanel.js';
 import { InputBar } from './InputBar.js';
+import { CouncilPanel } from './CouncilPanel.js';
 import { useTuiStore } from '../store.js';
 
 interface LayoutProps {
@@ -31,6 +32,9 @@ export function Layout({ onSubmit }: LayoutProps) {
             <Box borderStyle="round" borderColor="cyan" paddingX={1}>
                 <Text>{gradient.pastel('Ouroboros v1.0')}</Text>
             </Box>
+
+            {/* Council Panel */}
+            <CouncilPanel />
 
             {/* Status Panel */}
             <StatusPanel status={status} metrics={metrics} currentTask={currentTask} />
