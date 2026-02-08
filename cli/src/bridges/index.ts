@@ -20,3 +20,11 @@ export {
     type GeminiModel,
     type QueryOptions as GeminiQueryOptions
 } from "./GeminiCliBridge.js";
+
+export {
+    PersistentAntigravityBridge,
+    createPersistentAntigravityBridge,
+    type PersistentAntigravityConfig,
+    type AntigravityExecutionResult,
+    type AgentMemory,
+} from "./PersistentAntigravityBridge.js";
