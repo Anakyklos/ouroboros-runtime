@@ -14,7 +14,7 @@ import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useMissionControlStore } from "@/stores/mission-control-store";
 import { useWaveManager } from "@/hooks/use-wave-manager";
 import { Settings, Terminal, LayoutTemplate } from "lucide-react";
-import { SwissDashboard } from "@/components/swiss/layout/swiss-dashboard";
+import { CoilDashboard } from "@/components/swiss/layout/CoilDashboard";
 
 interface MissionControlProps {
   onSettingsClick?: () => void;
@@ -72,11 +72,11 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
 
   if (theme === "swiss") {
     return (
-      <div className="relative">
-        <SwissDashboard />
+      <div className="relative h-screen w-screen overflow-hidden bg-white">
+        <CoilDashboard />
         <button
           onClick={toggleTheme}
-          className="fixed bottom-4 right-4 z-50 p-2 bg-[var(--color-surface-secondary)] border border-[var(--color-border)] rounded shadow hover:bg-[var(--color-surface-tertiary)] uppercase text-xs font-bold tracking-wider"
+          className="fixed bottom-24 right-4 z-50 p-2 bg-white border-2 border-black shadow-lg hover:bg-black hover:text-white transition-colors uppercase text-[10px] font-bold tracking-widest"
         >
           Switch to Cyberpunk
         </button>
