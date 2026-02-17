@@ -131,33 +131,36 @@ export class MemoryManager {
     /**
      * Carrega contexto de hoje e ontem (como OpenClaw faz).
      */
-    loadRecentContext(): string {
+    async loadRecentContext(): Promise<string> {
         const today = formatDate();
         const yesterday = formatDate(new Date(Date.now() - 86400000));
 
-        let context = "";
-
-        for (const date of [yesterday, today]) {
+        const results = await Promise.all([yesterday, today].map(async (date) => {
             const logPath = path.join(ensureMemoryDir(this.projectRoot), `${date}.md`);
-            if (fs.existsSync(logPath)) {
-                context += `\n\n# Log ${date}\n`;
-                context += fs.readFileSync(logPath, "utf-8");
+            try {
+                const content = await fs.promises.readFile(logPath, "utf-8");
+                return `\n\n# Log ${date}\n${content}`;
+            } catch (err) {
+                return "";
             }
-        }
+        }));
 
+        const context = results.join("").trim();
         return context || "No recent memory found.";
     }
 
     /**
      * Gera resumo do dia (auto-summary).
      */
-    generateDailySummary(): string {
+    async generateDailySummary(): Promise<string> {
         const logPath = getDailyLogPath(this.projectRoot);
-        if (!fs.existsSync(logPath)) {
+        let content: string;
+
+        try {
+            content = await fs.promises.readFile(logPath, "utf-8");
+        } catch (err) {
             return "No tasks executed today.";
         }
-
-        const content = fs.readFileSync(logPath, "utf-8");
         const taskMatches = content.match(/## Task: .+ [✅❌🆘]/g) || [];
         const successCount = (content.match(/Status: SUCCESS/g) || []).length;
         const failCount = taskMatches.length - successCount;
