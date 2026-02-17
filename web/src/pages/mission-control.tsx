@@ -13,7 +13,8 @@ import { useDaemonAPI } from "@/hooks/use-daemon-api";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useMissionControlStore } from "@/stores/mission-control-store";
 import { useWaveManager } from "@/hooks/use-wave-manager";
-import { Settings, Terminal } from "lucide-react";
+import { Settings, Terminal, LayoutTemplate } from "lucide-react";
+import { SwissDashboard } from "@/components/swiss/layout/swiss-dashboard";
 
 interface MissionControlProps {
   onSettingsClick?: () => void;
@@ -24,6 +25,7 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
   const [confidence, setConfidence] = useState(80);
   const [showLogs, setShowLogs] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [theme, setTheme] = useState<"snake" | "swiss">("snake");
   
   const daemonConnected = useMissionControlStore((state) => state.daemonConnected);
   
@@ -64,8 +66,26 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
     return "healthy" as const;
   };
 
+  const toggleTheme = () => {
+    setTheme(prev => prev === "snake" ? "swiss" : "snake");
+  };
+
+  if (theme === "swiss") {
+    return (
+      <div className="relative">
+        <SwissDashboard />
+        <button
+          onClick={toggleTheme}
+          className="fixed bottom-4 right-4 z-50 p-2 bg-[var(--color-surface-secondary)] border border-[var(--color-border)] rounded shadow hover:bg-[var(--color-surface-tertiary)] uppercase text-xs font-bold tracking-wider"
+        >
+          Switch to Cyberpunk
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div className="h-screen w-screen bg-[var(--color-background)] text-[var(--color-foreground)] overflow-hidden flex flex-col pb-16">
+    <div className="h-screen w-screen bg-[var(--color-background)] text-[var(--color-foreground)] overflow-hidden flex flex-col pb-16 transition-colors duration-300">
       <header className="h-14 border-b border-[var(--color-border)] flex items-center justify-between px-4 sm:px-6 bg-[var(--color-surface-primary)] z-50">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-bold flex items-center gap-2">
@@ -77,6 +97,14 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
           </span>
         </div>
         <div className="flex items-center gap-4">
+          <button
+            onClick={toggleTheme}
+            className="flex items-center gap-2 text-sm text-[var(--color-silver-muted)] hover:text-[var(--color-foreground)] transition-colors"
+            title="Toggle Swiss Theme"
+          >
+            <LayoutTemplate className="w-4 h-4" />
+            <span className="hidden sm:inline">Swiss UI</span>
+          </button>
           <button
             onClick={() => setShowTerminal(!showTerminal)}
             className="flex items-center gap-2 text-sm text-[var(--color-silver-muted)] hover:text-[var(--color-foreground)] transition-colors"
@@ -211,9 +239,7 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
         confidence={confidence}
         onConfidenceChange={setConfidence}
         waveNumber={status?.activeWaves || 42}
-        activeTasks={status?.activeTasks || 3}
         tasksDone={47}
-        uptime={status ? `${Math.floor(status.uptime / 3600)}h ${Math.floor((status.uptime % 3600) / 60)}m` : "0h 0m"}
         tokens={status?.tokensUsed || 142000}
         onEmergencyBrake={handleEmergencyBrake}
       />

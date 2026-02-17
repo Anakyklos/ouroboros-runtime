@@ -1,60 +1,62 @@
 @import "tailwindcss";
 
 /* ============================================================================
-   🐍 Ouroboros Snake Theme - Mission Control
+   🐍 Ouroboros Design System
    ============================================================================ */
 
 @theme {
-  /* Core Colors - Snake Inspired */
-  --color-emerald: #10B981;
-  --color-emerald-muted: #059669;
-  --color-emerald-dark: #047857;
+  /* --- Semantic Tokens (mapped via CSS variables in :root) --- */
+  --color-background: var(--theme-background);
+  --color-foreground: var(--theme-foreground);
+  --color-surface-primary: var(--theme-surface-primary);
+  --color-surface-secondary: var(--theme-surface-secondary);
+  --color-surface-tertiary: var(--theme-surface-tertiary);
+  --color-border: var(--theme-border);
+  --color-ring: var(--theme-ring);
   
-  --color-gold: #F59E0B;
-  --color-gold-bright: #FBBF24;
+  --color-status-healthy: var(--theme-status-healthy);
+  --color-status-debating: var(--theme-status-debating);
+  --color-status-error: var(--theme-status-error);
   
-  --color-obsidian: #0F172A;
-  --color-slate: #1E293B;
-  --color-slate-light: #334155;
-  
-  --color-pearl: #F8FAFC;
-  --color-silver: #94A3B8;
-  --color-silver-muted: #64748B;
-  
-  --color-ruby: #EF4444;
+  --color-accent-primary: var(--theme-accent-primary);
+  --color-accent-secondary: var(--theme-accent-secondary);
 
-  /* Semantic Colors */
-  --color-background: var(--color-obsidian);
-  --color-foreground: var(--color-pearl);
-  
-  --color-surface-primary: var(--color-obsidian);
-  --color-surface-secondary: var(--color-slate);
-  --color-surface-tertiary: var(--color-slate-light);
-  
-  --color-border: var(--color-slate-light);
-  --color-ring: var(--color-emerald);
+  /* Map core color names to theme variables for component reuse */
+  --color-emerald: var(--theme-color-emerald);
+  --color-gold: var(--theme-color-gold);
+  --color-ruby: var(--theme-color-ruby);
+  --color-obsidian: var(--theme-color-obsidian);
+  --color-slate: var(--theme-color-slate);
+  --color-slate-light: var(--theme-color-slate-light);
+  --color-silver: var(--theme-color-silver);
+  --color-silver-muted: var(--theme-color-silver-muted);
+  --color-pearl: var(--theme-color-pearl);
 
-  /* Status Colors */
-  --color-status-healthy: var(--color-emerald);
-  --color-status-debating: var(--color-gold);
-  --color-status-error: var(--color-ruby);
-  
-  /* Fonts */
-  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
-  --font-mono: "JetBrains Mono", "Fira Code", monospace;
-  
-  /* Border Radius */
-  --radius-sm: 0.25rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.75rem;
-  --radius-xl: 1rem;
-  --radius-2xl: 1.5rem;
+  /* --- Swiss Specific Colors (Direct Access) --- */
+  --color-swiss-black: #000000;
+  --color-swiss-white: #FFFFFF;
+  --color-swiss-concrete: #F2F2F2;
+  --color-swiss-navy: #000080;
+  --color-swiss-orange: #FF4F00;
+  --color-swiss-gray: #CCCCCC;
 
-  /* Shadows */
+  /* --- Fonts --- */
+  --font-sans: var(--theme-font-sans);
+  --font-mono: var(--theme-font-mono);
+  --font-display: var(--theme-font-display);
+  
+  /* --- Border Radius --- */
+  --radius-sm: var(--theme-radius-sm);
+  --radius-md: var(--theme-radius-md);
+  --radius-lg: var(--theme-radius-lg);
+  --radius-xl: var(--theme-radius-xl);
+  --radius-2xl: var(--theme-radius-2xl);
+  
+  /* --- Shadows --- */
   --shadow-glow-emerald: 0 0 20px rgba(16, 185, 129, 0.4);
   --shadow-glow-gold: 0 0 20px rgba(245, 158, 11, 0.4);
   
-  /* Animations */
+  /* --- Animations --- */
   --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   --animate-pulse-snake: pulse-snake 2s ease-in-out infinite;
   --animate-glow: glow 2s ease-in-out infinite;
@@ -63,18 +65,105 @@
 }
 
 /* ============================================================================
-   Base Styles
+   Theme Configuration
    ============================================================================ */
 
 :root {
+  /* Default Theme: Snake (Cyberpunk) */
+  --theme-background: #0F172A; /* obsidian */
+  --theme-foreground: #F8FAFC; /* pearl */
+
+  --theme-surface-primary: #0F172A; /* obsidian */
+  --theme-surface-secondary: #1E293B; /* slate */
+  --theme-surface-tertiary: #334155; /* slate-light */
+
+  --theme-border: #334155; /* slate-light */
+  --theme-ring: #10B981; /* emerald */
+
+  --theme-status-healthy: #10B981; /* emerald */
+  --theme-status-debating: #F59E0B; /* gold */
+  --theme-status-error: #EF4444; /* ruby */
+
+  --theme-accent-primary: #10B981; /* emerald */
+  --theme-accent-secondary: #F59E0B; /* gold */
+
+  /* Color Mapping for Component Compatibility */
+  --theme-color-emerald: #10B981;
+  --theme-color-gold: #F59E0B;
+  --theme-color-ruby: #EF4444;
+  --theme-color-obsidian: #0F172A;
+  --theme-color-slate: #1E293B;
+  --theme-color-slate-light: #334155;
+  --theme-color-silver: #94A3B8;
+  --theme-color-silver-muted: #64748B;
+  --theme-color-pearl: #F8FAFC;
+
+  --theme-font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --theme-font-mono: "JetBrains Mono", "Fira Code", monospace;
+  --theme-font-display: "Inter", system-ui, sans-serif;
+
+  --theme-radius-sm: 0.25rem;
+  --theme-radius-md: 0.5rem;
+  --theme-radius-lg: 0.75rem;
+  --theme-radius-xl: 1rem;
+  --theme-radius-2xl: 1.5rem;
+
   color-scheme: dark;
 }
+
+[data-theme="swiss"] {
+  /* Swiss Minimal Theme */
+  --theme-background: #F2F2F2; /* concrete */
+  --theme-foreground: #000000; /* black */
+
+  --theme-surface-primary: #FFFFFF; /* white */
+  --theme-surface-secondary: #FFFFFF; /* white */
+  --theme-surface-tertiary: #F2F2F2; /* concrete */
+
+  --theme-border: #000000; /* black - high contrast */
+  --theme-ring: #000080; /* navy */
+
+  --theme-status-healthy: #000000; /* black (status via text/icon) */
+  --theme-status-debating: #FF4F00; /* orange */
+  --theme-status-error: #FF4F00; /* orange */
+
+  --theme-accent-primary: #000080; /* navy */
+  --theme-accent-secondary: #FF4F00; /* orange */
+
+  /* Color Mapping for Component Compatibility (Swiss overrides) */
+  --theme-color-emerald: #000080; /* map emerald (success) to navy (action/strong) */
+  --theme-color-gold: #FF4F00; /* map gold (warning) to orange */
+  --theme-color-ruby: #FF4F00; /* map ruby (error) to orange */
+  --theme-color-obsidian: #FFFFFF; /* map obsidian (bg) to white */
+  --theme-color-slate: #F2F2F2; /* map slate (secondary bg) to concrete */
+  --theme-color-slate-light: #CCCCCC; /* map slate-light (border) to gray */
+  --theme-color-silver: #666666; /* map silver to dark gray */
+  --theme-color-silver-muted: #999999; /* map silver-muted to medium gray */
+  --theme-color-pearl: #000000; /* map pearl (text) to black */
+
+  --theme-font-sans: "Helvetica Neue", "Helvetica", "Arial", sans-serif;
+  --theme-font-mono: "Courier New", monospace;
+  --theme-font-display: "Helvetica Neue", "Helvetica", "Arial", sans-serif;
+
+  --theme-radius-sm: 0;
+  --theme-radius-md: 0;
+  --theme-radius-lg: 0;
+  --theme-radius-xl: 0;
+  --theme-radius-2xl: 0;
+
+  color-scheme: light;
+}
+
+/* ============================================================================
+   Base Styles
+   ============================================================================ */
 
 body {
   background-color: var(--color-background);
   color: var(--color-foreground);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  transition: background-color 0.3s, color 0.3s;
 }
 
 /* ============================================================================
@@ -131,10 +220,22 @@ body {
   background-clip: text;
 }
 
+[data-theme="swiss"] .text-gradient {
+  background: none;
+  -webkit-text-fill-color: initial;
+  color: var(--color-foreground);
+}
+
 .surface-glass {
   background: rgba(15, 23, 42, 0.7);
   backdrop-filter: blur(12px);
   border: 1px solid rgba(51, 65, 85, 0.5);
+}
+
+[data-theme="swiss"] .surface-glass {
+  background: var(--color-surface-primary);
+  backdrop-filter: none;
+  border: 1px solid var(--color-border);
 }
 
 .surface-card {
