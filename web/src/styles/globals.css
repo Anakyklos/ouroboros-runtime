@@ -1,0 +1,265 @@
+@import "tailwindcss";
+
+/* ============================================================================
+   🐍 Ouroboros Snake Theme - Mission Control
+   Based on: DEEP_DIVE_INTEGRACAO_OUROBOROS.md
+   ============================================================================ */
+
+@theme {
+  /* Core Colors - Snake Inspired */
+  --color-emerald: #10B981;
+  --color-emerald-muted: #059669;
+  --color-emerald-dark: #047857;
+  
+  --color-gold: #F59E0B;
+  --color-gold-bright: #FBBF24;
+  
+  --color-obsidian: #0F172A;
+  --color-slate: #1E293B;
+  --color-slate-light: #334155;
+  
+  --color-pearl: #F8FAFC;
+  --color-silver: #94A3B8;
+  --color-silver-muted: #64748B;
+  
+  --color-ruby: #EF4444;
+  
+  /* Status Colors */
+  --color-status-healthy: #10B981;
+  --color-status-debating: #F59E0B;
+  --color-status-error: #EF4444;
+  --color-status-paused: #6366F1;
+  --color-status-stuck: #F97316;
+  
+  /* Severity Colors */
+  --color-severity-critical: #DC2626;
+  --color-severity-high: #EA580C;
+  --color-severity-medium: #D97706;
+  --color-severity-low: #65A30D;
+  --color-severity-disputed: #7C3AED;
+  
+  /* Kanban Column Colors */
+  --color-column-backlog: #94A3B8;
+  --color-column-queue: #38BDF8;
+  --color-column-in-progress: #10B981;
+  --color-column-ai-review: #F59E0B;
+  --color-column-human-review: #A78BFA;
+  --color-column-done: #34D399;
+  
+  /* Fonts */
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+  
+  /* Border Radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+  
+  /* Animations */
+  --animate-pulse-snake: pulse-snake 2s ease-in-out infinite;
+  --animate-glow: glow 2s ease-in-out infinite;
+  --animate-slide-up: slide-up 0.25s cubic-bezier(0, 0, 0.2, 1);
+  --animate-fade-in: fade-in 0.25s cubic-bezier(0, 0, 0.2, 1);
+}
+
+/* ============================================================================
+   Dark Theme (Default)
+   ============================================================================ */
+
+:root[data-theme="dark"] {
+  --background: #0F172A;
+  --foreground: #F8FAFC;
+  --card: #1E293B;
+  --card-foreground: #F8FAFC;
+  
+  --primary: #10B981;
+  --primary-foreground: #0F172A;
+  
+  --secondary: #1E293B;
+  --secondary-foreground: #94A3B8;
+  
+  --muted: #1E293B;
+  --muted-foreground: #94A3B8;
+  
+  --accent: #F59E0B;
+  --accent-foreground: #0F172A;
+  
+  --destructive: #EF4444;
+  --destructive-foreground: #F8FAFC;
+  
+  --border: #334155;
+  --input: #334155;
+  --ring: #10B981;
+  
+  --surface-primary: #0F172A;
+  --surface-secondary: #1E293B;
+  --surface-tertiary: #334155;
+}
+
+/* ============================================================================
+   Light Theme
+   ============================================================================ */
+
+:root[data-theme="light"] {
+  --background: #F8FAFC;
+  --foreground: #0F172A;
+  --card: #FFFFFF;
+  --card-foreground: #0F172A;
+  
+  --primary: #059669;
+  --primary-foreground: #F8FAFC;
+  
+  --secondary: #F1F5F9;
+  --secondary-foreground: #64748B;
+  
+  --muted: #F1F5F9;
+  --muted-foreground: #64748B;
+  
+  --accent: #D97706;
+  --accent-foreground: #F8FAFC;
+  
+  --destructive: #DC2626;
+  --destructive-foreground: #F8FAFC;
+  
+  --border: #E2E8F0;
+  --input: #E2E8F0;
+  --ring: #10B981;
+  
+  --surface-primary: #F8FAFC;
+  --surface-secondary: #FFFFFF;
+  --surface-tertiary: #E2E8F0;
+}
+
+/* ============================================================================
+   Base Styles
+   ============================================================================ */
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-feature-settings: "rlig" 1, "calt" 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================================================
+   Scrollbars (Auto-Claude style)
+   ============================================================================ */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--muted-foreground);
+  border-radius: var(--radius-full);
+  opacity: 0.3;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  opacity: 0.5;
+}
+
+/* ============================================================================
+   Animations
+   ============================================================================ */
+
+@keyframes pulse-snake {
+  0%, 100% { 
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.4);
+  }
+  50% { 
+    box-shadow: 0 0 40px rgba(16, 185, 129, 0.6), 0 0 60px rgba(16, 185, 129, 0.3);
+  }
+}
+
+@keyframes glow {
+  0%, 100% { 
+    opacity: 1;
+  }
+  50% { 
+    opacity: 0.6;
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ============================================================================
+   Accessibility
+   ============================================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* ============================================================================
+   Utility Classes
+   ============================================================================ */
+
+.surface-card {
+  background-color: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+}
+
+.surface-interactive {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.surface-interactive:hover {
+  border-color: rgba(16, 185, 129, 0.5);
+}
+
+.text-gradient {
+  background: linear-gradient(135deg, var(--primary), var(--accent));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.glow-emerald {
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.4);
+}
+
+.glow-gold {
+  box-shadow: 0 0 20px rgba(245, 158, 11, 0.4);
+}
