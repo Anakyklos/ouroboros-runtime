@@ -1,23 +1,21 @@
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { useEffect, useState } from "react";
+import { Card } from "@/components/ui/card";
 import { useLogStore } from "@/stores/log-store";
 
 interface Idea {
   id: string;
-  type: "code_improvements" | "ui_ux" | "documentation" | "security" | "performance" | "quality";
+  type: "code_improvements" | "ui_ux" | "security" | "performance";
   title: string;
   confidence: number;
 }
 
 const ideaTypeConfig = {
-  code_improvements: { color: "emerald", label: "Code" },
-  ui_ux: { color: "violet-400", label: "UI/UX" },
-  documentation: { color: "sky-400", label: "Docs" },
+  code_improvements: { color: "emerald", label: "Refactor" },
+  ui_ux: { color: "gold", label: "UI/UX" },
   security: { color: "ruby", label: "Security" },
   performance: { color: "gold", label: "Perf" },
-  quality: { color: "silver", label: "Quality" },
 };
 
 const mockFiles = [
@@ -73,34 +71,35 @@ export function TheEye() {
   }, [isDreaming, addLogEntry]);
 
   return (
-    <Card className="h-full p-4 flex flex-col bg-[var(--surface-primary)] border-[var(--border)]">
+    <Card className="h-full p-4 flex flex-col bg-[var(--color-surface-secondary)] border-[var(--color-border)] shadow-sm">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-bold flex items-center gap-2">
+        <h2 className="text-lg font-bold flex items-center gap-2 font-sans tracking-tight text-[var(--color-foreground)]">
           <span className="text-xl">🔮</span>
           THE EYE
           {isDreaming && (
-            <Badge variant="gold" className="animate-pulse">Dreaming</Badge>
+            <Badge variant="gold" className="animate-pulse bg-[var(--color-gold)]/20 text-[var(--color-gold)] border-[var(--color-gold)]/50">Dreaming</Badge>
           )}
         </h2>
-        <span className="text-sm text-[var(--muted-foreground)]">
+        <span className="text-xs sm:text-sm text-[var(--color-silver-muted)] font-mono">
           Analysis & Ideation
         </span>
       </div>
 
-      <div className="flex-1 overflow-hidden flex flex-col">
-        <div className="flex-1 relative">
+      <div className="flex-1 overflow-hidden flex flex-col relative">
+        {/* Scanning Files Stream */}
+        <div className="flex-1 relative border-l border-[var(--color-border)] pl-4 ml-2">
           <div className="absolute inset-0 overflow-hidden">
-            <div className="font-mono text-xs text-[var(--muted-foreground)] opacity-60 space-y-0.5">
+            <div className="font-mono text-xs text-[var(--color-silver-muted)] opacity-80 space-y-1">
               <AnimatePresence>
                 {scanningFiles.map((file, i) => (
                   <motion.div
                     key={`${file}-${i}`}
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 0.6, x: 0 }}
-                    exit={{ opacity: 0, x: 20 }}
-                    className="text-silver-muted"
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 10 }}
+                    className="flex items-center gap-2"
                   >
-                    <span className="text-emerald mr-2">▸</span>
+                    <span className="text-[var(--color-emerald)]">▸</span>
                     {file}
                   </motion.div>
                 ))}
@@ -108,40 +107,40 @@ export function TheEye() {
             </div>
           </div>
 
+          {/* Ideas Overlay */}
           <AnimatePresence>
             {ideas.map((idea, index) => (
               <motion.div
                 key={idea.id}
-                initial={{ opacity: 0, scale: 0.8, y: 20 }}
+                initial={{ opacity: 0, scale: 0.9, y: 20 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.8, y: -20 }}
+                exit={{ opacity: 0, scale: 0.9, y: -20 }}
                 transition={{ type: "spring", stiffness: 200 }}
-                className="absolute"
-                style={{ top: `${20 + index * 18}%`, left: "10%" }}
+                className="absolute w-full pr-4"
+                style={{ top: `${20 + index * 20}%`, left: "0" }}
               >
-                <div className="px-3 py-2 rounded-lg bg-[var(--surface-secondary)] border border-emerald/30 shadow-lg">
-                  <div className="flex items-center gap-2">
-                    <Badge variant={ideaTypeConfig[idea.type].color as "emerald" | "gold" | "ruby" | "silver"}>
-                      {ideaTypeConfig[idea.type].label}
-                    </Badge>
-                    <span className="text-sm">{idea.title}</span>
-                    <span className="text-xs font-mono text-emerald">
-                      {idea.confidence}%
-                    </span>
+                <div className="p-2 sm:px-3 sm:py-2 rounded-lg bg-[var(--color-surface-tertiary)] border border-[var(--color-emerald)]/30 shadow-lg flex items-center justify-between gap-2 backdrop-blur-sm">
+                  <div className="flex items-center gap-2 truncate">
+                    <div className={`w-2 h-2 rounded-full bg-[var(--color-${ideaTypeConfig[idea.type].color})]`} />
+                    <span className="text-xs sm:text-sm truncate text-[var(--color-foreground)]">{idea.title}</span>
                   </div>
+                  <span className="text-xs font-mono text-[var(--color-emerald)] whitespace-nowrap">
+                    {idea.confidence}%
+                  </span>
                 </div>
               </motion.div>
             ))}
           </AnimatePresence>
         </div>
 
-        <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+        {/* Footer Stats */}
+        <div className="mt-4 grid grid-cols-3 gap-2 text-center border-t border-[var(--color-border)] pt-4">
           {(["code_improvements", "security", "performance"] as const).map((type) => (
-            <div key={type} className="p-2 rounded-lg bg-[var(--surface-secondary)]">
-              <div className="text-xs text-[var(--muted-foreground)]">
+            <div key={type} className="p-1 rounded hover:bg-[var(--color-surface-tertiary)] transition-colors">
+              <div className="text-[10px] uppercase tracking-wider text-[var(--color-silver-muted)] mb-1">
                 {ideaTypeConfig[type].label}
               </div>
-              <div className="font-mono text-lg font-bold text-emerald">
+              <div className="font-mono text-sm sm:text-base font-bold text-[var(--color-emerald)]">
                 {Math.floor(Math.random() * 5) + 2}
               </div>
             </div>

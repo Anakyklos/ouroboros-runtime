@@ -13,7 +13,8 @@ import { useDaemonAPI } from "@/hooks/use-daemon-api";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useMissionControlStore } from "@/stores/mission-control-store";
 import { useWaveManager } from "@/hooks/use-wave-manager";
-import { Settings, Terminal } from "lucide-react";
+import { Settings, Terminal, LayoutTemplate } from "lucide-react";
+import { CoilDashboard } from "@/components/swiss/layout/CoilDashboard";
 
 interface MissionControlProps {
   onSettingsClick?: () => void;
@@ -24,6 +25,7 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
   const [confidence, setConfidence] = useState(80);
   const [showLogs, setShowLogs] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [theme, setTheme] = useState<"snake" | "swiss">("snake");
   
   const daemonConnected = useMissionControlStore((state) => state.daemonConnected);
   
@@ -64,134 +66,172 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
     return "healthy" as const;
   };
 
+  const toggleTheme = () => {
+    setTheme(prev => prev === "snake" ? "swiss" : "snake");
+  };
+
+  if (theme === "swiss") {
+    return (
+      <div className="relative h-screen w-screen overflow-hidden bg-white">
+        <CoilDashboard />
+        <button
+          onClick={toggleTheme}
+          className="fixed bottom-24 right-4 z-50 p-2 bg-white border-2 border-black shadow-lg hover:bg-black hover:text-white transition-colors uppercase text-[10px] font-bold tracking-widest"
+        >
+          Switch to Cyberpunk
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div className="h-screen w-screen bg-[var(--background)] text-[var(--foreground)] overflow-hidden flex flex-col pb-16">
-      <header className="h-14 border-b border-[var(--border)] flex items-center justify-between px-6 bg-[var(--surface-primary)]">
+    <div className="h-screen w-screen bg-[var(--color-background)] text-[var(--color-foreground)] overflow-hidden flex flex-col pb-16 transition-colors duration-300">
+      <header className="h-14 border-b border-[var(--color-border)] flex items-center justify-between px-4 sm:px-6 bg-[var(--color-surface-primary)] z-50">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-bold flex items-center gap-2">
             <span className="text-2xl">🐍</span>
-            <span className="text-gradient">OUROBOROS</span>
+            <span className="text-gradient font-sans font-bold tracking-tight">OUROBOROS</span>
           </h1>
-          <span className="text-sm text-[var(--muted-foreground)] hidden sm:inline">
+          <span className="text-sm text-[var(--color-silver-muted)] hidden sm:inline">
             Mission Control
           </span>
         </div>
         <div className="flex items-center gap-4">
           <button
+            onClick={toggleTheme}
+            className="flex items-center gap-2 text-sm text-[var(--color-silver-muted)] hover:text-[var(--color-foreground)] transition-colors"
+            title="Toggle Swiss Theme"
+          >
+            <LayoutTemplate className="w-4 h-4" />
+            <span className="hidden sm:inline">Swiss UI</span>
+          </button>
+          <button
             onClick={() => setShowTerminal(!showTerminal)}
-            className="flex items-center gap-2 text-sm text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+            className="flex items-center gap-2 text-sm text-[var(--color-silver-muted)] hover:text-[var(--color-foreground)] transition-colors"
           >
             <Terminal className="w-4 h-4" />
             <span className="hidden sm:inline">{showTerminal ? "Hide Terminal" : "Terminal"}</span>
           </button>
           <button
             onClick={() => setShowLogs(!showLogs)}
-            className="flex items-center gap-2 text-sm text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+            className="flex items-center gap-2 text-sm text-[var(--color-silver-muted)] hover:text-[var(--color-foreground)] transition-colors"
           >
             {showLogs ? "Hide Logs" : "Show Logs"}
           </button>
           {onSettingsClick && (
             <button
               onClick={onSettingsClick}
-              className="flex items-center gap-2 text-sm text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              className="flex items-center gap-2 text-sm text-[var(--color-silver-muted)] hover:text-[var(--color-foreground)] transition-colors"
             >
               <Settings className="w-4 h-4" />
               <span className="hidden sm:inline">Settings</span>
             </button>
           )}
-          <span className="text-sm text-[var(--muted-foreground)] hidden md:inline">
+          <span className="text-sm text-[var(--color-silver-muted)] hidden md:inline">
             Daemon:{" "}
-            <span className={daemonConnected ? "text-emerald font-mono" : "text-ruby font-mono"}>
+            <span className={daemonConnected ? "text-[var(--color-emerald)] font-mono" : "text-[var(--color-ruby)] font-mono"}>
               ● {daemonConnected ? "Connected" : "Disconnected"}
             </span>
           </span>
         </div>
       </header>
 
-      <main className="flex-1 p-4 grid grid-cols-1 md:grid-cols-2 grid-rows-2 gap-4">
-        <motion.section
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="row-start-1 col-start-1"
-        >
-          <TheEye />
-        </motion.section>
+      {/* Main Responsive Grid Layout */}
+      <main className="flex-1 p-4 sm:p-6 overflow-y-auto sm:overflow-hidden">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 lg:grid-rows-2 gap-4 sm:gap-6 h-full min-h-[800px] sm:min-h-0 relative">
 
-        <motion.section
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="row-start-1 md:row-start-1 col-start-1 md:col-start-2"
-        >
-          <TheCoil 
-            onWaveActivate={activateWave}
-            promotingWave={promotingWave}
-          />
-        </motion.section>
+          {/* Top Left: The Eye */}
+          <motion.section
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+            className="col-span-1 row-span-1 h-64 sm:h-auto"
+          >
+            <TheEye />
+          </motion.section>
 
-        <motion.section
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="row-start-2 col-start-1"
-        >
-          <TheCouncil />
-        </motion.section>
+          {/* Top Right: The Coil */}
+          <motion.section
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2 }}
+            className="col-span-1 row-span-1 h-64 sm:h-auto"
+          >
+            <TheCoil
+              onWaveActivate={activateWave}
+              promotingWave={promotingWave}
+            />
+          </motion.section>
 
-        <motion.section
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4 }}
-          className="row-start-2 col-start-1 md:col-start-2"
-        >
-          <TheStrike />
-        </motion.section>
+          {/* Center: The Snake Ring (Hidden on Mobile, Visible on Tablet/Desktop) */}
+          <motion.div
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: 0.5, type: "spring" }}
+            className="pointer-events-none z-0 hidden lg:block absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[400px] h-[400px]"
+          >
+             {/* Center overlay container for desktop */}
+            <div className="relative w-full h-full flex items-center justify-center">
+               {/* Background blur to separate ring from grid lines if needed */}
+              <div className="absolute inset-0 bg-[var(--color-background)]/80 backdrop-blur-sm rounded-full -z-10 scale-75 blur-3xl" />
+              <SnakeRing status={getSnakeStatus()} pulseEnabled={mode !== "pause"} />
+            </div>
+          </motion.div>
 
-        <motion.div
-          initial={{ opacity: 0, scale: 0.8 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.5, type: "spring" }}
-          className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none z-40 hidden md:block"
-        >
-          <div className="relative">
-            <SnakeRing status={getSnakeStatus()} pulseEnabled={mode !== "pause"} />
-            <div className="absolute inset-0 bg-[var(--background)]/50 backdrop-blur-sm rounded-full -z-10" />
-          </div>
-        </motion.div>
+          {/* Bottom Left: The Council */}
+          <motion.section
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.3 }}
+            className="col-span-1 row-span-1 h-64 sm:h-auto"
+          >
+            <TheCouncil />
+          </motion.section>
 
-        <AnimatePresence>
-          {showLogs && (
-            <motion.div
-              initial={{ opacity: 0, y: 20, scale: 0.95 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 20, scale: 0.95 }}
-              className="fixed bottom-20 right-4 w-80 md:w-96 z-50"
-            >
-              <LogViewer maxHeight="200px" />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <AnimatePresence>
-          {showTerminal && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="fixed inset-4 md:inset-8 z-50 bg-[var(--surface-primary)] rounded-xl border border-[var(--border)] shadow-2xl overflow-hidden"
-            >
-              <TerminalGrid />
-              <button
-                onClick={() => setShowTerminal(false)}
-                className="absolute top-4 right-4 p-2 rounded-lg bg-[var(--surface-secondary)] hover:bg-ruby/20 text-[var(--foreground)] hover:text-ruby transition-colors z-10"
-              >
-                Close
-              </button>
-            </motion.div>
-          )}
-        </AnimatePresence>
+          {/* Bottom Right: The Strike */}
+          <motion.section
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.4 }}
+            className="col-span-1 row-span-1 h-64 sm:h-auto"
+          >
+            <TheStrike />
+          </motion.section>
+        </div>
       </main>
+
+      {/* Overlays */}
+      <AnimatePresence>
+        {showLogs && (
+          <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.95 }}
+            className="fixed bottom-20 right-4 w-full sm:w-96 z-50 px-4 sm:px-0"
+          >
+            <LogViewer maxHeight="200px" />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showTerminal && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="fixed inset-2 sm:inset-8 z-50 bg-[var(--color-surface-primary)] rounded-xl border border-[var(--color-border)] shadow-2xl overflow-hidden"
+          >
+            <TerminalGrid />
+            <button
+              onClick={() => setShowTerminal(false)}
+              className="absolute top-4 right-4 p-2 rounded-lg bg-[var(--color-surface-secondary)] hover:bg-[var(--color-ruby)]/20 text-[var(--color-foreground)] hover:text-[var(--color-ruby)] transition-colors z-10"
+            >
+              Close
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <HUDBar
         mode={mode}
@@ -199,9 +239,7 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
         confidence={confidence}
         onConfidenceChange={setConfidence}
         waveNumber={status?.activeWaves || 42}
-        activeTasks={status?.activeTasks || 3}
         tasksDone={47}
-        uptime={status ? `${Math.floor(status.uptime / 3600)}h ${Math.floor((status.uptime % 3600) / 60)}m` : "0h 0m"}
         tokens={status?.tokensUsed || 142000}
         onEmergencyBrake={handleEmergencyBrake}
       />

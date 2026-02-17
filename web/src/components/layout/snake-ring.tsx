@@ -1,79 +1,66 @@
 import { motion } from "framer-motion";
-import { cn } from "@/lib/utils";
 
 interface SnakeRingProps {
-  status?: "healthy" | "debating" | "error";
+  status: "healthy" | "debating" | "error";
   pulseEnabled?: boolean;
 }
 
-const statusColors = {
-  healthy: {
-    ring: "#10B981",
-    glow: "rgba(16, 185, 129, 0.4)",
-    text: "text-emerald",
-  },
-  debating: {
-    ring: "#F59E0B",
-    glow: "rgba(245, 158, 11, 0.4)",
-    text: "text-gold",
-  },
-  error: {
-    ring: "#EF4444",
-    glow: "rgba(239, 68, 68, 0.4)",
-    text: "text-ruby",
-  },
+const statusConfig = {
+  healthy: { color: "var(--color-emerald)", shadow: "var(--shadow-glow-emerald)" },
+  debating: { color: "var(--color-gold)", shadow: "var(--shadow-glow-gold)" },
+  error: { color: "var(--color-ruby)", shadow: "0 0 20px rgba(239, 68, 68, 0.4)" },
 };
 
-export function SnakeRing({ status = "healthy", pulseEnabled = true }: SnakeRingProps) {
-  const config = statusColors[status];
+export function SnakeRing({ status, pulseEnabled = true }: SnakeRingProps) {
+  const config = statusConfig[status];
 
   return (
-    <div className="relative w-40 h-40 flex items-center justify-center">
+    <div className="relative w-64 h-64 sm:w-96 sm:h-96 flex items-center justify-center">
+      {/* Outer Ring - Static */}
+      <svg className="absolute inset-0 w-full h-full animate-[spin_60s_linear_infinite] opacity-30">
+        <circle
+          cx="50%"
+          cy="50%"
+          r="48%"
+          fill="none"
+          stroke={config.color}
+          strokeWidth="1"
+          strokeDasharray="4 4"
+        />
+      </svg>
+
+      {/* Middle Ring - Counter Spin */}
+      <svg className="absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] animate-[spin_45s_linear_infinite_reverse] opacity-50">
+        <circle
+          cx="50%"
+          cy="50%"
+          r="48%"
+          fill="none"
+          stroke={config.color}
+          strokeWidth="2"
+          strokeDasharray="20 40"
+        />
+      </svg>
+
+      {/* Inner Ring - Pulse */}
       <motion.div
-        className="absolute inset-0 rounded-full"
+        animate={pulseEnabled ? { scale: [1, 1.05, 1], opacity: [0.8, 1, 0.8] } : {}}
+        transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
+        className="absolute inset-16 w-[calc(100%-8rem)] h-[calc(100%-8rem)] rounded-full border-4 border-double"
         style={{
-          background: `conic-gradient(from 0deg, transparent, ${config.ring}, ${config.ring}, transparent)`,
+          borderColor: config.color,
+          boxShadow: config.shadow,
         }}
-        animate={pulseEnabled ? { rotate: 360 } : {}}
-        transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
-      />
-      
-      <motion.div
-        className="absolute inset-2 rounded-full"
-        style={{
-          background: `conic-gradient(from 180deg, transparent, ${config.ring}80, transparent)`,
-        }}
-        animate={pulseEnabled ? { rotate: -360 } : {}}
-        transition={{ duration: 12, repeat: Infinity, ease: "linear" }}
       />
 
-      <motion.div
-        className="absolute inset-4 rounded-full bg-[var(--surface-primary)]"
-        animate={
-          pulseEnabled
-            ? {
-                boxShadow: [
-                  `0 0 20px ${config.glow}`,
-                  `0 0 40px ${config.glow}, 0 0 60px ${config.glow}`,
-                  `0 0 20px ${config.glow}`,
-                ],
-              }
-            : {}
-        }
-        transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-      />
+      {/* Core Symbol */}
+      <div className="relative z-10 text-6xl sm:text-8xl select-none filter drop-shadow-lg animate-pulse">
+        🐍
+      </div>
 
-      <div className="relative z-10 flex flex-col items-center">
-        <motion.span
-          className="text-4xl"
-          animate={pulseEnabled ? { scale: [1, 1.1, 1] } : {}}
-          transition={{ duration: 2, repeat: Infinity }}
-        >
-          🐍
-        </motion.span>
-        <span className={cn("text-xs font-mono mt-1", config.text)}>
-          WAVE #42
-        </span>
+      {/* Status Text Watermark */}
+      <div className="absolute -bottom-8 font-mono text-xs tracking-[0.3em] uppercase opacity-60 text-[var(--color-silver-muted)]">
+        {status}
       </div>
     </div>
   );

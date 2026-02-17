@@ -1,63 +1,63 @@
 @import "tailwindcss";
 
 /* ============================================================================
-   🐍 Ouroboros Snake Theme - Mission Control
-   Based on: DEEP_DIVE_INTEGRACAO_OUROBOROS.md
+   🐍 Ouroboros Design System
    ============================================================================ */
 
 @theme {
-  /* Core Colors - Snake Inspired */
-  --color-emerald: #10B981;
-  --color-emerald-muted: #059669;
-  --color-emerald-dark: #047857;
+  /* --- Semantic Tokens (mapped via CSS variables in :root) --- */
+  --color-background: var(--theme-background);
+  --color-foreground: var(--theme-foreground);
+  --color-surface-primary: var(--theme-surface-primary);
+  --color-surface-secondary: var(--theme-surface-secondary);
+  --color-surface-tertiary: var(--theme-surface-tertiary);
+  --color-border: var(--theme-border);
+  --color-ring: var(--theme-ring);
   
-  --color-gold: #F59E0B;
-  --color-gold-bright: #FBBF24;
+  --color-status-healthy: var(--theme-status-healthy);
+  --color-status-debating: var(--theme-status-debating);
+  --color-status-error: var(--theme-status-error);
   
-  --color-obsidian: #0F172A;
-  --color-slate: #1E293B;
-  --color-slate-light: #334155;
+  --color-accent-primary: var(--theme-accent-primary);
+  --color-accent-secondary: var(--theme-accent-secondary);
+
+  /* Map core color names to theme variables for component reuse */
+  --color-emerald: var(--theme-color-emerald);
+  --color-gold: var(--theme-color-gold);
+  --color-ruby: var(--theme-color-ruby);
+  --color-obsidian: var(--theme-color-obsidian);
+  --color-slate: var(--theme-color-slate);
+  --color-slate-light: var(--theme-color-slate-light);
+  --color-silver: var(--theme-color-silver);
+  --color-silver-muted: var(--theme-color-silver-muted);
+  --color-pearl: var(--theme-color-pearl);
+
+  /* --- Swiss Specific Colors (Direct Access) --- */
+  --color-swiss-black: #000000;
+  --color-swiss-white: #FFFFFF;
+  --color-swiss-concrete: #F2F2F2;
+  --color-swiss-navy: #000080;
+  --color-swiss-orange: #FF4F00;
+  --color-swiss-gray: #CCCCCC;
+
+  /* --- Fonts --- */
+  --font-sans: var(--theme-font-sans);
+  --font-mono: var(--theme-font-mono);
+  --font-display: var(--theme-font-display);
   
-  --color-pearl: #F8FAFC;
-  --color-silver: #94A3B8;
-  --color-silver-muted: #64748B;
+  /* --- Border Radius --- */
+  --radius-sm: var(--theme-radius-sm);
+  --radius-md: var(--theme-radius-md);
+  --radius-lg: var(--theme-radius-lg);
+  --radius-xl: var(--theme-radius-xl);
+  --radius-2xl: var(--theme-radius-2xl);
   
-  --color-ruby: #EF4444;
+  /* --- Shadows --- */
+  --shadow-glow-emerald: 0 0 20px rgba(16, 185, 129, 0.4);
+  --shadow-glow-gold: 0 0 20px rgba(245, 158, 11, 0.4);
   
-  /* Status Colors */
-  --color-status-healthy: #10B981;
-  --color-status-debating: #F59E0B;
-  --color-status-error: #EF4444;
-  --color-status-paused: #6366F1;
-  --color-status-stuck: #F97316;
-  
-  /* Severity Colors */
-  --color-severity-critical: #DC2626;
-  --color-severity-high: #EA580C;
-  --color-severity-medium: #D97706;
-  --color-severity-low: #65A30D;
-  --color-severity-disputed: #7C3AED;
-  
-  /* Kanban Column Colors */
-  --color-column-backlog: #94A3B8;
-  --color-column-queue: #38BDF8;
-  --color-column-in-progress: #10B981;
-  --color-column-ai-review: #F59E0B;
-  --color-column-human-review: #A78BFA;
-  --color-column-done: #34D399;
-  
-  /* Fonts */
-  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
-  --font-mono: "JetBrains Mono", "Fira Code", monospace;
-  
-  /* Border Radius */
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
-  --radius-full: 9999px;
-  
-  /* Animations */
+  /* --- Animations --- */
+  --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   --animate-pulse-snake: pulse-snake 2s ease-in-out infinite;
   --animate-glow: glow 2s ease-in-out infinite;
   --animate-slide-up: slide-up 0.25s cubic-bezier(0, 0, 0.2, 1);
@@ -65,111 +65,105 @@
 }
 
 /* ============================================================================
-   Dark Theme (Default)
+   Theme Configuration
    ============================================================================ */
 
-:root[data-theme="dark"] {
-  --background: #0F172A;
-  --foreground: #F8FAFC;
-  --card: #1E293B;
-  --card-foreground: #F8FAFC;
-  
-  --primary: #10B981;
-  --primary-foreground: #0F172A;
-  
-  --secondary: #1E293B;
-  --secondary-foreground: #94A3B8;
-  
-  --muted: #1E293B;
-  --muted-foreground: #94A3B8;
-  
-  --accent: #F59E0B;
-  --accent-foreground: #0F172A;
-  
-  --destructive: #EF4444;
-  --destructive-foreground: #F8FAFC;
-  
-  --border: #334155;
-  --input: #334155;
-  --ring: #10B981;
-  
-  --surface-primary: #0F172A;
-  --surface-secondary: #1E293B;
-  --surface-tertiary: #334155;
+:root {
+  /* Default Theme: Snake (Cyberpunk) */
+  --theme-background: #0F172A; /* obsidian */
+  --theme-foreground: #F8FAFC; /* pearl */
+
+  --theme-surface-primary: #0F172A; /* obsidian */
+  --theme-surface-secondary: #1E293B; /* slate */
+  --theme-surface-tertiary: #334155; /* slate-light */
+
+  --theme-border: #334155; /* slate-light */
+  --theme-ring: #10B981; /* emerald */
+
+  --theme-status-healthy: #10B981; /* emerald */
+  --theme-status-debating: #F59E0B; /* gold */
+  --theme-status-error: #EF4444; /* ruby */
+
+  --theme-accent-primary: #10B981; /* emerald */
+  --theme-accent-secondary: #F59E0B; /* gold */
+
+  /* Color Mapping for Component Compatibility */
+  --theme-color-emerald: #10B981;
+  --theme-color-gold: #F59E0B;
+  --theme-color-ruby: #EF4444;
+  --theme-color-obsidian: #0F172A;
+  --theme-color-slate: #1E293B;
+  --theme-color-slate-light: #334155;
+  --theme-color-silver: #94A3B8;
+  --theme-color-silver-muted: #64748B;
+  --theme-color-pearl: #F8FAFC;
+
+  --theme-font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --theme-font-mono: "JetBrains Mono", "Fira Code", monospace;
+  --theme-font-display: "Inter", system-ui, sans-serif;
+
+  --theme-radius-sm: 0.25rem;
+  --theme-radius-md: 0.5rem;
+  --theme-radius-lg: 0.75rem;
+  --theme-radius-xl: 1rem;
+  --theme-radius-2xl: 1.5rem;
+
+  color-scheme: dark;
 }
 
-/* ============================================================================
-   Light Theme
-   ============================================================================ */
+[data-theme="swiss"] {
+  /* Swiss Minimal Theme (The Coil) */
+  --theme-background: #F5F5F5; /* light gray bg */
+  --theme-foreground: #000000; /* black text */
 
-:root[data-theme="light"] {
-  --background: #F8FAFC;
-  --foreground: #0F172A;
-  --card: #FFFFFF;
-  --card-foreground: #0F172A;
-  
-  --primary: #059669;
-  --primary-foreground: #F8FAFC;
-  
-  --secondary: #F1F5F9;
-  --secondary-foreground: #64748B;
-  
-  --muted: #F1F5F9;
-  --muted-foreground: #64748B;
-  
-  --accent: #D97706;
-  --accent-foreground: #F8FAFC;
-  
-  --destructive: #DC2626;
-  --destructive-foreground: #F8FAFC;
-  
-  --border: #E2E8F0;
-  --input: #E2E8F0;
-  --ring: #10B981;
-  
-  --surface-primary: #F8FAFC;
-  --surface-secondary: #FFFFFF;
-  --surface-tertiary: #E2E8F0;
+  --theme-surface-primary: #FFFFFF; /* white surface */
+  --theme-surface-secondary: #000000; /* black surface (Phase 1) */
+  --theme-surface-tertiary: #E5E5E5; /* light gray surface */
+
+  --theme-border: #E5E5E5; /* light gray border */
+  --theme-ring: #000000; /* black focus ring */
+
+  --theme-status-healthy: #000000; /* black */
+  --theme-status-debating: #FF4F00; /* orange */
+  --theme-status-error: #FF0000; /* red (abort) */
+
+  --theme-accent-primary: #000000; /* black accent */
+  --theme-accent-secondary: #FF4F00; /* orange accent */
+
+  /* Color Mapping */
+  --theme-color-emerald: #000000; /* map emerald (success) to black */
+  --theme-color-gold: #FF4F00; /* map gold (warning) to orange */
+  --theme-color-ruby: #FF0000; /* map ruby (error) to red */
+  --theme-color-obsidian: #FFFFFF; /* map obsidian (bg) to white */
+  --theme-color-slate: #F5F5F5; /* map slate (secondary bg) to light gray */
+  --theme-color-slate-light: #E5E5E5; /* map slate-light (border) to light gray */
+  --theme-color-silver: #666666; /* map silver to dark gray */
+  --theme-color-silver-muted: #888888; /* map silver-muted to medium gray */
+  --theme-color-pearl: #000000; /* map pearl (text) to black */
+
+  --theme-font-sans: "Inter Tight", "Helvetica Neue", "Arial", sans-serif;
+  --theme-font-mono: "JetBrains Mono", "Courier New", monospace;
+  --theme-font-display: "Inter Tight", "Helvetica Neue", "Arial Black", sans-serif;
+
+  --theme-radius-sm: 0;
+  --theme-radius-md: 0;
+  --theme-radius-lg: 0;
+  --theme-radius-xl: 0;
+  --theme-radius-2xl: 0;
+
+  color-scheme: light;
 }
 
 /* ============================================================================
    Base Styles
    ============================================================================ */
 
-* {
-  border-color: var(--border);
-}
-
 body {
-  background-color: var(--background);
-  color: var(--foreground);
+  background-color: var(--color-background);
+  color: var(--color-foreground);
   font-family: var(--font-sans);
-  font-feature-settings: "rlig" 1, "calt" 1;
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-/* ============================================================================
-   Scrollbars (Auto-Claude style)
-   ============================================================================ */
-
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: var(--muted-foreground);
-  border-radius: var(--radius-full);
-  opacity: 0.3;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  opacity: 0.5;
+  transition: background-color 0.3s, color 0.3s;
 }
 
 /* ============================================================================
@@ -177,19 +171,19 @@ body {
    ============================================================================ */
 
 @keyframes pulse-snake {
-  0%, 100% { 
+  0%, 100% {
     box-shadow: 0 0 20px rgba(16, 185, 129, 0.4);
   }
-  50% { 
+  50% {
     box-shadow: 0 0 40px rgba(16, 185, 129, 0.6), 0 0 60px rgba(16, 185, 129, 0.3);
   }
 }
 
 @keyframes glow {
-  0%, 100% { 
+  0%, 100% {
     opacity: 1;
   }
-  50% { 
+  50% {
     opacity: 0.6;
   }
 }
@@ -208,6 +202,7 @@ body {
 @keyframes fade-in {
   from {
     opacity: 0;
+    transform: translateY(0);
   }
   to {
     opacity: 1;
@@ -215,51 +210,36 @@ body {
 }
 
 /* ============================================================================
-   Accessibility
-   ============================================================================ */
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}
-
-:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-
-/* ============================================================================
    Utility Classes
    ============================================================================ */
 
-.surface-card {
-  background-color: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-}
-
-.surface-interactive {
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.surface-interactive:hover {
-  border-color: rgba(16, 185, 129, 0.5);
-}
-
 .text-gradient {
-  background: linear-gradient(135deg, var(--primary), var(--accent));
+  background: linear-gradient(135deg, var(--color-emerald), var(--color-gold));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
-.glow-emerald {
-  box-shadow: 0 0 20px rgba(16, 185, 129, 0.4);
+[data-theme="swiss"] .text-gradient {
+  background: none;
+  -webkit-text-fill-color: initial;
+  color: var(--color-foreground);
 }
 
-.glow-gold {
-  box-shadow: 0 0 20px rgba(245, 158, 11, 0.4);
+.surface-glass {
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(51, 65, 85, 0.5);
+}
+
+[data-theme="swiss"] .surface-glass {
+  background: var(--color-surface-primary);
+  backdrop-filter: none;
+  border: 1px solid var(--color-border);
+}
+
+.surface-card {
+  background-color: var(--color-surface-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
 }
