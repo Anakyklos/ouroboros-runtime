@@ -1,7 +1,7 @@
 # Plan: RE-02 Auto-Claude Prompt and Tool Extraction
 
 ## Phase 1: Preparation
-- [x] Task: Update `STATUS.md` to phase EXTRACT
+- [x] Task: Update `STATUS.md` to phase EXTRACT [a21f7c0]
 - [x] Task: Create destination directories in `_extracted/`
     - [x] `Auto-Claude/_extracted/prompts`
     - [x] `Auto-Claude/_extracted/tools`
@@ -24,6 +24,6 @@
 - [x] Task: Conductor - User Manual Verification 'Tool Extraction' (Protocol in workflow.md) [checkpoint: c044744]
 
 ## Phase 4: Completion
-- [ ] Task: Finalize `MANIFEST.md`
-- [ ] Task: Update `STATUS.md` to phase ADAPT (ready for adaptation)
-- [ ] Task: Conductor - User Manual Verification 'Completion' (Protocol in workflow.md)
+- [x] Task: Finalize `MANIFEST.md` [d901af5]
+- [x] Task: Update `STATUS.md` to phase ADAPT (ready for adaptation) [d901af5]
+- [x] Task: Conductor - User Manual Verification 'Completion' (Protocol in workflow.md) [checkpoint: d901af5]
