@@ -10,17 +10,17 @@
 - [ ] Task: Conductor - User Manual Verification 'Initialization' (Protocol in workflow.md)
 
 ## Phase 2: Reconnaissance (RECON)
-- [ ] Task: Analyze file structure and update `ANALYSIS.md`
+- [~] Task: Analyze file structure and update `ANALYSIS.md`
     - [ ] List all files recursively (`find . -maxdepth 3 -not -path '*/.*'`)
     - [ ] Update `ANALYSIS.md` with directory tree
-- [ ] Task: Analyze dependencies and update `ANALYSIS.md`
+- [~] Task: Analyze dependencies and update `ANALYSIS.md`
     - [ ] Read `package.json`, `requirements.txt`, `pyproject.toml` (if present)
     - [ ] Identify critical dependencies
     - [ ] Update `ANALYSIS.md` with Tech Stack details
-- [ ] Task: Identify entrypoints and update `ANALYSIS.md`
+- [~] Task: Identify entrypoints and update `ANALYSIS.md`
     - [ ] Locate main entry scripts (e.g., `main.py`, `index.js`, `app.py`)
     - [ ] Update `ANALYSIS.md` with Entrypoints
-- [ ] Task: Update `STATUS.md` to reflect RECON completion and transition to DISSECT
+- [~] Task: Update `STATUS.md` to reflect RECON completion and transition to DISSECT
 - [ ] Task: Conductor - User Manual Verification 'Reconnaissance' (Protocol in workflow.md)
 
 ## Phase 3: Dissection (DISSECT)
