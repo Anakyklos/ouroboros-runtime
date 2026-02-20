@@ -10,6 +10,7 @@
 | # | Repositório | URL Original | Tech Stack | Fase Atual | Componentes Extraídos | Tags | Status |
 |---|-------------|-------------|------------|------------|----------------------|------|--------|
 | 1 | `Auto-Claude` | https://github.com/AndyMik90/Auto-Claude.git | TypeScript/Python | RECON | - | #agent #tool | 📋 |
+| 2 | `oh-my-opencode` | https://github.com/code-yeongyu/oh-my-opencode | TypeScript/Bun | INTEGRATE | Agents, Prompts, Tools | #agent #tool #infra | 🔌 |
 
 ---
 

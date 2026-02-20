@@ -2,9 +2,9 @@
 
 | Campo | Valor |
 |-------|-------|
-| **Fase Atual** | 💎 EXTRACT |
-| **Progresso** | 30% |
+| **Fase Atual** | 🧩 ADAPT |
+| **Progresso** | 40% |
 | **Último Update** | 2026-02-20 |
 | **Agente** | Gemini CLI |
 | **Bloqueios** | Nenhum |
-| **Próxima Ação** | Extrair prompts e tools |
+| **Próxima Ação** | Adaptar tools Python para MCP Server (TS) |
