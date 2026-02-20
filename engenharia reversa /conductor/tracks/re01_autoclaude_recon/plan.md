@@ -1,12 +1,12 @@
 # Plan: RE-01 Auto-Claude Reconnaissance and Dissection
 
 ## Phase 1: Initialization
-- [ ] Task: Create initial reverse engineering artifacts in `Auto-Claude` (ANALYSIS.md, STATUS.md, _extracted/MANIFEST.md)
-    - [ ] Create `Auto-Claude/ANALYSIS.md` template
-    - [ ] Create `Auto-Claude/STATUS.md` template
-    - [ ] Create `Auto-Claude/_extracted/MANIFEST.md`
-- [ ] Task: Register repository in `CATALOG.md`
-    - [ ] Add `Auto-Claude` entry to `CATALOG.md` with status `RECON`
+- [x] Task: Create initial reverse engineering artifacts in `Auto-Claude` (ANALYSIS.md, STATUS.md, _extracted/MANIFEST.md)
+    - [x] Create `Auto-Claude/ANALYSIS.md` template
+    - [x] Create `Auto-Claude/STATUS.md` template
+    - [x] Create `Auto-Claude/_extracted/MANIFEST.md`
+- [x] Task: Register repository in `CATALOG.md`
+    - [x] Add `Auto-Claude` entry to `CATALOG.md` with status `RECON`
 - [ ] Task: Conductor - User Manual Verification 'Initialization' (Protocol in workflow.md)
 
 ## Phase 2: Reconnaissance (RECON)
