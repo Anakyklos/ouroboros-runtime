@@ -16,12 +16,12 @@
 - [x] Task: Conductor - User Manual Verification 'Prompt Extraction' (Protocol in workflow.md) [checkpoint: 327e1f1]
 
 ## Phase 3: Tool Extraction
-- [ ] Task: Analyze `apps/backend/agents/tools_pkg/` structure
-- [ ] Task: Extract tool definitions to `_extracted/tools/`
-    - [ ] Copy relevant Python files as reference (for later adaptation to TS)
-    - [ ] Focus on `models.py` (tool definitions) and `registry.py`
-- [ ] Task: Update `MANIFEST.md` with extracted tools
-- [ ] Task: Conductor - User Manual Verification 'Tool Extraction' (Protocol in workflow.md)
+- [x] Task: Analyze `apps/backend/agents/tools_pkg/` structure
+- [x] Task: Extract tool definitions to `_extracted/tools/`
+    - [x] Copy relevant Python files as reference (for later adaptation to TS)
+    - [x] Focus on `models.py` (tool definitions) and `registry.py`
+- [x] Task: Update `MANIFEST.md` with extracted tools
+- [x] Task: Conductor - User Manual Verification 'Tool Extraction' (Protocol in workflow.md) [checkpoint: c044744]
 
 ## Phase 4: Completion
 - [ ] Task: Finalize `MANIFEST.md`
