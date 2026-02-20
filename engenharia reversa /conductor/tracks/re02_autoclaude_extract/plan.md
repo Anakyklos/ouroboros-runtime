@@ -1,11 +1,11 @@
 # Plan: RE-02 Auto-Claude Prompt and Tool Extraction
 
 ## Phase 1: Preparation
-- [ ] Task: Update `STATUS.md` to phase EXTRACT
-- [ ] Task: Create destination directories in `_extracted/`
-    - [ ] `Auto-Claude/_extracted/prompts`
-    - [ ] `Auto-Claude/_extracted/tools`
-- [ ] Task: Conductor - User Manual Verification 'Preparation' (Protocol in workflow.md)
+- [x] Task: Update `STATUS.md` to phase EXTRACT
+- [x] Task: Create destination directories in `_extracted/`
+    - [x] `Auto-Claude/_extracted/prompts`
+    - [x] `Auto-Claude/_extracted/tools`
+- [x] Task: Conductor - User Manual Verification 'Preparation' (Protocol in workflow.md) [checkpoint: 6323052]
 
 ## Phase 2: Prompt Extraction
 - [ ] Task: List available prompts in `apps/backend/prompts/`
