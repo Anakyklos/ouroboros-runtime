@@ -1,25 +1,41 @@
-# Plan: RE-03 Auto-Claude MCP Server Adaptation
+# Plan: RE-03 Auto-Claude Native Integration (Ouroboros)
 
-## Phase 1: MCP Server Setup
-- [ ] Task: Initialize new MCP server project in `Auto-Claude/_adapted/` using `@modelcontextprotocol/sdk`
-- [ ] Task: Configure `tsconfig.json` and `package.json`
-- [ ] Task: Create basic server structure (`index.ts`, `server.ts`)
-- [ ] Task: Conductor - User Manual Verification 'Server Setup' (Protocol in workflow.md)
+This track focuses on reimplementing Auto-Claude's core logic as a native module for the Ouroboros Runtime, leveraging TypeScript, Bun, and Hexagonal Architecture.
 
-## Phase 2: Tool Adaptation (Python -> TS)
+## Phase 1: Foundation & Architecture
+- [ ] Task: Initialize `Auto-Claude/_adapted` as a Bun project (`bun init -y`)
+- [ ] Task: Configure `tsconfig.json` (strict mode, path aliases)
+- [ ] Task: Create directory structure:
+    - [ ] `src/core/domain` (Entities: Agent, Task, Result)
+    - [ ] `src/core/ports` (Interfaces: Tool, LLM, FileSystem)
+    - [ ] `src/infrastructure/adapters` (Implementations: BunFile, BunShell, Anthropic)
+- [ ] Task: Set up testing with `bun:test`
+- [ ] Task: Conductor - User Manual Verification 'Foundation' (Protocol in workflow.md)
+
+## Phase 2: Schema Migration (Python -> Zod)
 - [ ] Task: Analyze `_extracted/tools/models.py` (Pydantic models)
-- [ ] Task: Create equivalent Zod schemas in `_adapted/src/schemas/`
-- [ ] Task: Implement tool handlers in `_adapted/src/tools/`
-- [ ] Task: Register tools in the MCP server
-- [ ] Task: Conductor - User Manual Verification 'Tool Adaptation' (Protocol in workflow.md)
+- [ ] Task: Create Zod schemas in `src/core/domain/schemas/` covering:
+    - [ ] Tool definitions and arguments
+    - [ ] Task/Subtask structures
+    - [ ] Agent configuration
+- [ ] Task: Implement `PromptManager` in `src/infrastructure/adapters/prompts` to load/render extracted templates
+- [ ] Task: Conductor - User Manual Verification 'Schema Migration' (Protocol in workflow.md)
 
-## Phase 3: Prompt Adaptation
-- [ ] Task: Create a resource/prompt loader in `_adapted/src/prompts/`
-- [ ] Task: Expose extracted prompts (`_extracted/prompts/*.md`) via MCP Prompts API
-- [ ] Task: Conductor - User Manual Verification 'Prompt Adaptation' (Protocol in workflow.md)
+## Phase 3: Tool Implementation (Adapters)
+- [ ] Task: Implement `FileSystemTool` adapter using Bun native APIs
+- [ ] Task: Implement `GitTool` adapter using `Bun.spawn`
+- [ ] Task: Implement `ShellTool` adapter for safe command execution
+- [ ] Task: Verify tool execution with unit tests
+- [ ] Task: Conductor - User Manual Verification 'Tool Implementation' (Protocol in workflow.md)
 
-## Phase 4: Verification & Release
-- [ ] Task: Build the MCP server
-- [ ] Task: Test with a local MCP client (inspector or Claude Desktop config)
-- [ ] Task: Update `Auto-Claude/STATUS.md` to `DONE` or `INTEGRATED`
-- [ ] Task: Conductor - User Manual Verification 'Verification & Release' (Protocol in workflow.md)
+## Phase 4: Agent Core (Brain)
+- [ ] Task: Implement `AgentLoop` (Perceive -> Think -> Act)
+- [ ] Task: Implement `ResponseParser` to handle LLM output (XML/JSON) and invoke tools
+- [ ] Task: Connect `PromptManager` to `AgentLoop`
+- [ ] Task: Conductor - User Manual Verification 'Agent Core' (Protocol in workflow.md)
+
+## Phase 5: Integration & Public API
+- [ ] Task: Expose `AutoClaudeAgent` class for Ouroboros runtime consumption
+- [ ] Task: Create integration test: "Create a hello world file"
+- [ ] Task: Update `Auto-Claude/STATUS.md` to `INTEGRATED`
+- [ ] Task: Conductor - User Manual Verification 'Integration' (Protocol in workflow.md)
