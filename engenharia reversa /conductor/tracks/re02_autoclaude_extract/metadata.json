@@ -1,0 +1,8 @@
+{
+  "track_id": "re02_autoclaude_extract",
+  "type": "feature",
+  "status": "new",
+  "created_at": "2026-02-20T11:00:00Z",
+  "updated_at": "2026-02-20T11:00:00Z",
+  "description": "Extrair prompts e tools do Auto-Claude para _extracted/."
+}
