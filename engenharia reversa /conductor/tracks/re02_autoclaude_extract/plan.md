@@ -8,12 +8,12 @@
 - [x] Task: Conductor - User Manual Verification 'Preparation' (Protocol in workflow.md) [checkpoint: 6323052]
 
 ## Phase 2: Prompt Extraction
-- [ ] Task: List available prompts in `apps/backend/prompts/`
-- [ ] Task: Copy prompts to `_extracted/prompts/`
-    - [ ] Copy `planner.md`, `coder.md`, `qa_reviewer.md`, etc.
-    - [ ] Copy `followup_planner.md`
-- [ ] Task: Update `MANIFEST.md` with extracted prompts
-- [ ] Task: Conductor - User Manual Verification 'Prompt Extraction' (Protocol in workflow.md)
+- [x] Task: List available prompts in `apps/backend/prompts/`
+- [x] Task: Copy prompts to `_extracted/prompts/`
+    - [x] Copy `planner.md`, `coder.md`, `qa_reviewer.md`, etc.
+    - [x] Copy `followup_planner.md`
+- [x] Task: Update `MANIFEST.md` with extracted prompts
+- [x] Task: Conductor - User Manual Verification 'Prompt Extraction' (Protocol in workflow.md) [checkpoint: 327e1f1]
 
 ## Phase 3: Tool Extraction
 - [ ] Task: Analyze `apps/backend/agents/tools_pkg/` structure
