@@ -10,31 +10,31 @@
 - [ ] Task: Conductor - User Manual Verification 'Initialization' (Protocol in workflow.md)
 
 ## Phase 2: Reconnaissance (RECON)
-- [~] Task: Analyze file structure and update `ANALYSIS.md`
-    - [ ] List all files recursively (`find . -maxdepth 3 -not -path '*/.*'`)
-    - [ ] Update `ANALYSIS.md` with directory tree
-- [~] Task: Analyze dependencies and update `ANALYSIS.md`
-    - [ ] Read `package.json`, `requirements.txt`, `pyproject.toml` (if present)
-    - [ ] Identify critical dependencies
-    - [ ] Update `ANALYSIS.md` with Tech Stack details
-- [~] Task: Identify entrypoints and update `ANALYSIS.md`
-    - [ ] Locate main entry scripts (e.g., `main.py`, `index.js`, `app.py`)
-    - [ ] Update `ANALYSIS.md` with Entrypoints
-- [~] Task: Update `STATUS.md` to reflect RECON completion and transition to DISSECT
+- [x] Task: Analyze file structure and update `ANALYSIS.md`
+    - [x] List all files recursively (`find . -maxdepth 3 -not -path '*/.*'`)
+    - [x] Update `ANALYSIS.md` with directory tree
+- [x] Task: Analyze dependencies and update `ANALYSIS.md`
+    - [x] Read `package.json`, `requirements.txt`, `pyproject.toml` (if present)
+    - [x] Identify critical dependencies
+    - [x] Update `ANALYSIS.md` with Tech Stack details
+- [x] Task: Identify entrypoints and update `ANALYSIS.md`
+    - [x] Locate main entry scripts (e.g., `main.py`, `index.js`, `app.py`)
+    - [x] Update `ANALYSIS.md` with Entrypoints
+- [x] Task: Update `STATUS.md` to reflect RECON completion and transition to DISSECT
 - [ ] Task: Conductor - User Manual Verification 'Reconnaissance' (Protocol in workflow.md)
 
 ## Phase 3: Dissection (DISSECT)
-- [ ] Task: Analyze data flow and update `ANALYSIS.md`
-    - [ ] Trace execution flow from entrypoints
-    - [ ] Create Mermaid diagram or textual description of data flow in `ANALYSIS.md`
-- [ ] Task: Identify core abstractions and update `ANALYSIS.md`
-    - [ ] List key classes, interfaces, and types
-    - [ ] Update `ANALYSIS.md` with Core Abstractions
-- [ ] Task: Identify "Diamond" modules (reusable components) and update `ANALYSIS.md`
-    - [ ] Identify high-value modules for extraction
-    - [ ] Update `ANALYSIS.md` with Critical Modules list
-- [ ] Task: Extract prompts (if any) and update `ANALYSIS.md`
-    - [ ] Search for system prompts or agent instructions
-    - [ ] Document findings in `ANALYSIS.md`
-- [ ] Task: Update `STATUS.md` to reflect DISSECT progress
+- [x] Task: Analyze data flow and update `ANALYSIS.md`
+    - [x] Trace execution flow from entrypoints
+    - [x] Create Mermaid diagram or textual description of data flow in `ANALYSIS.md`
+- [x] Task: Identify core abstractions and update `ANALYSIS.md`
+    - [x] List key classes, interfaces, and types
+    - [x] Update `ANALYSIS.md` with Core Abstractions
+- [x] Task: Identify "Diamond" modules (reusable components) and update `ANALYSIS.md`
+    - [x] Identify high-value modules for extraction
+    - [x] Update `ANALYSIS.md` with Critical Modules list
+- [x] Task: Extract prompts (if any) and update `ANALYSIS.md`
+    - [x] Search for system prompts or agent instructions
+    - [x] Document findings in `ANALYSIS.md`
+- [x] Task: Update `STATUS.md` to reflect DISSECT progress
 - [ ] Task: Conductor - User Manual Verification 'Dissection' (Protocol in workflow.md)
