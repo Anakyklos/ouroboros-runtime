@@ -9,3 +9,6 @@
 | `qa_fixer.md` | Prompt | `apps/backend/prompts/qa_fixer.md` | `_extracted/prompts/qa_fixer.md` | ✅ Extraído |
 | `spec_writer.md` | Prompt | `apps/backend/prompts/spec_writer.md` | `_extracted/prompts/spec_writer.md` | ✅ Extraído |
 | `competitor_analysis.md` | Prompt | `apps/backend/prompts/competitor_analysis.md` | `_extracted/prompts/competitor_analysis.md` | ✅ Extraído |
+| `tools_pkg` | Módulo | `apps/backend/agents/tools_pkg/` | `_extracted/tools/` | ✅ Extraído |
+| `models.py` | Config | `apps/backend/agents/tools_pkg/models.py` | `_extracted/tools/models.py` | ✅ Extraído |
+| `registry.py` | Código | `apps/backend/agents/tools_pkg/registry.py` | `_extracted/tools/registry.py` | ✅ Extraído |
