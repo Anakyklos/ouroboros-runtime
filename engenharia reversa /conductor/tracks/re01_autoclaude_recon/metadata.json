@@ -1,0 +1,8 @@
+{
+  "track_id": "re01_autoclaude_recon",
+  "type": "feature",
+  "status": "new",
+  "created_at": "2026-02-20T10:00:00Z",
+  "updated_at": "2026-02-20T10:00:00Z",
+  "description": "Executar as fases iniciais do protocolo de engenharia reversa no repositório `Auto-Claude`: Inicialização, RECON e DISSECT."
+}
