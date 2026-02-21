@@ -30,7 +30,14 @@ function getValidationEmoji(isValid: boolean, required: boolean): string {
  * Formata timestamp para exibição.
  */
 function formatTimestamp(date: Date): string {
-    return date.toISOString().split("T")[1].split(".")[0];
+    if (isNaN(date.getTime())) {
+        return 'Invalid Date';
+    }
+    // Safer formatting: HH:MM:SS
+    const hours = date.getHours().toString().padStart(2, '0');
+    const minutes = date.getMinutes().toString().padStart(2, '0');
+    const seconds = date.getSeconds().toString().padStart(2, '0');
+    return `${hours}:${minutes}:${seconds}`;
 }
 
 /**
@@ -108,9 +115,9 @@ function validationResultToMarkdown(
         md += `\n<details>
 <summary>Details</summary>
 
-\`\`\`json
+```json
 ${JSON.stringify(result.details, null, 2)}
-\`\`\`
+```
 
 </details>
 `;
@@ -143,9 +150,9 @@ function qualityGateResultToMarkdown(gate: QualityGateResult): string {
         md += `\n<details>
 <summary>Details</summary>
 
-\`\`\`json
+```json
 ${JSON.stringify(gate.result.details, null, 2)}
-\`\`\`
+```
 
 </details>
 `;

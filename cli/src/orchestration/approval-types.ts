@@ -90,7 +90,7 @@ export interface ApprovalResult {
     /** Se a operação foi bem-sucedida */
     success: boolean;
     /** Solicitação de aprovação */
-    request: ApprovalRequest;
+    request?: ApprovalRequest;
     /** Mensagem de erro (se falhou) */
     error?: string;
     /** Timestamp da operação */

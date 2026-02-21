@@ -60,8 +60,17 @@ function loadState(projectRoot: string): PromotionState {
     try {
         const content = fs.readFileSync(statePath, "utf-8");
         return JSON.parse(content) as PromotionState;
-    } catch (err) {
-        // Arquivo não existe ou inválido: retorna estado inicial
+    } catch (err: any) {
+        if (err.code === 'ENOENT') {
+            // File doesn't exist yet - return initial state
+            return {
+                candidates: [],
+                approvedPending: [],
+                awaitingApproval: [],
+            };
+        }
+        // File exists but is corrupt - log error and return empty
+        console.error(`Corrupt promotion state file: ${err}`);
         return {
             candidates: [],
             approvedPending: [],
@@ -306,6 +315,9 @@ export class PromotionManager {
             this.saveState();
 
             this.log('error', `❌ Promotion failed for ${sourcePath}: ${error}`);
+            if (err instanceof Error && err.stack && this.config.verbose) {
+                this.log('debug', `Stack trace: ${err.stack}`);
+            }
 
             return {
                 success: false,
@@ -415,6 +427,9 @@ export class PromotionManager {
         } catch (err) {
             const error = err instanceof Error ? err.message : String(err);
             this.log('error', `❌ Rollback failed for ${sourcePath}: ${error}`);
+            if (err instanceof Error && err.stack && this.config.verbose) {
+                this.log('debug', `Stack trace: ${err.stack}`);
+            }
 
             return {
                 success: false,
@@ -474,9 +489,11 @@ export class PromotionManager {
             return false;
         }
 
+        // Fix: Store the removed candidate before splicing
+        const removed = this.state.candidates[index];
         this.state.candidates.splice(index, 1);
-        this.removeFromAwaiting(this.state.candidates[index]);
-        this.removeFromApprovedPending(this.state.candidates[index]);
+        this.removeFromAwaiting(removed);
+        this.removeFromApprovedPending(removed);
         this.saveState();
 
         this.log('info', `🗑️ Removed candidate: ${sourcePath}`);
