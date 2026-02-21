@@ -83,10 +83,22 @@ function parseTestOutput(stdout: string, stderr: string): TestMetrics {
     const skipMatch = output.match(/(\d+)\s+(?:skip|skipped)/i);
     const durationMatch = output.match(/(\d+)ms/);
 
-    if (passMatch) metrics.passed = parseInt(passMatch[1], 10);
-    if (failMatch) metrics.failed = parseInt(failMatch[1], 10);
-    if (skipMatch) metrics.skipped = parseInt(skipMatch[1], 10);
-    if (durationMatch) metrics.durationMs = parseInt(durationMatch[1], 10);
+    if (passMatch) {
+        const parsed = parseInt(passMatch[1], 10);
+        metrics.passed = isNaN(parsed) ? 0 : parsed;
+    }
+    if (failMatch) {
+        const parsed = parseInt(failMatch[1], 10);
+        metrics.failed = isNaN(parsed) ? 0 : parsed;
+    }
+    if (skipMatch) {
+        const parsed = parseInt(skipMatch[1], 10);
+        metrics.skipped = isNaN(parsed) ? 0 : parsed;
+    }
+    if (durationMatch) {
+        const parsed = parseInt(durationMatch[1], 10);
+        metrics.durationMs = isNaN(parsed) ? 0 : parsed;
+    }
 
     metrics.total = metrics.passed + metrics.failed + metrics.skipped;
 
