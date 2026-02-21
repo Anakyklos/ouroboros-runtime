@@ -543,3 +543,54 @@ Notes:
 - Integrates seamlessly with existing ValidationStrategy pattern
 - Provides clear feedback on missing required sections
 - Ready to proceed to subtask-3-3 (Integrate spec validation into orchestrator)
+2026-02-21 - subtask-3-3: Integrate spec validation into orchestrator phase gate checks
+
+Status: COMPLETED
+
+Files Modified:
+- cli/src/orchestration/Orchestrator.ts - Integrated SpecValidator into phase gate validation
+
+Implementation Details:
+- Import SpecValidator and createDefaultSpecValidator factory from validators/SpecValidator.js
+- Add private field specValidator: SpecValidator to Orchestrator class
+- Initialize spec validator in constructor using createDefaultSpecValidator()
+- Enhanced validatePhase method:
+  - Now accepts optional workDir parameter for spec file location
+  - Runs basic phase gate validation (existing check for spec file existence)
+  - For EXECUTION phase: runs enhanced spec validation via SpecValidator
+  - Validates spec has all required sections (Objective, Context, Implementation Plan, Acceptance Criteria)
+  - Validates spec is approved (checks for ✅, APPROVED, APROVADO, [x], [X] patterns)
+  - Throws descriptive error if validation fails, blocking EXECUTION phase
+  - Logs validation progress with emoji indicators
+- Updated validatePhase call in loopUntilSuccess to pass task.workDir parameter
+
+Integration Points:
+- validatePhase(phase, workDir?) - Enhanced method signature with workDir parameter
+- Spec validation runs AFTER basic phase gate check, BEFORE task execution
+- EXECUTION phase detected via: phase === WorkflowPhase.EXECUTION
+- Validation failures throw Error with message, triggering existing error handling
+- Error message includes detailed validation results from SpecValidator
+
+Anti-Vibe Protocol Enforcement:
+- Phase 1 (RESEARCH): No spec validation
+- Phase 2 (SPECIFICATION): No spec validation
+- Phase 3 (EXECUTION): Full spec validation (required sections + approval)
+- Follows "Trust but Verify" principle - validates spec completeness programmatically
+
+Git Commit:
+- auto-claude/002-complete-anti-vibe-protocol-quality-gates c26b7a2
+
+Quality Checklist:
+- [✓] Follows patterns from reference files (Orchestrator existing code, SpecValidator)
+- [✓] No console.log/print debugging statements (uses private log method)
+- [✓] Error handling in place (validation failures throw descriptive errors)
+- [✓] TypeScript type checking passed (no Orchestrator-specific errors)
+- [✓] Clean commit with descriptive message
+
+Notes:
+- Spec validation now blocks EXECUTION phase tasks without complete, approved specs
+- Integrates seamlessly with existing phase gate workflow
+- Maintains backward compatibility - validation only runs when skipPhaseValidation=false
+- Pre-existing TypeScript errors are unrelated to this change (missing dependency types)
+- Ready to proceed to Phase 4 (Human Approval Gates)
+
