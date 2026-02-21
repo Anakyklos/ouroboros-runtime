@@ -118,8 +118,8 @@ def _ouroboros_get_resource_usage():
             'cpu_time_ms': None
         }
 
-def _ouroboros_enforce_limits(max_memory_mb, max_cpu_seconds):
-    """Enforce resource limits"""
+def _ouroboros_enforce_limits(max_memory_mb, max_cpu_seconds, max_file_size_mb, max_processes):
+    """Enforce CPU, memory, disk, and process limits"""
     try:
         # Set memory limit (if supported)
         if max_memory_mb:
@@ -134,6 +134,21 @@ def _ouroboros_enforce_limits(max_memory_mb, max_cpu_seconds):
         if max_cpu_seconds:
             cpu_limit = int(max_cpu_seconds)
             resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
+    except (ValueError, OSError):
+        pass
+
+    try:
+        # Set file size limit (disk limit)
+        if max_file_size_mb:
+            file_size_limit = max_file_size_mb * 1024 * 1024
+            resource.setrlimit(resource.RLIMIT_FSIZE, (file_size_limit, file_size_limit))
+    except (ValueError, OSError):
+        pass
+
+    try:
+        # Set max processes limit
+        if max_processes:
+            resource.setrlimit(resource.RLIMIT_NPROC, (max_processes, max_processes))
     except (ValueError, OSError):
         pass
 
@@ -583,11 +598,14 @@ finally:
         });
     }
 
+    /**
+     * Setup resource limits for CPU, memory, disk, and processes
+     */
     private async setupResourceLimits(): Promise<void> {
-        const { maxMemoryMb, maxCpuTimeSeconds } = this.config.limits;
+        const { maxMemoryMb, maxCpuTimeSeconds, maxFileSizeMb, maxProcesses } = this.config.limits;
 
         const setupCode = `
-_ouroboros_enforce_limits(${maxMemoryMb}, ${maxCpuTimeSeconds})
+_ouroboros_enforce_limits(${maxMemoryMb}, ${maxCpuTimeSeconds}, ${maxFileSizeMb}, ${maxProcesses})
 _ouroboros_setup_signal_handlers()
 `;
 
