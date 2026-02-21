@@ -30,6 +30,8 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
   const daemonConnected = useMissionControlStore((state) => state.daemonConnected);
   const activeQuadrant = useMissionControlStore((state) => state.activeQuadrant);
   const viewMode = useMissionControlStore((state) => state.viewMode);
+  const setActiveQuadrant = useMissionControlStore((state) => state.setActiveQuadrant);
+  const setViewMode = useMissionControlStore((state) => state.setViewMode);
 
   // Initialize daemon connections
   useEventBus({ url: "ws://localhost:3001/ws" });
@@ -46,6 +48,10 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
     },
     onToggleLogs: () => setShowLogs((prev) => !prev),
     onFocusTerminal: () => setShowTerminal(true),
+    onQuadrantSwitch: (quadrant: 1 | 2 | 3 | 4) => {
+      setActiveQuadrant(quadrant);
+      setViewMode("focused");
+    },
   });
 
   // Sync mode with daemon status
