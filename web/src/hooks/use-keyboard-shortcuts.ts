@@ -9,6 +9,7 @@ interface UseKeyboardShortcutsOptions {
   onEmergencyBrake?: () => void;
   onToggleLogs?: () => void;
   onFocusTerminal?: () => void;
+  onQuadrantSwitch?: (quadrant: 1 | 2 | 3 | 4) => void;
 }
 
 export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) {
@@ -18,6 +19,7 @@ export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) 
     onEmergencyBrake,
     onToggleLogs,
     onFocusTerminal,
+    onQuadrantSwitch,
   } = options;
 
   const mode = useMissionControlStore((state) => state.mode);
@@ -105,6 +107,7 @@ export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) 
             const quadrant = parseInt(event.key) as 1 | 2 | 3 | 4;
             setActiveQuadrant(quadrant);
             setViewMode("focused");
+            onQuadrantSwitch?.(quadrant);
             addLogEntry({
               level: "info",
               message: `Switched to quadrant ${quadrant}`,
@@ -133,7 +136,7 @@ export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) 
           break;
       }
     },
-    [mode, setMode, setActiveQuadrant, setViewMode, onPause, onResume, onEmergencyBrake, onToggleLogs, onFocusTerminal, confirmEmergency, addLogEntry]
+    [mode, setMode, setActiveQuadrant, setViewMode, onPause, onResume, onEmergencyBrake, onToggleLogs, onFocusTerminal, onQuadrantSwitch, confirmEmergency, addLogEntry]
   );
 
   useEffect(() => {
