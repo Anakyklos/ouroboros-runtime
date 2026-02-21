@@ -314,33 +314,49 @@ export class ToolExecutor {
     private async handleListDirectory(args: Record<string, unknown>): Promise<ToolResult> {
         const dirPath = this.resolvePath(args.path as string);
         const recursive = args.recursive as boolean ?? false;
-
-        try {
-            await fs.promises.access(dirPath);
-        } catch {
-            return { success: false, output: '', error: `Directory not found: ${dirPath}` };
-        }
+        const CONCURRENCY_LIMIT = 10;
 
         const list = async (dir: string, prefix = ''): Promise<string[]> => {
             const items = await fs.promises.readdir(dir, { withFileTypes: true });
+            const results: string[][] = new Array(items.length);
 
-            const results = await Promise.all(items.map(async (item) => {
-                const indicator = item.isDirectory() ? '/' : '';
-                const entry = `${prefix}${item.name}${indicator}`;
+            // Simple worker pool for concurrency limiting
+            let nextIndex = 0;
+            const workers = Array.from({ length: Math.min(CONCURRENCY_LIMIT, items.length) }, async () => {
+                while (nextIndex < items.length) {
+                    const index = nextIndex++;
+                    const item = items[index];
+                    const indicator = item.isDirectory() ? '/' : '';
+                    const entry = `${prefix}${item.name}${indicator}`;
 
-                if (recursive && item.isDirectory()) {
-                    const subEntries = await list(path.join(dir, item.name), `${prefix}${item.name}/`);
-                    return [entry, ...subEntries];
+                    if (recursive && item.isDirectory()) {
+                        try {
+                            const subEntries = await list(path.join(dir, item.name), `${prefix}${item.name}/`);
+                            results[index] = [entry, ...subEntries];
+                        } catch {
+                            // Skip inaccessible subdirectories or files that disappeared
+                            results[index] = [entry];
+                        }
+                    } else {
+                        results[index] = [entry];
+                    }
                 }
-                return [entry];
-            }));
+            });
 
+            await Promise.all(workers);
             return results.flat();
         };
 
-        const entries = await list(dirPath);
-
-        return { success: true, output: entries.join('\n') };
+        try {
+            const entries = await list(dirPath);
+            return { success: true, output: entries.join('\n') };
+        } catch (err) {
+            return {
+                success: false,
+                output: '',
+                error: `Error listing directory: ${err instanceof Error ? err.message : String(err)}`
+            };
+        }
     }
 
     private async handleGrepSearch(args: Record<string, unknown>): Promise<ToolResult> {
