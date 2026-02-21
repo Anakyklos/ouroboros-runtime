@@ -86,7 +86,7 @@ const ESCAPE_PATTERNS = [
     /import\s+sys\s*[,;]?/i,
     /import\s+subprocess/i,
     /import\s+shutil/i,
-    /from\s+os\s+path/i,
+    /from\s+os\s+import/i,  // Fixed: include "import" keyword
     /__import__\s*\(/i,
     /open\s*\(\s*['"]/i,
     /exec\s*\(/i,
@@ -99,7 +99,8 @@ const ESCAPE_PATTERNS = [
     /~\//i,
     /getattr\s*\(/i,
     /setattr\s*\(/i,
-    /__class__\s*\./i,
+    /\.__class__/i,  // Fixed: match __class__ accessed via dot
+    /__class__\s*\./i,  // Also match __class__ followed by dot
     /__bases__\s*\./i,
     /__subclasses__\s*\(/i,
 ];
