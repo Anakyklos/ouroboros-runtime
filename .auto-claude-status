@@ -1,0 +1,25 @@
+{
+  "active": true,
+  "spec": "003-sandbox-code-execution-safety",
+  "state": "building",
+  "subtasks": {
+    "completed": 7,
+    "total": 16,
+    "in_progress": 1,
+    "failed": 0
+  },
+  "phase": {
+    "current": "Filesystem Isolation",
+    "id": null,
+    "total": 2
+  },
+  "workers": {
+    "active": 0,
+    "max": 1
+  },
+  "session": {
+    "number": 50,
+    "started_at": "2026-02-21T10:21:16.573285"
+  },
+  "last_update": "2026-02-21T13:39:47.026740"
+}

@@ -10,6 +10,12 @@
 import { spawn, ChildProcess } from "child_process";
 import { EventEmitter } from "events";
 import { OuroborosEnvironment, createOuroborosEnvironment } from "./OuroborosEnvironment.js";
+import {
+    validatePath,
+    createSandboxPathConfig,
+    type PathValidationResult,
+    type PathAccessConfig,
+} from "./SandboxPathUtils.js";
 
 // ============================================================================
 // Types
@@ -75,7 +81,7 @@ const DEFAULT_CONFIG: Required<Omit<SandboxRunnerConfig, 'environment'>> & { env
         timeoutMs: 30000,
         maxFileSizeMb: 100,
         maxProcesses: 1,
-    },
+    } as Required<ResourceLimits>,
     autoRestart: false,
     cwd: '',
     env: {},
@@ -169,7 +175,14 @@ print("__SANDBOX_INIT_COMPLETE__")
 export class SandboxRunner extends EventEmitter {
     private process: ChildProcess | null = null;
     private environment: OuroborosEnvironment;
-    private config: Required<Omit<SandboxRunnerConfig, 'environment'>> & { limits: Required<ResourceLimits> };
+    private config: {
+        environment: OuroborosEnvironment;
+        limits: Required<ResourceLimits>;
+        autoRestart: boolean;
+        cwd: string;
+        env: Record<string, string>;
+    };
+    private pathConfig: PathAccessConfig;
     private status: SandboxStatus = 'dead';
     private stdoutBuffer: string = '';
     private stderrBuffer: string = '';
@@ -195,16 +208,26 @@ export class SandboxRunner extends EventEmitter {
         }
 
         // Normalize config with defaults
+        const inputLimits = config.limits ?? {};
         this.config = {
-            ...DEFAULT_CONFIG,
-            ...config,
             environment: this.environment,
-            limits: {
-                ...DEFAULT_CONFIG.limits,
-                ...config.limits,
-            },
+            autoRestart: config.autoRestart ?? DEFAULT_CONFIG.autoRestart,
             cwd: config.cwd || this.environment.playgroundPath,
+            env: { ...DEFAULT_CONFIG.env, ...config.env },
+            limits: {
+                maxMemoryMb: (inputLimits.maxMemoryMb ?? DEFAULT_CONFIG.limits.maxMemoryMb) as number,
+                maxCpuTimeSeconds: (inputLimits.maxCpuTimeSeconds ?? DEFAULT_CONFIG.limits.maxCpuTimeSeconds) as number,
+                timeoutMs: (inputLimits.timeoutMs ?? DEFAULT_CONFIG.limits.timeoutMs) as number,
+                maxFileSizeMb: (inputLimits.maxFileSizeMb ?? DEFAULT_CONFIG.limits.maxFileSizeMb) as number,
+                maxProcesses: (inputLimits.maxProcesses ?? DEFAULT_CONFIG.limits.maxProcesses) as number,
+            },
         };
+
+        // Set up path confinement configuration
+        this.pathConfig = createSandboxPathConfig({
+            sandboxDir: this.environment.paths.ouroborosDir,
+            playgroundDir: this.environment.playgroundPath,
+        });
     }
 
     // ========================================================================
@@ -342,11 +365,13 @@ export class SandboxRunner extends EventEmitter {
      * Execute code from a file in the sandbox
      */
     async executeFile(filePath: string, timeoutMs?: number): Promise<SandboxExecutionResult> {
-        // Validate file path is within playground
-        if (!this.environment.isPathInPlayground(filePath)) {
+        // Validate file path using SandboxPathUtils
+        const validationResult = await validatePath(filePath, this.pathConfig);
+
+        if (!validationResult.valid) {
             return {
                 stdout: '',
-                stderr: `Security violation: File path outside playground: ${filePath}`,
+                stderr: `Security violation: ${validationResult.error}`,
                 success: false,
                 error: new Error('File access denied'),
                 durationMs: 0,
@@ -356,7 +381,7 @@ export class SandboxRunner extends EventEmitter {
 
         const fs = await import('fs/promises');
         try {
-            const code = await fs.readFile(filePath, 'utf-8');
+            const code = await fs.readFile(validationResult.resolvedPath, 'utf-8');
             return this.execute(code, timeoutMs);
         } catch (error) {
             return {
@@ -368,6 +393,27 @@ export class SandboxRunner extends EventEmitter {
                 exitCode: -1,
             };
         }
+    }
+
+    // ========================================================================
+    // Path Validation
+    // ========================================================================
+
+    /**
+     * Validate if a path is allowed within the sandbox
+     * Uses SandboxPathUtils for comprehensive security checks
+     */
+    async validatePath(filePath: string): Promise<PathValidationResult> {
+        return validatePath(filePath, this.pathConfig);
+    }
+
+    /**
+     * Check if a path is within allowed directories
+     * Quick boolean check without detailed error information
+     */
+    async isPathAllowed(filePath: string): Promise<boolean> {
+        const result = await validatePath(filePath, this.pathConfig);
+        return result.valid;
     }
 
     // ========================================================================
@@ -483,10 +529,15 @@ except Exception as e:
     // ========================================================================
 
     private wrapCodeForExecution(code: string, marker: string): string {
+        // Escape code for Python execution - use single quotes for Python string
+        const escapedCode = code
+            .replace(/\\/g, '\\\\')  // Escape backslashes
+            .replace(/'/g, "\\'");    // Escape single quotes
+
         return `
 try:
     # Execute in sandbox namespace
-    exec('''${code.replace(/'''/g, "\\'\\'\\'")'''}'], globals(), _ouroboros_sandbox_vars)
+    exec('${escapedCode}', globals(), _ouroboros_sandbox_vars)
 
 except Exception as __e:
     import traceback
