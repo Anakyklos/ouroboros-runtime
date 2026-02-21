@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { EventBus } from "../cli/src/daemon/event-bus.js";
+import { EventBus } from './event-bus.js';
 
 describe("EventBus", () => {
   let eventBus: EventBus;
@@ -14,7 +14,7 @@ describe("EventBus", () => {
 
   it("should emit and receive events", () => {
     const received: unknown[] = [];
-    
+
     eventBus.on("log", (data) => {
       received.push(data);
     });
@@ -31,7 +31,7 @@ describe("EventBus", () => {
 
   it("should support wildcard listeners", () => {
     const received: unknown[] = [];
-    
+
     eventBus.on("*", (data) => {
       received.push(data);
     });
@@ -44,7 +44,7 @@ describe("EventBus", () => {
 
   it("should unsubscribe correctly", () => {
     const received: unknown[] = [];
-    
+
     const unsubscribe = eventBus.on("log", (data) => {
       received.push(data);
     });

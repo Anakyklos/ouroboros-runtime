@@ -52,6 +52,7 @@ export type EventMap = {
     daemon: DaemonEvent;
     thought: ThoughtEvent;
     wave: WaveEvent;
+    '*': unknown; // Wildcard listener support
 };
 
 export class EventBus {
@@ -80,12 +81,22 @@ export class EventBus {
     /**
      * Emit an event
      */
-    emit<K extends keyof EventMap>(event: K, data: EventMap[K]): void {
+    emit<K extends Exclude<keyof EventMap, '*'>>(event: K, data: EventMap[K]): void {
+        // Trigger specific listeners
         this.listeners.get(event)?.forEach(callback => {
             try {
                 callback(data);
             } catch (err) {
-                console.error(`[EventBus] Error in ${event} handler:`, err);
+                console.error(`[EventBus] Error in ${String(event)} handler:`, err);
+            }
+        });
+
+        // Trigger wildcard listeners
+        this.listeners.get('*')?.forEach(callback => {
+            try {
+                callback({ event, data });
+            } catch (err) {
+                console.error(`[EventBus] Error in wildcard handler for ${String(event)}:`, err);
             }
         });
     }
