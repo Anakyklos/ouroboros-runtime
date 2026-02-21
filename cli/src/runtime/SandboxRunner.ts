@@ -69,9 +69,50 @@ export interface OuroborosEnvironmentConfig {
 
 export type SandboxStatus = 'idle' | 'executing' | 'dead' | 'restarting';
 
+export interface SecurityViolation {
+    type: 'escape_attempt' | 'resource_limit' | 'path_violation' | 'code_injection';
+    message: string;
+    detectedAt: Date;
+    code?: string;
+}
+
 // ============================================================================
 // Constants
 // ============================================================================
+
+// Sandbox escape detection patterns
+const ESCAPE_PATTERNS = [
+    /import\s+os\s*[,;]?/i,
+    /import\s+sys\s*[,;]?/i,
+    /import\s+subprocess/i,
+    /import\s+shutil/i,
+    /from\s+os\s+path/i,
+    /__import__\s*\(/i,
+    /open\s*\(\s*['"]/i,
+    /exec\s*\(/i,
+    /eval\s*\(/i,
+    /compile\s*\(/i,
+    /\.\.\//i,
+    /\.\.\\/i,
+    /\/etc\//i,
+    /C:\\\\/,
+    /~\//i,
+    /getattr\s*\(/i,
+    /setattr\s*\(/i,
+    /__class__\s*\./i,
+    /__bases__\s*\./i,
+    /__subclasses__\s*\(/i,
+];
+
+const SECURITY_KEYWORDS = [
+    'permission denied',
+    'access violation',
+    'security',
+    'unauthorized',
+    'escape',
+    'sandbox',
+    'restriction',
+];
 
 const DEFAULT_CONFIG: Required<Omit<SandboxRunnerConfig, 'environment'>> & { environment: OuroborosEnvironment } = {
     environment: createOuroborosEnvironment(),
@@ -196,6 +237,7 @@ export class SandboxRunner extends EventEmitter {
     }> = [];
     private initialized: boolean = false;
     private currentExecutionStartTime: number = 0;
+    private securityViolations: SecurityViolation[] = [];
 
     constructor(config: SandboxRunnerConfig = {}) {
         super();
@@ -303,6 +345,73 @@ export class SandboxRunner extends EventEmitter {
     }
 
     // ========================================================================
+    // Security & Escape Detection
+    // ========================================================================
+
+    /**
+     * Detect potential sandbox escape attempts in code
+     */
+    private detectEscapeAttempt(code: string): SecurityViolation | null {
+        for (const pattern of ESCAPE_PATTERNS) {
+            if (pattern.test(code)) {
+                return {
+                    type: 'escape_attempt',
+                    message: `Potential escape pattern detected: ${pattern.source}`,
+                    detectedAt: new Date(),
+                    code,
+                };
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Check output for security-related messages
+     */
+    private detectSecurityViolation(output: string, error: string): SecurityViolation | null {
+        const combined = (output + ' ' + error).toLowerCase();
+
+        for (const keyword of SECURITY_KEYWORDS) {
+            if (combined.includes(keyword)) {
+                return {
+                    type: 'escape_attempt',
+                    message: `Security-related message detected: "${keyword}"`,
+                    detectedAt: new Date(),
+                };
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Get all security violations recorded
+     */
+    getSecurityViolations(): SecurityViolation[] {
+        return [...this.securityViolations];
+    }
+
+    /**
+     * Clear security violation history
+     */
+    clearSecurityViolations(): void {
+        this.securityViolations = [];
+    }
+
+    /**
+     * Check if code is safe to execute
+     */
+    private validateCodeSafety(code: string): { safe: boolean; violation?: SecurityViolation } {
+        const violation = this.detectEscapeAttempt(code);
+        if (violation) {
+            this.securityViolations.push(violation);
+            this.emit('securityViolation', violation);
+            return { safe: false, violation };
+        }
+        return { safe: true };
+    }
+
+    // ========================================================================
     // Execution
     // ========================================================================
 
@@ -310,6 +419,20 @@ export class SandboxRunner extends EventEmitter {
      * Execute code in the sandbox with resource limits
      */
     async execute(code: string, timeoutMs?: number): Promise<SandboxExecutionResult> {
+        // Security validation - check for escape attempts BEFORE execution
+        const safetyCheck = this.validateCodeSafety(code);
+        if (!safetyCheck.safe) {
+            const violation = safetyCheck.violation!;
+            return {
+                stdout: '',
+                stderr: `Security violation: ${violation.message}`,
+                success: false,
+                error: new Error(`Sandbox security violation: ${violation.message}`),
+                durationMs: 0,
+                exitCode: -1,
+            };
+        }
+
         if (!this.process || this.status === 'dead') {
             if (this.config.autoRestart) {
                 await this.start();
@@ -609,13 +732,21 @@ finally:
         const hasError = this.stderrBuffer.includes('ERROR:') ||
             this.stderrBuffer.includes('Traceback');
 
+        // Check for security violations in output
+        const securityViolation = this.detectSecurityViolation(output, this.stderrBuffer);
+        if (securityViolation) {
+            this.securityViolations.push(securityViolation);
+            this.emit('securityViolation', securityViolation);
+        }
+
         // Resolve promise
         currentExecution.resolve({
             stdout: output,
             stderr: this.stderrBuffer,
-            success: !hasError,
+            success: !hasError && !securityViolation,
+            error: securityViolation ? new Error(securityViolation.message) : undefined,
             durationMs,
-            exitCode: hasError ? 1 : 0,
+            exitCode: hasError || securityViolation ? 1 : 0,
         });
 
         // Clear stderr for next execution

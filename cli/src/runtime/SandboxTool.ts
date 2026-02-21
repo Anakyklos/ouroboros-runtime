@@ -1,6 +1,6 @@
-import { ITool } from "../../../core/ports/ITool";
+import { ITool } from "../../../core/ports/ITool.js";
 import { z } from "zod";
-import { SandboxRunner, createSandboxRunner, type SandboxRunnerConfig } from "./SandboxRunner.js";
+import { SandboxRunner, createSandboxRunner, type SandboxRunnerConfig, type SecurityViolation } from "./SandboxRunner.js";
 
 export const SandboxArgsSchema = z.object({
     code: z.string().describe("Python code to execute in the sandbox"),
@@ -8,6 +8,19 @@ export const SandboxArgsSchema = z.object({
 });
 
 export type SandboxArgs = z.infer<typeof SandboxArgsSchema>;
+
+/**
+ * Enhanced error class for sandbox security violations
+ */
+export class SandboxSecurityError extends Error {
+    public readonly violation: SecurityViolation;
+
+    constructor(violation: SecurityViolation) {
+        super(`Sandbox security violation: ${violation.message}`);
+        this.name = 'SandboxSecurityError';
+        this.violation = violation;
+    }
+}
 
 export class SandboxTool implements ITool<SandboxArgs, string> {
     public readonly name = "sandbox";
@@ -18,6 +31,12 @@ export class SandboxTool implements ITool<SandboxArgs, string> {
 
     constructor(config?: SandboxRunnerConfig) {
         this.runner = createSandboxRunner(config);
+
+        // Listen for security violations
+        this.runner.on('securityViolation', (violation: SecurityViolation) => {
+            // Security violations are logged but not automatically thrown
+            // They're already included in the execution result
+        });
     }
 
     async execute(input: SandboxArgs): Promise<string> {
@@ -30,11 +49,25 @@ export class SandboxTool implements ITool<SandboxArgs, string> {
             // Execute code with optional timeout override
             const result = await this.runner.execute(input.code, input.timeoutMs);
 
+            // Check for security violations first
+            if (result.error?.message.includes('security violation')) {
+                const violations = this.runner.getSecurityViolations();
+                if (violations.length > 0) {
+                    throw new SandboxSecurityError(violations[violations.length - 1]);
+                }
+            }
+
             if (!result.success) {
+                // Enhanced error reporting with security context
+                const violations = this.runner.getSecurityViolations();
+                const hasSecurityIssues = violations.length > 0;
+
                 throw new Error(
-                    `Sandbox execution failed (exit code: ${result.exitCode})\n` +
-                    `STDOUT:\n${result.stdout}\n` +
-                    `STDERR:\n${result.stderr}`
+                    `Sandbox execution failed (exit code: ${result.exitCode})${hasSecurityIssues ? ' [SECURITY]' : ''}\n` +
+                    `STDOUT:\n${result.stdout || '(empty)'}\n` +
+                    `STDERR:\n${result.stderr || '(empty)'}${
+                        hasSecurityIssues ? `\nSecurity violations: ${violations.length} detected` : ''
+                    }`
                 );
             }
 
@@ -50,6 +83,10 @@ export class SandboxTool implements ITool<SandboxArgs, string> {
 
             return output.join('\n');
         } catch (error) {
+            if (error instanceof SandboxSecurityError) {
+                // Re-throw security errors as-is
+                throw error;
+            }
             if (error instanceof Error) {
                 throw error;
             }
@@ -62,6 +99,20 @@ export class SandboxTool implements ITool<SandboxArgs, string> {
      */
     getRunner(): SandboxRunner {
         return this.runner;
+    }
+
+    /**
+     * Get all security violations recorded during this session
+     */
+    getSecurityViolations(): SecurityViolation[] {
+        return this.runner.getSecurityViolations();
+    }
+
+    /**
+     * Clear security violation history
+     */
+    clearSecurityViolations(): void {
+        this.runner.clearSecurityViolations();
     }
 
     /**
