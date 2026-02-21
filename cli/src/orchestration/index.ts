@@ -56,6 +56,14 @@ export {
 } from "./ApprovalManager.js";
 
 export {
+    ApprovalHistory,
+    createApprovalHistory,
+    type ApprovalHistoryEntry,
+    type ApprovalHistoryStats,
+    type ApprovalHistoryFilters,
+} from "./ApprovalHistory.js";
+
+export {
     ApprovalStatus,
     ApprovalPriority,
     DEFAULT_APPROVAL_CONFIG,
