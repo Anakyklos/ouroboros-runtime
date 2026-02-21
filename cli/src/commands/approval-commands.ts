@@ -312,6 +312,12 @@ export async function approveCommand(
         process.exit(0);
     }
 
+    // Valida que o revisor foi fornecido
+    if (!reviewer) {
+        log("❌", "Nome do revisor é obrigatório", colors.red);
+        process.exit(1);
+    }
+
     // Executa a aprovação
     const result = await manager.approveRequest(requestId, reviewer, comments);
 
@@ -404,6 +410,17 @@ export async function rejectCommand(
     if (!confirmed) {
         log("⏭️", "Rejeição cancelada", colors.yellow);
         process.exit(0);
+    }
+
+    // Valida que o revisor e motivo foram fornecidos
+    if (!reviewer) {
+        log("❌", "Nome do revisor é obrigatório", colors.red);
+        process.exit(1);
+    }
+
+    if (!reason) {
+        log("❌", "Motivo da rejeição é obrigatório", colors.red);
+        process.exit(1);
     }
 
     // Executa a rejeição
