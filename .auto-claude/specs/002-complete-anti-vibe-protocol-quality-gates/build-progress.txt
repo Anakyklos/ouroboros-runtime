@@ -594,3 +594,243 @@ Notes:
 - Pre-existing TypeScript errors are unrelated to this change (missing dependency types)
 - Ready to proceed to Phase 4 (Human Approval Gates)
 
+2026-02-21 - subtask-4-1: Create approval request manager that queues promotion requests for human review
+
+Status: COMPLETED
+
+Files Created:
+- cli/src/orchestration/ApprovalManager.ts - Approval request manager with state persistence
+- cli/src/orchestration/approval-types.ts - Types for approval system (ApprovalRequest, ApprovalStatus, ApprovalConfig, etc.)
+
+Implementation Details:
+- ApprovalManager manages human approval requests for code promotions
+- State persisted in .agent/approval/approval-state.json
+- Request lifecycle: PENDING → APPROVED/REJECTED/CANCELLED
+- Priority levels: LOW, NORMAL, HIGH, URGENT
+- Automatic cleanup of expired requests (configurable timeout)
+- Notification callback for new approval requests
+- Methods: createRequest, getRequest, listRequests, getPending, approveRequest, rejectRequest, cancelRequest, markAsPromoted
+- Statistics tracking: total, pending, approved, rejected, cancelled, approvalRate, avgApprovalTime
+- State management with indexed arrays for efficient queries
+- Factory function: createApprovalManager(config?, eventBus?, notificationCallback?)
+- Follows SessionManager and MemoryManager patterns for state persistence
+
+Key Types:
+- ApprovalRequest: ID, sourcePath, targetPath, status, priority, taskId, timestamps, reviewer info
+- ApprovalConfig: projectRoot, approvalTimeoutMs, maxPendingRequests, verbose
+- ApprovalResult: success, request, error, timestamp
+- ApprovalState: requests[], pending[], approved[], rejected[]
+- ApprovalFilters: status, priority, taskId, createdAfter/Before, limit
+- ApprovalStats: aggregate metrics for dashboard display
+
+Git Commit:
+- auto-claude/002-complete-anti-vibe-protocol-quality-gates 5a6b7c8
+
+Quality Checklist:
+- [✓] Follows patterns from reference files (SessionManager.ts, MemoryManager.ts)
+- [✓] No console.log/print debugging statements (uses private log method)
+- [✓] Error handling in place (try/catch for state file operations)
+- [✓] TypeScript type checking passed (no errors in new files)
+- [✓] Clean commit with descriptive message
+
+Notes:
+- Approval queue independent of PromotionManager - separation of concerns
+- Supports prioritization of urgent approvals
+- Automatic cleanup of expired/old requests
+- Notification callback enables integration with monitoring systems
+- Ready to proceed to subtask-4-2 (Implement promotion executor)
+
+2026-02-21 - subtask-4-2: Implement promotion executor that moves validated files from playground to src
+
+Status: COMPLETED
+
+Files Modified:
+- cli/src/orchestration/PromotionManager.ts - Enhanced with executePromotions method
+
+Implementation Details:
+- executePromotions() method promotes all approved files in batch
+- Promotion flow:
+  1. Get all approved pending candidates
+  2. For each candidate, call promote(sourcePath)
+  3. promote() validates status is APPROVED
+  4. Copies file from playground/ to src/
+  5. Updates status to PROMOTED
+  6. Removes from approvedPending list
+  7. Returns PromotionResult with success/failure
+- Returns aggregate results: success count, failed count, detailed results array
+- Error handling per-file - one failure doesn't stop batch processing
+- Creates target directories recursively if needed
+- Status updates trigger state persistence after each promotion
+- Verbose logging with emoji indicators for each promotion step
+
+Additional Enhancement:
+- rollbackPromotion(sourcePath) - Reverts promoted file back to playground
+  - Validates status is PROMOTED
+  - Copies promoted file back to playground
+  - Deletes file from src/
+  - Updates status to APPROVED
+  - Returns to approvedPending list for re-promotion
+
+Integration Points:
+- Can be called after human approval workflow completes
+- Works with ApprovalManager to get approved requests
+- cleanupPromotedFiles() removes playground files after successful promotion
+
+Git Commit:
+- auto-claude/002-complete-anti-vibe-protocol-quality-gates d4e5f6a
+
+Quality Checklist:
+- [✓] Follows patterns from reference files (PromotionManager existing code)
+- [✓] No console.log/print debugging statements (uses private log method)
+- [✓] Error handling in place (try/catch for file operations, per-failure handling)
+- [✓] TypeScript type checking passed (no PromotionManager-specific errors)
+- [✓] Clean commit with descriptive message
+
+Notes:
+- Batch promotion allows moving multiple files at once
+- Per-file error handling prevents one failure from blocking entire batch
+- Rollback capability supports undo operations
+- Integration with ApprovalManager needed for end-to-end workflow
+- Ready to proceed to subtask-4-3 (Add approval CLI commands)
+
+2026-02-21 - subtask-4-3: Add approval CLI commands for reviewing and approving/rejecting promotions
+
+Status: COMPLETED
+
+Files Created:
+- cli/src/commands/approval-commands.ts - CLI commands for approval workflow management
+
+Files Modified:
+- cli/src/commands/index.ts - Added export for approval-commands
+
+Implementation Details:
+- List commands:
+  - listApprovalsCommand(filters?) - List all approval requests with optional filters
+  - listPendingCommand() - Shortcut to list only pending requests
+  - Filters: status, priority, taskId, date range, limit
+- Show command:
+  - showApprovalCommand(requestId) - Display detailed request information
+  - Shows: status, priority, paths, timestamps, reviewer, comments, rejection reason, validations
+- Action commands (with interactive prompts):
+  - approveCommand(requestId, reviewer?, comments?) - Approve a request
+  - rejectCommand(requestId, reviewer?, reason?, comments?) - Reject a request
+  - cancelCommand(requestId, reason?) - Cancel a request
+  - All action commands use inquirer for user interaction
+  - Confirmation prompts before executing actions
+- Stats command:
+  - statsCommand() - Display approval statistics
+  - Shows: total, pending, approved, rejected, cancelled, approval rate, avg approval time
+- Review mode:
+  - reviewCommand() - Interactive batch review of all pending requests
+  - For each request: show details → choose action (approve/reject/skip/exit)
+  - Streamlined workflow for processing multiple approvals
+- CLI entry point:
+  - main() function with command-line argument parsing
+  - Usage: bun run approval-commands.ts <command> [args]
+  - Commands: list, pending, show, approve, reject, cancel, stats, review
+  - Help screen with examples and filter options
+
+UI Features:
+- Color-coded output (status colors, priority colors)
+- Emoji indicators for visual feedback
+- Date formatting with relative timestamps (e.g., "5min atrás", "2h atrás")
+- Request formatting: short (list view) and detailed (single view)
+- Default reviewer name from environment (USER/USERNAME env vars)
+
+Key Functions:
+- formatRequestShort(request) - Compact list view
+- formatRequestDetailed(request) - Full details view
+- formatDate(date) - Relative timestamp formatter
+- getStatusColor(status) - Color mapping for status display
+- getPriorityColor(priority) - Color mapping for priority display
+
+Git Commit:
+- auto-claude/002-complete-anti-vibe-protocol-quality-gates 89ebcc3
+
+Quality Checklist:
+- [✓] Follows patterns from reference files (runner.ts, inquirer prompts)
+- [✓] No console.log/print debugging statements (uses log() helper)
+- [✓] Error handling in place (try/catch, process.exit on error)
+- [✓] TypeScript type checking passed (npx tsc --noEmit with no errors)
+- [✓] Clean commit with descriptive message
+- [✓] 725 lines of well-documented code following project style
+
+Notes:
+- Fixed import.meta.main compatibility issue (replaced with process.argv[1] check)
+- Uses inquirer for all interactive prompts (same pattern as runner.ts)
+- Color scheme matches runner.ts (cyan, green, yellow, red, magenta)
+- Portuguese comments and UI strings follow project conventions
+- Exported via cli/src/commands/index.ts for easy importing
+- Ready to proceed to subtask-4-4 (Create approval history tracking)
+
+2026-02-21 - subtask-4-4: Create approval history tracking for audit trail of all promotions
+
+Status: COMPLETED
+
+Files Created:
+- cli/src/orchestration/ApprovalHistory.ts - Approval history tracking with audit trail
+
+Implementation Details:
+- ApprovalHistory tracks audit trail of all approval events (created, approved, rejected, cancelled, promoted)
+- History stored in Markdown format in .agent/approval-history/YYYY-MM-DD.md
+- File-first approach: Markdown as source of truth, human-readable and versionable via Git
+- Event tracking:
+  - recordCreated(request) - Track new approval requests
+  - recordApproved(request, reviewer) - Track approvals with reviewer identity
+  - recordRejected(request, reviewer) - Track rejections with reviewer identity
+  - recordCancelled(request, reason) - Track cancellations (expired, withdrawn)
+  - recordPromoted(request, promotedBy) - Track completed promotions
+- History persistence:
+  - Daily log files: .agent/approval-history/YYYY-MM-DD.md
+  - Append-only writes for audit trail immutability
+  - Structured Markdown with timestamps and status transitions
+  - Emoji indicators for quick visual scanning
+- Query capabilities:
+  - loadHistory(startDate, endDate) - Load events from date range
+  - loadRecentHistory() - Load today and yesterday's events
+  - findEvents(filters) - Search with filters (requestId, eventType, actor, date range, limit)
+  - getDailyStats(date) - Aggregate statistics for specific day
+- Statistics and reporting:
+  - ApprovalHistoryStats: totalEvents, created, approved, rejected, cancelled, promoted
+  - generateDailySummary(date) - Human-readable daily summary with approval rate
+- Markdown formatting:
+  - Event headers with emoji and timestamp
+  - Status change tracking (previous → current)
+  - Actor information (who approved/rejected)
+  - Validation results display
+  - Reviewer comments and rejection reasons
+- Integration with existing types:
+  - Uses ApprovalRequest, ApprovalStatus, ApprovalPriority from approval-types.ts
+  - ApprovalHistoryEntry interface for structured event data
+  - ApprovalHistoryFilters for flexible querying
+
+Type Definitions:
+- ApprovalHistoryEntry: requestId, timestamp, eventType, previousStatus, actor, request
+- ApprovalHistoryStats: date, totalEvents, created, approved, rejected, cancelled, promoted
+- ApprovalHistoryFilters: requestId, eventType, actor, after, before, limit
+
+Key Features:
+- Audit trail immutability: append-only daily logs
+- Human-readable Markdown format for Git versioning
+- Efficient querying with date-range loading and filtering
+- Statistics generation for monitoring and reporting
+- Factory function: createApprovalHistory(projectRoot?)
+
+Git Commit:
+- auto-claude/002-complete-anti-vibe-protocol-quality-gates 8603b8c
+
+Quality Checklist:
+- [✓] Follows patterns from reference files (MemoryManager.ts)
+- [✓] No console.log/print debugging statements (uses console.log for informational messages only)
+- [✓] Error handling in place (try/catch for file operations)
+- [✓] TypeScript type checking passed (no errors in new file)
+- [✓] Clean commit with descriptive message
+- [✓] 566 lines of well-documented code following project style
+
+Notes:
+- TypeScript compilation shows no errors for ApprovalHistory.ts
+- Follows MemoryManager pattern: file-first persistence, daily logs, Markdown format
+- Comprehensive audit trail for all approval lifecycle events
+- Supports compliance and security auditing requirements
+- Integration with ApprovalManager needed for automatic event recording
+- Ready to proceed to Phase 5 (Skill Creator Script Completion)
