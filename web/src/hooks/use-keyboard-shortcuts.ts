@@ -22,6 +22,8 @@ export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) 
 
   const mode = useMissionControlStore((state) => state.mode);
   const setMode = useMissionControlStore((state) => state.setMode);
+  const setActiveQuadrant = useMissionControlStore((state) => state.setActiveQuadrant);
+  const setViewMode = useMissionControlStore((state) => state.setViewMode);
   const addLogEntry = useLogStore((state) => state.addEntry);
   const confirmEmergency = useSettingsStore((state) => state.confirmEmergencyBrake);
 
@@ -97,10 +99,17 @@ export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) 
         case "2":
         case "3":
         case "4":
-          // Number keys to switch quadrants (if we add tabs)
+          // Number keys to switch quadrants
           if (event.ctrlKey || event.metaKey) {
             event.preventDefault();
-            // TODO: Implement quadrant switching
+            const quadrant = parseInt(event.key) as 1 | 2 | 3 | 4;
+            setActiveQuadrant(quadrant);
+            setViewMode("focused");
+            addLogEntry({
+              level: "info",
+              message: `Switched to quadrant ${quadrant}`,
+              source: "Keyboard",
+            });
           }
           break;
 
@@ -124,7 +133,7 @@ export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) 
           break;
       }
     },
-    [mode, setMode, onPause, onResume, onEmergencyBrake, onToggleLogs, onFocusTerminal, confirmEmergency, addLogEntry]
+    [mode, setMode, setActiveQuadrant, setViewMode, onPause, onResume, onEmergencyBrake, onToggleLogs, onFocusTerminal, confirmEmergency, addLogEntry]
   );
 
   useEffect(() => {
@@ -138,6 +147,7 @@ export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) 
       { key: "Esc", action: "Emergency Brake" },
       { key: "Ctrl+L", action: "Toggle Logs" },
       { key: "`", action: "Focus Terminal" },
+      { key: "Ctrl+1/2/3/4", action: "Switch Quadrant" },
       { key: "Shift+F", action: "Frenzy Mode" },
     ],
   };
