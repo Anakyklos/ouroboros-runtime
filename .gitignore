@@ -52,3 +52,14 @@ Thumbs.db
 *.key
 secrets/
 telemetry-id
+
+# ==============================================
+# IGNORED FOLDERS
+# ==============================================
+engenharia reversa/*
+!engenharia reversa/README.md
+!engenharia reversa/CATALOG.md
+!engenharia reversa/conductor/
+
+# Auto Claude data directory
+.auto-claude/
