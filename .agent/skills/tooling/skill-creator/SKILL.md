@@ -1,10 +1,10 @@
 ---
 name: skill-creator
 description: "This skill should be used when the user asks to create a new skill, build a skill, make a custom skill, develop a CLI skill, or wants to extend the CLI with new capabilities. Automates the entire skill creation workflow from brainstorming to installation."
-version: 1.3.0
+version: 1.4.0
 author: Eric Andrade
 created: 2025-02-01
-updated: 2026-02-04
+updated: 2026-02-21
 platforms: [github-copilot-cli, claude-code, codex, antigravity]
 category: meta
 tags: [automation, scaffolding, skill-creation, meta-skill]
@@ -30,10 +30,11 @@ This skill should be used when:
 
 1. **Interactive Brainstorming** - Collaborative session to define skill purpose and scope
 2. **Prompt Enhancement** - Optional integration with prompt-engineer skill for refinement
-3. **Template Application** - Automatic file generation from standardized templates
-4. **Validation** - YAML, content, and style checks against Anthropic standards
-5. **Installation** - Local repository or global installation with symlinks
-6. **Progress Tracking** - Visual gauge showing completion status at each step
+3. **Automated Spec Generation** - Creates comprehensive technical specification document
+4. **Template Application** - Automatic file generation from standardized templates
+5. **Validation** - YAML, content, and style checks against Anthropic standards
+6. **Installation** - Local repository or global installation with symlinks
+7. **Progress Tracking** - Visual gauge showing completion status at each step
 
 ## Step 0: Discovery
 
@@ -85,25 +86,25 @@ EMAIL=$(git config user.email || echo "")
 Throughout the workflow, display a visual progress bar before starting each phase to keep the user informed. The progress bar format is:
 
 ```
-[████████████░░░░░░] 60% - Step 3/5: Creating SKILL.md
+[████████████░░░░░░] 57% - Step 4/7: File Generation
 ```
 
 **Format specifications:**
 - 20 characters wide (use █ for filled, ░ for empty)
-- Percentage based on current step (Step 1=20%, Step 2=40%, Step 3=60%, Step 4=80%, Step 5=100%)
-- Step counter showing current/total (e.g., "Step 3/5")
+- Percentage based on current step (Step 1=14%, Step 2=28%, Step 3=42%, Step 4=57%, Step 5=71%, Step 6=85%, Step 7=100%)
+- Step counter showing current/total (e.g., "Step 4/7")
 - Brief description of current phase
 
 **Display the progress bar using:**
 ```bash
-echo "[████░░░░░░░░░░░░░░] 20% - Step 1/5: Brainstorming & Planning"
+echo "[████░░░░░░░░░░░░░░] 14% - Step 1/7: Brainstorming & Planning"
 ```
 
 ### Phase 1: Brainstorming & Planning
 
 **Progress:** Display before starting this phase:
 ```bash
-echo "[████░░░░░░░░░░░░░░] 20% - Step 1/5: Brainstorming & Planning"
+echo "[████░░░░░░░░░░░░░░] 14% - Step 1/7: Brainstorming & Planning"
 ```
 
 Display progress:
@@ -113,9 +114,11 @@ Display progress:
 ╠══════════════════════════════════════════════════════════════╣
 ║ → Phase 1: Brainstorming                 [10%]               ║
 ║ ○ Phase 2: Prompt Refinement                                 ║
-║ ○ Phase 3: File Generation                                   ║
-║ ○ Phase 4: Validation                                        ║
-║ ○ Phase 5: Installation                                      ║
+║ ○ Phase 3: Spec Generation                                   ║
+║ ○ Phase 4: File Generation                                   ║
+║ ○ Phase 5: Validation                                        ║
+║ ○ Phase 6: Installation                                      ║
+║ ○ Phase 7: Completion                                        ║
 ╠══════════════════════════════════════════════════════════════╣
 ║ Progress: ███░░░░░░░░░░░░░░░░░░░░░░░░░░░  10%              ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -150,16 +153,16 @@ Display progress:
 
 **Progress:** Display before starting this phase:
 ```bash
-echo "[████████░░░░░░░░░░] 40% - Step 2/5: Prompt Enhancement"
+echo "[████████░░░░░░░░░░] 28% - Step 2/7: Prompt Enhancement"
 ```
 
 Update progress:
 ```
 ╔══════════════════════════════════════════════════════════════╗
 ║ ✓ Phase 1: Brainstorming                                     ║
-║ → Phase 2: Prompt Refinement             [30%]               ║
+║ → Phase 2: Prompt Refinement             [25%]               ║
 ╠══════════════════════════════════════════════════════════════╣
-║ Progress: █████████░░░░░░░░░░░░░░░░░░░░░  30%              ║
+║ Progress: ███████░░░░░░░░░░░░░░░░░░░░░░░░  25%              ║
 ╚══════════════════════════════════════════════════════════════╝
 ```
 
@@ -177,11 +180,11 @@ If **Yes**:
 If **No** or prompt-engineer unavailable:
 - Proceed with original user input
 
-### Phase 3: File Generation
+### Phase 3: Spec Generation
 
 **Progress:** Display before starting this phase:
 ```bash
-echo "[████████████░░░░░░] 60% - Step 3/5: File Generation"
+echo "[████████████░░░░░░] 42% - Step 3/7: Spec Generation"
 ```
 
 Update progress:
@@ -189,7 +192,365 @@ Update progress:
 ╔══════════════════════════════════════════════════════════════╗
 ║ ✓ Phase 1: Brainstorming                                     ║
 ║ ✓ Phase 2: Prompt Refinement                                 ║
-║ → Phase 3: File Generation               [50%]               ║
+║ → Phase 3: Spec Generation               [35%]               ║
+╠══════════════════════════════════════════════════════════════╣
+║ Progress: ██████████░░░░░░░░░░░░░░░░░░░░  35%              ║
+╚══════════════════════════════════════════════════════════════╝
+```
+
+**Purpose:**
+Create a comprehensive technical specification document that serves as the blueprint for skill implementation. This phase follows the Anti-Vibe methodology, ensuring clarity before proceeding to file generation.
+
+**Ask the user:**
+"Ready to generate the technical specification for this skill?"
+
+- [ ] **Yes** - Generate spec now
+- [ ] **Review parameters first** - Show what will be included
+- [ ] **Skip spec** - Proceed directly to file generation (not recommended)
+
+If **Review parameters first**, display:
+```
+📋 Spec Contents:
+─────────────────────────────────────────────────────────────
+1. Skill Identity
+   • Name: {SKILL_NAME}
+   • Type: {general/code/documentation/analysis}
+   • Target Platforms: {Copilot/Claude/Codex}
+
+2. Functional Specification
+   • Purpose statement
+   • Trigger phrases
+   • Input/output expectations
+
+3. Technical Architecture
+   • File structure
+   • Platform-specific adaptations
+   • Integration points
+
+4. Implementation Plan
+   • Phase breakdown
+   • Validation criteria
+   • Installation strategy
+
+5. Quality Gates
+   • Word count targets
+   • Style requirements
+   • Testing checklist
+```
+
+**Generate spec document:**
+
+```bash
+# Create spec filename
+SPEC_FILE=".github/skills/${SKILL_NAME}/SPEC.md"
+
+# Generate spec with timestamp
+cat > "$SPEC_FILE" << 'EOF'
+# Technical Specification: {SKILL_NAME}
+
+**Generated:** {DATE}
+**Author:** {AUTHOR}
+**Version:** 1.0.0
+**Status:** Draft
+
+---
+
+## 1. Skill Identity
+
+### 1.1 Metadata
+- **Name:** `{SKILL_NAME}`
+- **Type:** `{SKILL_TYPE}`
+- **Target Platforms:** `{PLATFORMS}`
+- **Version:** 1.0.0
+- **Author:** `{AUTHOR} <{EMAIL}>`
+
+### 1.2 Purpose Statement
+{PURPOSE_STATEMENT}
+
+### 1.3 Trigger Phrases
+{TRIGGER_PHRASES}
+
+---
+
+## 2. Functional Specification
+
+### 2.1 Core Capabilities
+1. **{CAPABILITY_1}**
+   - Description: {DESCRIPTION}
+   - Input: {INPUT_FORMAT}
+   - Output: {OUTPUT_FORMAT}
+
+2. **{CAPABILITY_2}**
+   - Description: {DESCRIPTION}
+   - Input: {INPUT_FORMAT}
+   - Output: {OUTPUT_FORMAT}
+
+### 2.2 Usage Patterns
+**When to use:**
+- {USE_CASE_1}
+- {USE_CASE_2}
+- {USE_CASE_3}
+
+**When NOT to use:**
+- {ANTI_PATTERN_1}
+- {ANTI_PATTERN_2}
+
+### 2.3 Workflow
+1. **{STEP_1}**
+   - Action: {ACTION}
+   - Validation: {CHECK}
+
+2. **{STEP_2}**
+   - Action: {ACTION}
+   - Validation: {CHECK}
+
+---
+
+## 3. Technical Architecture
+
+### 3.1 File Structure
+```
+{PLATFORM}/skills/{SKILL_NAME}/
+├── SKILL.md                 # Main skill documentation
+├── README.md                # User-facing documentation
+├── SPEC.md                  # This specification
+├── references/              # Extended documentation
+│   └── detailed-guide.md    # In-depth technical details
+├── examples/                # Usage examples
+│   ├── basic-usage.md
+│   └── advanced-usage.md
+└── scripts/                 # Utility scripts
+    ├── validate.sh
+    └── test.sh
+```
+
+### 3.2 Platform-Specific Adaptations
+**GitHub Copilot CLI:**
+- {COPILOT_SPECIFIC}
+
+**Claude Code:**
+- {CLAUDE_SPECIFIC}
+
+**Codex:**
+- {CODEX_SPECIFIC}
+
+### 3.3 Integration Points
+- **Dependencies:** {DEPENDENCIES}
+- **Related Skills:** {RELATED_SKILLS}
+- **External Tools:** {EXTERNAL_TOOLS}
+
+---
+
+## 4. Implementation Plan
+
+### 4.1 Phase Breakdown
+**Phase 1: File Generation**
+- [ ] Create SKILL.md from template
+- [ ] Generate README.md
+- [ ] Set up directory structure
+- [ ] Apply platform-specific adaptations
+
+**Phase 2: Content Development**
+- [ ] Write core documentation
+- [ ] Create usage examples
+- [ ] Add validation scripts
+- [ ] Prepare references/ content
+
+**Phase 3: Validation**
+- [ ] YAML frontmatter validation
+- [ ] Content quality checks
+- [ ] Style guide compliance
+- [ ] Word count verification
+
+**Phase 4: Installation**
+- [ ] Repository setup
+- [ ] Global symlinks (if applicable)
+- [ ] Installation verification
+- [ ] Integration testing
+
+### 4.2 Validation Criteria
+**YAML Frontmatter:**
+- [ ] All required fields present
+- [ ] Description in third-person format
+- [ ] Valid version number
+- [ ] Platform tags correct
+
+**Content Quality:**
+- [ ] SKILL.md: 1,500-2,000 words (ideal)
+- [ ] SKILL.md: Under 5,000 words (max)
+- [ ] README.md: 300-500 words
+- [ ] No second-person language
+- [ ] Progressive disclosure followed
+
+**Style Compliance:**
+- [ ] Imperative/infinitive verbs
+- [ ] Clear section headers
+- [ ] Code blocks properly formatted
+- [ ] Examples provided
+
+### 4.3 Installation Strategy
+**Local Repository:**
+- Files in `{PLATFORM}/skills/{SKILL_NAME}/`
+- Works when repository is active
+- No system-wide installation
+
+**Global Installation:**
+- Symlinks in `~/{PLATFORM}/skills/{SKILL_NAME}/`
+- Works system-wide
+- Auto-updates with git pull
+
+**Recommended:** Both (repository + symlinks)
+
+---
+
+## 5. Quality Gates
+
+### 5.1 Documentation Standards
+**SKILL.md Requirements:**
+- Word count: 1,500-2,000 (ideal), <5,000 (max)
+- Writing style: Imperative/infinitive
+- Format: Progressive disclosure
+- Sections: Purpose, When to Use, Core Capabilities, Workflow
+
+**README.md Requirements:**
+- Word count: 300-500
+- Audience: End users
+- Content: Installation, usage, examples
+- Tone: Accessible, practical
+
+### 5.2 Validation Checklist
+**Pre-Generation:**
+- [ ] Purpose clearly defined
+- [ ] Triggers identified
+- [ ] Platform targets confirmed
+- [ ] Author information available
+
+**Post-Generation:**
+- [ ] YAML validates successfully
+- [ ] Word counts within limits
+- [ ] Style guide compliance verified
+- [ ] Examples provided
+- [ ] Installation tested
+
+### 5.3 Testing Strategy
+**Manual Testing:**
+- Trigger skill in CLI
+- Verify expected behavior
+- Test edge cases
+- Validate error handling
+
+**Automated Testing:**
+- Run validation scripts
+- Check symlink integrity
+- Verify metadata completeness
+
+---
+
+## 6. Success Criteria
+
+**Functional Requirements:**
+- [ ] Skill triggers correctly on all specified phrases
+- [ ] Provides accurate guidance for target use cases
+- [ ] Integrates smoothly with target platforms
+- [ ] Documentation is clear and actionable
+
+**Quality Requirements:**
+- [ ] Passes all validation checks
+- [ ] Meets word count guidelines
+- [ ] Follows writing style standards
+- [ ] Includes working examples
+
+**Usability Requirements:**
+- [ ] README is accessible to new users
+- [ ] SKILL.md is comprehensive yet focused
+- [ ] Examples are practical and realistic
+- [ ] Installation is straightforward
+
+---
+
+## 7. Revision History
+
+| Version | Date       | Author      | Changes                     |
+|---------|------------|-------------|-----------------------------|
+| 1.0.0   | {DATE}     | {AUTHOR}    | Initial specification       |
+
+---
+
+## Appendix A: Template Variables
+
+**Placeholders to substitute:**
+- `{SKILL_NAME}` - kebab-case skill name
+- `{SKILL_TYPE}` - general/code/documentation/analysis
+- `{PLATFORMS}` - copilot/claude/codex
+- `{AUTHOR}` - From git config
+- `{EMAIL}` - From git config
+- `{DATE}` - Current date (YYYY-MM-DD)
+- `{PURPOSE_STATEMENT}` - From Phase 1 brainstorming
+- `{TRIGGER_PHRASES}` - From Phase 1 brainstorming
+
+## Appendix B: Reference Documents
+
+- Anthropic Skill Development Guide
+- Platform-Specific Documentation
+- Writing Style Guide
+- Progressive Disclosure Patterns
+
+EOF
+
+echo "✅ Spec generated: $SPEC_FILE"
+```
+
+**Display spec summary:**
+
+```
+📋 Technical Specification Generated
+─────────────────────────────────────────────────────────────
+File: .github/skills/{SKILL_NAME}/SPEC.md
+Size: {FILE_SIZE}
+
+📊 Spec Breakdown:
+   Section 1: Skill Identity
+   Section 2: Functional Specification
+   Section 3: Technical Architecture
+   Section 4: Implementation Plan
+   Section 5: Quality Gates
+   Section 6: Success Criteria
+   Appendix A: Template Variables
+   Appendix B: Reference Documents
+
+✅ Ready for Phase 4: File Generation
+```
+
+**Next steps:**
+1. Review the generated spec for accuracy
+2. Make any manual adjustments if needed
+3. Proceed to Phase 4 to generate files based on spec
+
+**If user requests changes:**
+- Edit SPEC.md directly
+- Re-run generation with updated parameters
+- Skip spec and proceed to file generation
+
+## Artifact Expected
+
+| Phase | Artifact | Location |
+|------|----------|----------|
+| 3 | SPEC.md | .github/skills/{SKILL_NAME}/SPEC.md |
+
+### Phase 4: File Generation
+
+**Progress:** Display before starting this phase:
+```bash
+echo "[██████████████░░░░] 57% - Step 4/7: File Generation"
+```
+
+Update progress:
+```
+╔══════════════════════════════════════════════════════════════╗
+║ ✓ Phase 1: Brainstorming                                     ║
+║ ✓ Phase 2: Prompt Refinement                                 ║
+║ ✓ Phase 3: Spec Generation                                   ║
+║ → Phase 4: File Generation               [50%]               ║
 ╠══════════════════════════════════════════════════════════════╣
 ║ Progress: ███████████████░░░░░░░░░░░░░░░  50%              ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -281,20 +642,20 @@ fi
    └── scripts/
 ```
 
-### Phase 4: Validation
+### Phase 5: Validation
 
 **Progress:** Display before starting this phase:
 ```bash
-echo "[████████████████░░] 80% - Step 4/5: Validation"
+echo "[████████████████░░] 71% - Step 5/7: Validation"
 ```
 
 Update progress:
 ```
 ╔══════════════════════════════════════════════════════════════╗
-║ ✓ Phase 3: File Generation                                   ║
-║ → Phase 4: Validation                    [70%]               ║
+║ ✓ Phase 4: File Generation                                   ║
+║ → Phase 5: Validation                    [65%]               ║
 ╠══════════════════════════════════════════════════════════════╣
-║ Progress: █████████████████████░░░░░░░░░  70%              ║
+║ Progress: ████████████████████░░░░░░░░░  65%              ║
 ╚══════════════════════════════════════════════════════════════╝
 ```
 
@@ -328,20 +689,20 @@ scripts/validate-skill-content.sh ".github/skills/$SKILL_NAME"
 - Reformat description to third-person
 - Add missing required fields
 
-### Phase 5: Installation
+### Phase 6: Installation
 
 **Progress:** Display before starting this phase:
 ```bash
-echo "[████████████████████] 100% - Step 5/5: Installation"
+echo "[████████████████████] 85% - Step 6/7: Installation"
 ```
 
 Update progress:
 ```
 ╔══════════════════════════════════════════════════════════════╗
-║ ✓ Phase 4: Validation                                        ║
-║ → Phase 5: Installation                  [90%]               ║
+║ ✓ Phase 5: Validation                                        ║
+║ → Phase 6: Installation                  [80%]               ║
 ╠══════════════════════════════════════════════════════════════╣
-║ Progress: ██████████████████████████░░░░░  90%              ║
+║ Progress: ████████████████████████░░░░░░  80%              ║
 ╚══════════════════════════════════════════════════════════════╝
 ```
 
@@ -410,7 +771,7 @@ ls -la ~/.claude/skills/$SKILL_NAME 2>/dev/null
 ls -la ~/.codex/skills/$SKILL_NAME 2>/dev/null
 ```
 
-### Phase 6: Completion
+### Phase 7: Completion
 
 **Progress:** Display completion message:
 ```bash
@@ -420,7 +781,7 @@ echo "[████████████████████] 100% - ✓ 
 Update progress:
 ```
 ╔══════════════════════════════════════════════════════════════╗
-║ ✓ Phase 5: Installation                                      ║
+║ ✓ Phase 6: Installation                                      ║
 ║ ✅ SKILL CREATION COMPLETE!                                  ║
 ╠══════════════════════════════════════════════════════════════╣
 ║ Progress: ██████████████████████████████  100%              ║
@@ -437,6 +798,7 @@ Update progress:
 🔗 Installed: Global (Copilot + Claude)
 
 📋 Files Created:
+   ✅ SPEC.md (technical specification)
    ✅ SKILL.md (1,847 words)
    ✅ README.md (423 words)
    ✅ references/ (empty, ready for extended docs)
@@ -444,13 +806,15 @@ Update progress:
    ✅ scripts/ (empty, ready for utilities)
 
 🚀 Next Steps:
-   1. Test the skill: Try trigger phrases in CLI
-   2. Add examples: Create working code samples in examples/
-   3. Extend docs: Add detailed guides to references/
-   4. Commit changes: git add .github/skills/your-skill-name && git commit
-   5. Share: Push to repository for team use
+   1. Review spec: Check SPEC.md for accuracy
+   2. Test the skill: Try trigger phrases in CLI
+   3. Add examples: Create working code samples in examples/
+   4. Extend docs: Add detailed guides to references/
+   5. Commit changes: git add .github/skills/your-skill-name && git commit
+   6. Share: Push to repository for team use
 
 💡 Pro Tips:
+   - SPEC.md is your blueprint - update it as skill evolves
    - Keep SKILL.md under 2,000 words (currently: 1,847)
    - Move detailed content to references/ folder
    - Add executable scripts to scripts/ folder
