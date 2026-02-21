@@ -122,9 +122,10 @@ describe("ApprovalManager", () => {
             await manager.createRequest("file1.ts", "src/file1.ts");
             await manager.createRequest("file2.ts", "src/file2.ts");
 
+            // Fix: Use rejects.toThrow for async function
             await expect(
                 manager.createRequest("file3.ts", "src/file3.ts")
-            ).toThrow("Maximum pending requests reached");
+            ).rejects.toThrow("Maximum pending requests reached");
         });
     });
 

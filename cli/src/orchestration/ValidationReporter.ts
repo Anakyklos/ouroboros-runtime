@@ -112,15 +112,11 @@ function validationResultToMarkdown(
     md += `- **Message**: ${result.message}\n`;
 
     if (result.details) {
-        md += `\n<details>
-<summary>Details</summary>
-
-```json
-${JSON.stringify(result.details, null, 2)}
-```
-
-</details>
-`;
+        md += '\n<details>\n<summary>Details</summary>\n\n' +
+              '```json\n' +
+              JSON.stringify(result.details, null, 2) +
+              '\n```\n' +
+              '\n</details>\n';
     }
 
     return md;
@@ -147,15 +143,11 @@ function qualityGateResultToMarkdown(gate: QualityGateResult): string {
     md += `- **Message**: ${gate.result.message}\n`;
 
     if (gate.result.details) {
-        md += `\n<details>
-<summary>Details</summary>
-
-```json
-${JSON.stringify(gate.result.details, null, 2)}
-```
-
-</details>
-`;
+        md += '\n<details>\n<summary>Details</summary>\n\n' +
+              '```json\n' +
+              JSON.stringify(gate.result.details, null, 2) +
+              '\n```\n' +
+              '\n</details>\n';
     }
 
     return md;

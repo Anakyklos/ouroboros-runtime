@@ -32,6 +32,14 @@ import { EventBus } from "../daemon/event-bus.js";
 const APPROVAL_STATE_DIR = ".agent/approval";
 const STATE_FILE = "approval-state.json";
 
+// Pre-computed priority map for O(1) lookups
+const PRIORITY_ORDER: Record<ApprovalPriority, number> = {
+    [ApprovalPriority.URGENT]: 0,
+    [ApprovalPriority.HIGH]: 1,
+    [ApprovalPriority.NORMAL]: 2,
+    [ApprovalPriority.LOW]: 3,
+};
+
 /**
  * Garante que o diretório de estado existe.
  */
@@ -152,9 +160,17 @@ export class ApprovalManager {
         if (!targetPath || typeof targetPath !== 'string' || targetPath.trim().length === 0) {
             throw new Error('targetPath must be a non-empty string');
         }
-        // Optional: Add path traversal validation
-        if (sourcePath.includes('..') || targetPath.includes('..')) {
-            throw new Error('Path traversal detected in source or target path');
+
+        // Path traversal validation using path.resolve relative to project root
+        // This handles '..' sequences and ensures the resolved path is within the allowed root
+        const resolvedSource = path.resolve(this.config.projectRoot, sourcePath);
+        const resolvedTarget = path.resolve(this.config.projectRoot, targetPath);
+
+        if (!resolvedSource.startsWith(this.config.projectRoot)) {
+            throw new Error(`Path traversal detected: source path resolves outside project root (${resolvedSource})`);
+        }
+        if (!resolvedTarget.startsWith(this.config.projectRoot)) {
+            throw new Error(`Path traversal detected: target path resolves outside project root (${resolvedTarget})`);
         }
 
         // Verifica limite de solicitações pendentes
@@ -166,7 +182,7 @@ export class ApprovalManager {
 
         const request: ApprovalRequest = {
             id: generateRequestId(),
-            sourcePath,
+            sourcePath, // Keep original relative path for storage/display
             targetPath,
             status: ApprovalStatus.PENDING,
             priority,
@@ -203,20 +219,18 @@ export class ApprovalManager {
 
     /**
      * Helper to sort requests by priority and date.
+     * Uses pre-computed PRIORITY_ORDER for O(1) lookups.
      */
     private sortByPriorityAndDate(requests: ApprovalRequest[]): ApprovalRequest[] {
-        const priorityOrder = [
-            ApprovalPriority.URGENT,
-            ApprovalPriority.HIGH,
-            ApprovalPriority.NORMAL,
-            ApprovalPriority.LOW,
-        ];
         return requests.sort((a, b) => {
-            const aPriorityIndex = priorityOrder.indexOf(a.priority);
-            const bPriorityIndex = priorityOrder.indexOf(b.priority);
-            if (aPriorityIndex !== bPriorityIndex) {
-                return aPriorityIndex - bPriorityIndex;
+            const aPriority = PRIORITY_ORDER[a.priority];
+            const bPriority = PRIORITY_ORDER[b.priority];
+
+            if (aPriority !== bPriority) {
+                return aPriority - bPriority;
             }
+
+            // Newer requests first if priority is same
             return b.createdAt.getTime() - a.createdAt.getTime();
         });
     }
