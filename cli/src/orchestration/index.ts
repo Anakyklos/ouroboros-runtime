@@ -31,6 +31,12 @@ export {
 } from "./PromotionManager.js";
 
 export {
+    ValidationReporter,
+    createValidationReporter,
+    createQuietReporter,
+} from "./ValidationReporter.js";
+
+export {
     PromotionStatus,
     QualityGateType,
     DEFAULT_PROMOTION_CONFIG,
