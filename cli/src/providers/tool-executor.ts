@@ -315,25 +315,30 @@ export class ToolExecutor {
         const dirPath = this.resolvePath(args.path as string);
         const recursive = args.recursive as boolean ?? false;
 
-        if (!fs.existsSync(dirPath)) {
+        try {
+            await fs.promises.access(dirPath);
+        } catch {
             return { success: false, output: '', error: `Directory not found: ${dirPath}` };
         }
 
-        const entries: string[] = [];
+        const list = async (dir: string, prefix = ''): Promise<string[]> => {
+            const items = await fs.promises.readdir(dir, { withFileTypes: true });
 
-        const list = (dir: string, prefix = '') => {
-            const items = fs.readdirSync(dir, { withFileTypes: true });
-            for (const item of items) {
+            const results = await Promise.all(items.map(async (item) => {
                 const indicator = item.isDirectory() ? '/' : '';
-                entries.push(`${prefix}${item.name}${indicator}`);
+                const entry = `${prefix}${item.name}${indicator}`;
 
                 if (recursive && item.isDirectory()) {
-                    list(path.join(dir, item.name), `${prefix}${item.name}/`);
+                    const subEntries = await list(path.join(dir, item.name), `${prefix}${item.name}/`);
+                    return [entry, ...subEntries];
                 }
-            }
+                return [entry];
+            }));
+
+            return results.flat();
         };
 
-        list(dirPath);
+        const entries = await list(dirPath);
 
         return { success: true, output: entries.join('\n') };
     }
