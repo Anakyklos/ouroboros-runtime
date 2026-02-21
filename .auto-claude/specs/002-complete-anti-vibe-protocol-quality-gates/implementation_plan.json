@@ -1,0 +1,553 @@
+{
+  "feature": "Complete Anti-Vibe Protocol Quality Gates",
+  "workflow_type": "feature",
+  "workflow_rationale": "Multi-service feature involving orchestration system, skill creator scripts, and quality gates. Implementation follows dependency order: infrastructure first, then validation enforcement, then human approval UI, then integration.",
+  "phases": [
+    {
+      "id": "phase-1-infrastructure",
+      "name": "Quality Gates Infrastructure",
+      "type": "implementation",
+      "description": "Build the core playground promotion system with validation checks and promotion tracking",
+      "depends_on": [],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-1-1",
+          "description": "Create promotion manager module to handle playground→src workflow",
+          "service": "cli",
+          "files_to_modify": [],
+          "files_to_create": [
+            "cli/src/orchestration/PromotionManager.ts",
+            "cli/src/orchestration/promotion-types.ts"
+          ],
+          "patterns_from": [
+            "cli/src/orchestration/Orchestrator.ts",
+            "cli/src/orchestration/MemoryManager.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bun run typecheck",
+            "expected": "Type check successful"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-1-2",
+          "description": "Implement quality validation registry with test, lint, and type-check validators",
+          "service": "cli",
+          "files_to_modify": [
+            "cli/src/orchestration/strategies/CommandValidationStrategy.ts"
+          ],
+          "files_to_create": [
+            "cli/src/orchestration/strategies/TestValidationStrategy.ts",
+            "cli/src/orchestration/strategies/QualityGateRegistry.ts"
+          ],
+          "patterns_from": [
+            "cli/src/orchestration/strategies/CommandValidationStrategy.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bun run typecheck",
+            "expected": "Type check successful"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-1-3",
+          "description": "Create playground file tracking system to monitor candidate files for promotion",
+          "service": "cli",
+          "files_to_modify": [],
+          "files_to_create": [
+            "cli/src/utils/playground-tracker.ts"
+          ],
+          "patterns_from": [
+            "cli/src/orchestration/MemoryManager.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bun run typecheck",
+            "expected": "Type check successful"
+          },
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-2-validation-enforcement",
+      "name": "Validation Enforcement",
+      "type": "implementation",
+      "description": "Integrate quality gates into orchestrator workflow to enforce validation before task completion",
+      "depends_on": [
+        "phase-1-infrastructure"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-2-1",
+          "description": "Add automatic quality gate validation to orchestrator for EXECUTION phase tasks",
+          "service": "cli",
+          "files_to_modify": [
+            "cli/src/orchestration/Orchestrator.ts"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "cli/src/orchestration/Orchestrator.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bun run typecheck",
+            "expected": "Type check successful"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-2-2",
+          "description": "Implement test requirement checker that validates test coverage for new code",
+          "service": "cli",
+          "files_to_modify": [],
+          "files_to_create": [
+            "cli/src/orchestration/validators/TestCoverageValidator.ts"
+          ],
+          "patterns_from": [
+            "cli/src/orchestration/strategies/CommandValidationStrategy.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bun run typecheck",
+            "expected": "Type check successful"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-2-3",
+          "description": "Create validation result formatter for clear gate pass/fail reporting",
+          "service": "cli",
+          "files_to_modify": [],
+          "files_to_create": [
+            "cli/src/orchestration/ValidationReporter.ts"
+          ],
+          "patterns_from": [
+            "cli/src/orchestration/MemoryManager.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bun run typecheck",
+            "expected": "Type check successful"
+          },
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-3-specification-workflow",
+      "name": "Specification Workflow Enhancement",
+      "type": "implementation",
+      "description": "Enhance anti-vibe protocol to enforce specification generation before code execution",
+      "depends_on": [
+        "phase-2-validation-enforcement"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-3-1",
+          "description": "Add spec template generator with anti-vibe phase enforcement",
+          "service": "cli",
+          "files_to_modify": [
+            "cli/src/utils/anti-vibe.ts"
+          ],
+          "files_to_create": [
+            "cli/src/utils/spec-generator.ts"
+          ],
+          "patterns_from": [
+            "cli/src/utils/anti-vibe.ts",
+            ".agent/workflows/architect-spec.md"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bun run typecheck",
+            "expected": "Type check successful"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-3-2",
+          "description": "Implement spec validation that checks for required sections before allowing EXECUTION phase",
+          "service": "cli",
+          "files_to_modify": [],
+          "files_to_create": [
+            "cli/src/orchestration/validators/SpecValidator.ts"
+          ],
+          "patterns_from": [
+            "cli/src/orchestration/strategies/CommandValidationStrategy.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bun run typecheck",
+            "expected": "Type check successful"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-3-3",
+          "description": "Integrate spec validation into orchestrator phase gate checks",
+          "service": "cli",
+          "files_to_modify": [
+            "cli/src/orchestration/Orchestrator.ts"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "cli/src/orchestration/Orchestrator.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bun run typecheck",
+            "expected": "Type check successful"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-4-human-approval",
+      "name": "Human Approval Gates",
+      "type": "implementation",
+      "description": "Implement human approval workflow for code promotion from playground to src",
+      "depends_on": [
+        "phase-3-specification-workflow"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-4-1",
+          "description": "Create approval request manager that queues promotion requests for human review",
+          "service": "cli",
+          "files_to_modify": [],
+          "files_to_create": [
+            "cli/src/orchestration/ApprovalManager.ts",
+            "cli/src/orchestration/approval-types.ts"
+          ],
+          "patterns_from": [
+            "cli/src/orchestration/SessionManager.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bun run typecheck",
+            "expected": "Type check successful"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-4-2",
+          "description": "Implement promotion executor that moves validated files from playground to src",
+          "service": "cli",
+          "files_to_modify": [
+            "cli/src/orchestration/PromotionManager.ts"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "cli/src/orchestration/PromotionManager.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bun run typecheck",
+            "expected": "Type check successful"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-4-3",
+          "description": "Add approval CLI commands for reviewing and approving/rejecting promotions",
+          "service": "cli",
+          "files_to_modify": [],
+          "files_to_create": [
+            "cli/src/commands/approval-commands.ts"
+          ],
+          "patterns_from": [
+            "cli/src/orchestration/runner.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bun run typecheck",
+            "expected": "Type check successful"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-4-4",
+          "description": "Create approval history tracking for audit trail of all promotions",
+          "service": "cli",
+          "files_to_modify": [],
+          "files_to_create": [
+            "cli/src/orchestration/ApprovalHistory.ts"
+          ],
+          "patterns_from": [
+            "cli/src/orchestration/MemoryManager.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bun run typecheck",
+            "expected": "Type check successful"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-5-skill-creator-completion",
+      "name": "Skill Creator Script Completion",
+      "type": "implementation",
+      "description": "Remove TODO placeholders from skill creator scripts and implement missing functionality",
+      "depends_on": [
+        "phase-4-human-approval"
+      ],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-5-1",
+          "description": "Replace TODO placeholders in init_skill.py with actual skill template content",
+          "service": "agent-skills",
+          "files_to_modify": [
+            ".agent/skills/tooling/skill-creator/scripts/init_skill.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            ".agent/skills/tooling/skill-creator/SKILL.md"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "grep -r 'TODO' .agent/skills/tooling/skill-creator/scripts/init_skill.py | wc -l",
+            "expected": "0"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-5-2",
+          "description": "Add automated spec generation to skill creator workflow",
+          "service": "agent-skills",
+          "files_to_modify": [
+            ".agent/skills/tooling/skill-creator/SKILL.md"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            ".agent/skills/architect-workflow/SKILL.md"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Review SKILL.md to verify spec generation workflow is documented"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-5-3",
+          "description": "Add quality gate validation step to skill creator Phase 4",
+          "service": "agent-skills",
+          "files_to_modify": [
+            ".agent/skills/tooling/skill-creator/SKILL.md"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            ".agent/skills/tooling/skill-creator/scripts/quick_validate.py"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Review SKILL.md Phase 4 to verify quality gate validation is integrated"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-6-integration",
+      "name": "Integration & End-to-End Testing",
+      "type": "integration",
+      "description": "Wire all quality gates together and verify complete anti-vibe workflow",
+      "depends_on": [
+        "phase-5-skill-creator-completion"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-6-1",
+          "description": "Create end-to-end integration test for full anti-vibe workflow (spec→code→validate→approve→promote)",
+          "service": "cli",
+          "files_to_modify": [],
+          "files_to_create": [
+            "cli/src/orchestration/AntiVibeWorkflow.test.ts"
+          ],
+          "patterns_from": [
+            "cli/src/orchestration/WaveExecutor.test.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bun test cli/src/orchestration/AntiVibeWorkflow.test.ts",
+            "expected": "All tests passed"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-6-2",
+          "description": "Update orchestrator index.ts to export new quality gate modules",
+          "service": "cli",
+          "files_to_modify": [
+            "cli/src/orchestration/index.ts"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "cli/src/orchestration/index.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bun run typecheck",
+            "expected": "Type check successful"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-6-3",
+          "description": "Verify all acceptance criteria are met with manual testing checklist",
+          "all_services": true,
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "e2e",
+            "steps": [
+              "Create new feature using anti-vibe workflow",
+              "Verify spec is generated before code",
+              "Verify code in playground passes tests",
+              "Verify human approval is required",
+              "Verify code promotion from playground to src",
+              "Verify skill creator has no TODO placeholders"
+            ]
+          },
+          "status": "pending"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_phases": 6,
+    "total_subtasks": 22,
+    "services_involved": [
+      "cli",
+      "agent-skills"
+    ],
+    "parallelism": {
+      "max_parallel_phases": 1,
+      "parallel_groups": [],
+      "recommended_workers": 1,
+      "speedup_estimate": "Sequential execution required due to phase dependencies"
+    },
+    "startup_command": "source .auto-claude/.venv/bin/activate && python .auto-claude/run.py --spec 002 --parallel 1"
+  },
+  "verification_strategy": {
+    "risk_level": "high",
+    "skip_validation": false,
+    "test_creation_phase": "post_implementation",
+    "test_types_required": [
+      "unit",
+      "integration",
+      "e2e"
+    ],
+    "security_scanning_required": false,
+    "staging_deployment_required": false,
+    "acceptance_criteria": [
+      "All existing tests pass",
+      "New code has unit and integration test coverage",
+      "End-to-end workflow test validates complete anti-vibe protocol",
+      "No TODO placeholders remain in skill creator scripts",
+      "Code promotion requires human approval"
+    ],
+    "verification_steps": [
+      {
+        "name": "Unit Tests",
+        "command": "bun test",
+        "expected_outcome": "All unit tests pass",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Type Check",
+        "command": "bun run typecheck",
+        "expected_outcome": "No type errors",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Integration Tests",
+        "command": "bun test cli/src/orchestration/*.test.ts",
+        "expected_outcome": "All integration tests pass",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "E2E Anti-Vibe Workflow",
+        "command": "bun test cli/src/orchestration/AntiVibeWorkflow.test.ts",
+        "expected_outcome": "End-to-end workflow completes successfully",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Skill Creator TODO Check",
+        "command": "grep -r 'TODO' .agent/skills/tooling/skill-creator/ | wc -l",
+        "expected_outcome": "0 TODO placeholders found",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      }
+    ],
+    "reasoning": "High risk change involving core orchestration workflow and quality gates. Requires comprehensive testing to ensure anti-vibe protocol enforces quality standards without breaking existing functionality."
+  },
+  "qa_acceptance": {
+    "unit_tests": {
+      "required": true,
+      "commands": [
+        "bun test cli/src/orchestration/PromotionManager.test.ts",
+        "bun test cli/src/orchestration/QualityGateRegistry.test.ts",
+        "bun test cli/src/orchestration/ApprovalManager.test.ts"
+      ],
+      "minimum_coverage": "80%"
+    },
+    "integration_tests": {
+      "required": true,
+      "commands": [
+        "bun test cli/src/orchestration/Orchestrator.test.ts"
+      ],
+      "services_to_test": [
+        "cli",
+        "orchestrator"
+      ]
+    },
+    "e2e_tests": {
+      "required": true,
+      "commands": [
+        "bun test cli/src/orchestration/AntiVibeWorkflow.test.ts"
+      ],
+      "flows": [
+        "spec-generation",
+        "code-validation",
+        "human-approval",
+        "playground-promotion"
+      ]
+    },
+    "manual_verification": {
+      "required": true,
+      "checks": [
+        "Skill creator scripts have no TODO placeholders",
+        "Human approval workflow prevents automatic promotion",
+        "Quality gates enforce test requirements",
+        "Specification generation happens before code execution"
+      ]
+    }
+  },
+  "qa_signoff": null,
+  "status": "in_progress",
+  "planStatus": "in_progress",
+  "xstateState": "coding",
+  "executionPhase": "coding",
+  "updated_at": "2026-02-21T12:30:26.421Z"
+}

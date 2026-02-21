@@ -405,3 +405,72 @@ Notes:
 - Smart test file detection supports multiple conventions
 - Provides both file-level and aggregate coverage metrics
 - Ready to proceed to subtask-2-3 (Create validation result formatter)
+
+2026-02-21 - subtask-3-1: Add spec template generator with anti-vibe phase enforcement
+
+Status: COMPLETED
+
+Files Created:
+- cli/src/utils/spec-generator.ts - Spec template generator with anti-vibe phase enforcement
+
+Files Modified:
+- cli/src/utils/anti-vibe.ts - Exported DEFAULT_CONTEXT_DIR for spec-generator use
+
+Implementation Details:
+- Spec template generator based on Architect Specification Workflow (.agent/workflows/architect-spec.md)
+- Comprehensive spec template with required sections:
+  - 🎯 Objetivo (Objective) - Required
+  - 💡 Contexto e Justificativa (Context and Justification) - Required
+  - 🚀 Plano de Implementação (Implementation Plan) - Required
+  - ✅ Critérios de Aceitação / Verificação (Acceptance Criteria) - Required
+  - 🚧 Possíveis Riscos e Desafios (Risks and Challenges) - Optional
+- Spec file metadata: description, author, date, phase, status
+- Files section: files to modify, create, and reference patterns
+- Anti-Vibe Protocol checklist for all phases (RESEARCH, SPECIFICATION, EXECUTION, VERIFICATION)
+- Spec review checklist before approval
+- Phase enforcement functions:
+  - ensureSpecFile() - Creates spec if not exists
+  - validateSpecContent() - Checks for required sections
+  - createSpecFile() - Creates spec with phase gate enforcement (blocks during EXECUTION)
+  - loadSpecForValidation() - Loads spec for validation checks
+  - canTransitionToExecution() - Validates spec is complete before phase transition
+- Exported DEFAULT_CONTEXT_DIR from anti-vibe.ts for spec-generator use
+- Template includes placeholders, prompts, and example structure
+- Follows Portuguese language conventions from existing specs
+- Anti-Vibe phase gates: blocks spec creation during EXECUTION phase
+
+Key Features:
+- generateSpecTemplate(options: SpecTemplateOptions): string - Generate complete spec template
+- validateSpecContent(content: string): { valid, missing } - Validate required sections exist
+- ensureSpecFile(contextDir, specFile): Promise<void> - Create spec if missing
+- createSpecFile(options, contextDir, specFile): Promise<void> - Create with phase enforcement
+- loadSpecForValidation(contextDir, specFile): Promise<specData> - Load and validate spec
+- canTransitionToExecution(contextDir, specFile): Promise<canProceed, reason> - Check phase transition
+
+Type Definitions:
+- SpecTemplateOptions: Template generation options (taskDescription, files, verification, author)
+- SpecSection: Spec section definition (title, required, placeholder)
+
+Integration Points:
+- Imports from anti-vibe.ts: WorkflowPhase, SPEC_FILE, DIAG_FILE, DEFAULT_CONTEXT_DIR
+- Uses DEFAULT_CONTEXT_DIR for default context directory path
+- Enforces phase gates via ANTI_VIBE_PHASE environment variable check
+- Validates spec approval status before allowing EXECUTION phase transition
+
+Git Commit:
+- auto-claude/002-complete-anti-vibe-protocol-quality-gates f650ace
+
+Quality Checklist:
+- [✓] Follows patterns from reference files (anti-vibe.ts, architect-spec.md)
+- [✓] No console.log/print debugging statements (uses console.log for informational messages only)
+- [✓] Error handling in place (try/catch for file operations, proper error messages)
+- [✓] TypeScript type checking passed (no errors in modified files)
+- [✓] Clean commit with descriptive message
+
+Notes:
+- TypeScript compilation shows no errors for spec-generator.ts or anti-vibe.ts
+- Follows Architect Specification Workflow from .agent/workflows/architect-spec.md
+- Comprehensive template includes all required sections and placeholders
+- Phase enforcement prevents spec modification during EXECUTION phase
+- Validates spec completeness before allowing transition to EXECUTION
+- Ready to proceed to subtask-3-2 (Implement spec validation)
