@@ -253,6 +253,10 @@ export function Settings() {
               {[
                 { key: "Space", action: "Pause/Resume" },
                 { key: "Esc", action: "Emergency Brake" },
+                { key: "Ctrl + 1", action: "Switch to Quadrant 1" },
+                { key: "Ctrl + 2", action: "Switch to Quadrant 2" },
+                { key: "Ctrl + 3", action: "Switch to Quadrant 3" },
+                { key: "Ctrl + 4", action: "Switch to Quadrant 4" },
                 { key: "Ctrl + L", action: "Toggle Logs" },
                 { key: "`", action: "Focus Terminal" },
                 { key: "Shift + F", action: "Frenzy Mode" },
