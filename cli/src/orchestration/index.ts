@@ -49,6 +49,26 @@ export {
     type PromotionValidation,
 } from "./promotion-types.js";
 
+// Approval Manager (Human Approval Gates)
+export {
+    ApprovalManager,
+    createApprovalManager,
+} from "./ApprovalManager.js";
+
+export {
+    ApprovalStatus,
+    ApprovalPriority,
+    DEFAULT_APPROVAL_CONFIG,
+    DEFAULT_APPROVAL_PRIORITY,
+    type ApprovalRequest,
+    type ApprovalConfig,
+    type ApprovalResult,
+    type ApprovalState,
+    type ApprovalFilters,
+    type ApprovalStats,
+    type ApprovalNotificationCallback,
+} from "./approval-types.js";
+
 export {
     PersonaType,
     TaskStatus,
