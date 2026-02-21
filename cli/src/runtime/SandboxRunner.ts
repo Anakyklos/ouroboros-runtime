@@ -488,8 +488,23 @@ export class SandboxRunner extends EventEmitter {
      * Execute code from a file in the sandbox
      */
     async executeFile(filePath: string, timeoutMs?: number): Promise<SandboxExecutionResult> {
+        // For relative paths, try resolving against playground first
+        let pathToValidate = filePath;
+
+        // If path is not absolute, try it as-is first, then try playground
+        const { resolve } = await import('path');
+        if (!filePath.startsWith('/')) {
+            // Try relative to playground
+            const playgroundPath = resolve(this.environment.playgroundPath, filePath);
+            const playgroundResult = await validatePath(playgroundPath, this.pathConfig);
+
+            if (playgroundResult.valid) {
+                pathToValidate = playgroundPath;
+            }
+        }
+
         // Validate file path using SandboxPathUtils
-        const validationResult = await validatePath(filePath, this.pathConfig);
+        const validationResult = await validatePath(pathToValidate, this.pathConfig);
 
         if (!validationResult.valid) {
             return {
@@ -652,16 +667,15 @@ except Exception as e:
     // ========================================================================
 
     private wrapCodeForExecution(code: string, marker: string): string {
-        // Escape code for Python execution - use single quotes for Python string
-        const escapedCode = code
-            .replace(/\\/g, '\\\\')  // Escape backslashes
-            .replace(/'/g, "\\'");    // Escape single quotes
+        // Indent code for try/except block - simpler approach without complex escaping
+        const indentedCode = code
+            .split('\n')
+            .map(line => '    ' + line)
+            .join('\n');
 
         return `
 try:
-    # Execute in sandbox namespace
-    exec('${escapedCode}', globals(), _ouroboros_sandbox_vars)
-
+${indentedCode}
 except Exception as __e:
     import traceback
     print(f"ERROR: {__e}", file=__import__('sys').stderr)
