@@ -24,6 +24,25 @@ export {
     createCustomValidationStrategy,
 } from "./strategies/index.js";
 
+// Promotion Manager (Anti-Vibe Quality Gates)
+export {
+    PromotionManager,
+    createPromotionManager,
+} from "./PromotionManager.js";
+
+export {
+    PromotionStatus,
+    QualityGateType,
+    DEFAULT_PROMOTION_CONFIG,
+    QUALITY_GATE_COMMANDS,
+    type PromotionCandidate,
+    type PromotionConfig,
+    type PromotionResult,
+    type PromotionState,
+    type ApprovalCallback,
+    type PromotionValidation,
+} from "./promotion-types.js";
+
 export {
     PersonaType,
     TaskStatus,
