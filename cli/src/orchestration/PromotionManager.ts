@@ -317,6 +317,146 @@ export class PromotionManager {
     }
 
     /**
+     * Executa a promoção de todos os arquivos aprovados pendentes.
+     * Este é o executor principal que move todos os arquivos validados
+     * de playground para src em lote.
+     */
+    async executePromotions(): Promise<{
+        success: number;
+        failed: number;
+        results: PromotionResult[];
+    }> {
+        const approved = [...this.state.approvedPending];
+        this.log('info', `🚀 Executing promotions for ${approved.length} approved files`);
+
+        const results: PromotionResult[] = [];
+        let successCount = 0;
+        let failedCount = 0;
+
+        for (const candidate of approved) {
+            this.log('info', `   Processing: ${candidate.sourcePath}`);
+            const result = await this.promote(candidate.sourcePath);
+
+            results.push(result);
+
+            if (result.success) {
+                successCount++;
+            } else {
+                failedCount++;
+            }
+        }
+
+        this.log('info', `✅ Execution complete: ${successCount} succeeded, ${failedCount} failed`);
+
+        return {
+            success: successCount,
+            failed: failedCount,
+            results,
+        };
+    }
+
+    /**
+     * Faz rollback de um arquivo promovido (move de volta para playground).
+     */
+    async rollbackPromotion(sourcePath: string): Promise<PromotionResult> {
+        const candidate = this.findCandidate(sourcePath);
+        if (!candidate) {
+            return {
+                success: false,
+                candidate: {} as PromotionCandidate,
+                error: `Candidate not found: ${sourcePath}`,
+                timestamp: new Date(),
+            };
+        }
+
+        if (candidate.status !== PromotionStatus.PROMOTED) {
+            return {
+                success: false,
+                candidate,
+                error: `Cannot rollback: file is not promoted (status: ${candidate.status})`,
+                timestamp: new Date(),
+            };
+        }
+
+        try {
+            const sourceFullPath = path.join(
+                this.config.projectRoot,
+                this.config.targetDir,
+                candidate.targetPath
+            );
+            const playgroundFullPath = path.join(
+                this.config.projectRoot,
+                this.config.sourceDir,
+                candidate.sourcePath
+            );
+
+            // Verifica se o arquivo promovido existe
+            if (!fs.existsSync(sourceFullPath)) {
+                throw new Error(`Promoted file not found: ${sourceFullPath}`);
+            }
+
+            // Move de volta para o playground
+            fs.copyFileSync(sourceFullPath, playgroundFullPath);
+            fs.unlinkSync(sourceFullPath);
+
+            // Atualiza o estado
+            candidate.status = PromotionStatus.APPROVED;
+            candidate.updatedAt = new Date();
+            this.state.approvedPending.push(candidate);
+            this.saveState();
+
+            this.log('info', `↩️ Rolled back: ${candidate.targetPath} → ${candidate.sourcePath}`);
+
+            return {
+                success: true,
+                candidate,
+                timestamp: new Date(),
+            };
+        } catch (err) {
+            const error = err instanceof Error ? err.message : String(err);
+            this.log('error', `❌ Rollback failed for ${sourcePath}: ${error}`);
+
+            return {
+                success: false,
+                candidate,
+                error,
+                timestamp: new Date(),
+            };
+        }
+    }
+
+    /**
+     * Remove arquivos do playground após promoção bem-sucedida.
+     */
+    cleanupPromotedFiles(sourcePath?: string): number {
+        let cleaned = 0;
+
+        const candidatesToClean = sourcePath
+            ? this.state.candidates.filter(c => c.sourcePath === sourcePath)
+            : this.state.candidates.filter(c => c.status === PromotionStatus.PROMOTED);
+
+        for (const candidate of candidatesToClean) {
+            const sourceFullPath = path.join(
+                this.config.projectRoot,
+                this.config.sourceDir,
+                candidate.sourcePath
+            );
+
+            try {
+                if (fs.existsSync(sourceFullPath)) {
+                    fs.unlinkSync(sourceFullPath);
+                    cleaned++;
+                    this.log('info', `🧹 Cleaned up: ${candidate.sourcePath}`);
+                }
+            } catch (err) {
+                this.log('warn', `⚠️ Failed to cleanup ${candidate.sourcePath}: ${err}`);
+            }
+        }
+
+        return cleaned;
+    }
+
+    /**
      * Retorna o estado atual do sistema de promoção.
      */
     getState(): PromotionState {
