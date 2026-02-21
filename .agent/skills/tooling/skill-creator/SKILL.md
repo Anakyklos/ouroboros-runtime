@@ -642,6 +642,138 @@ fi
    └── scripts/
 ```
 
+**Quality Gate Validation:**
+
+After file generation, run automated validation to ensure the skill meets quality standards:
+
+```bash
+# Determine the skill path based on platform
+if [[ "$PLATFORM" =~ "copilot" ]]; then
+    SKILL_PATH=".github/skills/$SKILL_NAME"
+elif [[ "$PLATFORM" =~ "claude" ]]; then
+    SKILL_PATH=".claude/skills/$SKILL_NAME"
+elif [[ "$PLATFORM" =~ "codex" ]]; then
+    SKILL_PATH=".codex/skills/$SKILL_NAME"
+fi
+
+# Run quality gate validation
+python3 .agent/skills/tooling/skill-creator/scripts/quick_validate.py "$SKILL_PATH"
+VALIDATION_RESULT=$?
+
+if [ $VALIDATION_RESULT -eq 0 ]; then
+    echo "✅ Quality gate passed!"
+else
+    echo "⚠️  Quality gate validation failed"
+    echo ""
+    echo "The following issues were found:"
+    echo "• Review the error messages above"
+    echo "• Common fixes:"
+    echo "  - Name must be hyphen-case (lowercase with hyphens)"
+    echo "  - Name max 64 characters"
+    echo "  - Description max 1024 characters"
+    echo "  - Description cannot contain < or >"
+    echo "  - Only allowed frontmatter keys: name, description, license, allowed-tools, metadata"
+    echo ""
+    echo "Would you like to:"
+    echo "1. Fix issues automatically (if possible)"
+    echo "2. Fix manually and re-validate"
+    echo "3. Continue despite validation errors (not recommended)"
+fi
+```
+
+**Expected successful validation output:**
+```
+🔍 Running quality gate validation...
+✅ Skill is valid!
+✅ Quality gate passed!
+```
+
+**If validation fails, display specific errors:**
+```
+⚠️  Quality gate validation failed
+
+❌ Validation Errors:
+   • Name 'My_Skill' should be hyphen-case (lowercase letters, digits, and hyphens only)
+   • Description is too long (1150 characters). Maximum is 1024 characters.
+   • Unexpected key(s) in SKILL.md frontmatter: author, created
+
+💡 Suggested fixes:
+   1. Rename skill: My_Skill → my-skill
+   2. Shorten description to under 1024 characters
+   3. Remove disallowed frontmatter keys (author, created should be in metadata)
+
+Options:
+[1] Fix automatically
+[2] Edit SKILL.md manually
+[3] Continue anyway
+```
+
+**Quality Gate Checks:**
+
+The validation script verifies:
+
+1. **File Existence**
+   - SKILL.md exists in the skill directory
+
+2. **YAML Frontmatter Format**
+   - Valid YAML delimiters (---\n...\n---)
+   - Parseable YAML structure
+
+3. **Required Fields**
+   - `name`: Required, string type
+   - `description`: Required, string type
+
+4. **Name Validation**
+   - Format: Hyphen-case (lowercase letters, digits, hyphens only)
+   - Length: Maximum 64 characters
+   - Pattern: Cannot start/end with hyphen, no consecutive hyphens
+   - Regex: `^[a-z0-9-]+$`
+
+5. **Description Validation**
+   - Length: Maximum 1024 characters
+   - No angle brackets (< or > allowed)
+   - String type validation
+
+6. **Allowed Properties**
+   - Permitted top-level keys: name, description, license, allowed-tools, metadata
+   - Any other keys are rejected
+
+**Auto-fix capabilities:**
+
+When validation fails, offer automated fixes for common issues:
+
+```bash
+# Fix naming convention
+if [[ "$SKILL_NAME" =~ [A-Z] ]]; then
+    FIXED_NAME=$(echo "$SKILL_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+    echo "Suggested fix: Rename '$SKILL_NAME' to '$FIXED_NAME'"
+fi
+
+# Fix description length
+DESCRIPTION_LENGTH=${#DESCRIPTION}
+if [ $DESCRIPTION_LENGTH -gt 1024 ]; then
+    echo "Suggested fix: Shorten description by $((DESCRIPTION_LENGTH - 1024)) characters"
+fi
+
+# Remove disallowed frontmatter keys
+DISALLOWED_KEYS=("author" "created" "updated" "version")
+for key in "${DISALLOWED_KEYS[@]}"; do
+    if grep -q "^$key:" "$SKILL_PATH/SKILL.md"; then
+        echo "Suggested fix: Move '$key' to metadata section"
+    fi
+done
+```
+
+**Integration with Phase 5:**
+
+The quality gate in Phase 4 is a quick sanity check. Phase 5 performs comprehensive validation including:
+- Word count verification (SKILL.md: 1,500-2,000 ideal, <5,000 max)
+- Writing style checks (imperative/infinitive, no second-person)
+- Progressive disclosure compliance
+- Content quality assessment
+
+Think of Phase 4 quality gate as "does the basic structure work?" and Phase 5 validation as "does the content meet standards?"
+
 ### Phase 5: Validation
 
 **Progress:** Display before starting this phase:
