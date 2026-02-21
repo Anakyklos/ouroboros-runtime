@@ -31,6 +31,7 @@ import { MemoryRetriever, createMemoryRetriever } from "./MemoryRetriever.js";
 import { EventBus, globalEventBus } from "../daemon/event-bus.js";
 import { getWorkspacePath } from "../utils/ouroboros.js";
 import { QualityGateRegistry, createQualityGateRegistry, type QualityGatesReport } from "./strategies/QualityGateRegistry.js";
+import { SpecValidator, createDefaultSpecValidator } from "./validators/SpecValidator.js";
 
 /**
  * Orchestrator - Coordena execução de subagentes com auto-correção.
@@ -45,6 +46,7 @@ export class Orchestrator {
     private memoryRetriever: MemoryRetriever;
     private qualityGateRegistry: QualityGateRegistry;
     private enableQualityGates: boolean;
+    private specValidator: SpecValidator;
 
     constructor(config: Partial<OrchestratorConfig> = {}, eventBus?: EventBus) {
         this.config = { ...DEFAULT_ORCHESTRATOR_CONFIG, ...config };
@@ -57,6 +59,9 @@ export class Orchestrator {
             this.config.verbose,
             this.enableQualityGates // only register defaults if enabled
         );
+
+        // Initialize spec validator for enhanced phase gate validation
+        this.specValidator = createDefaultSpecValidator();
 
         if (eventBus) {
             this.eventBus = eventBus;
@@ -175,7 +180,7 @@ export class Orchestrator {
                 // 2. Validate phase gate (blocks EXECUTION without spec)
                 // Skip if configured for simple tasks
                 if (!this.config.skipPhaseValidation) {
-                    await this.validatePhase(phase);
+                    await this.validatePhase(phase, task.workDir);
                 }
 
                 // 3. Execute via AgentLoop
@@ -434,10 +439,34 @@ IMPORTANT: Analyze the error carefully before proceeding.
 
     /**
      * Validate Anti-Vibe phase gate.
+     * For EXECUTION phase, also validates spec content using SpecValidator.
      */
-    private async validatePhase(phase: WorkflowPhase): Promise<void> {
+    private async validatePhase(phase: WorkflowPhase, workDir?: string): Promise<void> {
         try {
+            // Basic phase gate validation (checks spec file existence)
             await validatePhaseGate(phase);
+
+            // Enhanced spec validation for EXECUTION phase
+            // Protocolo Anti-Vibe: "Trust but Verify"
+            if (phase === WorkflowPhase.EXECUTION) {
+                this.log('info', `🔬 Running enhanced spec validation for EXECUTION phase`);
+
+                const validationResult = await this.specValidator.validate({
+                    workDir: workDir || process.cwd(),
+                    taskId: `phase-gate-${Date.now()}`,
+                    output: "",
+                    additionalContext: "",
+                });
+
+                if (!validationResult.isValid) {
+                    // Spec validation failed - block execution
+                    const errorMsg = `Spec validation failed: ${validationResult.message}`;
+                    this.log('error', `❌ ${errorMsg}`);
+                    throw new Error(errorMsg);
+                }
+
+                this.log('info', `✅ Spec validation passed`);
+            }
         } catch (err) {
             // Re-throw with more context
             const message = err instanceof Error ? err.message : String(err);

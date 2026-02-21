@@ -185,7 +185,7 @@
             "command": "bun run typecheck",
             "expected": "Type check successful"
           },
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "subtask-3-3",
