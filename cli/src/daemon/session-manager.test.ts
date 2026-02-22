@@ -95,4 +95,35 @@ describe('SessionManager', () => {
         expect(activeTasks.has(`task_${sessionId}_A`)).toBe(false);
         expect(activeTasks.has(`task_${sessionId}_B`)).toBe(false);
     });
+
+    test('cleanupSession should stop after max iterations and log warning', async () => {
+        const sessionId = 'session-infinite';
+        const activeTasks = (manager as any).activeTasks as Map<string, Promise<void>>;
+
+        // Spy on log
+        const logSpy = mock();
+        (manager as any).eventBus.log = logSpy;
+
+        // Recursive task adder that simulates an infinite loop of tasks
+        let taskCount = 0;
+
+        const createSelfReplicatingTask = (id: string) => {
+            const task = new Promise<void>(resolve => {
+                setTimeout(() => {
+                    resolve();
+                    if (taskCount < 20) {
+                        taskCount++;
+                        createSelfReplicatingTask(`${sessionId}_${taskCount}`);
+                    }
+                }, 10);
+            });
+            activeTasks.set(id, task);
+        };
+
+        createSelfReplicatingTask(`${sessionId}_0`);
+
+        await manager.cleanupSession(sessionId);
+
+        expect(logSpy).toHaveBeenCalledWith('warn', expect.stringContaining('cleanupSession reached max iterations'), 'SessionManager');
+    });
 });

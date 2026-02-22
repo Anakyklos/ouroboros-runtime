@@ -187,12 +187,18 @@ export class SessionManager {
 /**
      * Cleanup resources for a session
      */
-    async cleanupSession(sessionId: string): Promise<void> {
+        async cleanupSession(sessionId: string): Promise<void> {
         this.activeOrchestrators.delete(sessionId);
 
         // Loop to catch any tasks added concurrently
-        while (true) {
+        // We limit iterations to prevent infinite loops if tasks keep being scheduled
+        let iterations = 0;
+        const maxIterations = 5;
+
+        while (iterations < maxIterations) {
             // Collect all tasks to cleanup
+            // Note: This iterates the entire activeTasks map, but expected volume is low per session
+            // and total active tasks across all sessions should remain manageable.
             const tasksToCleanup = Array.from(this.activeTasks.entries())
                 .filter(([taskId]) => taskId.includes(sessionId));
 
@@ -211,6 +217,12 @@ export class SessionManager {
             for (const [taskId] of tasksToCleanup) {
                 this.activeTasks.delete(taskId);
             }
+
+            iterations++;
+        }
+
+        if (iterations >= maxIterations) {
+            this.eventBus.log('warn', `cleanupSession reached max iterations (${maxIterations}) for session ${sessionId}`, 'SessionManager');
         }
     }
 
