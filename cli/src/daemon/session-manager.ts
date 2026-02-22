@@ -26,6 +26,11 @@ export interface SessionManagerConfig {
     cleanupTimeoutMs?: number;
 }
 
+export const DEFAULT_SESSION_MANAGER_CONFIG: SessionManagerConfig = {
+    maxCleanupIterations: 3,
+    cleanupTimeoutMs: 5000,
+};
+
 export class SessionManager {
     private readonly maxCleanupIterations: number;
     private readonly cleanupTimeoutMs: number;
@@ -38,12 +43,17 @@ export class SessionManager {
 
     private apiKey?: string;
 
-    constructor(storage: StoragePort, eventBus: EventBus, apiKey?: string, config?: SessionManagerConfig) {
+        constructor(
+        storage: StoragePort,
+        eventBus: EventBus,
+        apiKey?: string,
+        config: SessionManagerConfig = DEFAULT_SESSION_MANAGER_CONFIG
+    ) {
         this.storage = storage;
         this.eventBus = eventBus;
         this.apiKey = apiKey;
-        this.maxCleanupIterations = config?.maxCleanupIterations ?? 3;
-        this.cleanupTimeoutMs = config?.cleanupTimeoutMs ?? 5000;
+        this.maxCleanupIterations = config.maxCleanupIterations ?? 3;
+        this.cleanupTimeoutMs = config.cleanupTimeoutMs ?? 5000;
     }
 
     async createSession(data: Omit<Session, 'id' | 'createdAt' | 'updatedAt'>): Promise<Session> {
@@ -62,7 +72,7 @@ export class SessionManager {
         }
 
         this.activeOrchestrators.set(session.id, orchestrator);
-        this.activeTasks.set(session.id, new Map());
+        this.getOrCreateSessionTasksMap(session.id);
 
         this.eventBus.emit('task', {
             type: 'started',
@@ -109,9 +119,7 @@ export class SessionManager {
             this.activeOrchestrators.set(id, orchestrator);
         }
 
-        if (!this.activeTasks.has(id)) {
-            this.activeTasks.set(id, new Map());
-        }
+        this.getOrCreateSessionTasksMap(id);
 
         this.eventBus.log('info', `Client attached to session: ${id}`, 'SessionManager');
 
@@ -168,10 +176,7 @@ export class SessionManager {
             this.eventBus.log('info', `Task ${task.id} finished: ${result.status}`, 'SessionManager');
         });
 
-        if (!this.activeTasks.has(sessionId)) {
-            this.activeTasks.set(sessionId, new Map());
-        }
-        this.activeTasks.get(sessionId)!.set(task.id, execution);
+        this.getOrCreateSessionTasksMap(sessionId).set(task.id, execution);
 
         this.eventBus.log('info', `Task started for session ${sessionId}: ${task.id}`, 'SessionManager');
 
@@ -217,6 +222,14 @@ export class SessionManager {
     /**
      * Cleanup resources for a session
      */
+
+    private getOrCreateSessionTasksMap(sessionId: string): Map<string, Promise<void>> {
+        if (!this.activeTasks.has(sessionId)) {
+            this.activeTasks.set(sessionId, new Map());
+        }
+        return this.activeTasks.get(sessionId)!;
+    }
+
     async cleanupSession(sessionId: string): Promise<void> {
         this.activeOrchestrators.delete(sessionId);
 
@@ -226,25 +239,26 @@ export class SessionManager {
             const sessionTasksMap = this.activeTasks.get(sessionId);
 
             if (!sessionTasksMap || sessionTasksMap.size === 0) {
-                // Remove the empty session map
-                this.activeTasks.delete(sessionId);
+                if (sessionTasksMap && this.activeTasks.get(sessionId) === sessionTasksMap) {
+                     this.activeTasks.delete(sessionId);
+                }
                 break;
             }
 
             const tasksToCleanup = Array.from(sessionTasksMap.entries());
 
             const promisesToAwait = tasksToCleanup.map(([_, promise]) =>
-                promise.catch(() => { /* ignore errors */ })
+                promise.catch((err) => {
+                    this.eventBus.log('debug', `Task cleanup error: ${err}`, 'SessionManager');
+                })
             );
 
-            // Wait for all tasks to finish concurrently with a timeout
             const cleanupPromise = Promise.all(promisesToAwait);
 
-            let timeoutId: ReturnType<typeof setTimeout>;
-            // Use a unique symbol to distinguish timeout
+            let timeoutId: ReturnType<typeof setTimeout> | undefined;
             const TIMEOUT = Symbol('TIMEOUT');
 
-            const timeoutPromise = new Promise<typeof TIMEOUT>((resolve) => {
+            const timeoutPromise = new Promise<symbol>((resolve) => {
                 timeoutId = setTimeout(() => resolve(TIMEOUT), this.cleanupTimeoutMs);
             });
 
@@ -255,23 +269,25 @@ export class SessionManager {
                     this.eventBus.log('warn', `cleanupSession iteration ${iterations + 1} timed out after ${this.cleanupTimeoutMs}ms for session ${sessionId}`, 'SessionManager');
                 }
             } finally {
-                // Ensure timer is cleared if cleanup finishes first
-                clearTimeout(timeoutId!);
+                if (timeoutId) clearTimeout(timeoutId);
             }
 
-            // Remove from active tasks map
-            for (const [taskId] of tasksToCleanup) {
-                sessionTasksMap.delete(taskId);
+            if (this.activeTasks.get(sessionId) === sessionTasksMap) {
+                for (const [taskId] of tasksToCleanup) {
+                    sessionTasksMap.delete(taskId);
+                }
+                if (sessionTasksMap.size === 0) {
+                    this.activeTasks.delete(sessionId);
+                }
             }
 
             iterations++;
         }
 
-        // Final force cleanup verification
-        const sessionTasksMap = this.activeTasks.get(sessionId);
-        if (sessionTasksMap && sessionTasksMap.size > 0) {
-            this.eventBus.log('warn', `Force removing ${sessionTasksMap.size} remaining tasks for session ${sessionId} after max iterations/timeout`, 'SessionManager');
-            sessionTasksMap.clear();
+        const finalMap = this.activeTasks.get(sessionId);
+        if (finalMap && finalMap.size > 0) {
+            this.eventBus.log('warn', `Force removing ${finalMap.size} remaining tasks for session ${sessionId} after max iterations/timeout`, 'SessionManager');
+            finalMap.clear();
             this.activeTasks.delete(sessionId);
         }
     }

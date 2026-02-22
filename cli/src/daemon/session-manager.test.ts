@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { SessionManager } from './session-manager.js';
 import { EventBus } from './event-bus.js';
 import type { StoragePort } from '../ports/storage.port.js';
@@ -37,7 +37,7 @@ describe('SessionManager', () => {
         manager = new SessionManager(mockStorage, mockEventBus);
     });
 
-    test('cleanupSession should wait for all tasks and clear activeTasks', async () => {
+    it('cleanupSession should wait for all tasks and clear activeTasks', async () => {
         const sessionId = 'session-1';
 
         // Create tasks that resolve after a delay
@@ -68,7 +68,7 @@ describe('SessionManager', () => {
         expect(getActiveTasks(manager).get(otherSessionId)!.has(`task_${otherSessionId}_1`)).toBe(true);
     });
 
-    test('cleanupSession should handle rejected tasks gracefully', async () => {
+    it('cleanupSession should handle rejected tasks gracefully', async () => {
         const sessionId = 'session-1';
 
         // Create a rejected task
@@ -84,7 +84,7 @@ describe('SessionManager', () => {
         expect(getActiveTasks(manager).has(sessionId)).toBe(false);
     });
 
-    test('cleanupSession should handle tasks added concurrently during cleanup', async () => {
+    it('cleanupSession should handle tasks added concurrently during cleanup', async () => {
         const sessionId = 'session-race';
 
         const taskA = new Promise<void>(resolve => setTimeout(resolve, 100));
@@ -103,7 +103,7 @@ describe('SessionManager', () => {
         expect(getActiveTasks(manager).has(sessionId)).toBe(false);
     });
 
-    test('cleanupSession should stop after max iterations and log warning', async () => {
+    it('cleanupSession should stop after max iterations and log warning', async () => {
         const sessionId = 'session-infinite';
 
         // Spy on log
@@ -139,7 +139,7 @@ describe('SessionManager', () => {
         expect(getActiveTasks(manager).has(sessionId)).toBe(false);
     });
 
-    test('SessionManager should respect custom configuration', async () => {
+    it('SessionManager should respect custom configuration', async () => {
         // Create manager with small timeout and max iterations
         const config = { maxCleanupIterations: 2, cleanupTimeoutMs: 10 };
         const customManager = new SessionManager(mockStorage, mockEventBus, undefined, config);
@@ -158,7 +158,7 @@ describe('SessionManager', () => {
         const end = Date.now();
 
         // Should finish around 10ms (timeout) instead of 50ms
-        expect(end - start).toBeLessThan(45);
+        expect(end - start).toBeLessThan(30);
         expect(getActiveTasks(customManager).has(sessionId)).toBe(false);
 
         const calls = logSpy.mock.calls;
