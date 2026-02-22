@@ -1,4 +1,4 @@
-/**
+    /**
  * 📋 Session Manager
  * 
  * Gerencia ciclo de vida das sessões.
@@ -190,12 +190,24 @@ export class SessionManager {
     async cleanupSession(sessionId: string): Promise<void> {
         this.activeOrchestrators.delete(sessionId);
 
-        // Wait for any pending tasks
+        const tasksToCleanup: string[] = [];
+        const promisesToAwait: Promise<void>[] = [];
+
+        // Collect all tasks to cleanup
         for (const [taskId, promise] of this.activeTasks) {
             if (taskId.includes(sessionId)) {
-                await promise.catch(() => { /* ignore errors */ });
-                this.activeTasks.delete(taskId);
+                tasksToCleanup.push(taskId);
+                promisesToAwait.push(promise.catch(() => { /* ignore errors */ }));
             }
         }
+
+        // Wait for all tasks to finish concurrently
+        await Promise.all(promisesToAwait);
+
+        // Remove from active tasks map
+        for (const taskId of tasksToCleanup) {
+            this.activeTasks.delete(taskId);
+        }
     }
+
 }
