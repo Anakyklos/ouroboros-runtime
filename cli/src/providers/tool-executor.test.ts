@@ -70,3 +70,82 @@ describe("ToolExecutor.handleListDirectory (Optimized)", () => {
         fs.chmodSync(restrictedDir, 0o755);
     });
 });
+
+describe("ToolExecutor.handleReadFile", () => {
+    const testDir = path.join(process.cwd(), "test_read_file");
+    const testFile = path.join(testDir, "test.txt");
+    const multiLineFile = path.join(testDir, "multiline.txt");
+
+    beforeAll(() => {
+        if (!fs.existsSync(testDir)) {
+            fs.mkdirSync(testDir, { recursive: true });
+        }
+        fs.writeFileSync(testFile, "Hello, world!");
+        fs.writeFileSync(multiLineFile, "Line 1\nLine 2\nLine 3\nLine 4\nLine 5");
+    });
+
+    afterAll(() => {
+        if (fs.existsSync(testDir)) {
+            fs.rmSync(testDir, { recursive: true, force: true });
+        }
+    });
+
+    test("should read file successfully", async () => {
+        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
+        const result = await (executor as any).handleReadFile({ path: path.relative(process.cwd(), testFile) });
+
+        expect(result.success).toBe(true);
+        expect(result.output).toBe("Hello, world!");
+    });
+
+    test("should read file with line range (start_line)", async () => {
+        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
+        const result = await (executor as any).handleReadFile({
+            path: path.relative(process.cwd(), multiLineFile),
+            start_line: 2
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.output).toBe("Line 2\nLine 3\nLine 4\nLine 5");
+    });
+
+    test("should read file with line range (end_line)", async () => {
+        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
+        const result = await (executor as any).handleReadFile({
+            path: path.relative(process.cwd(), multiLineFile),
+            end_line: 3
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.output).toBe("Line 1\nLine 2\nLine 3");
+    });
+
+    test("should read file with specific range", async () => {
+        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
+        const result = await (executor as any).handleReadFile({
+            path: path.relative(process.cwd(), multiLineFile),
+            start_line: 2,
+            end_line: 4
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.output).toBe("Line 2\nLine 3\nLine 4");
+    });
+
+    test("should return error if file does not exist", async () => {
+        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
+        const result = await (executor as any).handleReadFile({ path: "non_existent_file.txt" });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("File not found");
+    });
+
+    test("should return error if path is a directory", async () => {
+        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
+        const result = await (executor as any).handleReadFile({ path: path.relative(process.cwd(), testDir) });
+
+        expect(result.success).toBe(false);
+        // Expect failure, specific error message depends on implementation details
+        expect(result.success).toBe(false);
+    });
+});
