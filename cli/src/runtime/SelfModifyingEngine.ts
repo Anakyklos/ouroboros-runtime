@@ -8,7 +8,7 @@
  * @module runtime/SelfModifyingEngine
  */
 
-import * as fs from 'fs/promises';
+import fs from 'fs/promises';
 import * as path from 'path';
 import { spawn } from 'child_process';
 
@@ -439,18 +439,25 @@ export class SelfModifyingEngine {
         try {
             const entries = await fs.readdir(dir, { withFileTypes: true });
 
-            for (const entry of entries) {
+            const promises = entries.map(async (entry) => {
                 const fullPath = path.join(dir, entry.name);
 
                 if (entry.isDirectory()) {
                     // Skip node_modules, .git, etc.
                     if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
-                        files.push(...await this.walkDir(fullPath));
+                        return this.walkDir(fullPath);
                     }
                 } else {
-                    files.push(fullPath);
+                    return [fullPath];
                 }
+                return [];
+            });
+
+            const results = await Promise.all(promises);
+            for (const result of results) {
+                files.push(...result);
             }
+
         } catch (error) {
             // Ignora erros de leitura
         }
