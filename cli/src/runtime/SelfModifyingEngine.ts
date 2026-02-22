@@ -453,7 +453,7 @@ export class SelfModifyingEngine {
         }
 
         // Clone the RegExp to avoid shared mutable state (lastIndex)
-        const clonedPattern = new RegExp(pattern, pattern.flags);
+        const clonedPattern = new RegExp(pattern);
         clonedPattern.lastIndex = 0;
 
         const results: string[] = [];

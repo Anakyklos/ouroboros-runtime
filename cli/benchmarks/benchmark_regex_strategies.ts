@@ -32,7 +32,8 @@ function staticLoop(code: string) {
 
 // 2. Cloned Instance (Safe - New RegExp per call)
 function clonedLoop(code: string) {
-    const p = new RegExp(PATTERN, PATTERN.flags);
+    // Clone: new RegExp(pattern) copies flags automatically in ES6+
+    const p = new RegExp(PATTERN);
     while (p.exec(code) !== null) {}
 }
 
