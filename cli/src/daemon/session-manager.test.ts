@@ -73,4 +73,26 @@ describe('SessionManager', () => {
 
         expect(activeTasks.has(`task_${sessionId}_1`)).toBe(false);
     });
+
+    test('cleanupSession should handle tasks added concurrently during cleanup', async () => {
+        const sessionId = 'session-race';
+        const activeTasks = (manager as any).activeTasks as Map<string, Promise<void>>;
+
+        const taskA = new Promise<void>(resolve => setTimeout(resolve, 100));
+        activeTasks.set(`task_${sessionId}_A`, taskA);
+
+        const cleanupPromise = manager.cleanupSession(sessionId);
+
+        // Add Task B after a delay, effectively simulating a race condition
+        // where a task is added while cleanupSession is awaiting.
+        setTimeout(() => {
+            const taskB = new Promise<void>(resolve => setTimeout(resolve, 100));
+            activeTasks.set(`task_${sessionId}_B`, taskB);
+        }, 50);
+
+        await cleanupPromise;
+
+        expect(activeTasks.has(`task_${sessionId}_A`)).toBe(false);
+        expect(activeTasks.has(`task_${sessionId}_B`)).toBe(false);
+    });
 });

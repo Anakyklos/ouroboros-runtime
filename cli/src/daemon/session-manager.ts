@@ -1,4 +1,4 @@
-    /**
+/**
  * 📋 Session Manager
  * 
  * Gerencia ciclo de vida das sessões.
@@ -184,26 +184,33 @@ export class SessionManager {
         this.eventBus.log('info', `Session resumed: ${sessionId}`, 'SessionManager');
     }
 
-    /**
+/**
      * Cleanup resources for a session
      */
     async cleanupSession(sessionId: string): Promise<void> {
         this.activeOrchestrators.delete(sessionId);
 
-        // Collect all tasks to cleanup
-        const tasksToCleanup = Array.from(this.activeTasks.entries())
-            .filter(([taskId]) => taskId.includes(sessionId));
+        // Loop to catch any tasks added concurrently
+        while (true) {
+            // Collect all tasks to cleanup
+            const tasksToCleanup = Array.from(this.activeTasks.entries())
+                .filter(([taskId]) => taskId.includes(sessionId));
 
-        const promisesToAwait = tasksToCleanup.map(([_, promise]) =>
-            promise.catch(() => { /* ignore errors */ })
-        );
+            if (tasksToCleanup.length === 0) {
+                break;
+            }
 
-        // Wait for all tasks to finish concurrently
-        await Promise.all(promisesToAwait);
+            const promisesToAwait = tasksToCleanup.map(([_, promise]) =>
+                promise.catch(() => { /* ignore errors */ })
+            );
 
-        // Remove from active tasks map
-        for (const [taskId] of tasksToCleanup) {
-            this.activeTasks.delete(taskId);
+            // Wait for all tasks to finish concurrently
+            await Promise.all(promisesToAwait);
+
+            // Remove from active tasks map
+            for (const [taskId] of tasksToCleanup) {
+                this.activeTasks.delete(taskId);
+            }
         }
     }
 
