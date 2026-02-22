@@ -307,11 +307,21 @@ export class SelfModifyingEngine {
                 .filter(f => f.startsWith(basename) && f.endsWith('.bak'))
                 .sort()
                 .reverse();
-
-            // Remove backups excedentes
             const toRemove = backups.slice(this.config.maxBackupsPerFile);
-            // Using Promise.allSettled to ensure we attempt to delete all candidate backup files concurrently, even if individual deletions fail (e.g., due to file locks)
-            await Promise.allSettled(toRemove.map(file => fs.unlink(path.join(backupDir, file))));
+
+            // Process deletions in chunks to avoid overwhelming file system
+            const CHUNK_SIZE = 20;
+            for (let i = 0; i < toRemove.length; i += CHUNK_SIZE) {
+                const chunk = toRemove.slice(i, i + CHUNK_SIZE);
+                const results = await Promise.allSettled(chunk.map(file => fs.unlink(path.join(backupDir, file))));
+
+                // Log failures
+                results.forEach((result, index) => {
+                    if (result.status === 'rejected') {
+                        console.warn(`Failed to delete backup ${chunk[index]}:`, result.reason);
+                    }
+                });
+            }
         } catch (error) {
             // Ignora erros de limpeza
         }
