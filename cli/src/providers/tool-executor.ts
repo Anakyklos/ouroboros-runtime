@@ -33,6 +33,8 @@ export interface ToolExecutorConfig {
     maxOutputSize?: number;
     /** Command timeout in ms (default: 30s) */
     commandTimeout?: number;
+    /** Max concurrent FS operations (default: 20) */
+    concurrencyLimit?: number;
 }
 
 // ============================================================
@@ -123,8 +125,6 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 // Concurrency Limiter
 // ============================================================
 
-const GLOBAL_CONCURRENCY_LIMIT = 20;
-
 type Task<T = void> = () => Promise<T>;
 
 class ConcurrencyLimiter {
@@ -149,12 +149,6 @@ class ConcurrencyLimiter {
     }
 }
 
-const fsConcurrencyLimiter = new ConcurrencyLimiter(GLOBAL_CONCURRENCY_LIMIT);
-
-const enqueueFsTask = <T>(task: Task<T>): Promise<T> => {
-    return fsConcurrencyLimiter.run(task);
-};
-
 // ============================================================
 // ToolExecutor
 // ============================================================
@@ -163,6 +157,7 @@ export class ToolExecutor {
     private config: ToolExecutorConfig;
     private handlers: Map<string, ToolHandler> = new Map();
     private eventBus: EventBus;
+    private concurrencyLimiter: ConcurrencyLimiter;
 
     constructor(config: ToolExecutorConfig, eventBus?: EventBus) {
         this.config = {
@@ -170,8 +165,10 @@ export class ToolExecutor {
             verbose: config.verbose ?? false,
             maxOutputSize: config.maxOutputSize ?? 50 * 1024, // 50KB
             commandTimeout: config.commandTimeout ?? 30_000, // 30s
+            concurrencyLimit: config.concurrencyLimit ?? 20,
         };
         this.eventBus = eventBus ?? globalEventBus;
+        this.concurrencyLimiter = new ConcurrencyLimiter(this.config.concurrencyLimit!);
 
         // Register built-in handlers
         this.registerHandler('read_file', this.handleReadFile.bind(this));
@@ -437,9 +434,9 @@ export class ToolExecutor {
         } else {
             const processDir = async (dir: string) => {
                 // Enqueue readdir to respect global concurrency limit
-                const items = await enqueueFsTask(() => fs.promises.readdir(dir, { withFileTypes: true }));
+                const items = await this.enqueueFsTask(() => fs.promises.readdir(dir, { withFileTypes: true }));
 
-                await Promise.all(items.map(item => enqueueFsTask(async () => {
+                await Promise.all(items.map(item => this.enqueueFsTask(async () => {
                      const fullPath = path.join(dir, item.name);
 
                      if (item.isDirectory()) {
@@ -470,6 +467,10 @@ export class ToolExecutor {
     // Helpers
     // ============================================================
 
+    private enqueueFsTask<T>(task: Task<T>): Promise<T> {
+        return this.concurrencyLimiter.run(task);
+    }
+
     private resolvePath(inputPath: string): string {
         if (path.isAbsolute(inputPath)) {
             return inputPath;
@@ -480,7 +481,7 @@ export class ToolExecutor {
     private matchGlob(filename: string, pattern: string): boolean {
         // Simple glob matching (*.ts, *.js, etc.)
         const regex = new RegExp(
-            '^' + pattern.replace(/\./g, '\.').replace(/\*/g, '.*') + '$'
+            '^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$'
         );
         return regex.test(filename);
     }
