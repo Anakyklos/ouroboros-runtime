@@ -79,6 +79,8 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
 // SelfModifyingEngine
 // ============================================================================
 
+const IGNORED_FS_ERRORS = new Set(['ENOENT', 'EACCES', 'EPERM', 'EBUSY', 'EMFILE']);
+
 export class SelfModifyingEngine {
     private config: Required<SelfModifyingEngineConfig>;
     private semaphore: Semaphore;
@@ -90,6 +92,16 @@ export class SelfModifyingEngine {
             ...DEFAULT_CONFIG,
             ...config,
         };
+
+        // Validate and normalize concurrency limit
+        let limit = this.config.concurrencyLimit;
+        if (!Number.isFinite(limit) || limit <= 0) {
+            limit = DEFAULT_CONFIG.concurrencyLimit;
+        } else if (limit > 1024) {
+            limit = 1024; // Cap at 1024 to prevent resource exhaustion
+        }
+        this.config.concurrencyLimit = limit;
+
         this.semaphore = new Semaphore(this.config.concurrencyLimit);
     }
 
@@ -453,7 +465,7 @@ export class SelfModifyingEngine {
             });
         } catch (error: any) {
             // Ignore expected filesystem errors (e.g., permission denied, not found)
-            if (error.code === 'ENOENT' || error.code === 'EACCES' || error.code === 'EPERM') {
+            if (IGNORED_FS_ERRORS.has(error.code)) {
                 return [];
             }
             throw error;
