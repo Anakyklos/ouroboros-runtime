@@ -45,12 +45,19 @@ export class SessionManager {
 
     private apiKey?: string;
 
-            constructor(storage: StoragePort, eventBus: EventBus, apiKey?: string, config?: SessionManagerConfig) {
+    constructor(storage: StoragePort, eventBus: EventBus, apiKey?: string, config?: SessionManagerConfig) {
         this.storage = storage;
         this.eventBus = eventBus;
         this.apiKey = apiKey;
         this.maxCleanupIterations = config?.maxCleanupIterations ?? DEFAULT_SESSION_MANAGER_CONFIG.maxCleanupIterations!;
         this.cleanupTimeoutMs = config?.cleanupTimeoutMs ?? DEFAULT_SESSION_MANAGER_CONFIG.cleanupTimeoutMs!;
+    }
+
+        /**
+     * Add a task for testing purposes or internal use.
+     */
+    protected addTask(sessionId: string, taskId: string, promise: Promise<void>): void {
+        this.getOrCreateSessionTasksMap(sessionId).set(taskId, promise);
     }
 
     async createSession(data: Omit<Session, 'id' | 'createdAt' | 'updatedAt'>): Promise<Session> {
