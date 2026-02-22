@@ -4,9 +4,11 @@ import path from "node:path";
 import os from "node:os";
 import { createSelfModifyingEngine } from "../src/runtime/SelfModifyingEngine.js";
 
-const DEPTH = 4;
-const BREADTH = 5;
-const NUM_FILES_PER_DIR = 3;
+const DEPTH = parseInt(process.env.BENCH_DEPTH || "4", 10);
+const BREADTH = parseInt(process.env.BENCH_BREADTH || "5", 10);
+const NUM_FILES_PER_DIR = parseInt(process.env.BENCH_FILES || "3", 10);
+
+console.log(`🔧 Configuration: DEPTH=${DEPTH}, BREADTH=${BREADTH}, FILES=${NUM_FILES_PER_DIR}`);
 
 async function createDeepDir(baseDir: string, currentDepth: number) {
     if (currentDepth >= DEPTH) return;
