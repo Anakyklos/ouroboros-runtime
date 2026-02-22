@@ -11,6 +11,9 @@ import { Orchestrator, createTask } from '../orchestration/index.js';
 import { PersonaType } from '../orchestration/types.js';
 
 export class SessionManager {
+    private static readonly MAX_CLEANUP_ITERATIONS = 5;
+    private static readonly CLEANUP_TIMEOUT_MS = 10000;
+
     private storage: StoragePort;
     private eventBus: EventBus;
     private activeOrchestrators: Map<string, Orchestrator> = new Map();
@@ -187,15 +190,14 @@ export class SessionManager {
     /**
      * Cleanup resources for a session
      */
-    async cleanupSession(sessionId: string): Promise<void> {
+                async cleanupSession(sessionId: string): Promise<void> {
         this.activeOrchestrators.delete(sessionId);
 
         // Loop to catch any tasks added concurrently
         // We limit iterations to prevent infinite loops if tasks keep being scheduled
         let iterations = 0;
-        const maxIterations = 5;
 
-        while (iterations < maxIterations) {
+        while (iterations < SessionManager.MAX_CLEANUP_ITERATIONS) {
             // Collect all tasks to cleanup
             // Note: This iterates the entire activeTasks map, but expected volume is low per session
             // and total active tasks across all sessions should remain manageable.
@@ -210,10 +212,16 @@ export class SessionManager {
                 promise.catch(() => { /* ignore errors */ })
             );
 
-            // Wait for all tasks to finish concurrently
-            await Promise.all(promisesToAwait);
+            // Wait for all tasks to finish concurrently with a timeout
+            const cleanupPromise = Promise.all(promisesToAwait);
+            const timeoutPromise = new Promise<void>((resolve) =>
+                setTimeout(resolve, SessionManager.CLEANUP_TIMEOUT_MS)
+            );
 
-            // Remove from active tasks map
+            await Promise.race([cleanupPromise, timeoutPromise]);
+
+            // Remove from active tasks map regardless of completion (to avoid leaks)
+            // Even if we timed out, we want to remove these tasks from tracking
             for (const [taskId] of tasksToCleanup) {
                 this.activeTasks.delete(taskId);
             }
@@ -221,8 +229,16 @@ export class SessionManager {
             iterations++;
         }
 
-        if (iterations >= maxIterations) {
-            this.eventBus.log('warn', `cleanupSession reached max iterations (${maxIterations}) for session ${sessionId}`, 'SessionManager');
+        // Final force cleanup for any stragglers added during the last iteration wait
+        // This ensures we don't leave zombie tasks in the map if we hit the iteration limit
+        const remainingTasks = Array.from(this.activeTasks.entries())
+            .filter(([taskId]) => taskId.includes(sessionId));
+
+        if (remainingTasks.length > 0) {
+            this.eventBus.log('warn', `Force removing ${remainingTasks.length} remaining tasks for session ${sessionId} after max iterations/timeout`, 'SessionManager');
+            for (const [taskId] of remainingTasks) {
+                this.activeTasks.delete(taskId);
+            }
         }
     }
 
