@@ -77,6 +77,7 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
 export class SelfModifyingEngine {
     private config: Required<SelfModifyingEngineConfig>;
     private mutationHistory: MutationProposal[] = [];
+    private static readonly CLEANUP_CHUNK_SIZE = 20;
     private initialized: boolean = false;
 
     constructor(config: SelfModifyingEngineConfig) {
@@ -310,9 +311,8 @@ export class SelfModifyingEngine {
             const toRemove = backups.slice(this.config.maxBackupsPerFile);
 
             // Process deletions in chunks to avoid overwhelming file system
-            const CHUNK_SIZE = 20;
-            for (let i = 0; i < toRemove.length; i += CHUNK_SIZE) {
-                const chunk = toRemove.slice(i, i + CHUNK_SIZE);
+            for (let i = 0; i < toRemove.length; i += SelfModifyingEngine.CLEANUP_CHUNK_SIZE) {
+                const chunk = toRemove.slice(i, i + SelfModifyingEngine.CLEANUP_CHUNK_SIZE);
                 const results = await Promise.allSettled(chunk.map(file => fs.unlink(path.join(backupDir, file))));
 
                 // Log failures
@@ -323,7 +323,7 @@ export class SelfModifyingEngine {
                 });
             }
         } catch (error) {
-            // Ignora erros de limpeza
+            console.error('Failed to clean old backups:', error);
         }
     }
 
