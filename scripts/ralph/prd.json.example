@@ -1,0 +1,21 @@
+{
+  "project": "Ouroboros",
+  "branchName": "ralph/example-feature",
+  "description": "Example PRD - Replace with your actual feature",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Example user story",
+      "description": "As a developer, I need to implement something.",
+      "acceptanceCriteria": [
+        "Specific criterion 1",
+        "Specific criterion 2",
+        "bun run build passes",
+        "bun run test passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

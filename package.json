@@ -25,7 +25,8 @@
     "council:turn": "bun run scripts/council-turn.ts",
     "claude:ag": "bun run scripts/claude-ag.ts",
     "ouroboros": "bun run scripts/ouroboros-cli.ts",
-    "council:daemon": "bun run scripts/council-daemon.ts"
+    "council:daemon": "bun run scripts/council-daemon.ts",
+    "ralph": "./scripts/ralph/ralph.sh"
   },
   "keywords": [
     "ai",

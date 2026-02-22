@@ -1,0 +1,19 @@
+# Ralph Progress Log
+Started: Sun Feb 22 2026
+---
+
+## Codebase Patterns
+- Use bun for all package management and running scripts
+- Always run `bun run build && bun run test` before committing
+- Follow patterns in AGENTS.md for code conventions
+
+## [Sun Feb 22 2026 - 20:45] - US-001
+- Implemented exponential backoff for WebSocket reconnection
+- Added connectionStatus state: connected, disconnected, reconnecting
+- Updated UI to show colored status indicators (green/yellow/red)
+- Files changed: web/src/hooks/use-event-bus.ts, web/src/pages/swiss-mission-control.tsx, web/src/pages/mission-control.tsx
+- **Learnings for future iterations:**
+  - useEventBus already had reconnection logic, just needed exponential backoff
+  - Connection status should be exposed from hook, not just boolean
+  - Both Swiss and Snake themes need connection status updates
+---

@@ -11,7 +11,6 @@ import { TerminalGrid } from "@/components/terminal/terminal-grid";
 import { useEventBus } from "@/hooks/use-event-bus";
 import { useDaemonAPI } from "@/hooks/use-daemon-api";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
-import { useMissionControlStore } from "@/stores/mission-control-store";
 import { useWaveManager } from "@/hooks/use-wave-manager";
 import { useLiveMissionControl } from "@/hooks/use-live-mission-control";
 import { Settings, Terminal, LayoutTemplate } from "lucide-react";
@@ -28,10 +27,8 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
   const [showTerminal, setShowTerminal] = useState(false);
   const [theme, setTheme] = useState<"snake" | "swiss">("snake");
   
-  const daemonConnected = useMissionControlStore((state) => state.daemonConnected);
+  const { connectionStatus } = useEventBus();
   
-  // Initialize daemon connections
-  useEventBus();
   const { status, emergencyBrake } = useDaemonAPI();
   const { promotingWave, activateWave } = useWaveManager();
   const liveData = useLiveMissionControl();
@@ -131,8 +128,14 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
           )}
           <span className="text-sm text-[var(--color-silver-muted)] hidden md:inline">
             Daemon:{" "}
-            <span className={daemonConnected ? "text-[var(--color-emerald)] font-mono" : "text-[var(--color-ruby)] font-mono"}>
-              ● {daemonConnected ? "Connected" : "Disconnected"}
+            <span className={`font-mono ${
+              connectionStatus === 'connected' ? "text-[var(--color-emerald)]" :
+              connectionStatus === 'reconnecting' ? "text-[var(--color-gold)]" :
+              "text-[var(--color-ruby)]"
+            }`}>
+              ● {connectionStatus === 'connected' ? "Connected" : 
+                  connectionStatus === 'reconnecting' ? "Reconnecting..." : 
+                  "Disconnected"}
             </span>
           </span>
         </div>

@@ -7,11 +7,10 @@ import { useLogStore } from "@/stores/log-store";
 export function SwissMissionControl() {
   const [currentTime, setCurrentTime] = useState(new Date());
   const { status, emergencyBrake, setMode } = useDaemonAPI();
-  const daemonConnected = useMissionControlStore((state) => state.daemonConnected);
   const waves = useMissionControlStore((state) => state.waves);
   const logs = useLogStore((state) => state.entries);
 
-  useEventBus();
+  const { connectionStatus } = useEventBus();
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -89,9 +88,22 @@ export function SwissMissionControl() {
             </div>
             <div className="border-t border-white/20 pt-4 flex justify-between items-center">
               <span className="text-sm font-light uppercase text-gray-400">Overall Status</span>
-              <span className={`text-sm font-bold uppercase tracking-widest ${daemonConnected ? 'text-white' : 'text-red-500'}`}>
-                {daemonConnected ? 'Optimal' : 'Disconnected'}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${
+                  connectionStatus === 'connected' ? 'bg-green-500' :
+                  connectionStatus === 'reconnecting' ? 'bg-yellow-500 animate-pulse' :
+                  'bg-red-500'
+                }`}></span>
+                <span className={`text-sm font-bold uppercase tracking-widest ${
+                  connectionStatus === 'connected' ? 'text-white' :
+                  connectionStatus === 'reconnecting' ? 'text-yellow-500' :
+                  'text-red-500'
+                }`}>
+                  {connectionStatus === 'connected' ? 'Optimal' :
+                   connectionStatus === 'reconnecting' ? 'Reconnecting...' :
+                   'Disconnected'}
+                </span>
+              </div>
             </div>
           </section>
 
@@ -143,8 +155,13 @@ export function SwissMissionControl() {
               <div>
                 <div className="text-xs font-light text-gray-400 uppercase tracking-wider mb-1">Status</div>
                 <div className="text-lg font-bold uppercase flex items-center gap-2">
-                  {daemonConnected ? 'Active' : 'Offline'}
-                  {daemonConnected && <span className="w-2 h-2 bg-white rounded-full animate-pulse"></span>}
+                  {connectionStatus === 'connected' ? 'Active' : 
+                   connectionStatus === 'reconnecting' ? 'Reconnecting' : 'Offline'}
+                  <span className={`w-2 h-2 rounded-full ${
+                    connectionStatus === 'connected' ? 'bg-white animate-pulse' :
+                    connectionStatus === 'reconnecting' ? 'bg-yellow-500 animate-pulse' :
+                    'bg-red-500'
+                  }`}></span>
                 </div>
               </div>
               <div className="text-right">
