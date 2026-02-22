@@ -184,10 +184,10 @@ export class SessionManager {
         this.eventBus.log('info', `Session resumed: ${sessionId}`, 'SessionManager');
     }
 
-/**
+    /**
      * Cleanup resources for a session
      */
-        async cleanupSession(sessionId: string): Promise<void> {
+    async cleanupSession(sessionId: string): Promise<void> {
         this.activeOrchestrators.delete(sessionId);
 
         // Loop to catch any tasks added concurrently
