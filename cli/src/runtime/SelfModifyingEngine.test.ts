@@ -5,7 +5,7 @@ describe('SelfModifyingEngine', () => {
     // Create a minimal config for testing
     const config: SelfModifyingEngineConfig = {
         sourceDir: '/tmp/ouroboros-test',
-        validateSyntax: false, // disable external deps for unit test
+        validateSyntax: false,
         runTestsAfter: false,
         autoGitCommit: false
     };
@@ -15,6 +15,10 @@ describe('SelfModifyingEngine', () => {
     // Helper to access private method
     const extractExports = (code: string): string[] => {
         return (engine as any).extractExports(code);
+    };
+
+    const extractMatches = (pattern: RegExp, code: string): string[] => {
+        return (SelfModifyingEngine as any).extractMatches(pattern, code);
     };
 
     it('should extract function exports', () => {
@@ -82,5 +86,30 @@ describe('SelfModifyingEngine', () => {
             function b() {}
         `;
         expect(extractExports(code)).toEqual([]);
+    });
+
+    // New tests for complex identifiers
+    it('should extract identifiers with $', () => {
+        const code = `
+            export const $foo = 1;
+            export function $bar() {}
+            export class $Baz {}
+        `;
+        expect(extractExports(code).sort()).toEqual(['$foo', '$bar', '$Baz'].sort());
+    });
+
+    it('should extract identifiers with unicode characters', () => {
+        const code = `
+            export const café = 1;
+            export function ümlaut() {}
+            export class Ångström {}
+        `;
+        expect(extractExports(code).sort()).toEqual(['café', 'ümlaut', 'Ångström'].sort());
+    });
+
+    // Test for safety check (infinite loop prevention)
+    it('should throw error if pattern is not global', () => {
+        const pattern = /test/i;
+        expect(() => extractMatches(pattern, 'test')).toThrow('Pattern must be global');
     });
 });

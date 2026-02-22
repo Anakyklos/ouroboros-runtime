@@ -71,11 +71,11 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
 };
 
 const EXPORT_PATTERNS: ReadonlyArray<RegExp> = Object.freeze([
-    /export\s+(?:async\s+)?function\s+(\w+)/g,
-    /export\s+class\s+(\w+)/g,
-    /export\s+const\s+(\w+)/g,
-    /export\s+interface\s+(\w+)/g,
-    /export\s+type\s+(\w+)/g,
+    /export\s+(?:async\s+)?function\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
+    /export\s+class\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
+    /export\s+const\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
+    /export\s+interface\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
+    /export\s+type\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
 ]);
 
 // ============================================================================
@@ -435,9 +435,19 @@ export class SelfModifyingEngine {
      * Note: We use a manual exec loop with explicit lastIndex reset instead of
      * String.prototype.matchAll() because benchmarks show this approach is
      * approximately 4x faster (3000ns vs 14000ns) for our workload.
-     * The lastIndex reset ensures safety when reusing global RegExp instances.
+     *
+     * Safety:
+     * - The pattern must be global to avoid infinite loops.
+     * - This method is synchronous and intended for use in a single-threaded
+     *   JavaScript environment (Node/Bun). Reusing static RegExp instances is safe
+     *   because strict synchronous execution prevents interleaved access to `lastIndex`.
+     *   If this code is ever moved to a concurrent environment (e.g. Workers) or made async,
+     *   cloning the RegExp per call (new RegExp(pattern, pattern.flags)) would be required.
      */
     private static extractMatches(pattern: RegExp, code: string): string[] {
+        if (!pattern.global) {
+            throw new Error('Pattern must be global');
+        }
         pattern.lastIndex = 0;
         const results: string[] = [];
         let match;
