@@ -71,11 +71,11 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
 };
 
 const EXPORT_PATTERNS: ReadonlyArray<string> = Object.freeze([
-    'export\\s+(?:async\\s+)?function\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
-    'export\\s+class\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
-    'export\\s+const\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
-    'export\\s+interface\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
-    'export\\s+type\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
+    'export\\s+(?:async\\s+)?function\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+class\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+const\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+interface\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+type\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
 ]);
 
 // ============================================================================

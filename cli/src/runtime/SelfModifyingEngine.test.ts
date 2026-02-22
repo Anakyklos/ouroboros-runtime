@@ -1,16 +1,7 @@
-/**
- * 🧪 Tests for SelfModifyingEngine
- *
- * Verifica:
- * 1. Extração de exports (funções, classes, const, interfaces, types)
- * 2. Manipulação de identificadores com $ e unicode
- * 3. Validação de padrões regex e segurança (prevenção de loops infinitos)
- */
 import { describe, it, expect } from 'bun:test';
 import { SelfModifyingEngine, SelfModifyingEngineConfig } from './SelfModifyingEngine';
 
 describe('SelfModifyingEngine', () => {
-    // Create a minimal config for testing
     const config: SelfModifyingEngineConfig = {
         sourceDir: '/tmp/ouroboros-test',
         validateSyntax: false,
@@ -20,7 +11,6 @@ describe('SelfModifyingEngine', () => {
 
     const engine = new SelfModifyingEngine(config);
 
-    // Helper to access private method
     const extractExports = (code: string): string[] => {
         return (engine as any).extractExports(code);
     };
@@ -105,6 +95,15 @@ describe('SelfModifyingEngine', () => {
         expect(extractExports(code).sort()).toEqual(['$foo', '$bar', '$Baz'].sort());
     });
 
+    it('should extract identifiers starting with _', () => {
+        const code = `
+            export const _foo = 1;
+            export function _bar() {}
+            export class _Baz {}
+        `;
+        expect(extractExports(code).sort()).toEqual(['_foo', '_bar', '_Baz'].sort());
+    });
+
     it('should extract identifiers with unicode characters', () => {
         const code = `
             export const café = 1;
@@ -119,9 +118,8 @@ describe('SelfModifyingEngine', () => {
         expect(() => extractMatches(pattern, 'test')).toThrow('Pattern must be global');
     });
 
-    // New Tests for extractMatches safety
     it('should throw error if capture group does not exist', () => {
-        const pattern = /test/g; // No capture groups
+        const pattern = /test/g;
         expect(() => extractMatches(pattern, 'test')).toThrow('does not contain capture group');
     });
 

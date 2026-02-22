@@ -20,17 +20,19 @@ type InternalID = number;
 export const café = 1;
 export function ümlaut() {}
 export class Ångström {}
+// Add underscore identifiers
+export const _private = 1;
 `.repeat(10);
 
 // 1. Baseline: Recreating Regexes (Original Implementation)
 function baseline(code: string): string[] {
     const exports: string[] = [];
     const patterns = [
-        /export\s+(?:async\s+)?function\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
-        /export\s+class\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
-        /export\s+const\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
-        /export\s+interface\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
-        /export\s+type\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
+        /export\s+(?:async\s+)?function\s+([\p{ID_Start}][\p{ID_Continue}$]*)/gu,
+        /export\s+class\s+([\p{ID_Start}][\p{ID_Continue}$]*)/gu,
+        /export\s+const\s+([\p{ID_Start}][\p{ID_Continue}$]*)/gu,
+        /export\s+interface\s+([\p{ID_Start}][\p{ID_Continue}$]*)/gu,
+        /export\s+type\s+([\p{ID_Start}][\p{ID_Continue}$]*)/gu,
     ];
 
     for (const pattern of patterns) {
@@ -44,11 +46,11 @@ function baseline(code: string): string[] {
 
 // 2. Optimized: Static Strings + Constructor (New Implementation)
 const EXPORT_PATTERNS = Object.freeze([
-    'export\\s+(?:async\\s+)?function\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
-    'export\\s+class\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
-    'export\\s+const\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
-    'export\\s+interface\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
-    'export\\s+type\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
+    'export\\s+(?:async\\s+)?function\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+class\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+const\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+interface\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+type\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
 ]);
 
 function optimized(code: string): string[] {
