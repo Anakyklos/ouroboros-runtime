@@ -1,4 +1,4 @@
-import { ToolExecutor } from './src/providers/tool-executor';
+import { ToolExecutor } from '../../cli/src/providers/tool-executor';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -38,13 +38,27 @@ async function runBenchmark() {
         promises.push(handleReadFile({ path: TEMP_FILE }));
     }
 
-    await Promise.all(promises);
+    const results = await Promise.all(promises);
 
     const end = performance.now();
+
+    const successfulReads = results.filter((result: any) => result?.success).length;
+    const failedReads = CONCURRENT_READS - successfulReads;
+
+    if (successfulReads === 0) {
+        await cleanup();
+        throw new Error(`Benchmark aborted: all ${CONCURRENT_READS} read operations failed.`);
+    }
+
+    if (failedReads > 0) {
+        console.warn(`Warning: ${failedReads} of ${CONCURRENT_READS} read operations failed and are excluded from benchmark success count.`);
+    }
+
     const duration = end - start;
 
     console.log(`\nBenchmark Result:`);
     console.log(`Total Time: ${duration.toFixed(2)}ms`);
+    console.log(`Successful Reads: ${successfulReads}`);
     console.log(`Average Time per Read: ${(duration / CONCURRENT_READS).toFixed(2)}ms`);
 
     await cleanup();

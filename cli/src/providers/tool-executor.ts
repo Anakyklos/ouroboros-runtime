@@ -18,106 +18,19 @@ import type { ToolCall, ToolDefinition } from './direct-zai.js';
 // Types
 // ============================================================
 
+export interface ToolExecutorConfig {
+    workingDirectory: string;
+    allowedCommands?: string[]; // Allowlist for run_command
+    commandTimeout?: number; // ms
+    maxOutputSize?: number; // chars
+    verbose?: boolean;
+}
+
 export interface ToolResult {
     success: boolean;
     output: string;
     error?: string;
 }
-
-export type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
-
-export interface ToolExecutorConfig {
-    workingDirectory: string;
-    verbose?: boolean;
-    /** Max output size per tool call (default: 50KB) */
-    maxOutputSize?: number;
-    /** Command timeout in ms (default: 30s) */
-    commandTimeout?: number;
-}
-
-// ============================================================
-// Tool Definitions (for Z.AI function calling)
-// ============================================================
-
-const TOOL_DEFINITIONS: ToolDefinition[] = [
-    {
-        type: 'function',
-        function: {
-            name: 'read_file',
-            description: 'Read the contents of a file. Returns the file content as text.',
-            parameters: {
-                type: 'object',
-                properties: {
-                    path: { type: 'string', description: 'Path to the file to read' },
-                    start_line: { type: 'integer', description: 'Optional start line number (1-based)' },
-                    end_line: { type: 'integer', description: 'Optional end line number' }
-                },
-                required: ['path']
-            }
-        }
-    },
-    {
-        type: 'function',
-        function: {
-            name: 'write_file',
-            description: 'Write content to a file. Overwrites if exists, creates if not.',
-            parameters: {
-                type: 'object',
-                properties: {
-                    path: { type: 'string', description: 'Path to the file to write' },
-                    content: { type: 'string', description: 'Content to write' }
-                },
-                required: ['path', 'content']
-            }
-        }
-    },
-    {
-        type: 'function',
-        function: {
-            name: 'run_command',
-            description: 'Run a shell command. Use for ls, git, grep, etc.',
-            parameters: {
-                type: 'object',
-                properties: {
-                    command: { type: 'string', description: 'Shell command to execute' },
-                    cwd: { type: 'string', description: 'Optional working directory' }
-                },
-                required: ['command']
-            }
-        }
-    },
-    {
-        type: 'function',
-        function: {
-            name: 'list_directory',
-            description: 'List files and directories in a path.',
-            parameters: {
-                type: 'object',
-                properties: {
-                    path: { type: 'string', description: 'Directory path to list' },
-                    recursive: { type: 'boolean', description: 'List recursively (default: false)' }
-                },
-                required: ['path']
-            }
-        }
-    },
-    {
-        type: 'function',
-        function: {
-            name: 'grep_search',
-            description: 'Search for a text pattern in files.',
-            parameters: {
-                type: 'object',
-                properties: {
-                    pattern: { type: 'string', description: 'Regex pattern to search' },
-                    path: { type: 'string', description: 'Directory or file to search in' },
-                    include: { type: 'string', description: 'Glob pattern for file names to include (e.g. *.ts)' }
-                },
-                required: ['pattern', 'path']
-            }
-        }
-    }
-];
 
 // ============================================================
 // ToolExecutor
@@ -125,44 +38,33 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 
 export class ToolExecutor {
     private config: ToolExecutorConfig;
-    private handlers: Map<string, ToolHandler> = new Map();
     private eventBus: EventBus;
+    private handlers: Map<string, (args: Record<string, unknown>) => Promise<ToolResult>>;
 
-    constructor(config: ToolExecutorConfig, eventBus?: EventBus) {
+    constructor(config: ToolExecutorConfig) {
         this.config = {
-            workingDirectory: config.workingDirectory,
-            verbose: config.verbose ?? false,
-            maxOutputSize: config.maxOutputSize ?? 50 * 1024, // 50KB
-            commandTimeout: config.commandTimeout ?? 30_000, // 30s
+            commandTimeout: 30000,
+            maxOutputSize: 100000,
+            verbose: false,
+            ...config
         };
-        this.eventBus = eventBus ?? globalEventBus;
+        this.eventBus = globalEventBus;
+        this.handlers = new Map();
 
-        // Register built-in handlers
+        // Register tools
         this.registerHandler('read_file', this.handleReadFile.bind(this));
         this.registerHandler('write_file', this.handleWriteFile.bind(this));
         this.registerHandler('run_command', this.handleRunCommand.bind(this));
         this.registerHandler('list_directory', this.handleListDirectory.bind(this));
         this.registerHandler('grep_search', this.handleGrepSearch.bind(this));
-
-        this.log('info', `Initialized with working directory: ${this.config.workingDirectory}`);
     }
 
-    /**
-     * Get tool definitions for Z.AI function calling
-     */
-    getToolDefinitions(): ToolDefinition[] {
-        return TOOL_DEFINITIONS;
-    }
-
-    /**
-     * Register a custom tool handler
-     */
-    registerHandler(name: string, handler: ToolHandler): void {
+    registerHandler(name: string, handler: (args: Record<string, unknown>) => Promise<ToolResult>): void {
         this.handlers.set(name, handler);
     }
 
     /**
-     * Execute a tool call from Z.AI response
+     * Executes a tool call from Z.AI response
      */
     async execute(call: ToolCall): Promise<ToolResult> {
         const handler = this.handlers.get(call.function.name);
@@ -216,27 +118,29 @@ export class ToolExecutor {
         const startLine = args.start_line as number | undefined;
         const endLine = args.end_line as number | undefined;
 
-        if (!fs.existsSync(filePath)) {
-            return { success: false, output: '', error: `File not found: ${filePath}` };
+        try {
+            let content = await fs.promises.readFile(filePath, 'utf-8');
+
+            // Handle line range
+            if (startLine !== undefined || endLine !== undefined) {
+                const lines = content.split('\n');
+                const start = (startLine ?? 1) - 1;
+                const end = endLine ?? lines.length;
+                content = lines.slice(start, end).join('\n');
+            }
+
+            this.log('debug', `Read ${content.length} chars from ${filePath}`);
+            return { success: true, output: content };
+        } catch (error) {
+            const err = error as NodeJS.ErrnoException;
+            if (err.code === 'ENOENT') {
+                return { success: false, output: '', error: `File not found: ${filePath}` };
+            }
+            if (err.code === 'EISDIR') {
+                return { success: false, output: '', error: `Path is a directory: ${filePath}` };
+            }
+            return { success: false, output: '', error: `Error reading file: ${err.message}` };
         }
-
-        const stat = fs.statSync(filePath);
-        if (stat.isDirectory()) {
-            return { success: false, output: '', error: `Path is a directory: ${filePath}` };
-        }
-
-        let content = fs.readFileSync(filePath, 'utf-8');
-
-        // Handle line range
-        if (startLine !== undefined || endLine !== undefined) {
-            const lines = content.split('\n');
-            const start = (startLine ?? 1) - 1;
-            const end = endLine ?? lines.length;
-            content = lines.slice(start, end).join('\n');
-        }
-
-        this.log('debug', `Read ${content.length} chars from ${filePath}`);
-        return { success: true, output: content };
     }
 
     private async handleWriteFile(args: Record<string, unknown>): Promise<ToolResult> {
