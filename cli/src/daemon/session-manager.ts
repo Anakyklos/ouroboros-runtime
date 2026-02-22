@@ -190,22 +190,19 @@ export class SessionManager {
     async cleanupSession(sessionId: string): Promise<void> {
         this.activeOrchestrators.delete(sessionId);
 
-        const tasksToCleanup: string[] = [];
-        const promisesToAwait: Promise<void>[] = [];
-
         // Collect all tasks to cleanup
-        for (const [taskId, promise] of this.activeTasks) {
-            if (taskId.includes(sessionId)) {
-                tasksToCleanup.push(taskId);
-                promisesToAwait.push(promise.catch(() => { /* ignore errors */ }));
-            }
-        }
+        const tasksToCleanup = Array.from(this.activeTasks.entries())
+            .filter(([taskId]) => taskId.includes(sessionId));
+
+        const promisesToAwait = tasksToCleanup.map(([_, promise]) =>
+            promise.catch(() => { /* ignore errors */ })
+        );
 
         // Wait for all tasks to finish concurrently
         await Promise.all(promisesToAwait);
 
         // Remove from active tasks map
-        for (const taskId of tasksToCleanup) {
+        for (const [taskId] of tasksToCleanup) {
             this.activeTasks.delete(taskId);
         }
     }
