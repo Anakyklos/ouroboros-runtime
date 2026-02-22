@@ -10,11 +10,12 @@ Started: Sun Feb 22 2026
 - Use Framer Motion for animations
 - Use CSS variables from theme.ts for consistent colors
 - Radix UI for dialogs and modals
+- Session persistence uses SQLite with WAL mode
+- Checkpoint timer pattern for periodic state saves
 
 ## [Sun Feb 22 2026 - COMPLETE] 
 
-All 10 user stories completed for Web Interface:
-
+### Feature 1: Web Interface (10/10 stories)
 ✅ US-001: WebSocket reconnection with exponential backoff
 ✅ US-002: Real-time wave progress visualization  
 ✅ US-003: Task detail panel
@@ -26,66 +27,29 @@ All 10 user stories completed for Web Interface:
 ✅ US-009: Emergency brake confirmation
 ✅ US-010: Keyboard shortcuts help modal
 
+### Feature 2: Session Persistence (8/8 stories)
+✅ US-001: Session state schema
+✅ US-002: Session manager service
+✅ US-003: Wave state persistence
+✅ US-004: Session checkpointing
+✅ US-005: Memory context persistence
+✅ US-006: Daemon startup with session resume
+✅ US-007: Session archival
+✅ US-008: Session export/import
+
 ---
 
-## [Sun Feb 22 2026 - 21:00] - US-001
-- Implemented exponential backoff for WebSocket reconnection
-- Added connectionStatus state: connected, disconnected, reconnecting
-- Updated UI to show colored status indicators (green/yellow/red)
-- Files changed: web/src/hooks/use-event-bus.ts, web/src/pages/swiss-mission-control.tsx, web/src/pages/mission-control.tsx
-- **Learnings for future iterations:**
-  - useEventBus already had reconnection logic, just needed exponential backoff
-  - Connection status should be exposed from hook, not just boolean
-  - Both Swiss and Snake themes need connection status updates
----
+## Learnings
 
-## [Sun Feb 22 2026 - 21:05] - US-002
-- Added progress bar with percentage for each wave
-- Updated task count to show completed/total
-- Added status change animations with Framer Motion
-- Files changed: web/src/components/quadrants/the-coil.tsx
-- **Learnings for future iterations:**
-  - motion.div with initial/animate/exit for smooth transitions
-  - Status badge should animate when status changes
-  - Use key prop on motion elements to trigger animations
----
+### Session Persistence
+- Use prepared statements for performance
+- Checkpoint timer needs cleanup on session end
+- WAL mode essential for concurrent read/write
+- Memory filtering by type enables context-specific retrieval
 
-## [Sun Feb 22 2026 - 21:10] - US-003
-- Created TaskDetailPanel component with slide-in animation
-- Added task click event dispatcher in TheCoil
-- Updated Task type with description, createdAt, updatedAt
-- Files changed: web/src/components/task-detail-panel.tsx, web/src/components/quadrants/the-coil.tsx, web/src/pages/mission-control.tsx, web/src/stores/mission-control-store.ts
-- **Learnings for future iterations:**
-  - Use CustomEvent for cross-component communication
-  - ESC key listener needs cleanup in useEffect
-  - Panel overlay should block body scroll when open
----
-
-## [Sun Feb 22 2026 - 21:15] - US-004
-- Added uiLayout setting (snake/swiss) to settings-store
-- Updated Settings page with UI Layout selector
-- App.tsx now renders correct component based on setting
-- Files changed: web/src/stores/settings-store.ts, web/src/pages/settings.tsx, web/src/App.tsx
-- **Learnings for future iterations:**
-  - Zustand persist middleware handles localStorage automatically
-  - Custom event for layout change allows immediate update
----
-
-## [Sun Feb 22 2026 - 21:20] - US-005
-- Added daemonConfig to settings-store with websocketUrl and apiKey
-- Settings page has daemon configuration section with test connection
-- Files changed: web/src/stores/settings-store.ts, web/src/pages/settings.tsx
----
-
-## [Sun Feb 22 2026 - 21:25] - US-006 through US-010
-- US-006: Terminal uses daemon config from settings store
-- US-007: Added celebration animation when consensus >= 80%
-- US-008: Created MemoryPanel with search and filter by type
-- US-009: Created EmergencyBrakeDialog with Radix UI
-- US-010: Created KeyboardShortcutsModal with ? key trigger
-- Files changed: Multiple new components and mission-control.tsx
-- **Learnings for future iterations:**
-  - Radix UI provides accessible dialog components
-  - Keyboard shortcuts should check for input focus
-  - Memory panel uses slide-in from left for variety
+### Web UI
+- Radix UI provides accessible dialog components
+- Keyboard shortcuts should check for input focus
+- Memory panel uses slide-in from left for variety
+- Exponential backoff: 1s, 2s, 4s, 8s, max 30s
 ---
