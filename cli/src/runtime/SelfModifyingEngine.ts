@@ -70,12 +70,6 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
     autoGitCommit: false,
 };
 
-/**
- * Export-matching patterns, stored as pattern strings to avoid sharing
- * mutable global RegExp instances (in particular the lastIndex state
- * associated with the g flag). Callers must construct RegExp
- * instances from these patterns (e.g. with new RegExp(pattern, "gu")).
- */
 const EXPORT_PATTERNS: ReadonlyArray<string> = Object.freeze([
     'export\\s+(?:async\\s+)?function\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
     'export\\s+class\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
@@ -459,8 +453,8 @@ export class SelfModifyingEngine {
             throw new Error(`groupIndex must be a non-negative integer, got: ${groupIndex}`);
         }
 
-        // Clone the RegExp to avoid shared mutable state (lastIndex)
-        // Uses passed pattern directly
+        // Use passed pattern directly (assumed fresh/reset by caller)
+        pattern.lastIndex = 0;
 
         const results: string[] = [];
         let match;
