@@ -329,12 +329,11 @@ export class SelfModifyingEngine {
             }
         }
     }
-
     private async validateSyntax(code: string, filePath: string): Promise<boolean> {
-        const tempFile = path.join('/tmp', `ouroboros-validate-${Date.now()}.ts`);
+        const tempFile = path.join("/tmp", `ouroboros-validate-${Date.now()}.ts`);
 
         try {
-            await fs.writeFile(tempFile, code, 'utf-8');
+            await fs.writeFile(tempFile, code, "utf-8");
 
             return new Promise((resolve) => {
                 const proc = spawn('bunx', ['tsc', '--noEmit', tempFile], {
