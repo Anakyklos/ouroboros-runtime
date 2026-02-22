@@ -76,7 +76,6 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
 
 export class SelfModifyingEngine {
     private config: Required<SelfModifyingEngineConfig>;
-    private static readonly CLEANUP_CHUNK_SIZE = 20;
     /** Batch size for parallel deletion to prevent EMFILE errors */
     private static readonly CLEANUP_CHUNK_SIZE = 20;
     private initialized: boolean = false;
