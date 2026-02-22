@@ -432,17 +432,13 @@ export class SelfModifyingEngine {
     /**
      * Extracts all matches for a given global regex pattern.
      *
-     * Note: We use a manual exec loop with explicit lastIndex reset instead of
-     * String.prototype.matchAll() because benchmarks show this approach is
-     * approximately 4x faster (3000ns vs 14000ns) for our workload.
+     * Note: We use a manual exec loop instead of String.prototype.matchAll()
+     * because benchmarks show this approach is faster for our workload.
      *
      * Safety:
-     * - The pattern must be global to avoid infinite loops.
-     * - This method is synchronous and intended for use in a single-threaded
-     *   JavaScript environment (Node/Bun). Reusing static RegExp instances is safe
-     *   because strict synchronous execution prevents interleaved access to `lastIndex`.
-     *   If this code is ever moved to a concurrent environment (e.g. Workers) or made async,
-     *   cloning the RegExp per call (new RegExp(pattern, pattern.flags)) would be required.
+     * - We clone the RegExp instance per call to ensure thread-safety and avoid
+     *   shared mutable state (lastIndex), making this robust against reentrancy
+     *   or concurrent usage.
      */
     private static extractMatches(
         pattern: RegExp,
@@ -456,11 +452,14 @@ export class SelfModifyingEngine {
             throw new Error(`groupIndex must be a non-negative integer, got: ${groupIndex}`);
         }
 
-        pattern.lastIndex = 0;
+        // Clone the RegExp to avoid shared mutable state (lastIndex)
+        const clonedPattern = new RegExp(pattern, pattern.flags);
+        clonedPattern.lastIndex = 0;
+
         const results: string[] = [];
         let match;
 
-        while ((match = pattern.exec(code)) !== null) {
+        while ((match = clonedPattern.exec(code)) !== null) {
             if (groupIndex >= match.length) {
                 throw new Error(
                     `RegExp match does not contain capture group at index ${groupIndex}. ` +
