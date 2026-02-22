@@ -102,7 +102,7 @@ export class SelfModifyingEngine {
         }
         this.config.concurrencyLimit = limit;
 
-        this.semaphore = new Semaphore(this.config.concurrencyLimit, 2048);
+        this.semaphore = new Semaphore(this.config.concurrencyLimit, Math.max(2048, this.config.concurrencyLimit * 100));
     }
 
     // ========================================================================
@@ -465,7 +465,7 @@ export class SelfModifyingEngine {
             });
         } catch (error: any) {
             // Ignore expected filesystem errors (e.g., permission denied, not found)
-            if (IGNORED_FS_ERRORS.has(error.code)) {
+            if (error && typeof error.code === "string" && IGNORED_FS_ERRORS.has(error.code)) {
                 return [];
             }
             throw error;
