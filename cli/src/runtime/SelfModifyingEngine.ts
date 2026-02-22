@@ -495,6 +495,7 @@ export class SelfModifyingEngine {
 
     /**
      * Public wrapper for directory scanning (testing purposes)
+     * @internal
      */
     async scanDirectory(dir: string): Promise<string[]> {
         return this.walkDir(dir);
