@@ -61,10 +61,10 @@ describe('SessionManager', () => {
         expect(end - start).toBeGreaterThanOrEqual(90);
 
         // Verify tasks are removed for the session
-        expect(getActiveTasks(manager).has(sessionId)).toBe(false);
+        expect(manager.hasActiveTasks(sessionId)).toBe(false);
 
         // Verify other session task remains
-        expect(getActiveTasks(manager).has(otherSessionId)).toBe(true);
+        expect(manager.hasActiveTasks(otherSessionId)).toBe(true);
         expect(getActiveTasks(manager).get(otherSessionId)!.has(`task_${otherSessionId}_1`)).toBe(true);
     });
 
@@ -81,7 +81,7 @@ describe('SessionManager', () => {
         // This should not throw
         await manager.cleanupSession(sessionId);
 
-        expect(getActiveTasks(manager).has(sessionId)).toBe(false);
+        expect(manager.hasActiveTasks(sessionId)).toBe(false);
     });
 
     it('cleanupSession should handle tasks added concurrently during cleanup', async () => {
@@ -100,7 +100,7 @@ describe('SessionManager', () => {
 
         await cleanupPromise;
 
-        expect(getActiveTasks(manager).has(sessionId)).toBe(false);
+        expect(manager.hasActiveTasks(sessionId)).toBe(false);
     });
 
     it('cleanupSession should stop after max iterations and log warning', async () => {
@@ -136,7 +136,7 @@ describe('SessionManager', () => {
         expect(warnCall).toBeDefined();
 
         // It should have cleaned up forcefully
-        expect(getActiveTasks(manager).has(sessionId)).toBe(false);
+        expect(manager.hasActiveTasks(sessionId)).toBe(false);
     });
 
     it('SessionManager should respect custom configuration', async () => {
@@ -159,7 +159,7 @@ describe('SessionManager', () => {
 
         // Should finish around 10ms (timeout) instead of 50ms
         expect(end - start).toBeLessThan(30);
-        expect(getActiveTasks(customManager).has(sessionId)).toBe(false);
+        expect(customManager.hasActiveTasks(sessionId)).toBe(false);
 
         const calls = logSpy.mock.calls;
         const timeoutCall = calls.find((c: any[]) => c[0] === 'warn' && c[1].includes('timed out'));

@@ -31,6 +31,8 @@ export const DEFAULT_SESSION_MANAGER_CONFIG: SessionManagerConfig = {
     cleanupTimeoutMs: 5000,
 };
 
+const TIMEOUT_SYMBOL = Symbol('TIMEOUT');
+
 export class SessionManager {
     private readonly maxCleanupIterations: number;
     private readonly cleanupTimeoutMs: number;
@@ -43,17 +45,12 @@ export class SessionManager {
 
     private apiKey?: string;
 
-        constructor(
-        storage: StoragePort,
-        eventBus: EventBus,
-        apiKey?: string,
-        config: SessionManagerConfig = DEFAULT_SESSION_MANAGER_CONFIG
-    ) {
+            constructor(storage: StoragePort, eventBus: EventBus, apiKey?: string, config?: SessionManagerConfig) {
         this.storage = storage;
         this.eventBus = eventBus;
         this.apiKey = apiKey;
-        this.maxCleanupIterations = config.maxCleanupIterations ?? 3;
-        this.cleanupTimeoutMs = config.cleanupTimeoutMs ?? 5000;
+        this.maxCleanupIterations = config?.maxCleanupIterations ?? DEFAULT_SESSION_MANAGER_CONFIG.maxCleanupIterations!;
+        this.cleanupTimeoutMs = config?.cleanupTimeoutMs ?? DEFAULT_SESSION_MANAGER_CONFIG.cleanupTimeoutMs!;
     }
 
     async createSession(data: Omit<Session, 'id' | 'createdAt' | 'updatedAt'>): Promise<Session> {
@@ -230,6 +227,14 @@ export class SessionManager {
         return this.activeTasks.get(sessionId)!;
     }
 
+
+    /**
+     * Check if a session has active tasks (for testing/diagnostics)
+     */
+    hasActiveTasks(sessionId: string): boolean {
+        return (this.activeTasks.get(sessionId)?.size ?? 0) > 0;
+    }
+
     async cleanupSession(sessionId: string): Promise<void> {
         this.activeOrchestrators.delete(sessionId);
 
@@ -256,16 +261,16 @@ export class SessionManager {
             const cleanupPromise = Promise.all(promisesToAwait);
 
             let timeoutId: ReturnType<typeof setTimeout> | undefined;
-            const TIMEOUT = Symbol('TIMEOUT');
 
-            const timeoutPromise = new Promise<symbol>((resolve) => {
-                timeoutId = setTimeout(() => resolve(TIMEOUT), this.cleanupTimeoutMs);
+
+            const timeoutPromise = new Promise<typeof TIMEOUT_SYMBOL>((resolve) => {
+                timeoutId = setTimeout(() => resolve(TIMEOUT_SYMBOL), this.cleanupTimeoutMs);
             });
 
             try {
                 const result = await Promise.race([cleanupPromise, timeoutPromise]);
 
-                if (result === TIMEOUT) {
+                if (result === TIMEOUT_SYMBOL) {
                     this.eventBus.log('warn', `cleanupSession iteration ${iterations + 1} timed out after ${this.cleanupTimeoutMs}ms for session ${sessionId}`, 'SessionManager');
                 }
             } finally {
