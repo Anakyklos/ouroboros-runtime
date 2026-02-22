@@ -70,7 +70,7 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
     autoGitCommit: false,
 };
 
-const EXPORT_PATTERNS = [
+const EXPORT_PATTERNS: ReadonlyArray<RegExp> = [
     /export\s+(?:async\s+)?function\s+(\w+)/g,
     /export\s+class\s+(\w+)/g,
     /export\s+const\s+(\w+)/g,
