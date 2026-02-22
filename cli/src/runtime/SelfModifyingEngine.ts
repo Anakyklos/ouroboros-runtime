@@ -8,40 +8,10 @@
  * @module runtime/SelfModifyingEngine
  */
 
-import fs from 'fs/promises';
+import * as fs from 'fs/promises';
 import * as path from 'path';
 import { spawn } from 'child_process';
 
-/**
- * Global concurrency limiter for directory traversal.
- * Ensures a real global limit on file system operations across the entire traversal.
- */
-const WALK_CONCURRENCY_LIMIT = 50;
-let activeWalks = 0;
-const walkQueue: Array<() => void> = [];
-
-async function acquireWalkSlot(): Promise<void> {
-    if (activeWalks < WALK_CONCURRENCY_LIMIT) {
-        activeWalks += 1;
-        return;
-    }
-
-    await new Promise<void>((resolve) => {
-        walkQueue.push(() => {
-            activeWalks += 1;
-            resolve();
-        });
-    });
-}
-
-function releaseWalkSlot(): void {
-    activeWalks = Math.max(0, activeWalks - 1);
-
-    const next = walkQueue.shift();
-    if (next) {
-        next();
-    }
-}
 
 // ============================================================================
 // Types
@@ -72,6 +42,8 @@ export interface MutationResult {
 }
 
 export interface SelfModifyingEngineConfig {
+    /** Max concurrent directory scans (default: 50) */
+    concurrencyLimit?: number;
     /** Diretório raiz do código fonte */
     sourceDir: string;
     /** Diretório para backups */
@@ -93,6 +65,7 @@ export interface SelfModifyingEngineConfig {
 // ============================================================================
 
 const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
+    concurrencyLimit: 50,
     backupDir: '.ouroboros/backups',
     validateSyntax: true,
     runTestsAfter: true,
@@ -106,6 +79,9 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
 // ============================================================================
 
 export class SelfModifyingEngine {
+    private config: Required<SelfModifyingEngineConfig>;
+    private activeWalks = 0;
+    private walkQueue: Array<() => void> = [];
     private config: Required<SelfModifyingEngineConfig>;
     private mutationHistory: MutationProposal[] = [];
     private initialized: boolean = false;
@@ -464,16 +440,41 @@ export class SelfModifyingEngine {
         return exports;
     }
 
+    private async acquireWalkSlot(): Promise<void> {
+        if (this.activeWalks < this.config.concurrencyLimit) {
+            this.activeWalks += 1;
+            return;
+        }
+
+        await new Promise<void>((resolve) => {
+            this.walkQueue.push(() => {
+                this.activeWalks += 1;
+                resolve();
+            });
+        });
+    }
+
+    private releaseWalkSlot(): void {
+        this.activeWalks = Math.max(0, this.activeWalks - 1);
+
+        const next = this.walkQueue.shift();
+        if (next) {
+            next();
+        }
+    }
+
     private async walkDir(dir: string): Promise<string[]> {
         const files: string[] = [];
         let entries: fs.Dirent[] = [];
 
         try {
-            await acquireWalkSlot();
+            await this.acquireWalkSlot();
             try {
                 entries = await fs.readdir(dir, { withFileTypes: true });
+                // Sort entries for deterministic output
+                entries.sort((a, b) => a.name.localeCompare(b.name));
             } finally {
-                releaseWalkSlot();
+                this.releaseWalkSlot();
             }
 
             const promises = entries.map(async (entry) => {
@@ -482,15 +483,18 @@ export class SelfModifyingEngine {
                 if (entry.isDirectory()) {
                     // Skip node_modules, .git, etc.
                     if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
-                        const subFiles = await this.walkDir(fullPath);
-                        files.push(...subFiles);
+                        return this.walkDir(fullPath);
                     }
                 } else {
-                    files.push(fullPath);
+                    return [fullPath];
                 }
+                return [];
             });
 
-            await Promise.all(promises);
+            const results = await Promise.all(promises);
+            for (const result of results) {
+                files.push(...result);
+            }
 
         } catch (error) {
             // Ignore read errors
