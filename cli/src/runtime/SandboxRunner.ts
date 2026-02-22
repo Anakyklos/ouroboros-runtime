@@ -289,6 +289,22 @@ export class SandboxRunner extends EventEmitter {
 
         const pythonPath = this.environment.pythonPath;
 
+        // Validate that Python venv exists
+        try {
+            const fs = await import('fs/promises');
+            await fs.access(pythonPath);
+        } catch {
+            throw new Error(
+                `Python executable not found at ${pythonPath}.\n` +
+                `The sandbox virtual environment (venv) does not exist.\n\n` +
+                `To fix this, run setupSandbox() before starting the sandbox:\n` +
+                `  const { setupSandbox } = await import('./SandboxSetup.js');\n` +
+                `  await setupSandbox();\n\n` +
+                `Or create the venv manually:\n` +
+                `  python3 -m venv .ouroboros/venv`
+            );
+        }
+
         this.process = spawn(pythonPath, ['-i', '-u'], {
             cwd: this.config.cwd,
             stdio: ['pipe', 'pipe', 'pipe'],

@@ -15,6 +15,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { SandboxRunner } from "./SandboxRunner.js";
 import { OuroborosEnvironment } from "./OuroborosEnvironment.js";
+import { setupSandbox } from "./SandboxSetup.js";
 import { rmSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
@@ -28,9 +29,19 @@ describe("SandboxE2E - End-to-End Verification", () => {
     // ========================================================================
 
     beforeAll(async () => {
-        // Create isolated test environment
-        environment = new OuroborosEnvironment({ projectRoot: testProjectRoot });
-        await environment.initialize();
+        // Create isolated test environment WITH venv
+        const setupResult = await setupSandbox({
+            projectRoot: testProjectRoot,
+            skipVenvCreation: false
+        });
+
+        if (!setupResult.success) {
+            throw new Error(
+                `Failed to setup sandbox environment: ${setupResult.error}`
+            );
+        }
+
+        environment = setupResult.environment;
 
         sandbox = new SandboxRunner({
             environment,
@@ -569,9 +580,19 @@ print(sum(result))
 if (import.meta.main) {
     console.log("🧪 Running End-to-End Sandbox Verification Tests...\n");
 
-    const testEnv = new OuroborosEnvironment({
-        projectRoot: join(process.cwd(), "cli", "src", "runtime", "temp_e2e_manual")
+    // Setup sandbox environment with venv
+    const testProjectRoot = join(process.cwd(), "cli", "src", "runtime", "temp_e2e_manual");
+    const setupResult = await setupSandbox({
+        projectRoot: testProjectRoot,
+        skipVenvCreation: false
     });
+
+    if (!setupResult.success) {
+        console.error("❌ Failed to setup sandbox environment:", setupResult.error);
+        process.exit(1);
+    }
+
+    const testEnv = setupResult.environment;
     const testSandbox = new SandboxRunner({
         environment: testEnv,
         autoRestart: false,
@@ -608,7 +629,7 @@ if (import.meta.main) {
 
             console.log("1️️⃣  Environment Isolation Tests");
             console.log("─────────────────────────────────");
-            await testEnv.initialize();
+            // Environment already initialized by setupSandbox()
             await runTest("Create .ouroboros directory", async () => {
                 const { ouroborosDir } = testEnv.paths;
                 if (!existsSync(ouroborosDir)) {
