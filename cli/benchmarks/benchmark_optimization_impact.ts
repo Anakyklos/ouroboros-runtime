@@ -25,11 +25,6 @@ export class Ångström {}
 // 1. Baseline: Recreating Regexes (Original Implementation)
 function baseline(code: string): string[] {
     const exports: string[] = [];
-    // Original patterns were simpler (\w+), but let's use the new patterns inside the loop
-    // to measure the "allocation" cost fairly, or use the old patterns to measure total change?
-    // The request asks to measure "creating 5 RegExp objects on every function call vs using the module-level EXPORT_PATTERNS".
-    // I will use the *same* regex logic (new unicode ones) to isolate the ALLOCATION cost.
-
     const patterns = [
         /export\s+(?:async\s+)?function\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
         /export\s+class\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
@@ -47,23 +42,21 @@ function baseline(code: string): string[] {
     return exports;
 }
 
-// 2. Optimized: Static Constant + Cloning (Current Implementation)
-// Simulating the module-level constant
+// 2. Optimized: Static Strings + Constructor (New Implementation)
 const EXPORT_PATTERNS = Object.freeze([
-    /export\s+(?:async\s+)?function\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
-    /export\s+class\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
-    /export\s+const\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
-    /export\s+interface\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
-    /export\s+type\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
+    'export\\s+(?:async\\s+)?function\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
+    'export\\s+class\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
+    'export\\s+const\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
+    'export\\s+interface\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
+    'export\\s+type\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
 ]);
 
 function optimized(code: string): string[] {
     const exports: string[] = [];
-    for (const pattern of EXPORT_PATTERNS) {
-        // Current implementation clones
-        const cloned = new RegExp(pattern);
+    for (const patternString of EXPORT_PATTERNS) {
+        const pattern = new RegExp(patternString, 'gu');
         let match;
-        while ((match = cloned.exec(code)) !== null) {
+        while ((match = pattern.exec(code)) !== null) {
             exports.push(match[1]);
         }
     }
@@ -74,7 +67,7 @@ bench
   .add('Baseline (Recreate Array)', () => {
     baseline(code);
   })
-  .add('Optimized (Static + Clone)', () => {
+  .add('Optimized (Static Strings)', () => {
     optimized(code);
   });
 

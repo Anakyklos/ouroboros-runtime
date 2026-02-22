@@ -70,12 +70,18 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
     autoGitCommit: false,
 };
 
-const EXPORT_PATTERNS: ReadonlyArray<RegExp> = Object.freeze([
-    /export\s+(?:async\s+)?function\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
-    /export\s+class\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
-    /export\s+const\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
-    /export\s+interface\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
-    /export\s+type\s+([\p{ID_Start}$][\p{ID_Continue}$]*)/gu,
+/**
+ * Export-matching patterns, stored as pattern strings to avoid sharing
+ * mutable global RegExp instances (in particular the lastIndex state
+ * associated with the g flag). Callers must construct RegExp
+ * instances from these patterns (e.g. with new RegExp(pattern, "gu")).
+ */
+const EXPORT_PATTERNS: ReadonlyArray<string> = Object.freeze([
+    'export\\s+(?:async\\s+)?function\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
+    'export\\s+class\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
+    'export\\s+const\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
+    'export\\s+interface\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
+    'export\\s+type\\s+([\\p{ID_Start}$][\\p{ID_Continue}$]*)',
 ]);
 
 // ============================================================================
@@ -422,7 +428,8 @@ export class SelfModifyingEngine {
     private extractExports(code: string): string[] {
         const exports: string[] = [];
 
-        for (const pattern of EXPORT_PATTERNS) {
+        for (const patternString of EXPORT_PATTERNS) {
+            const pattern = new RegExp(patternString, 'gu');
             exports.push(...SelfModifyingEngine.extractMatches(pattern, code));
         }
 
@@ -437,9 +444,8 @@ export class SelfModifyingEngine {
      *
      * Safety:
      * - The pattern must be global to avoid infinite loops.
-     * - We clone the RegExp instance per call to avoid manually managing shared
-     *   mutable state (lastIndex) on the static constants, which simplifies the
-     *   logic and prevents subtle bugs from reentrancy.
+     * - The method operates on the provided RegExp instance. Callers should ensure
+     *   the instance is not shared if concurrency/reentrancy is a concern.
      */
     private static extractMatches(
         pattern: RegExp,
@@ -454,12 +460,12 @@ export class SelfModifyingEngine {
         }
 
         // Clone the RegExp to avoid shared mutable state (lastIndex)
-        const clonedPattern = new RegExp(pattern);
+        // Uses passed pattern directly
 
         const results: string[] = [];
         let match;
 
-        while ((match = clonedPattern.exec(code)) !== null) {
+        while ((match = pattern.exec(code)) !== null) {
             if (groupIndex >= match.length) {
                 throw new Error(
                     `RegExp match does not contain capture group at index ${groupIndex}. ` +
