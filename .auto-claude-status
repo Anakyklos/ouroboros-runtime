@@ -5,11 +5,17 @@
   "subtasks": {
     "completed": 10,
     "total": 16,
+  "spec": "002-complete-anti-vibe-protocol-quality-gates",
+  "state": "building",
+  "subtasks": {
+    "completed": 7,
+    "total": 19,
     "in_progress": 1,
     "failed": 0
   },
   "phase": {
     "current": "Testing & Verification",
+    "current": "Specification Workflow Enhancement",
     "id": null,
     "total": 3
   },
@@ -22,4 +28,8 @@
     "started_at": "2026-02-21T10:21:16.573285"
   },
   "last_update": "2026-02-21T13:50:12.809147"
+    "number": 2,
+    "started_at": "2026-02-21T08:30:26.400775"
+  },
+  "last_update": "2026-02-21T08:36:37.465849"
 }

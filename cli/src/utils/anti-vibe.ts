@@ -25,9 +25,9 @@ export interface AntiVibeConfig {
 
 // --- DEFAULT CONFIGURATION ---
 
-const DEFAULT_CONTEXT_DIR = path.join(process.cwd(), '.ouroboros', 'context');
-const SPEC_FILE = 'SPEC_TECNICA.md';
-const DIAG_FILE = 'DIAGNOSTICO_CTX.md';
+export const DEFAULT_CONTEXT_DIR = path.join(process.cwd(), '.ouroboros', 'context');
+export const SPEC_FILE = 'SPEC_TECNICA.md';
+export const DIAG_FILE = 'DIAGNOSTICO_CTX.md';
 
 // --- PERSONAS (SYSTEM PROMPTS) ---
 
