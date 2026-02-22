@@ -67,7 +67,7 @@ if (import.meta.main) {
         const start = performance.now();
 
         // Access private method for focused benchmark
-        const files = await (engine as any).walkDir(tempDir);
+        const files = await engine.scanDirectory(tempDir);
 
         const end = performance.now();
         const duration = end - start;

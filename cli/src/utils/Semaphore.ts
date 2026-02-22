@@ -35,10 +35,35 @@ export class Semaphore {
      * Releases a slot in the semaphore, allowing the next queued task to proceed.
      */
     release(): void {
-        this.activeCount = Math.max(0, this.activeCount - 1);
+        if (this.activeCount <= 0) {
+            // Log warning in debug mode or if explicitly required
+            if (process.env.DEBUG) {
+                console.warn("Semaphore.release() called with no active tasks. Logic error suspected.");
+            }
+            return;
+        }
+
+        this.activeCount--;
 
         const next = this.queue.shift();
         if (next) {
+            // Immediately activate the next task (increment was handled by the push logic or we handle it here?)
+            // Wait, my acquire logic:
+            // if queue push: closure { activeCount++; resolve(); }
+            // So if I release, activeCount becomes N-1.
+            // If I call next(), the closure runs, activeCount becomes N. Correct.
+            // But wait, the closure increments activeCount.
+            // So release() decrements, next() increments. Net change 0. Correct.
+
+            // However, the check `if (this.activeCount < this.maxConcurrency)` in acquire relies on `activeCount` being accurate.
+
+            // Let's re-verify the logic.
+            // Start: 0/1
+            // A: acquire -> 1/1.
+            // B: acquire -> push B.
+            // A: release -> activeCount=0. next=B. B runs -> activeCount=1.
+            // Result: 1/1. Correct.
+
             next();
         }
     }
