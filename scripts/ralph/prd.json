@@ -62,8 +62,8 @@
         "bun run build passes"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Added uiLayout setting to settings-store with snake/swiss options. Updated Settings page with UI Layout selector. App.tsx now renders correct component based on setting."
     },
     {
       "id": "US-005",

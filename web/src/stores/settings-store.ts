@@ -2,10 +2,12 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export type Theme = "dark" | "light" | "system";
+export type UILayout = "snake" | "swiss";
 
 interface SettingsState {
   // Appearance
   theme: Theme;
+  uiLayout: UILayout;
   uiScale: number;
   reducedMotion: boolean;
   
@@ -24,6 +26,7 @@ interface SettingsState {
   
   // Actions
   setTheme: (theme: Theme) => void;
+  setUILayout: (layout: UILayout) => void;
   setUIScale: (scale: number) => void;
   setReducedMotion: (enabled: boolean) => void;
   setAutoScrollLogs: (enabled: boolean) => void;
@@ -39,6 +42,7 @@ export const useSettingsStore = create<SettingsState>()(
   persist(
     (set) => ({
       theme: "dark",
+      uiLayout: "snake",
       uiScale: 100,
       reducedMotion: false,
       autoScrollLogs: true,
@@ -52,6 +56,10 @@ export const useSettingsStore = create<SettingsState>()(
       setTheme: (theme) => {
         set({ theme });
         applyTheme(theme);
+      },
+      setUILayout: (uiLayout) => {
+        set({ uiLayout });
+        applyUILayout(uiLayout);
       },
       setUIScale: (uiScale) => {
         set({ uiScale });
@@ -81,6 +89,10 @@ function applyTheme(theme: Theme) {
   } else {
     root.setAttribute("data-theme", theme);
   }
+}
+
+function applyUILayout(layout: UILayout) {
+  window.dispatchEvent(new CustomEvent("ui:layout-change", { detail: layout }));
 }
 
 function applyUIScale(scale: number) {
