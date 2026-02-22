@@ -12,6 +12,37 @@ import fs from 'fs/promises';
 import * as path from 'path';
 import { spawn } from 'child_process';
 
+/**
+ * Global concurrency limiter for directory traversal.
+ * Ensures a real global limit on file system operations across the entire traversal.
+ */
+const WALK_CONCURRENCY_LIMIT = 50;
+let activeWalks = 0;
+const walkQueue: Array<() => void> = [];
+
+async function acquireWalkSlot(): Promise<void> {
+    if (activeWalks < WALK_CONCURRENCY_LIMIT) {
+        activeWalks += 1;
+        return;
+    }
+
+    await new Promise<void>((resolve) => {
+        walkQueue.push(() => {
+            activeWalks += 1;
+            resolve();
+        });
+    });
+}
+
+function releaseWalkSlot(): void {
+    activeWalks = Math.max(0, activeWalks - 1);
+
+    const next = walkQueue.shift();
+    if (next) {
+        next();
+    }
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -435,39 +466,34 @@ export class SelfModifyingEngine {
 
     private async walkDir(dir: string): Promise<string[]> {
         const files: string[] = [];
-        const CONCURRENCY_LIMIT = 50;
+        let entries: fs.Dirent[] = [];
 
         try {
-            const entries = await fs.readdir(dir, { withFileTypes: true });
-            const tasks: (() => Promise<string[]>)[] = [];
+            await acquireWalkSlot();
+            try {
+                entries = await fs.readdir(dir, { withFileTypes: true });
+            } finally {
+                releaseWalkSlot();
+            }
 
-            for (const entry of entries) {
+            const promises = entries.map(async (entry) => {
                 const fullPath = path.join(dir, entry.name);
 
                 if (entry.isDirectory()) {
                     // Skip node_modules, .git, etc.
                     if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
-                        tasks.push(() => this.walkDir(fullPath));
+                        const subFiles = await this.walkDir(fullPath);
+                        files.push(...subFiles);
                     }
                 } else {
                     files.push(fullPath);
                 }
-            }
+            });
 
-            // Execute tasks with concurrency limit
-            const results: string[][] = [];
-            for (let i = 0; i < tasks.length; i += CONCURRENCY_LIMIT) {
-                const chunk = tasks.slice(i, i + CONCURRENCY_LIMIT);
-                const chunkResults = await Promise.all(chunk.map(task => task()));
-                results.push(...chunkResults);
-            }
-
-            for (const result of results) {
-                files.push(...result);
-            }
+            await Promise.all(promises);
 
         } catch (error) {
-            // Ignora erros de leitura
+            // Ignore read errors
         }
 
         return files;
