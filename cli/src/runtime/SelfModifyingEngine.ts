@@ -423,18 +423,20 @@ export class SelfModifyingEngine {
         const exports: string[] = [];
 
         for (const pattern of EXPORT_PATTERNS) {
-            SelfModifyingEngine.extractMatches(pattern, code, exports);
+            exports.push(...SelfModifyingEngine.extractMatches(pattern, code));
         }
 
         return exports;
     }
 
-    private static extractMatches(pattern: RegExp, code: string, results: string[]): void {
+    private static extractMatches(pattern: RegExp, code: string): string[] {
         pattern.lastIndex = 0;
+        const results: string[] = [];
         let match;
         while ((match = pattern.exec(code)) !== null) {
             results.push(match[1]);
         }
+        return results;
     }
 
     private async walkDir(dir: string): Promise<string[]> {
