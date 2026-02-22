@@ -244,6 +244,14 @@ Ralph is an autonomous AI agent loop that runs opencode repeatedly until all PRD
   ✅ Integrações: Gemini, Antigravity, Jules
   ✅ Memória persistente (MemoryManager)
   ✅ Anti-Vibe protocol básico
+  ✅ Web UI completa (Snake + Swiss themes)
+  ✅ WebSocket com reconexão exponencial
+  ✅ Painel de detalhes de tarefas
+  ✅ Terminal integrado com xterm.js
+  ✅ Council debate viewer com animação
+  ✅ Memory panel com busca/filtro
+  ✅ Emergency brake confirmation
+  ✅ Keyboard shortcuts modal
 
 **O que falta implementar**:
   ⏳ Validação programática avançada

@@ -6,8 +6,29 @@ Started: Sun Feb 22 2026
 - Use bun for all package management and running scripts
 - Always run `bun run build && bun run test` before committing
 - Follow patterns in AGENTS.md for code conventions
+- Web UI uses Zustand for state management with persist middleware
+- Use Framer Motion for animations
+- Use CSS variables from theme.ts for consistent colors
+- Radix UI for dialogs and modals
 
-## [Sun Feb 22 2026 - 20:45] - US-001
+## [Sun Feb 22 2026 - COMPLETE] 
+
+All 10 user stories completed for Web Interface:
+
+✅ US-001: WebSocket reconnection with exponential backoff
+✅ US-002: Real-time wave progress visualization  
+✅ US-003: Task detail panel
+✅ US-004: Settings page - theme selector
+✅ US-005: Settings page - daemon configuration
+✅ US-006: Terminal integration with PTY
+✅ US-007: Council debate viewer
+✅ US-008: Memory/context panel
+✅ US-009: Emergency brake confirmation
+✅ US-010: Keyboard shortcuts help modal
+
+---
+
+## [Sun Feb 22 2026 - 21:00] - US-001
 - Implemented exponential backoff for WebSocket reconnection
 - Added connectionStatus state: connected, disconnected, reconnecting
 - Updated UI to show colored status indicators (green/yellow/red)
@@ -16,4 +37,55 @@ Started: Sun Feb 22 2026
   - useEventBus already had reconnection logic, just needed exponential backoff
   - Connection status should be exposed from hook, not just boolean
   - Both Swiss and Snake themes need connection status updates
+---
+
+## [Sun Feb 22 2026 - 21:05] - US-002
+- Added progress bar with percentage for each wave
+- Updated task count to show completed/total
+- Added status change animations with Framer Motion
+- Files changed: web/src/components/quadrants/the-coil.tsx
+- **Learnings for future iterations:**
+  - motion.div with initial/animate/exit for smooth transitions
+  - Status badge should animate when status changes
+  - Use key prop on motion elements to trigger animations
+---
+
+## [Sun Feb 22 2026 - 21:10] - US-003
+- Created TaskDetailPanel component with slide-in animation
+- Added task click event dispatcher in TheCoil
+- Updated Task type with description, createdAt, updatedAt
+- Files changed: web/src/components/task-detail-panel.tsx, web/src/components/quadrants/the-coil.tsx, web/src/pages/mission-control.tsx, web/src/stores/mission-control-store.ts
+- **Learnings for future iterations:**
+  - Use CustomEvent for cross-component communication
+  - ESC key listener needs cleanup in useEffect
+  - Panel overlay should block body scroll when open
+---
+
+## [Sun Feb 22 2026 - 21:15] - US-004
+- Added uiLayout setting (snake/swiss) to settings-store
+- Updated Settings page with UI Layout selector
+- App.tsx now renders correct component based on setting
+- Files changed: web/src/stores/settings-store.ts, web/src/pages/settings.tsx, web/src/App.tsx
+- **Learnings for future iterations:**
+  - Zustand persist middleware handles localStorage automatically
+  - Custom event for layout change allows immediate update
+---
+
+## [Sun Feb 22 2026 - 21:20] - US-005
+- Added daemonConfig to settings-store with websocketUrl and apiKey
+- Settings page has daemon configuration section with test connection
+- Files changed: web/src/stores/settings-store.ts, web/src/pages/settings.tsx
+---
+
+## [Sun Feb 22 2026 - 21:25] - US-006 through US-010
+- US-006: Terminal uses daemon config from settings store
+- US-007: Added celebration animation when consensus >= 80%
+- US-008: Created MemoryPanel with search and filter by type
+- US-009: Created EmergencyBrakeDialog with Radix UI
+- US-010: Created KeyboardShortcutsModal with ? key trigger
+- Files changed: Multiple new components and mission-control.tsx
+- **Learnings for future iterations:**
+  - Radix UI provides accessible dialog components
+  - Keyboard shortcuts should check for input focus
+  - Memory panel uses slide-in from left for variety
 ---
