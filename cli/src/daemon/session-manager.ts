@@ -12,7 +12,17 @@ import { PersonaType } from '../orchestration/types.js';
 
 
 export interface SessionManagerConfig {
+    /**
+     * Maximum number of cleanup iterations to perform before giving up.
+     * Lower values reduce worst-case shutdown latency if cleanups repeatedly time out.
+     */
     maxCleanupIterations?: number;
+
+    /**
+     * Timeout in milliseconds for each cleanup iteration.
+     * This should be short enough to avoid making shutdown appear hung,
+     * but long enough for a typical cleanup task to complete.
+     */
     cleanupTimeoutMs?: number;
 }
 
@@ -23,7 +33,8 @@ export class SessionManager {
     private storage: StoragePort;
     private eventBus: EventBus;
     private activeOrchestrators: Map<string, Orchestrator> = new Map();
-    private activeTasks: Map<string, Promise<void>> = new Map();
+    // Map<sessionId, Map<taskId, Promise<void>>>
+    private activeTasks: Map<string, Map<string, Promise<void>>> = new Map();
 
     private apiKey?: string;
 
@@ -31,8 +42,8 @@ export class SessionManager {
         this.storage = storage;
         this.eventBus = eventBus;
         this.apiKey = apiKey;
-        this.maxCleanupIterations = config?.maxCleanupIterations ?? 5;
-        this.cleanupTimeoutMs = config?.cleanupTimeoutMs ?? 10000;
+        this.maxCleanupIterations = config?.maxCleanupIterations ?? 3;
+        this.cleanupTimeoutMs = config?.cleanupTimeoutMs ?? 5000;
     }
 
     async createSession(data: Omit<Session, 'id' | 'createdAt' | 'updatedAt'>): Promise<Session> {
@@ -51,6 +62,7 @@ export class SessionManager {
         }
 
         this.activeOrchestrators.set(session.id, orchestrator);
+        this.activeTasks.set(session.id, new Map());
 
         this.eventBus.emit('task', {
             type: 'started',
@@ -95,6 +107,10 @@ export class SessionManager {
             }
 
             this.activeOrchestrators.set(id, orchestrator);
+        }
+
+        if (!this.activeTasks.has(id)) {
+            this.activeTasks.set(id, new Map());
         }
 
         this.eventBus.log('info', `Client attached to session: ${id}`, 'SessionManager');
@@ -152,7 +168,10 @@ export class SessionManager {
             this.eventBus.log('info', `Task ${task.id} finished: ${result.status}`, 'SessionManager');
         });
 
-        this.activeTasks.set(task.id, execution);
+        if (!this.activeTasks.has(sessionId)) {
+            this.activeTasks.set(sessionId, new Map());
+        }
+        this.activeTasks.get(sessionId)!.set(task.id, execution);
 
         this.eventBus.log('info', `Task started for session ${sessionId}: ${task.id}`, 'SessionManager');
 
@@ -201,20 +220,18 @@ export class SessionManager {
     async cleanupSession(sessionId: string): Promise<void> {
         this.activeOrchestrators.delete(sessionId);
 
-        // Loop to catch any tasks added concurrently
-        // We limit iterations to prevent infinite loops if tasks keep being scheduled
         let iterations = 0;
 
         while (iterations < this.maxCleanupIterations) {
-            // Collect all tasks to cleanup
-            // Note: This iterates the entire activeTasks map, but expected volume is low per session
-            // and total active tasks across all sessions should remain manageable.
-            const tasksToCleanup = Array.from(this.activeTasks.entries())
-                .filter(([taskId]) => taskId.includes(sessionId));
+            const sessionTasksMap = this.activeTasks.get(sessionId);
 
-            if (tasksToCleanup.length === 0) {
+            if (!sessionTasksMap || sessionTasksMap.size === 0) {
+                // Remove the empty session map
+                this.activeTasks.delete(sessionId);
                 break;
             }
+
+            const tasksToCleanup = Array.from(sessionTasksMap.entries());
 
             const promisesToAwait = tasksToCleanup.map(([_, promise]) =>
                 promise.catch(() => { /* ignore errors */ })
@@ -224,37 +241,38 @@ export class SessionManager {
             const cleanupPromise = Promise.all(promisesToAwait);
 
             let timeoutId: ReturnType<typeof setTimeout>;
-            const timeoutPromise = new Promise<void>((resolve) => {
-                timeoutId = setTimeout(resolve, this.cleanupTimeoutMs);
+            // Use a unique symbol to distinguish timeout
+            const TIMEOUT = Symbol('TIMEOUT');
+
+            const timeoutPromise = new Promise<typeof TIMEOUT>((resolve) => {
+                timeoutId = setTimeout(() => resolve(TIMEOUT), this.cleanupTimeoutMs);
             });
 
             try {
-                await Promise.race([cleanupPromise, timeoutPromise]);
+                const result = await Promise.race([cleanupPromise, timeoutPromise]);
+
+                if (result === TIMEOUT) {
+                    this.eventBus.log('warn', `cleanupSession iteration ${iterations + 1} timed out after ${this.cleanupTimeoutMs}ms for session ${sessionId}`, 'SessionManager');
+                }
             } finally {
                 // Ensure timer is cleared if cleanup finishes first
                 clearTimeout(timeoutId!);
             }
 
-            // Remove from active tasks map regardless of completion (to avoid leaks)
-            // Even if we timed out, we want to remove these tasks from tracking
+            // Remove from active tasks map
             for (const [taskId] of tasksToCleanup) {
-                this.activeTasks.delete(taskId);
+                sessionTasksMap.delete(taskId);
             }
 
             iterations++;
         }
 
-        // Final force cleanup for any stragglers added during the last iteration wait
-        // This ensures we don't leave zombie tasks in the map if we hit the iteration limit
-        const remainingTasks = Array.from(this.activeTasks.entries())
-            .filter(([taskId]) => taskId.includes(sessionId));
-
-        if (remainingTasks.length > 0) {
-            this.eventBus.log('warn', `Force removing ${remainingTasks.length} remaining tasks for session ${sessionId} after max iterations/timeout`, 'SessionManager');
-            for (const [taskId] of remainingTasks) {
-                this.activeTasks.delete(taskId);
-            }
+        // Final force cleanup verification
+        const sessionTasksMap = this.activeTasks.get(sessionId);
+        if (sessionTasksMap && sessionTasksMap.size > 0) {
+            this.eventBus.log('warn', `Force removing ${sessionTasksMap.size} remaining tasks for session ${sessionId} after max iterations/timeout`, 'SessionManager');
+            sessionTasksMap.clear();
+            this.activeTasks.delete(sessionId);
         }
     }
-
 }
