@@ -70,6 +70,14 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
     autoGitCommit: false,
 };
 
+const EXPORT_PATTERNS = [
+    /export\s+(?:async\s+)?function\s+(\w+)/g,
+    /export\s+class\s+(\w+)/g,
+    /export\s+const\s+(\w+)/g,
+    /export\s+interface\s+(\w+)/g,
+    /export\s+type\s+(\w+)/g,
+];
+
 // ============================================================================
 // SelfModifyingEngine
 // ============================================================================
@@ -414,16 +422,8 @@ export class SelfModifyingEngine {
     private extractExports(code: string): string[] {
         const exports: string[] = [];
 
-        // Match export statements
-        const patterns = [
-            /export\s+(?:async\s+)?function\s+(\w+)/g,
-            /export\s+class\s+(\w+)/g,
-            /export\s+const\s+(\w+)/g,
-            /export\s+interface\s+(\w+)/g,
-            /export\s+type\s+(\w+)/g,
-        ];
-
-        for (const pattern of patterns) {
+        for (const pattern of EXPORT_PATTERNS) {
+            pattern.lastIndex = 0;
             let match;
             while ((match = pattern.exec(code)) !== null) {
                 exports.push(match[1]);
