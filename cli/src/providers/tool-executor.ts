@@ -49,8 +49,8 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
                 type: 'object',
                 properties: {
                     path: { type: 'string', description: 'Path to the file to read' },
-                    start_line: { type: 'integer', description: 'Optional start line number (1-based)' },
-                    end_line: { type: 'integer', description: 'Optional end line number' }
+                    start_line: { type: 'number', description: 'Optional start line number (1-based)' },
+                    end_line: { type: 'number', description: 'Optional end line number (1-based)' }
                 },
                 required: ['path']
             }
@@ -60,7 +60,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
         type: 'function',
         function: {
             name: 'write_file',
-            description: 'Write content to a file. Overwrites if exists, creates if not.',
+            description: 'Write content to a file. Creates directories if they do not exist.',
             parameters: {
                 type: 'object',
                 properties: {
@@ -75,11 +75,11 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
         type: 'function',
         function: {
             name: 'run_command',
-            description: 'Run a shell command. Use for ls, git, grep, etc.',
+            description: 'Run a shell command.',
             parameters: {
                 type: 'object',
                 properties: {
-                    command: { type: 'string', description: 'Shell command to execute' },
+                    command: { type: 'string', description: 'Command to run' },
                     cwd: { type: 'string', description: 'Optional working directory' }
                 },
                 required: ['command']
@@ -90,11 +90,11 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
         type: 'function',
         function: {
             name: 'list_directory',
-            description: 'List files and directories in a path.',
+            description: 'List contents of a directory.',
             parameters: {
                 type: 'object',
                 properties: {
-                    path: { type: 'string', description: 'Directory path to list' },
+                    path: { type: 'string', description: 'Directory path' },
                     recursive: { type: 'boolean', description: 'List recursively (default: false)' }
                 },
                 required: ['path']
@@ -118,6 +118,42 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
         }
     }
 ];
+
+// ============================================================
+// Concurrency Limiter
+// ============================================================
+
+const GLOBAL_CONCURRENCY_LIMIT = 20;
+
+type Task<T = void> = () => Promise<T>;
+
+class ConcurrencyLimiter {
+    private active = 0;
+    private queue: Array<() => void> = [];
+
+    constructor(private readonly limit: number) {}
+
+    async run<T>(task: Task<T>): Promise<T> {
+        if (this.active >= this.limit) {
+            await new Promise<void>((resolve) => this.queue.push(resolve));
+        }
+
+        this.active++;
+        try {
+            return await task();
+        } finally {
+            this.active--;
+            const next = this.queue.shift();
+            if (next) next();
+        }
+    }
+}
+
+const fsConcurrencyLimiter = new ConcurrencyLimiter(GLOBAL_CONCURRENCY_LIMIT);
+
+const enqueueFsTask = <T>(task: Task<T>): Promise<T> => {
+    return fsConcurrencyLimiter.run(task);
+};
 
 // ============================================================
 // ToolExecutor
@@ -364,13 +400,16 @@ export class ToolExecutor {
         const searchPath = this.resolvePath(args.path as string);
         const include = args.include as string | undefined;
 
+        let stat: fs.Stats;
         try {
-            await fs.promises.access(searchPath);
-        } catch {
-            return { success: false, output: '', error: `Path not found: ${searchPath}` };
+            stat = await fs.promises.stat(searchPath);
+        } catch (error: any) {
+             if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) {
+                return { success: false, output: '', error: `Path not found: ${searchPath}` };
+            }
+            throw error;
         }
 
-        const stat = await fs.promises.stat(searchPath);
         const results: string[] = [];
         // Use 'i' flag only (case-insensitive) to avoid stateful regex issues with 'g'
         const regex = new RegExp(pattern, 'i');
@@ -393,29 +432,20 @@ export class ToolExecutor {
         if (stat.isFile()) {
             await searchFile(searchPath);
         } else {
-            const CONCURRENCY_LIMIT = 20;
-
             const processDir = async (dir: string) => {
                 const items = await fs.promises.readdir(dir, { withFileTypes: true });
 
-                let nextIndex = 0;
-                const workers = Array.from({ length: Math.min(CONCURRENCY_LIMIT, items.length) }, async () => {
-                    while (nextIndex < items.length) {
-                        const index = nextIndex++;
-                        const item = items[index];
-                        const fullPath = path.join(dir, item.name);
+                await Promise.all(items.map(item => enqueueFsTask(async () => {
+                     const fullPath = path.join(dir, item.name);
 
-                        if (item.isDirectory()) {
-                            await processDir(fullPath);
-                        } else if (item.isFile()) {
-                            if (!include || this.matchGlob(item.name, include)) {
-                                await searchFile(fullPath);
-                            }
-                        }
-                    }
-                });
-
-                await Promise.all(workers);
+                     if (item.isDirectory()) {
+                         await processDir(fullPath);
+                     } else if (item.isFile()) {
+                         if (!include || this.matchGlob(item.name, include)) {
+                             await searchFile(fullPath);
+                         }
+                     }
+                })));
             };
 
             await processDir(searchPath);
@@ -446,7 +476,7 @@ export class ToolExecutor {
     private matchGlob(filename: string, pattern: string): boolean {
         // Simple glob matching (*.ts, *.js, etc.)
         const regex = new RegExp(
-            '^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$'
+            '^' + pattern.replace(/\./g, '\.').replace(/\*/g, '.*') + '$'
         );
         return regex.test(filename);
     }
