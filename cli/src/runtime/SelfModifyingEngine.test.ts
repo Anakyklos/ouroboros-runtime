@@ -1,25 +1,32 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as os from 'os';
 import { createSelfModifyingEngine, SelfModifyingEngineConfig } from './SelfModifyingEngine';
 
-const TEST_DIR = path.join(process.cwd(), 'test_temp_engine');
-const SOURCE_DIR = path.join(TEST_DIR, 'src');
-const BACKUP_DIR = path.join(SOURCE_DIR, '.ouroboros/backups');
-
 describe('SelfModifyingEngine', () => {
+    let testDir: string;
+    let sourceDir: string;
+    let backupDir: string;
+
     beforeEach(async () => {
-        await fs.rm(TEST_DIR, { recursive: true, force: true });
-        await fs.mkdir(SOURCE_DIR, { recursive: true });
+        // Create a unique temporary directory for each test
+        testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ouroboros-test-'));
+        sourceDir = path.join(testDir, 'src');
+        backupDir = path.join(sourceDir, '.ouroboros/backups');
+        await fs.mkdir(sourceDir, { recursive: true });
     });
 
     afterEach(async () => {
-        await fs.rm(TEST_DIR, { recursive: true, force: true });
+        // Clean up the unique temporary directory
+        if (testDir) {
+            await fs.rm(testDir, { recursive: true, force: true });
+        }
     });
 
     test('should respect maxBackupsPerFile limit', async () => {
         const config: SelfModifyingEngineConfig = {
-            sourceDir: SOURCE_DIR,
+            sourceDir: sourceDir,
             backupDir: '.ouroboros/backups',
             maxBackupsPerFile: 3,
             validateSyntax: false,
@@ -28,7 +35,7 @@ describe('SelfModifyingEngine', () => {
 
         const engine = createSelfModifyingEngine(config);
         const testFile = 'test.ts';
-        const fullPath = path.join(SOURCE_DIR, testFile);
+        const fullPath = path.join(sourceDir, testFile);
 
         await fs.writeFile(fullPath, 'original content');
 
@@ -45,7 +52,7 @@ describe('SelfModifyingEngine', () => {
         }
 
         try {
-            const backups = await fs.readdir(BACKUP_DIR);
+            const backups = await fs.readdir(backupDir);
             const testBackups = backups.filter(f => f.startsWith(testFile) && f.endsWith('.bak'));
 
             expect(testBackups.length).toBe(3);
