@@ -70,13 +70,13 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
     autoGitCommit: false,
 };
 
-const EXPORT_PATTERNS: ReadonlyArray<RegExp> = [
+const EXPORT_PATTERNS: ReadonlyArray<RegExp> = Object.freeze([
     /export\s+(?:async\s+)?function\s+(\w+)/g,
     /export\s+class\s+(\w+)/g,
     /export\s+const\s+(\w+)/g,
     /export\s+interface\s+(\w+)/g,
     /export\s+type\s+(\w+)/g,
-];
+]);
 
 // ============================================================================
 // SelfModifyingEngine
