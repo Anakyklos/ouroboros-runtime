@@ -77,8 +77,8 @@
         "bun run build passes"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Added daemonConfig to settings-store with websocketUrl and apiKey. Added Daemon Connection section to Settings page with test connection button."
     },
     {
       "id": "US-006",

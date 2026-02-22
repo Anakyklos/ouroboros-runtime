@@ -4,12 +4,20 @@ import { persist } from "zustand/middleware";
 export type Theme = "dark" | "light" | "system";
 export type UILayout = "snake" | "swiss";
 
+interface DaemonConfig {
+  websocketUrl: string;
+  apiKey: string;
+}
+
 interface SettingsState {
   // Appearance
   theme: Theme;
   uiLayout: UILayout;
   uiScale: number;
   reducedMotion: boolean;
+  
+  // Daemon
+  daemonConfig: DaemonConfig;
   
   // Behavior
   autoScrollLogs: boolean;
@@ -29,6 +37,7 @@ interface SettingsState {
   setUILayout: (layout: UILayout) => void;
   setUIScale: (scale: number) => void;
   setReducedMotion: (enabled: boolean) => void;
+  setDaemonConfig: (config: Partial<DaemonConfig>) => void;
   setAutoScrollLogs: (enabled: boolean) => void;
   setMaxLogEntries: (max: number) => void;
   setConfirmEmergencyBrake: (enabled: boolean) => void;
@@ -45,6 +54,10 @@ export const useSettingsStore = create<SettingsState>()(
       uiLayout: "snake",
       uiScale: 100,
       reducedMotion: false,
+      daemonConfig: {
+        websocketUrl: "ws://localhost:7777",
+        apiKey: "",
+      },
       autoScrollLogs: true,
       maxLogEntries: 500,
       confirmEmergencyBrake: true,
@@ -66,6 +79,9 @@ export const useSettingsStore = create<SettingsState>()(
         applyUIScale(uiScale);
       },
       setReducedMotion: (reducedMotion) => set({ reducedMotion }),
+      setDaemonConfig: (config) => set((state) => ({
+        daemonConfig: { ...state.daemonConfig, ...config }
+      })),
       setAutoScrollLogs: (autoScrollLogs) => set({ autoScrollLogs }),
       setMaxLogEntries: (maxLogEntries) => set({ maxLogEntries }),
       setConfirmEmergencyBrake: (confirmEmergencyBrake) => set({ confirmEmergencyBrake }),

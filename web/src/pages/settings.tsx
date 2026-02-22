@@ -211,6 +211,61 @@ export function Settings() {
             </div>
           </SettingsSection>
 
+          {/* Daemon Configuration */}
+          <SettingsSection title="Daemon Connection" icon={<Terminal className="w-5 h-5 text-emerald" />}>
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm font-medium mb-2 block">WebSocket URL</label>
+                <input
+                  type="text"
+                  value={settings.daemonConfig.websocketUrl}
+                  onChange={(e) => handleChange(settings.setDaemonConfig, { websocketUrl: e.target.value })}
+                  placeholder="ws://localhost:7777"
+                  className="w-full px-3 py-2 rounded-lg bg-[var(--secondary)] border border-[var(--border)] 
+                    focus:border-emerald focus:outline-none font-mono text-sm"
+                />
+                <p className="text-xs text-[var(--muted-foreground)] mt-1">
+                  WebSocket endpoint for the Ouroboros daemon
+                </p>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium mb-2 block">API Key (optional)</label>
+                <input
+                  type="password"
+                  value={settings.daemonConfig.apiKey}
+                  onChange={(e) => handleChange(settings.setDaemonConfig, { apiKey: e.target.value })}
+                  placeholder="Enter API key if required"
+                  className="w-full px-3 py-2 rounded-lg bg-[var(--secondary)] border border-[var(--border)] 
+                    focus:border-emerald focus:outline-none font-mono text-sm"
+                />
+                <p className="text-xs text-[var(--muted-foreground)] mt-1">
+                  Authentication key for secured daemon instances
+                </p>
+              </div>
+
+              <button
+                onClick={async () => {
+                  try {
+                    const ws = new WebSocket(settings.daemonConfig.websocketUrl);
+                    ws.onopen = () => {
+                      ws.close();
+                      alert("Connection successful!");
+                    };
+                    ws.onerror = () => {
+                      alert("Connection failed. Check the WebSocket URL.");
+                    };
+                  } catch (e) {
+                    alert("Connection failed: " + String(e));
+                  }
+                }}
+                className="px-4 py-2 rounded-lg border border-emerald text-emerald hover:bg-emerald hover:text-black transition-colors"
+              >
+                Test Connection
+              </button>
+            </div>
+          </SettingsSection>
+
           {/* Notifications */}
           <SettingsSection title="Notifications" icon={<Bell className="w-5 h-5 text-ruby" />}>
             <div className="space-y-3">
