@@ -80,7 +80,7 @@ if (import.meta.main) {
 
         // Access private method via cast for benchmark purposes
         // This avoids exposing private API in production code just for benchmarks
-        const files = await (engine as any).walkDir(tempDir);
+        const files = await engine.benchmarkScan(tempDir);
 
         const end = performance.now();
         const duration = end - start;

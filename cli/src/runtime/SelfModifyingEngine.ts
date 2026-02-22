@@ -102,7 +102,7 @@ export class SelfModifyingEngine {
         }
         this.config.concurrencyLimit = limit;
 
-        this.semaphore = new Semaphore(this.config.concurrencyLimit);
+        this.semaphore = new Semaphore(this.config.concurrencyLimit, 2048);
     }
 
     // ========================================================================
@@ -498,6 +498,14 @@ export class SelfModifyingEngine {
         }
 
         return files;
+    }
+
+    /**
+     * Public wrapper for directory scanning (benchmarking purposes)
+     * @internal
+     */
+    async benchmarkScan(dir: string): Promise<string[]> {
+        return this.walkDir(dir);
     }
 }
 
