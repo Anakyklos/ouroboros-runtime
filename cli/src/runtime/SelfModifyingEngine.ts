@@ -11,6 +11,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { spawn } from 'child_process';
+import { Semaphore } from "../utils/Semaphore.js";
 
 
 // ============================================================================
@@ -80,9 +81,7 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
 
 export class SelfModifyingEngine {
     private config: Required<SelfModifyingEngineConfig>;
-    private activeWalks = 0;
-    private walkQueue: Array<() => void> = [];
-    private config: Required<SelfModifyingEngineConfig>;
+    private semaphore: Semaphore;
     private mutationHistory: MutationProposal[] = [];
     private initialized: boolean = false;
 
@@ -91,6 +90,7 @@ export class SelfModifyingEngine {
             ...DEFAULT_CONFIG,
             ...config,
         };
+        this.semaphore = new Semaphore(this.config.concurrencyLimit);
     }
 
     // ========================================================================
@@ -440,41 +440,18 @@ export class SelfModifyingEngine {
         return exports;
     }
 
-    private async acquireWalkSlot(): Promise<void> {
-        if (this.activeWalks < this.config.concurrencyLimit) {
-            this.activeWalks += 1;
-            return;
-        }
-
-        await new Promise<void>((resolve) => {
-            this.walkQueue.push(() => {
-                this.activeWalks += 1;
-                resolve();
-            });
-        });
-    }
-
-    private releaseWalkSlot(): void {
-        this.activeWalks = Math.max(0, this.activeWalks - 1);
-
-        const next = this.walkQueue.shift();
-        if (next) {
-            next();
-        }
-    }
-
     private async walkDir(dir: string): Promise<string[]> {
         const files: string[] = [];
         let entries: fs.Dirent[] = [];
 
         try {
-            await this.acquireWalkSlot();
+            await this.semaphore.acquire();
             try {
                 entries = await fs.readdir(dir, { withFileTypes: true });
                 // Sort entries for deterministic output
                 entries.sort((a, b) => a.name.localeCompare(b.name));
             } finally {
-                this.releaseWalkSlot();
+                this.semaphore.release();
             }
 
             const promises = entries.map(async (entry) => {

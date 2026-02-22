@@ -78,7 +78,7 @@ if (import.meta.main) {
 
         if (files.length !== expectedFiles) {
             console.error(`❌ Mismatch! Expected ${expectedFiles}, found ${files.length}`);
-            process.exit(1);
+            throw new Error("Mismatch!");
         } else {
             console.log("✅ File count matches!");
         }
