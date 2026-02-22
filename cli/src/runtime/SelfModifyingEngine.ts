@@ -45,6 +45,8 @@ export interface MutationResult {
 export interface SelfModifyingEngineConfig {
     /** Max concurrent directory scans (default: 50) */
     concurrencyLimit?: number;
+    /** Max items in semaphore queue (default: Infinity) */
+    maxQueueSize?: number;
     /** Diretório raiz do código fonte */
     sourceDir: string;
     /** Diretório para backups */
@@ -67,6 +69,7 @@ export interface SelfModifyingEngineConfig {
 
 const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
     concurrencyLimit: 50,
+    maxQueueSize: Infinity,
     backupDir: '.ouroboros/backups',
     validateSyntax: true,
     runTestsAfter: true,
@@ -102,7 +105,7 @@ export class SelfModifyingEngine {
         }
         this.config.concurrencyLimit = limit;
 
-        this.semaphore = new Semaphore(this.config.concurrencyLimit, Math.max(2048, this.config.concurrencyLimit * 100));
+        this.semaphore = new Semaphore(this.config.concurrencyLimit, this.config.maxQueueSize);
     }
 
     // ========================================================================
@@ -487,13 +490,17 @@ export class SelfModifyingEngine {
             }
         }
 
-        // Recurse into directories in parallel
+        // Recurse into directories in parallel, batched
         if (directories.length > 0) {
-            const results = await Promise.all(
-                directories.map(d => this.walkDir(d))
-            );
-            for (const result of results) {
-                files.push(...result);
+            const batchSize = this.config.concurrencyLimit;
+            for (let i = 0; i < directories.length; i += batchSize) {
+                const batch = directories.slice(i, i + batchSize);
+                const results = await Promise.all(
+                    batch.map(d => this.walkDir(d))
+                );
+                for (const result of results) {
+                    files.push(...result);
+                }
             }
         }
 
