@@ -51,6 +51,7 @@ function SortableWaveCard({ wave, isPromoting, onActivate, minimal }: SortableWa
     pending: { border: "border-[var(--color-silver-muted)]", badge: "secondary" as const, icon: Clock },
     active: { border: "border-[var(--color-emerald)]", badge: "emerald" as const, icon: Play },
     done: { border: "border-[var(--color-emerald)]/50", badge: "outline" as const, icon: CheckCircle },
+    failed: { border: "border-[var(--color-ruby)]", badge: "ruby" as const, icon: CheckCircle },
   };
 
   const config = statusConfig[wave.status] || statusConfig.pending;
@@ -61,10 +62,17 @@ function SortableWaveCard({ wave, isPromoting, onActivate, minimal }: SortableWa
     completed: "●",
   };
 
+  const completedTasks = wave.tasks.filter(t => t.phase === "complete").length;
+  const totalTasks = wave.tasks.length;
+  const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
   return (
-    <div
+    <motion.div
       ref={setNodeRef}
       style={style}
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -10 }}
       className={cn(
         "p-3 rounded-lg border-l-4 bg-[var(--color-surface-secondary)] transition-all",
         config.border,
@@ -85,7 +93,14 @@ function SortableWaveCard({ wave, isPromoting, onActivate, minimal }: SortableWa
             </button>
           )}
           <span className={cn("font-mono font-bold text-[var(--color-foreground)]", minimal && "text-sm")}>WAVE {wave.number}</span>
-          {!minimal && <Badge variant={config.badge}>{wave.status.toUpperCase()}</Badge>}
+          <motion.div
+            key={wave.status}
+            initial={{ scale: 1.3, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ duration: 0.2 }}
+          >
+            <Badge variant={config.badge}>{wave.status.toUpperCase()}</Badge>
+          </motion.div>
           {wave.status === "active" && !minimal && (
             <motion.span
               animate={{ scale: [1, 1.2, 1] }}
@@ -98,7 +113,7 @@ function SortableWaveCard({ wave, isPromoting, onActivate, minimal }: SortableWa
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-[var(--color-silver-muted)]">
-            {wave.tasks.length} tasks
+            {completedTasks}/{totalTasks} tasks
           </span>
           {wave.status === "pending" && onActivate && !minimal && (
             <button
@@ -111,10 +126,32 @@ function SortableWaveCard({ wave, isPromoting, onActivate, minimal }: SortableWa
         </div>
       </div>
 
+      {!minimal && totalTasks > 0 && (
+        <div className="mb-2 px-1">
+          <div className="h-1.5 bg-[var(--color-surface-tertiary)] rounded-full overflow-hidden">
+            <motion.div
+              className="h-full bg-[var(--color-emerald)] rounded-full"
+              initial={{ width: 0 }}
+              animate={{ width: `${progress}%` }}
+              transition={{ duration: 0.5, ease: "easeOut" }}
+            />
+          </div>
+          <div className="flex justify-between mt-1">
+            <span className="text-[10px] text-[var(--color-silver-muted)]">{progress}% complete</span>
+            {wave.status === "active" && (
+              <span className="text-[10px] text-[var(--color-emerald)]">In progress...</span>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className={cn("space-y-1 pl-6", minimal && "pl-2")}>
         {wave.tasks.slice(0, minimal ? 2 : 3).map((task) => (
           <div key={task.id} className="flex items-center gap-2 text-sm py-0.5">
-            <span
+            <motion.span
+              key={task.phase}
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
               className={cn(
                 "font-mono",
                 task.phase === "complete" && "text-[var(--color-emerald)]",
@@ -123,7 +160,7 @@ function SortableWaveCard({ wave, isPromoting, onActivate, minimal }: SortableWa
               )}
             >
               {taskStatusIcon[task.phase === "complete" ? "completed" : task.phase === "coding" ? "in_progress" : "pending"]}
-            </span>
+            </motion.span>
             <span
               className={cn(
                 "text-[var(--color-foreground)]",
@@ -141,7 +178,7 @@ function SortableWaveCard({ wave, isPromoting, onActivate, minimal }: SortableWa
           </div>
         )}
       </div>
-    </div>
+    </motion.div>
   );
 }
 
