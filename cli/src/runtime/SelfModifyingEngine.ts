@@ -436,9 +436,10 @@ export class SelfModifyingEngine {
      * because benchmarks show this approach is faster for our workload.
      *
      * Safety:
-     * - We clone the RegExp instance per call to ensure thread-safety and avoid
-     *   shared mutable state (lastIndex), making this robust against reentrancy
-     *   or concurrent usage.
+     * - The pattern must be global to avoid infinite loops.
+     * - We clone the RegExp instance per call to avoid manually managing shared
+     *   mutable state (lastIndex) on the static constants, which simplifies the
+     *   logic and prevents subtle bugs from reentrancy.
      */
     private static extractMatches(
         pattern: RegExp,
@@ -454,7 +455,6 @@ export class SelfModifyingEngine {
 
         // Clone the RegExp to avoid shared mutable state (lastIndex)
         const clonedPattern = new RegExp(pattern);
-        clonedPattern.lastIndex = 0;
 
         const results: string[] = [];
         let match;

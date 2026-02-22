@@ -1,3 +1,11 @@
+/**
+ * 🧪 Tests for SelfModifyingEngine
+ *
+ * Verifica:
+ * 1. Extração de exports (funções, classes, const, interfaces, types)
+ * 2. Manipulação de identificadores com $ e unicode
+ * 3. Validação de padrões regex e segurança (prevenção de loops infinitos)
+ */
 import { describe, it, expect } from 'bun:test';
 import { SelfModifyingEngine, SelfModifyingEngineConfig } from './SelfModifyingEngine';
 
