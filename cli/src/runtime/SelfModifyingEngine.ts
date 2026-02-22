@@ -310,8 +310,8 @@ export class SelfModifyingEngine {
 
             // Remove backups excedentes
             const toRemove = backups.slice(this.config.maxBackupsPerFile);
-            // Using Promise.all directly as the number of concurrent file operations is bounded and expected to be small
-            await Promise.all(toRemove.map(file => fs.unlink(path.join(backupDir, file))));
+            // Using Promise.allSettled to ensure we attempt to delete all candidate backup files concurrently, even if individual deletions fail (e.g., due to file locks)
+            await Promise.allSettled(toRemove.map(file => fs.unlink(path.join(backupDir, file))));
         } catch (error) {
             // Ignora erros de limpeza
         }
