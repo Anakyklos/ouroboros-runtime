@@ -49,8 +49,8 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
                 type: 'object',
                 properties: {
                     path: { type: 'string', description: 'Path to the file to read' },
-                    start_line: { type: 'number', description: 'Optional start line number (1-based)' },
-                    end_line: { type: 'number', description: 'Optional end line number (1-based)' }
+                    start_line: { type: 'integer', description: 'Optional start line number (1-based)' },
+                    end_line: { type: 'integer', description: 'Optional end line number (1-based)' }
                 },
                 required: ['path']
             }
@@ -436,7 +436,8 @@ export class ToolExecutor {
             await searchFile(searchPath);
         } else {
             const processDir = async (dir: string) => {
-                const items = await fs.promises.readdir(dir, { withFileTypes: true });
+                // Enqueue readdir to respect global concurrency limit
+                const items = await enqueueFsTask(() => fs.promises.readdir(dir, { withFileTypes: true }));
 
                 await Promise.all(items.map(item => enqueueFsTask(async () => {
                      const fullPath = path.join(dir, item.name);
@@ -479,7 +480,7 @@ export class ToolExecutor {
     private matchGlob(filename: string, pattern: string): boolean {
         // Simple glob matching (*.ts, *.js, etc.)
         const regex = new RegExp(
-            '^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$'
+            '^' + pattern.replace(/\./g, '\.').replace(/\*/g, '.*') + '$'
         );
         return regex.test(filename);
     }
