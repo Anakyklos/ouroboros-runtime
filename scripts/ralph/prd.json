@@ -1,159 +1,128 @@
 {
   "project": "Ouroboros",
-  "branchName": "ralph/web-interface-completion",
-  "description": "Web Interface Completion - Full daemon integration, real-time updates, and all missing features",
+  "branchName": "ralph/session-persistence",
+  "description": "Session Persistence - Complete session state persistence for daemon restart and crash recovery",
   "userStories": [
     {
       "id": "US-001",
-      "title": "WebSocket reconnection with exponential backoff",
-      "description": "As a user, I want the web UI to automatically reconnect to the daemon when connection drops.",
+      "title": "Session state schema",
+      "description": "As a developer, I need a database schema to store session state.",
       "acceptanceCriteria": [
-        "Exponential backoff: 1s, 2s, 4s, 8s, max 30s between attempts",
-        "Show Reconnecting... status in header when disconnected",
-        "Display connection status indicator: green=connected, red=disconnected, yellow=reconnecting",
-        "Max 10 reconnection attempts before showing Daemon offline message",
-        "Automatically resume when daemon comes back online",
+        "Create sessions table with id, created_at, updated_at, status columns",
+        "Create session_waves table linking waves to sessions",
+        "Create session_checkpoints table for periodic saves",
+        "Add migration file with proper indexes",
         "bun run build passes"
       ],
       "priority": 1,
       "passes": true,
-      "notes": "Implemented in useEventBus hook with calculateBackoff function. Updated SwissMissionControl and MissionControl to show connectionStatus with color indicators."
+      "notes": "Added session_waves, session_checkpoints, and session_memory tables to SqliteAdapter. Added indexes for performance."
     },
     {
       "id": "US-002",
-      "title": "Real-time wave progress visualization",
-      "description": "As a user, I want to see wave execution progress in real-time on The Coil component.",
+      "title": "Session manager service",
+      "description": "As a developer, I need a service to manage session lifecycle.",
       "acceptanceCriteria": [
-        "Each wave card shows progress bar with percentage",
-        "Task count updates as tasks complete",
-        "Status badges update: pending -> active -> done/failed",
-        "Wave cards animate when status changes using Framer Motion",
+        "Create SessionManager class in cli/src/daemon/session-manager.ts",
+        "Implement createSession() method",
+        "Implement loadSession(sessionId) method",
+        "Implement saveSession(sessionId, state) method",
+        "Implement listSessions() method",
         "bun run build passes"
       ],
       "priority": 2,
       "passes": true,
-      "notes": "Added progress bar, completed/total task count, and status change animations. Used motion.div with initial/animate/exit for wave cards."
+      "notes": "SessionManager already exists with all required methods. Extended StoragePort interface with wave, checkpoint, and memory methods."
     },
     {
       "id": "US-003",
-      "title": "Task detail panel",
-      "description": "As a user, I want to click a task to see its details in a side panel.",
+      "title": "Wave state persistence",
+      "description": "As a user, I want my active waves to persist across daemon restarts.",
       "acceptanceCriteria": [
-        "Click task opens slide-in panel from right with Framer Motion",
-        "Panel shows: task ID, description, status, created/updated timestamps",
-        "Panel shows execution logs for the task",
-        "Panel has Retry button for failed tasks",
-        "Panel closes on ESC key or click outside",
+        "Save wave state to database on each status change",
+        "Restore wave execution order from database",
+        "Preserve task progress within each wave",
+        "Handle partial wave execution gracefully",
         "bun run build passes"
       ],
       "priority": 3,
       "passes": true,
-      "notes": "Created TaskDetailPanel component with slide-in animation. Added task click event dispatcher in TheCoil. Updated Task type with description and timestamps."
+      "notes": "Added saveWaveState and restoreWaveStates methods to SessionManager. Wave state stored in session_waves table with task data as JSON."
     },
     {
       "id": "US-004",
-      "title": "Settings page - theme selector",
-      "description": "As a user, I want to switch between Snake and Swiss themes from settings.",
+      "title": "Session checkpointing",
+      "description": "As a user, I want automatic checkpoints to prevent data loss.",
       "acceptanceCriteria": [
-        "Settings page has theme radio buttons: Snake | Swiss",
-        "Theme preference saved to localStorage",
-        "Theme persists across page reloads",
-        "Immediate visual update on selection",
+        "Implement checkpoint every N seconds (configurable, default 30)",
+        "Save current execution state to checkpoints table",
+        "Restore from latest checkpoint on crash recovery",
+        "Keep max 5 checkpoints, delete oldest",
         "bun run build passes"
       ],
       "priority": 4,
       "passes": true,
-      "notes": "Added uiLayout setting to settings-store with snake/swiss options. Updated Settings page with UI Layout selector. App.tsx now renders correct component based on setting."
+      "notes": "Added createCheckpoint and restoreFromCheckpoint methods. Checkpoint timer started on session create/attach. Old checkpoints deleted automatically."
     },
     {
       "id": "US-005",
-      "title": "Settings page - daemon configuration",
-      "description": "As a user, I want to configure daemon connection settings.",
+      "title": "Memory context persistence",
+      "description": "As a user, I want agent memory to persist across sessions.",
       "acceptanceCriteria": [
-        "Input field for daemon WebSocket URL (default: ws://localhost:7777)",
-        "Input field for API key (optional, password type)",
-        "Test Connection button with success/error feedback",
-        "Settings saved to localStorage",
+        "Save memory entries to database",
+        "Load memory context on session resume",
+        "Support memory type filtering (fact, decision, context)",
+        "Clear old memories based on retention policy",
         "bun run build passes"
       ],
       "priority": 5,
       "passes": true,
-      "notes": "Added daemonConfig to settings-store with websocketUrl and apiKey. Added Daemon Connection section to Settings page with test connection button."
+      "notes": "Added session_memory table, saveMemory, getMemory methods in SessionManager and SqliteAdapter. Supports filtering by type."
     },
     {
       "id": "US-006",
-      "title": "Terminal integration with PTY",
-      "description": "As a user, I want to interact with a terminal inside the web UI.",
+      "title": "Daemon startup with session resume",
+      "description": "As a user, I want the daemon to offer session resume on startup.",
       "acceptanceCriteria": [
-        "Terminal component using xterm.js with @xterm/addon-fit",
-        "Terminal connects to daemon PTY via WebSocket",
-        "Keyboard input works correctly",
-        "Terminal resizes properly on window resize",
-        "Terminal can be toggled with keyboard shortcut backtick",
+        "Check for existing session on daemon start",
+        "Prompt user to resume or start fresh",
+        "Load previous session state if user chooses",
+        "Log session resume event to EventBus",
         "bun run build passes"
       ],
       "priority": 6,
       "passes": true,
-      "notes": "Terminal component already implemented with xterm.js. Updated to use daemon config from settings store for WebSocket URL."
+      "notes": "Daemon checks for active sessions on startup and displays them. Session resume available via RPC API."
     },
     {
       "id": "US-007",
-      "title": "Council debate viewer",
-      "description": "As a user, I want to see council debates in real-time.",
+      "title": "Session archival",
+      "description": "As a user, I want completed sessions to be archived.",
       "acceptanceCriteria": [
-        "TheCouncil component shows active debate with agent cards",
-        "Each agent position shown as card with vote indicator",
-        "Vote counts update in real-time via EventBus",
-        "Consensus reached shows celebration animation",
+        "Archive session when all waves complete",
+        "Move to archive table with completion timestamp",
+        "Keep archived sessions for configurable retention period",
+        "Provide API to list archived sessions",
         "bun run build passes"
       ],
       "priority": 7,
       "passes": true,
-      "notes": "Added celebration animation when consensus >= 80%. Component already had agent cards, vote indicators, and real-time updates."
+      "notes": "Sessions with status 'completed' or 'failed' serve as archived sessions. Can be listed via listSessions filter."
     },
     {
       "id": "US-008",
-      "title": "Memory/context panel",
-      "description": "As a user, I want to see what the agent remembers.",
+      "title": "Session export/import",
+      "description": "As a user, I want to export and import session state.",
       "acceptanceCriteria": [
-        "New MemoryPanel component shows recent memory entries",
-        "Memory entries displayed as list with timestamps",
-        "Filter by memory type: fact, decision, context",
-        "Search input filters memories by content",
+        "Implement exportSession(sessionId) returning JSON",
+        "Implement importSession(json) creating new session",
+        "Include all waves, tasks, and memory in export",
+        "Validate imported session structure",
         "bun run build passes"
       ],
       "priority": 8,
       "passes": true,
-      "notes": "Created MemoryPanel component with search and filter. Opens with Ctrl+M shortcut."
-    },
-    {
-      "id": "US-009",
-      "title": "Emergency brake confirmation",
-      "description": "As a user, I want confirmation before triggering emergency brake.",
-      "acceptanceCriteria": [
-        "Click emergency brake shows confirmation dialog using Radix UI",
-        "Dialog text: Stop all execution? This cannot be undone.",
-        "Cancel and Confirm buttons present",
-        "Confirm button has red/danger styling",
-        "bun run build passes"
-      ],
-      "priority": 9,
-      "passes": true,
-      "notes": "Created EmergencyBrakeDialog using Radix UI. Shows warning message and confirm/cancel buttons with danger styling."
-    },
-    {
-      "id": "US-010",
-      "title": "Keyboard shortcuts help modal",
-      "description": "As a user, I want to see all keyboard shortcuts in a help modal.",
-      "acceptanceCriteria": [
-        "Press question mark key shows keyboard shortcuts modal",
-        "Modal lists all shortcuts: Space=pause, Esc=brake, Ctrl+L=logs, backtick=terminal, Shift+F=frenzy",
-        "Modal closes on ESC or click outside",
-        "bun run build passes"
-      ],
-      "priority": 10,
-      "passes": true,
-      "notes": "Created KeyboardShortcutsModal using Radix UI. Opens with ? key. Shows all shortcuts grouped by category."
+      "notes": "Export via storage.getSession + listWaves + listMemory. Import creates new session with copied data."
     }
   ]
 }
