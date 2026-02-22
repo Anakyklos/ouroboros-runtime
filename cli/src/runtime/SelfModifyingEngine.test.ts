@@ -17,8 +17,8 @@ describe('SelfModifyingEngine', () => {
         return (engine as any).extractExports(code);
     };
 
-    const extractMatches = (pattern: RegExp, code: string): string[] => {
-        return (SelfModifyingEngine as any).extractMatches(pattern, code);
+    const extractMatches = (pattern: RegExp, code: string, groupIndex?: number): string[] => {
+        return (SelfModifyingEngine as any).extractMatches(pattern, code, groupIndex);
     };
 
     it('should extract function exports', () => {
@@ -88,7 +88,6 @@ describe('SelfModifyingEngine', () => {
         expect(extractExports(code)).toEqual([]);
     });
 
-    // New tests for complex identifiers
     it('should extract identifiers with $', () => {
         const code = `
             export const $foo = 1;
@@ -107,9 +106,19 @@ describe('SelfModifyingEngine', () => {
         expect(extractExports(code).sort()).toEqual(['café', 'ümlaut', 'Ångström'].sort());
     });
 
-    // Test for safety check (infinite loop prevention)
     it('should throw error if pattern is not global', () => {
         const pattern = /test/i;
         expect(() => extractMatches(pattern, 'test')).toThrow('Pattern must be global');
+    });
+
+    // New Tests for extractMatches safety
+    it('should throw error if capture group does not exist', () => {
+        const pattern = /test/g; // No capture groups
+        expect(() => extractMatches(pattern, 'test')).toThrow('does not contain capture group');
+    });
+
+    it('should allow extracting full match (group 0)', () => {
+        const pattern = /test/g;
+        expect(extractMatches(pattern, 'test test', 0)).toEqual(['test', 'test']);
     });
 });

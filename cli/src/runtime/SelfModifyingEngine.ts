@@ -444,15 +444,30 @@ export class SelfModifyingEngine {
      *   If this code is ever moved to a concurrent environment (e.g. Workers) or made async,
      *   cloning the RegExp per call (new RegExp(pattern, pattern.flags)) would be required.
      */
-    private static extractMatches(pattern: RegExp, code: string): string[] {
+    private static extractMatches(
+        pattern: RegExp,
+        code: string,
+        groupIndex: number = 1
+    ): string[] {
         if (!pattern.global) {
             throw new Error('Pattern must be global');
         }
+        if (!Number.isInteger(groupIndex) || groupIndex < 0) {
+            throw new Error(`groupIndex must be a non-negative integer, got: ${groupIndex}`);
+        }
+
         pattern.lastIndex = 0;
         const results: string[] = [];
         let match;
+
         while ((match = pattern.exec(code)) !== null) {
-            results.push(match[1]);
+            if (groupIndex >= match.length) {
+                throw new Error(
+                    `RegExp match does not contain capture group at index ${groupIndex}. ` +
+                    `Pattern: /${pattern.source}/${pattern.flags}`
+                );
+            }
+            results.push(match[groupIndex]);
         }
         return results;
     }
