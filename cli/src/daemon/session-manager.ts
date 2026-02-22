@@ -238,7 +238,7 @@ export class SessionManager {
     /**
      * Check if a session has active tasks (for testing/diagnostics)
      */
-    hasActiveTasks(sessionId: string): boolean {
+    protected hasActiveTasks(sessionId: string): boolean {
         return (this.activeTasks.get(sessionId)?.size ?? 0) > 0;
     }
 
@@ -261,7 +261,8 @@ export class SessionManager {
 
             const promisesToAwait = tasksToCleanup.map(([_, promise]) =>
                 promise.catch((err) => {
-                    this.eventBus.log('debug', `Task cleanup error: ${err}`, 'SessionManager');
+                    const message = err instanceof Error ? err.stack ?? err.message : String(err);
+                    this.eventBus.log('debug', `Task cleanup error: ${message}`, 'SessionManager');
                 })
             );
 

@@ -8,6 +8,10 @@ class TestSessionManager extends SessionManager {
     public addTaskForTest(sessionId: string, taskId: string, promise: Promise<void>) {
         this.addTask(sessionId, taskId, promise);
     }
+
+    public hasActiveTasksForTest(sessionId: string): boolean {
+        return this.hasActiveTasks(sessionId);
+    }
 }
 
 function createDeferred() {
@@ -60,8 +64,8 @@ describe('SessionManager', () => {
         const cleanupPromise = manager.cleanupSession(sessionId);
 
         // Verify tasks are still tracked (cleanup is pending)
-        expect(manager.hasActiveTasks(sessionId)).toBe(true);
-        expect(manager.hasActiveTasks(otherSessionId)).toBe(true);
+        expect(manager.hasActiveTasksForTest(sessionId)).toBe(true);
+        expect(manager.hasActiveTasksForTest(otherSessionId)).toBe(true);
 
         // Resolve tasks
         task1.resolve();
@@ -71,9 +75,9 @@ describe('SessionManager', () => {
         await cleanupPromise;
 
         // Verify tasks are removed
-        expect(manager.hasActiveTasks(sessionId)).toBe(false);
+        expect(manager.hasActiveTasksForTest(sessionId)).toBe(false);
         // Other session remains
-        expect(manager.hasActiveTasks(otherSessionId)).toBe(true);
+        expect(manager.hasActiveTasksForTest(otherSessionId)).toBe(true);
     });
 
     it('cleanupSession should handle rejected tasks gracefully', async () => {
@@ -92,7 +96,7 @@ describe('SessionManager', () => {
         // This should not throw
         await cleanupPromise;
 
-        expect(manager.hasActiveTasks(sessionId)).toBe(false);
+        expect(manager.hasActiveTasksForTest(sessionId)).toBe(false);
     });
 
     it('cleanupSession should handle tasks added concurrently during cleanup', async () => {
@@ -115,7 +119,7 @@ describe('SessionManager', () => {
 
         await cleanupPromise;
 
-        expect(manager.hasActiveTasks(sessionId)).toBe(false);
+        expect(manager.hasActiveTasksForTest(sessionId)).toBe(false);
     });
 
     it('cleanupSession should stop after max iterations and log warning', async () => {
@@ -160,7 +164,7 @@ describe('SessionManager', () => {
         const warnCall = calls.find((c: any[]) => c[0] === 'warn' && (c[1].includes('cleanupSession iteration') || c[1].includes('Force removing')));
         expect(warnCall).toBeDefined();
 
-        expect(manager.hasActiveTasks(sessionId)).toBe(false);
+        expect(manager.hasActiveTasksForTest(sessionId)).toBe(false);
     });
 
     it('SessionManager should respect custom configuration', async () => {
@@ -184,7 +188,7 @@ describe('SessionManager', () => {
         // Should finish around 10ms (timeout)
         // Allowing 30ms margin
         expect(end - start).toBeLessThan(30);
-        expect(customManager.hasActiveTasks(sessionId)).toBe(false);
+        expect(customManager.hasActiveTasksForTest(sessionId)).toBe(false);
 
         const calls = logSpy.mock.calls;
         const timeoutCall = calls.find((c: any[]) => c[0] === 'warn' && c[1].includes('timed out'));
