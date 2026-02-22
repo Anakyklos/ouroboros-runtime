@@ -33,6 +33,8 @@ export interface ToolExecutorConfig {
     maxOutputSize?: number;
     /** Command timeout in ms (default: 30s) */
     commandTimeout?: number;
+    /** Max concurrent FS operations (default: 20) */
+    concurrencyLimit?: number;
 }
 
 // ============================================================
@@ -50,7 +52,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
                 properties: {
                     path: { type: 'string', description: 'Path to the file to read' },
                     start_line: { type: 'integer', description: 'Optional start line number (1-based)' },
-                    end_line: { type: 'integer', description: 'Optional end line number' }
+                    end_line: { type: 'integer', description: 'Optional end line number (1-based)' }
                 },
                 required: ['path']
             }
@@ -60,7 +62,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
         type: 'function',
         function: {
             name: 'write_file',
-            description: 'Write content to a file. Overwrites if exists, creates if not.',
+            description: 'Write content to a file. Creates directories if they do not exist.',
             parameters: {
                 type: 'object',
                 properties: {
@@ -75,11 +77,11 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
         type: 'function',
         function: {
             name: 'run_command',
-            description: 'Run a shell command. Use for ls, git, grep, etc.',
+            description: 'Run a shell command.',
             parameters: {
                 type: 'object',
                 properties: {
-                    command: { type: 'string', description: 'Shell command to execute' },
+                    command: { type: 'string', description: 'Command to run' },
                     cwd: { type: 'string', description: 'Optional working directory' }
                 },
                 required: ['command']
@@ -90,11 +92,11 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
         type: 'function',
         function: {
             name: 'list_directory',
-            description: 'List files and directories in a path.',
+            description: 'List contents of a directory.',
             parameters: {
                 type: 'object',
                 properties: {
-                    path: { type: 'string', description: 'Directory path to list' },
+                    path: { type: 'string', description: 'Directory path' },
                     recursive: { type: 'boolean', description: 'List recursively (default: false)' }
                 },
                 required: ['path']
@@ -120,6 +122,34 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 ];
 
 // ============================================================
+// Concurrency Limiter
+// ============================================================
+
+type Task<T = void> = () => Promise<T>;
+
+class ConcurrencyLimiter {
+    private active = 0;
+    private queue: Array<() => void> = [];
+
+    constructor(private readonly limit: number) {}
+
+    async run<T>(task: Task<T>): Promise<T> {
+        if (this.active >= this.limit) {
+            await new Promise<void>((resolve) => this.queue.push(resolve));
+        }
+
+        this.active++;
+        try {
+            return await task();
+        } finally {
+            this.active--;
+            const next = this.queue.shift();
+            if (next) next();
+        }
+    }
+}
+
+// ============================================================
 // ToolExecutor
 // ============================================================
 
@@ -127,6 +157,7 @@ export class ToolExecutor {
     private config: ToolExecutorConfig;
     private handlers: Map<string, ToolHandler> = new Map();
     private eventBus: EventBus;
+    private concurrencyLimiter: ConcurrencyLimiter;
 
     constructor(config: ToolExecutorConfig, eventBus?: EventBus) {
         this.config = {
@@ -134,8 +165,10 @@ export class ToolExecutor {
             verbose: config.verbose ?? false,
             maxOutputSize: config.maxOutputSize ?? 50 * 1024, // 50KB
             commandTimeout: config.commandTimeout ?? 30_000, // 30s
+            concurrencyLimit: config.concurrencyLimit ?? 20,
         };
         this.eventBus = eventBus ?? globalEventBus;
+        this.concurrencyLimiter = new ConcurrencyLimiter(this.config.concurrencyLimit!);
 
         // Register built-in handlers
         this.registerHandler('read_file', this.handleReadFile.bind(this));
@@ -364,21 +397,31 @@ export class ToolExecutor {
         const searchPath = this.resolvePath(args.path as string);
         const include = args.include as string | undefined;
 
-        if (!fs.existsSync(searchPath)) {
-            return { success: false, output: '', error: `Path not found: ${searchPath}` };
+        let stat: fs.Stats;
+        try {
+            stat = await fs.promises.stat(searchPath);
+        } catch (error: any) {
+             if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) {
+                return { success: false, output: '', error: `Path not found: ${searchPath}` };
+            }
+            throw error;
         }
 
         const results: string[] = [];
-        const regex = new RegExp(pattern, 'gi');
+        // Use 'i' flag only (case-insensitive) to avoid stateful regex issues with 'g'
+        const regex = new RegExp(pattern, 'i');
 
-        const searchFile = (filePath: string) => {
+        const searchFile = async (filePath: string) => {
             try {
-                const content = fs.readFileSync(filePath, 'utf-8');
+                const content = await fs.promises.readFile(filePath, 'utf-8');
                 const lines = content.split('\n');
+
+                // Normalize path separators to forward slashes for cross-platform consistency
+                const normalizedPath = filePath.split(path.sep).join('/');
 
                 for (let i = 0; i < lines.length; i++) {
                     if (regex.test(lines[i])) {
-                        results.push(`${filePath}:${i + 1}: ${lines[i].trim()}`);
+                        results.push(`${normalizedPath}:${i + 1}: ${lines[i].trim()}`);
                     }
                 }
             } catch {
@@ -386,27 +429,31 @@ export class ToolExecutor {
             }
         };
 
-        const searchDir = (dir: string) => {
-            const items = fs.readdirSync(dir, { withFileTypes: true });
-            for (const item of items) {
-                const fullPath = path.join(dir, item.name);
-
-                if (item.isDirectory()) {
-                    searchDir(fullPath);
-                } else if (item.isFile()) {
-                    if (!include || this.matchGlob(item.name, include)) {
-                        searchFile(fullPath);
-                    }
-                }
-            }
-        };
-
-        const stat = fs.statSync(searchPath);
         if (stat.isFile()) {
-            searchFile(searchPath);
+            await searchFile(searchPath);
         } else {
-            searchDir(searchPath);
+            const processDir = async (dir: string) => {
+                // Enqueue readdir to respect global concurrency limit
+                const items = await this.enqueueFsTask(() => fs.promises.readdir(dir, { withFileTypes: true }));
+
+                await Promise.all(items.map(item => this.enqueueFsTask(async () => {
+                     const fullPath = path.join(dir, item.name);
+
+                     if (item.isDirectory()) {
+                         await processDir(fullPath);
+                     } else if (item.isFile()) {
+                         if (!include || this.matchGlob(item.name, include)) {
+                             await searchFile(fullPath);
+                         }
+                     }
+                })));
+            };
+
+            await processDir(searchPath);
         }
+
+        // Sort results for deterministic output
+        results.sort();
 
         return {
             success: true,
@@ -419,6 +466,10 @@ export class ToolExecutor {
     // ============================================================
     // Helpers
     // ============================================================
+
+    private enqueueFsTask<T>(task: Task<T>): Promise<T> {
+        return this.concurrencyLimiter.run(task);
+    }
 
     private resolvePath(inputPath: string): string {
         if (path.isAbsolute(inputPath)) {
