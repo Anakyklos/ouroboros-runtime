@@ -1,9 +1,10 @@
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { useMissionControlStore } from "@/stores/mission-control-store";
 import { useLogStore } from "@/stores/log-store";
+import { useEffect, useState } from "react";
 
 const stanceConfig = {
   approve: { color: "emerald" as const, label: "Approve" },
@@ -14,6 +15,15 @@ const stanceConfig = {
 export function TheCouncil() {
   const currentDebate = useMissionControlStore((state) => state.currentDebate);
   const addLogEntry = useLogStore((state) => state.addEntry);
+  const [showCelebration, setShowCelebration] = useState(false);
+
+  useEffect(() => {
+    if (currentDebate && currentDebate.consensus >= 80) {
+      setShowCelebration(true);
+      const timer = setTimeout(() => setShowCelebration(false), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [currentDebate?.consensus]);
 
   if (!currentDebate) {
     return (
@@ -123,12 +133,41 @@ export function TheCouncil() {
           />
           <div className="mt-2 text-xs text-center">
             {consensus >= 80 ? (
-              <span className="text-[var(--color-emerald)]">✓ Auto-merge threshold reached</span>
+              <motion.span
+                initial={{ scale: 1 }}
+                animate={{ scale: [1, 1.2, 1] }}
+                transition={{ duration: 0.5 }}
+                className="text-[var(--color-emerald)]"
+              >
+                ✓ Consensus reached!
+              </motion.span>
             ) : (
               <span className="text-[var(--color-gold)]">⚠ Needs human review below 80%</span>
             )}
           </div>
         </div>
+
+        <AnimatePresence>
+          {showCelebration && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.5 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.5 }}
+              className="absolute inset-0 flex items-center justify-center bg-[var(--color-surface-secondary)]/90 rounded-lg z-10"
+            >
+              <motion.div
+                animate={{ 
+                  scale: [1, 1.2, 1],
+                  rotate: [0, 10, -10, 0]
+                }}
+                transition={{ duration: 0.5, repeat: 2 }}
+                className="text-6xl"
+              >
+                🎉
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {autoMergeIn && consensus >= 60 && (

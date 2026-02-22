@@ -9,6 +9,9 @@ import { SnakeRing } from "@/components/layout/snake-ring";
 import { LogViewer } from "@/components/ui/log-viewer";
 import { TerminalGrid } from "@/components/terminal/terminal-grid";
 import { TaskDetailPanel } from "@/components/task-detail-panel";
+import { EmergencyBrakeDialog } from "@/components/emergency-brake-dialog";
+import { MemoryPanel } from "@/components/memory-panel";
+import { KeyboardShortcutsModal } from "@/components/keyboard-shortcuts-modal";
 import { useEventBus } from "@/hooks/use-event-bus";
 import { useDaemonAPI } from "@/hooks/use-daemon-api";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
@@ -30,6 +33,9 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
   const [theme, setTheme] = useState<"snake" | "swiss">("snake");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedWaveId, setSelectedWaveId] = useState<string | null>(null);
+  const [showEmergencyDialog, setShowEmergencyDialog] = useState(false);
+  const [showMemoryPanel, setShowMemoryPanel] = useState(false);
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   
   const { connectionStatus } = useEventBus();
   const waves = useMissionControlStore((state) => state.waves);
@@ -45,13 +51,28 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
   useKeyboardShortcuts({
     onPause: () => setMode("pause"),
     onResume: () => setMode("running"),
-    onEmergencyBrake: () => {
-      emergencyBrake();
-      setMode("pause");
-    },
+    onEmergencyBrake: () => setShowEmergencyDialog(true),
     onToggleLogs: () => setShowLogs((prev) => !prev),
     onFocusTerminal: () => setShowTerminal(true),
   });
+
+  // Listen for keyboard shortcuts modal
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "?" && !e.ctrlKey && !e.metaKey) {
+        if (!(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
+          e.preventDefault();
+          setShowShortcutsModal(true);
+        }
+      }
+      if (e.key === "m" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        setShowMemoryPanel((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   // Sync mode with daemon status
   useEffect(() => {
@@ -75,6 +96,7 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
   const handleEmergencyBrake = () => {
     emergencyBrake();
     setMode("pause");
+    setShowEmergencyDialog(false);
   };
 
   const getSnakeStatus = () => {
@@ -279,6 +301,22 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
           setSelectedTaskId(null);
           setSelectedWaveId(null);
         }}
+      />
+
+      <EmergencyBrakeDialog
+        isOpen={showEmergencyDialog}
+        onClose={() => setShowEmergencyDialog(false)}
+        onConfirm={handleEmergencyBrake}
+      />
+
+      <MemoryPanel
+        isOpen={showMemoryPanel}
+        onClose={() => setShowMemoryPanel(false)}
+      />
+
+      <KeyboardShortcutsModal
+        isOpen={showShortcutsModal}
+        onClose={() => setShowShortcutsModal(false)}
       />
     </div>
   );

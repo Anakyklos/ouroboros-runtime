@@ -93,8 +93,8 @@
         "bun run build passes"
       ],
       "priority": 6,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Terminal component already implemented with xterm.js. Updated to use daemon config from settings store for WebSocket URL."
     },
     {
       "id": "US-007",
@@ -108,8 +108,8 @@
         "bun run build passes"
       ],
       "priority": 7,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Added celebration animation when consensus >= 80%. Component already had agent cards, vote indicators, and real-time updates."
     },
     {
       "id": "US-008",
@@ -123,8 +123,8 @@
         "bun run build passes"
       ],
       "priority": 8,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Created MemoryPanel component with search and filter. Opens with Ctrl+M shortcut."
     },
     {
       "id": "US-009",
@@ -138,8 +138,8 @@
         "bun run build passes"
       ],
       "priority": 9,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Created EmergencyBrakeDialog using Radix UI. Shows warning message and confirm/cancel buttons with danger styling."
     },
     {
       "id": "US-010",
@@ -152,8 +152,8 @@
         "bun run build passes"
       ],
       "priority": 10,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Created KeyboardShortcutsModal using Radix UI. Opens with ? key. Shows all shortcuts grouped by category."
     }
   ]
 }

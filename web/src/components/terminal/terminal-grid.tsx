@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Terminal } from "./terminal";
 import { Plus, Grid3X3, LayoutGrid } from "lucide-react";
+import { useSettingsStore } from "@/stores/settings-store";
 
 interface TerminalSession {
   id: string;
@@ -14,11 +15,14 @@ interface TerminalGridProps {
 }
 
 export function TerminalGrid({ maxTerminals = 4 }: TerminalGridProps) {
+  const daemonConfig = useSettingsStore((state) => state.daemonConfig);
+  const baseWsUrl = daemonConfig.websocketUrl.replace("/ws", "/pty");
+  
   const [terminals, setTerminals] = useState<TerminalSession[]>([
     {
       id: "term-1",
       title: "Main Session",
-      wsUrl: "ws://localhost:3001/pty/main",
+      wsUrl: `${baseWsUrl}/main`,
     },
   ]);
   const [maximizedId, setMaximizedId] = useState<string | null>(null);
@@ -33,10 +37,10 @@ export function TerminalGrid({ maxTerminals = 4 }: TerminalGridProps) {
       {
         id: newId,
         title: `Session ${prev.length + 1}`,
-        wsUrl: `ws://localhost:3001/pty/${newId}`,
+        wsUrl: `${baseWsUrl}/${newId}`,
       },
     ]);
-  }, [terminals.length, maxTerminals]);
+  }, [terminals.length, maxTerminals, baseWsUrl]);
 
   const removeTerminal = useCallback((id: string) => {
     setTerminals((prev) => prev.filter((t) => t.id !== id));
