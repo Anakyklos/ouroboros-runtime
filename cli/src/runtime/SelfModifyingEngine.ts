@@ -451,9 +451,12 @@ export class SelfModifyingEngine {
                 results.sort((a, b) => a.name.localeCompare(b.name));
                 return results;
             });
-        } catch (error) {
+        } catch (error: any) {
             // Ignore expected filesystem errors (e.g., permission denied, not found)
-            return [];
+            if (error.code === 'ENOENT' || error.code === 'EACCES' || error.code === 'EPERM') {
+                return [];
+            }
+            throw error;
         }
 
         const directories: string[] = [];

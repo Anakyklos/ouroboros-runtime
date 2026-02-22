@@ -52,10 +52,10 @@ export class Semaphore {
      * Executes a function with a semaphore permit.
      * Automatically handles acquisition and release.
      */
-    async runWithPermit<T>(fn: () => Promise<T>): Promise<T> {
+    async runWithPermit<T>(fn: () => T | Promise<T>): Promise<T> {
         await this.acquire();
         try {
-            return await fn();
+            return await Promise.resolve(fn());
         } finally {
             this.release();
         }
