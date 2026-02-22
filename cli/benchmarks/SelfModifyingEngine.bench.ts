@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { createSelfModifyingEngine } from "./SelfModifyingEngine.js";
+import { createSelfModifyingEngine } from "../src/runtime/SelfModifyingEngine.js";
 
 const DEPTH = 4;
 const BREADTH = 5;

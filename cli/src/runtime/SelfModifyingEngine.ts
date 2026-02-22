@@ -435,25 +435,33 @@ export class SelfModifyingEngine {
 
     private async walkDir(dir: string): Promise<string[]> {
         const files: string[] = [];
+        const CONCURRENCY_LIMIT = 50;
 
         try {
             const entries = await fs.readdir(dir, { withFileTypes: true });
+            const tasks: (() => Promise<string[]>)[] = [];
 
-            const promises = entries.map(async (entry) => {
+            for (const entry of entries) {
                 const fullPath = path.join(dir, entry.name);
 
                 if (entry.isDirectory()) {
                     // Skip node_modules, .git, etc.
                     if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
-                        return this.walkDir(fullPath);
+                        tasks.push(() => this.walkDir(fullPath));
                     }
                 } else {
-                    return [fullPath];
+                    files.push(fullPath);
                 }
-                return [];
-            });
+            }
 
-            const results = await Promise.all(promises);
+            // Execute tasks with concurrency limit
+            const results: string[][] = [];
+            for (let i = 0; i < tasks.length; i += CONCURRENCY_LIMIT) {
+                const chunk = tasks.slice(i, i + CONCURRENCY_LIMIT);
+                const chunkResults = await Promise.all(chunk.map(task => task()));
+                results.push(...chunkResults);
+            }
+
             for (const result of results) {
                 files.push(...result);
             }
