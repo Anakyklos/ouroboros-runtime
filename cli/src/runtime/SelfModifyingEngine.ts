@@ -423,13 +423,13 @@ export class SelfModifyingEngine {
         const exports: string[] = [];
 
         for (const pattern of EXPORT_PATTERNS) {
-            this.extractMatches(pattern, code, exports);
+            SelfModifyingEngine.extractMatches(pattern, code, exports);
         }
 
         return exports;
     }
 
-    private extractMatches(pattern: RegExp, code: string, results: string[]): void {
+    private static extractMatches(pattern: RegExp, code: string, results: string[]): void {
         pattern.lastIndex = 0;
         let match;
         while ((match = pattern.exec(code)) !== null) {
