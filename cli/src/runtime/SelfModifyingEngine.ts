@@ -454,23 +454,30 @@ export class SelfModifyingEngine {
                 this.semaphore.release();
             }
 
-            const promises = entries.map(async (entry) => {
+            const directories: string[] = [];
+
+            // Process files synchronously and collect directories
+            for (const entry of entries) {
                 const fullPath = path.join(dir, entry.name);
 
                 if (entry.isDirectory()) {
                     // Skip node_modules, .git, etc.
                     if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
-                        return this.walkDir(fullPath);
+                        directories.push(fullPath);
                     }
                 } else {
-                    return [fullPath];
+                    files.push(fullPath);
                 }
-                return [];
-            });
+            }
 
-            const results = await Promise.all(promises);
-            for (const result of results) {
-                files.push(...result);
+            // Recurse into directories in parallel
+            if (directories.length > 0) {
+                const results = await Promise.all(
+                    directories.map(d => this.walkDir(d))
+                );
+                for (const result of results) {
+                    files.push(...result);
+                }
             }
 
         } catch (error) {

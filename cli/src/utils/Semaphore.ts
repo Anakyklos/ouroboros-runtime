@@ -7,6 +7,9 @@ export class Semaphore {
     private queue: Array<() => void> = [];
 
     constructor(maxConcurrency: number) {
+        if (!Number.isFinite(maxConcurrency) || maxConcurrency <= 0) {
+            throw new Error(`Semaphore maxConcurrency must be > 0, got ${maxConcurrency}`);
+        }
         this.maxConcurrency = maxConcurrency;
     }
 
