@@ -15,8 +15,13 @@ export class Semaphore {
         if (!Number.isFinite(maxConcurrency) || maxConcurrency <= 0) {
             throw new Error(`Semaphore maxConcurrency must be > 0, got ${maxConcurrency}`);
         }
-        if (!Number.isFinite(maxQueueSize) && maxQueueSize !== Infinity) {
-             throw new Error(`Semaphore maxQueueSize must be a finite number or Infinity, got ${maxQueueSize}`);
+        if (
+            (Number.isFinite(maxQueueSize) && maxQueueSize < 0) ||
+            (!Number.isFinite(maxQueueSize) && maxQueueSize !== Infinity)
+        ) {
+            throw new Error(
+                `Semaphore maxQueueSize must be a finite number >= 0 or Infinity, got ${maxQueueSize}`,
+            );
         }
         this.maxConcurrency = maxConcurrency;
         this.maxQueueSize = maxQueueSize;
