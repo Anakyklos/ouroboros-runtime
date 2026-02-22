@@ -450,44 +450,42 @@ export class SelfModifyingEngine {
         const files: string[] = [];
         let entries: fs.Dirent[] = [];
 
+        await this.semaphore.acquire();
         try {
-            await this.semaphore.acquire();
-            try {
-                entries = await fs.readdir(dir, { withFileTypes: true });
-                // Sort entries for deterministic output
-                entries.sort((a, b) => a.name.localeCompare(b.name));
-            } finally {
-                this.semaphore.release();
-            }
-
-            const directories: string[] = [];
-
-            // Process files synchronously and collect directories
-            for (const entry of entries) {
-                const fullPath = path.join(dir, entry.name);
-
-                if (entry.isDirectory()) {
-                    // Skip node_modules, .git, etc.
-                    if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
-                        directories.push(fullPath);
-                    }
-                } else {
-                    files.push(fullPath);
-                }
-            }
-
-            // Recurse into directories in parallel
-            if (directories.length > 0) {
-                const results = await Promise.all(
-                    directories.map(d => this.walkDir(d))
-                );
-                for (const result of results) {
-                    files.push(...result);
-                }
-            }
-
+            entries = await fs.readdir(dir, { withFileTypes: true });
+            // Sort entries for deterministic output
+            entries.sort((a, b) => a.name.localeCompare(b.name));
         } catch (error) {
-            // Ignore read errors
+            // Ignore expected filesystem errors (e.g., permission denied, not found)
+            return [];
+        } finally {
+            this.semaphore.release();
+        }
+
+        const directories: string[] = [];
+
+        // Process files synchronously and collect directories
+        for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+
+            if (entry.isDirectory()) {
+                // Skip node_modules, .git, etc.
+                if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
+                    directories.push(fullPath);
+                }
+            } else {
+                files.push(fullPath);
+            }
+        }
+
+        // Recurse into directories in parallel
+        if (directories.length > 0) {
+            const results = await Promise.all(
+                directories.map(d => this.walkDir(d))
+            );
+            for (const result of results) {
+                files.push(...result);
+            }
         }
 
         return files;
