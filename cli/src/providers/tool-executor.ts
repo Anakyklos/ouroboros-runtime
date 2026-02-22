@@ -419,9 +419,12 @@ export class ToolExecutor {
                 const content = await fs.promises.readFile(filePath, 'utf-8');
                 const lines = content.split('\n');
 
+                // Normalize path separators to forward slashes for cross-platform consistency
+                const normalizedPath = filePath.split(path.sep).join('/');
+
                 for (let i = 0; i < lines.length; i++) {
                     if (regex.test(lines[i])) {
-                        results.push(`${filePath}:${i + 1}: ${lines[i].trim()}`);
+                        results.push(`${normalizedPath}:${i + 1}: ${lines[i].trim()}`);
                     }
                 }
             } catch {
@@ -476,7 +479,7 @@ export class ToolExecutor {
     private matchGlob(filename: string, pattern: string): boolean {
         // Simple glob matching (*.ts, *.js, etc.)
         const regex = new RegExp(
-            '^' + pattern.replace(/\./g, '\.').replace(/\*/g, '.*') + '$'
+            '^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$'
         );
         return regex.test(filename);
     }
