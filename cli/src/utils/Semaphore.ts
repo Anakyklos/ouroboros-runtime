@@ -33,21 +33,17 @@ export class Semaphore {
 
     /**
      * Releases a slot in the semaphore, allowing the next queued task to proceed.
+     * Throws an error if called when no tasks are active.
      */
     release(): void {
         if (this.activeCount <= 0) {
-            // Log warning in debug mode or if explicitly required
-            if (process.env.DEBUG) {
-                console.warn("Semaphore.release() called with no active tasks. Logic error suspected.");
-            }
-            return;
+            throw new Error("Semaphore.release() called with no active tasks. This indicates a logic error where release() is called more times than acquire().");
         }
 
         this.activeCount--;
 
         const next = this.queue.shift();
         if (next) {
-
             next();
         }
     }
