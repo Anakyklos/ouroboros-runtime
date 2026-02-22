@@ -310,9 +310,7 @@ export class SelfModifyingEngine {
 
             // Remove backups excedentes
             const toRemove = backups.slice(this.config.maxBackupsPerFile);
-            for (const file of toRemove) {
-                await fs.unlink(path.join(backupDir, file));
-            }
+            await Promise.all(toRemove.map(file => fs.unlink(path.join(backupDir, file))));
         } catch (error) {
             // Ignora erros de limpeza
         }
