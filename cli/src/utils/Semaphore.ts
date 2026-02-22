@@ -49,6 +49,19 @@ export class Semaphore {
     }
 
     /**
+     * Executes a function with a semaphore permit.
+     * Automatically handles acquisition and release.
+     */
+    async runWithPermit<T>(fn: () => Promise<T>): Promise<T> {
+        await this.acquire();
+        try {
+            return await fn();
+        } finally {
+            this.release();
+        }
+    }
+
+    /**
      * Returns the number of currently active tasks.
      */
     getActiveCount(): number {

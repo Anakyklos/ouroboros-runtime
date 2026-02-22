@@ -90,12 +90,6 @@ export class SelfModifyingEngine {
             ...DEFAULT_CONFIG,
             ...config,
         };
-
-        // Normalize concurrency limit
-        if (!Number.isFinite(this.config.concurrencyLimit) || this.config.concurrencyLimit <= 0) {
-            this.config.concurrencyLimit = DEFAULT_CONFIG.concurrencyLimit;
-        }
-
         this.semaphore = new Semaphore(this.config.concurrencyLimit);
     }
 
@@ -450,16 +444,16 @@ export class SelfModifyingEngine {
         const files: string[] = [];
         let entries: fs.Dirent[] = [];
 
-        await this.semaphore.acquire();
         try {
-            entries = await fs.readdir(dir, { withFileTypes: true });
-            // Sort entries for deterministic output
-            entries.sort((a, b) => a.name.localeCompare(b.name));
+            entries = await this.semaphore.runWithPermit(async () => {
+                const results = await fs.readdir(dir, { withFileTypes: true });
+                // Sort entries for deterministic output
+                results.sort((a, b) => a.name.localeCompare(b.name));
+                return results;
+            });
         } catch (error) {
             // Ignore expected filesystem errors (e.g., permission denied, not found)
             return [];
-        } finally {
-            this.semaphore.release();
         }
 
         const directories: string[] = [];
