@@ -10,9 +10,15 @@ import type { EventBus } from './event-bus.js';
 import { Orchestrator, createTask } from '../orchestration/index.js';
 import { PersonaType } from '../orchestration/types.js';
 
+
+export interface SessionManagerConfig {
+    maxCleanupIterations?: number;
+    cleanupTimeoutMs?: number;
+}
+
 export class SessionManager {
-    private static readonly MAX_CLEANUP_ITERATIONS = 5;
-    private static readonly CLEANUP_TIMEOUT_MS = 10000;
+    private readonly maxCleanupIterations: number;
+    private readonly cleanupTimeoutMs: number;
 
     private storage: StoragePort;
     private eventBus: EventBus;
@@ -21,10 +27,12 @@ export class SessionManager {
 
     private apiKey?: string;
 
-    constructor(storage: StoragePort, eventBus: EventBus, apiKey?: string) {
+    constructor(storage: StoragePort, eventBus: EventBus, apiKey?: string, config?: SessionManagerConfig) {
         this.storage = storage;
         this.eventBus = eventBus;
         this.apiKey = apiKey;
+        this.maxCleanupIterations = config?.maxCleanupIterations ?? 5;
+        this.cleanupTimeoutMs = config?.cleanupTimeoutMs ?? 10000;
     }
 
     async createSession(data: Omit<Session, 'id' | 'createdAt' | 'updatedAt'>): Promise<Session> {
@@ -190,14 +198,14 @@ export class SessionManager {
     /**
      * Cleanup resources for a session
      */
-                async cleanupSession(sessionId: string): Promise<void> {
+    async cleanupSession(sessionId: string): Promise<void> {
         this.activeOrchestrators.delete(sessionId);
 
         // Loop to catch any tasks added concurrently
         // We limit iterations to prevent infinite loops if tasks keep being scheduled
         let iterations = 0;
 
-        while (iterations < SessionManager.MAX_CLEANUP_ITERATIONS) {
+        while (iterations < this.maxCleanupIterations) {
             // Collect all tasks to cleanup
             // Note: This iterates the entire activeTasks map, but expected volume is low per session
             // and total active tasks across all sessions should remain manageable.
@@ -214,11 +222,18 @@ export class SessionManager {
 
             // Wait for all tasks to finish concurrently with a timeout
             const cleanupPromise = Promise.all(promisesToAwait);
-            const timeoutPromise = new Promise<void>((resolve) =>
-                setTimeout(resolve, SessionManager.CLEANUP_TIMEOUT_MS)
-            );
 
-            await Promise.race([cleanupPromise, timeoutPromise]);
+            let timeoutId: ReturnType<typeof setTimeout>;
+            const timeoutPromise = new Promise<void>((resolve) => {
+                timeoutId = setTimeout(resolve, this.cleanupTimeoutMs);
+            });
+
+            try {
+                await Promise.race([cleanupPromise, timeoutPromise]);
+            } finally {
+                // Ensure timer is cleared if cleanup finishes first
+                clearTimeout(timeoutId!);
+            }
 
             // Remove from active tasks map regardless of completion (to avoid leaks)
             // Even if we timed out, we want to remove these tasks from tracking
