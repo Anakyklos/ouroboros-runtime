@@ -76,6 +76,7 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
 
 export class SelfModifyingEngine {
     private config: Required<SelfModifyingEngineConfig>;
+    /** Batch size for parallel deletion to prevent EMFILE errors */
     private mutationHistory: MutationProposal[] = [];
     private static readonly CLEANUP_CHUNK_SIZE = 20;
     private initialized: boolean = false;
@@ -306,24 +307,26 @@ export class SelfModifyingEngine {
             const files = await fs.readdir(backupDir);
             const backups = files
                 .filter(f => f.startsWith(basename) && f.endsWith('.bak'))
-                .sort()
-                .reverse();
             const toRemove = backups.slice(this.config.maxBackupsPerFile);
-
             // Process deletions in chunks to avoid overwhelming file system
             for (let i = 0; i < toRemove.length; i += SelfModifyingEngine.CLEANUP_CHUNK_SIZE) {
                 const chunk = toRemove.slice(i, i + SelfModifyingEngine.CLEANUP_CHUNK_SIZE);
                 const results = await Promise.allSettled(chunk.map(file => fs.unlink(path.join(backupDir, file))));
 
-                // Log failures
-                results.forEach((result, index) => {
-                    if (result.status === 'rejected') {
-                        console.warn(`Failed to delete backup ${chunk[index]}:`, result.reason);
-                    }
-                });
+                // Log failures only in debug mode to avoid spam
+                if (process.env.DEBUG) {
+                    results.forEach((result, index) => {
+                        if (result.status === 'rejected') {
+                            console.warn(`Failed to delete backup ${chunk[index]}:`, result.reason);
+                        }
+                    });
+                }
             }
         } catch (error) {
-            console.error('Failed to clean old backups:', error);
+            // Gate noisy cleanup errors behind a debug flag
+            if (process.env.DEBUG) {
+                console.warn('Failed to clean old backups:', error);
+            }
         }
     }
 
