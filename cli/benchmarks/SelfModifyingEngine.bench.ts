@@ -4,9 +4,19 @@ import path from "node:path";
 import os from "node:os";
 import { createSelfModifyingEngine } from "../src/runtime/SelfModifyingEngine.js";
 
-const DEPTH = parseInt(process.env.BENCH_DEPTH || "4", 10);
-const BREADTH = parseInt(process.env.BENCH_BREADTH || "5", 10);
-const NUM_FILES_PER_DIR = parseInt(process.env.BENCH_FILES || "3", 10);
+// Parse and validate configuration
+function getEnvInt(key: string, defaultValue: number): number {
+    const val = parseInt(process.env[key] || String(defaultValue), 10);
+    if (!Number.isFinite(val) || val < 0) {
+        console.warn(`⚠️ Invalid ${key}, falling back to default: ${defaultValue}`);
+        return defaultValue;
+    }
+    return val;
+}
+
+const DEPTH = getEnvInt("BENCH_DEPTH", 4);
+const BREADTH = getEnvInt("BENCH_BREADTH", 5);
+const NUM_FILES_PER_DIR = getEnvInt("BENCH_FILES", 3);
 
 console.log(`🔧 Configuration: DEPTH=${DEPTH}, BREADTH=${BREADTH}, FILES=${NUM_FILES_PER_DIR}`);
 
@@ -68,8 +78,9 @@ if (import.meta.main) {
         console.log("\n⏱️  Running Benchmark: walkDir...");
         const start = performance.now();
 
-        // Access private method for focused benchmark
-        const files = await engine.scanDirectory(tempDir);
+        // Access private method via cast for benchmark purposes
+        // This avoids exposing private API in production code just for benchmarks
+        const files = await (engine as any).walkDir(tempDir);
 
         const end = performance.now();
         const duration = end - start;

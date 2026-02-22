@@ -79,7 +79,7 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
 // SelfModifyingEngine
 // ============================================================================
 
-const IGNORED_FS_ERRORS = new Set(['ENOENT', 'EACCES', 'EPERM', 'EBUSY', 'EMFILE']);
+const IGNORED_FS_ERRORS = new Set(['ENOENT', 'EACCES', 'EPERM', 'EBUSY']);
 
 export class SelfModifyingEngine {
     private config: Required<SelfModifyingEngineConfig>;
@@ -498,14 +498,6 @@ export class SelfModifyingEngine {
         }
 
         return files;
-    }
-
-    /**
-     * Public wrapper for directory scanning (testing purposes)
-     * @internal
-     */
-    async scanDirectory(dir: string): Promise<string[]> {
-        return this.walkDir(dir);
     }
 }
 
