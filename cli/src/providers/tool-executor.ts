@@ -364,16 +364,20 @@ export class ToolExecutor {
         const searchPath = this.resolvePath(args.path as string);
         const include = args.include as string | undefined;
 
-        if (!fs.existsSync(searchPath)) {
+        try {
+            await fs.promises.access(searchPath);
+        } catch {
             return { success: false, output: '', error: `Path not found: ${searchPath}` };
         }
 
+        const stat = await fs.promises.stat(searchPath);
         const results: string[] = [];
-        const regex = new RegExp(pattern, 'gi');
+        // Use 'i' flag only (case-insensitive) to avoid stateful regex issues with 'g'
+        const regex = new RegExp(pattern, 'i');
 
-        const searchFile = (filePath: string) => {
+        const searchFile = async (filePath: string) => {
             try {
-                const content = fs.readFileSync(filePath, 'utf-8');
+                const content = await fs.promises.readFile(filePath, 'utf-8');
                 const lines = content.split('\n');
 
                 for (let i = 0; i < lines.length; i++) {
@@ -386,27 +390,39 @@ export class ToolExecutor {
             }
         };
 
-        const searchDir = (dir: string) => {
-            const items = fs.readdirSync(dir, { withFileTypes: true });
-            for (const item of items) {
-                const fullPath = path.join(dir, item.name);
-
-                if (item.isDirectory()) {
-                    searchDir(fullPath);
-                } else if (item.isFile()) {
-                    if (!include || this.matchGlob(item.name, include)) {
-                        searchFile(fullPath);
-                    }
-                }
-            }
-        };
-
-        const stat = fs.statSync(searchPath);
         if (stat.isFile()) {
-            searchFile(searchPath);
+            await searchFile(searchPath);
         } else {
-            searchDir(searchPath);
+            const CONCURRENCY_LIMIT = 20;
+
+            const processDir = async (dir: string) => {
+                const items = await fs.promises.readdir(dir, { withFileTypes: true });
+
+                let nextIndex = 0;
+                const workers = Array.from({ length: Math.min(CONCURRENCY_LIMIT, items.length) }, async () => {
+                    while (nextIndex < items.length) {
+                        const index = nextIndex++;
+                        const item = items[index];
+                        const fullPath = path.join(dir, item.name);
+
+                        if (item.isDirectory()) {
+                            await processDir(fullPath);
+                        } else if (item.isFile()) {
+                            if (!include || this.matchGlob(item.name, include)) {
+                                await searchFile(fullPath);
+                            }
+                        }
+                    }
+                });
+
+                await Promise.all(workers);
+            };
+
+            await processDir(searchPath);
         }
+
+        // Sort results for deterministic output
+        results.sort();
 
         return {
             success: true,
