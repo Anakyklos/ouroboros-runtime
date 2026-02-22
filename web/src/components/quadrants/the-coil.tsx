@@ -180,48 +180,21 @@ export function TheCoil({ onWaveActivate, promotingWave, className, minimal = fa
     }
   };
 
-  const displayWaves = waves.length > 0 ? waves : [
-    {
-      id: "wave-43",
-      number: 43,
-      status: "pending" as const,
-      tasks: [
-        { id: "t1", title: "Fix CSS Variables", progress: 0, phase: "planning" as const },
-        { id: "t2", title: "Update Theme", progress: 0, phase: "planning" as const },
-        { id: "t3", title: "Add Animations", progress: 0, phase: "planning" as const },
-      ],
-    },
-    {
-      id: "wave-42",
-      number: 42,
-      status: "active" as const,
-      tasks: [
-        { id: "t4", title: "Auth Implementation", progress: 100, phase: "complete" as const },
-        { id: "t5", title: "API Integration", progress: 67, phase: "coding" as const },
-        { id: "t6", title: "Database Schema", progress: 23, phase: "planning" as const },
-      ],
-    },
-    {
-      id: "wave-41",
-      number: 41,
-      status: "done" as const,
-      tasks: [
-        { id: "t7", title: "Setup Project", progress: 100, phase: "complete" as const },
-        { id: "t8", title: "Configure Tailwind", progress: 100, phase: "complete" as const },
-      ],
-    },
-  ];
-
-  const activeWave = displayWaves.find((w) => w.id === activeId);
+  const activeWave = waves.find((w) => w.id === activeId);
+  const pendingCount = waves.filter(w => w.status === "pending").length;
+  const activeCount = waves.filter(w => w.status === "active").length;
+  const doneCount = waves.filter(w => w.status === "done").length;
 
   return (
-    <Card className={cn("h-full flex flex-col bg-[var(--color-surface-primary)] border-[var(--color-border)]", !minimal && "p-4", className)}>
+    <Card className={cn("h-full flex flex-col bg-[var(--color-surface-secondary)] border-[var(--color-border)]", !minimal && "p-4", className)}>
       {!minimal && (
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold flex items-center gap-2 text-[var(--color-foreground)]">
             <span className="text-xl">🐍</span>
             THE COIL
-            <Badge variant="emerald">Planning</Badge>
+            <Badge variant={activeCount > 0 ? "emerald" : pendingCount > 0 ? "gold" : "secondary"}>
+              {activeCount > 0 ? "Running" : pendingCount > 0 ? "Ready" : "Idle"}
+            </Badge>
           </h2>
           <span className="text-sm text-[var(--color-silver-muted)]">
             Wave Queue
@@ -229,47 +202,59 @@ export function TheCoil({ onWaveActivate, promotingWave, className, minimal = fa
         </div>
       )}
 
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        onDragStart={handleDragStart}
-        onDragEnd={handleDragEnd}
-      >
-        <SortableContext
-          items={displayWaves.map((w) => w.id)}
-          strategy={verticalListSortingStrategy}
-        >
-          <div className={cn("flex-1 overflow-auto space-y-3", minimal && "space-y-2 pr-1")}>
-            {displayWaves.map((wave) => (
-              <SortableWaveCard
-                key={wave.id}
-                wave={wave}
-                isPromoting={promotingWave === wave.id}
-                onActivate={onWaveActivate}
-                minimal={minimal}
-              />
-            ))}
+      {waves.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center text-[var(--color-silver-muted)]">
+            <div className="text-4xl mb-3">🌀</div>
+            <p className="text-sm">No waves in queue</p>
+            <p className="text-xs mt-1">Waves will appear when tasks are scheduled</p>
           </div>
-        </SortableContext>
-
-        <DragOverlay>
-          {activeWave ? (
-            <div className="p-3 rounded-lg border-l-4 border-[var(--color-emerald)] bg-[var(--color-surface-secondary)] shadow-xl opacity-90">
-              <div className="font-mono font-bold text-[var(--color-foreground)]">WAVE {activeWave.number}</div>
-              <div className="text-sm text-[var(--color-silver-muted)]">
-                {activeWave.tasks.length} tasks
-              </div>
+        </div>
+      ) : (
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext
+            items={waves.map((w) => w.id)}
+            strategy={verticalListSortingStrategy}
+          >
+            <div className={cn("flex-1 overflow-auto space-y-3", minimal && "space-y-2 pr-1")}>
+              {waves.map((wave) => (
+                <SortableWaveCard
+                  key={wave.id}
+                  wave={wave}
+                  isPromoting={promotingWave === wave.id}
+                  onActivate={onWaveActivate}
+                  minimal={minimal}
+                />
+              ))}
             </div>
-          ) : null}
-        </DragOverlay>
-      </DndContext>
+          </SortableContext>
+
+          <DragOverlay>
+            {activeWave ? (
+              <div className="p-3 rounded-lg border-l-4 border-[var(--color-emerald)] bg-[var(--color-surface-secondary)] shadow-xl opacity-90">
+                <div className="font-mono font-bold text-[var(--color-foreground)]">WAVE {activeWave.number}</div>
+                <div className="text-sm text-[var(--color-silver-muted)]">
+                  {activeWave.tasks.length} tasks
+                </div>
+              </div>
+            ) : null}
+          </DragOverlay>
+        </DndContext>
+      )}
 
       {!minimal && (
         <div className="mt-4 pt-4 border-t border-[var(--color-border)] flex items-center justify-between text-sm">
           <span className="text-[var(--color-silver-muted)]">
-            Next wave in queue
+            Queue: {pendingCount} pending • {doneCount} done
           </span>
-          <span className="font-mono text-[var(--color-emerald)]">Wave #44 ready</span>
+          <span className="font-mono text-[var(--color-emerald)]">
+            {activeCount > 0 ? "Wave active" : "Ready for tasks"}
+          </span>
         </div>
       )}
     </Card>

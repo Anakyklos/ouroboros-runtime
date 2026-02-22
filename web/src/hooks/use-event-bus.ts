@@ -19,7 +19,7 @@ interface UseEventBusOptions {
 
 export function useEventBus(options: UseEventBusOptions = {}) {
   const {
-    url = "ws://localhost:3001/ws",
+    url = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`,
     reconnectInterval = 3000,
     maxReconnectAttempts = 10,
   } = options;
@@ -33,7 +33,20 @@ export function useEventBus(options: UseEventBusOptions = {}) {
 
   const handleMessage = useCallback((event: MessageEvent) => {
     try {
-      const data: EventBusMessage = JSON.parse(event.data);
+      const rawData = JSON.parse(event.data);
+      
+      // Handle connection message
+      if (rawData.event === 'connected') {
+        setDaemonConnected(true);
+        return;
+      }
+      
+      // Extract event data - backend sends { event, data } format
+      const data: EventBusMessage = {
+        type: rawData.event || rawData.type,
+        ...rawData.data,
+        data: rawData.data,
+      };
 
       // Route events to appropriate stores
       switch (data.type) {
@@ -47,10 +60,14 @@ export function useEventBus(options: UseEventBusOptions = {}) {
           }
           break;
 
+        case "wave":
+        case "wave:created":
+        case "wave:updated":
         case "wave:progress":
         case "task:progress":
         case "council:vote":
         case "council:consensus":
+        case "daemon":
           // These will be handled by specific stores
           window.dispatchEvent(new CustomEvent("daemon:event", { detail: data }));
           break;
@@ -66,7 +83,7 @@ export function useEventBus(options: UseEventBusOptions = {}) {
     } catch (err) {
       console.error("[EventBus] Failed to parse message:", err);
     }
-  }, [addLogEntry]);
+  }, [addLogEntry, setDaemonConnected]);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;

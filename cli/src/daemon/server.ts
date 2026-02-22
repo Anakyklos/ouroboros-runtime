@@ -6,6 +6,7 @@
  */
 
 import Fastify, { FastifyInstance } from 'fastify';
+import websocket from '@fastify/websocket';
 import { EventBus, globalEventBus } from './event-bus.js';
 import { RpcGateway } from './rpc-gateway.js';
 import { GatewayOrchestrator } from '../orchestration/GatewayOrchestrator.js';
@@ -20,7 +21,7 @@ export interface DaemonConfig {
 
 const DEFAULT_CONFIG: DaemonConfig = {
     port: 7777,
-    host: '127.0.0.1',  // Localhost only for security
+    host: '127.0.0.1',
 };
 
 export class DaemonServer {
@@ -30,6 +31,7 @@ export class DaemonServer {
     private rpcGateway: RpcGateway;
     private gatewayOrchestrator: GatewayOrchestrator;
     private isRunning = false;
+    private initialized = false;
 
     constructor(
         storage: StoragePort,
@@ -49,16 +51,52 @@ export class DaemonServer {
         this.app = Fastify({
             logger: false,
         });
-
-        this.setupRoutes();
     }
+
+    async initialize(): Promise<void> {
+        if (this.initialized) return;
+        
+        await this.app.register(websocket);
+        this.setupRoutes();
+        this.setupEventForwarding();
+        this.initialized = true;
+    }
+
+    private setupEventForwarding(): void {
+        this.eventBus.on('*', (data) => {
+            const message = JSON.stringify(data);
+            this.app.websocketServer?.clients.forEach((client: { readyState: number; send: (msg: string) => void }) => {
+                if (client.readyState === 1) {
+                    client.send(message);
+                }
+            });
+        });
+    }
+
     private setupRoutes(): void {
-        // Health check
+        this.app.get('/', async () => {
+            return { 
+                service: 'Ouroboros Daemon', 
+                version: '1.0.0',
+                endpoints: {
+                    health: 'GET /health',
+                    rpc: 'POST /rpc',
+                    ws: 'WebSocket /ws'
+                }
+            };
+        });
+
         this.app.get('/health', async () => {
             return { status: 'ok', timestamp: new Date().toISOString() };
         });
 
-        // JSON-RPC endpoint
+        this.app.get('/ws', { websocket: true }, (socket) => {
+            socket.send(JSON.stringify({
+                event: 'connected',
+                data: { timestamp: new Date().toISOString() }
+            }));
+        });
+
         this.app.post('/rpc', async (request, reply) => {
             const rpcRequest = request.body as {
                 jsonrpc: string;
@@ -67,7 +105,6 @@ export class DaemonServer {
                 params?: Record<string, unknown>;
             };
 
-            // Validate JSON-RPC format
             if (rpcRequest.jsonrpc !== '2.0') {
                 return reply.code(400).send({
                     jsonrpc: '2.0',
@@ -90,6 +127,10 @@ export class DaemonServer {
     async start(): Promise<void> {
         if (this.isRunning) {
             throw new Error('Daemon is already running');
+        }
+
+        if (!this.initialized) {
+            await this.initialize();
         }
 
         this.eventBus.emit('daemon', { type: 'starting', port: this.config.port });

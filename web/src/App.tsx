@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { MissionControl } from "@/pages/mission-control";
+import { SwissMissionControl } from "@/pages/swiss-mission-control";
 import { Settings } from "@/pages/settings";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { LoadingState } from "@/components/loading-states";
@@ -37,7 +37,7 @@ export function App() {
   return (
     <ErrorBoundary>
       {currentPage === "mission-control" ? (
-        <MissionControl onSettingsClick={() => setCurrentPage("settings")} />
+        <SwissMissionControl />
       ) : (
         <Settings />
       )}

@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { useLogStore } from "@/stores/log-store";
+import { useMissionControlStore } from "@/stores/mission-control-store";
 
 interface Idea {
   id: string;
@@ -18,67 +19,81 @@ const ideaTypeConfig = {
   performance: { color: "gold", label: "Perf" },
 };
 
-const mockFiles = [
-  "src/auth/middleware.ts",
-  "src/api/routes.ts",
-  "src/db/schema.ts",
-  "src/utils/parser.ts",
-  "src/components/Button.tsx",
-  "src/hooks/useAuth.ts",
-  "src/stores/session.ts",
-];
+const statusConfig = {
+  idle: { label: "Idle", icon: "😴" },
+  scanning: { label: "Scanning", icon: "🔍" },
+  analyzing: { label: "Analyzing", icon: "🧠" },
+  dreaming: { label: "Dreaming", icon: "💭" },
+};
 
 export function TheEye() {
-  const [scanningFiles, setScanningFiles] = useState<string[]>([]);
   const [ideas, setIdeas] = useState<Idea[]>([]);
-  const [isDreaming] = useState(true);
+  const [currentFile, setCurrentFile] = useState<string | null>(null);
+  const [status, setStatus] = useState<"idle" | "scanning" | "analyzing" | "dreaming">("idle");
+  const daemonConnected = useMissionControlStore((state) => state.daemonConnected);
   const addLogEntry = useLogStore((state) => state.addEntry);
 
   useEffect(() => {
-    if (isDreaming) {
-      const interval = setInterval(() => {
-        const randomFile = mockFiles[Math.floor(Math.random() * mockFiles.length)];
-        setScanningFiles((prev) => [...prev.slice(-5), randomFile]);
-      }, 300);
-      return () => clearInterval(interval);
+    if (!daemonConnected) {
+      setStatus("idle");
+      setCurrentFile(null);
+      return;
     }
-  }, [isDreaming]);
 
-  useEffect(() => {
-    if (isDreaming) {
-      const ideaInterval = setInterval(() => {
-        const types: Idea["type"][] = ["code_improvements", "ui_ux", "security", "performance"];
-        const randomType = types[Math.floor(Math.random() * types.length)];
-        
+    setStatus("scanning");
+
+    const handleDaemonEvent = (event: CustomEvent) => {
+      const { type, data } = event.detail;
+
+      if (type === "eye:file_scan") {
+        setCurrentFile(data.file);
+      } else if (type === "eye:idea") {
         const newIdea: Idea = {
           id: `idea-${Date.now()}`,
-          type: randomType,
-          title: `Optimize ${randomType.replace("_", " ")} in module`,
-          confidence: Math.floor(Math.random() * 30) + 70,
+          type: data.type || "code_improvements",
+          title: data.title,
+          confidence: data.confidence || 75,
         };
-        
         setIdeas((prev) => [...prev.slice(-4), newIdea]);
-        
-        // Log to store
         addLogEntry({
           level: "info",
-          message: `New idea generated: ${newIdea.title} (${newIdea.confidence}% confidence)`,
+          message: `Idea: ${newIdea.title} (${newIdea.confidence}%)`,
           source: "Eye",
         });
-      }, 2000);
-      return () => clearInterval(ideaInterval);
+      }
+    };
+
+    window.addEventListener("daemon:event", handleDaemonEvent as EventListener);
+    return () => {
+      window.removeEventListener("daemon:event", handleDaemonEvent as EventListener);
+    };
+  }, [daemonConnected, addLogEntry]);
+
+  useEffect(() => {
+    if (daemonConnected && ideas.length > 0) {
+      setStatus("dreaming");
     }
-  }, [isDreaming, addLogEntry]);
+  }, [daemonConnected, ideas.length]);
+
+  const statusInfo = statusConfig[status];
+  const stats: Record<string, number> = {
+    refactors: ideas.filter(i => i.type === "code_improvements").length,
+    security: ideas.filter(i => i.type === "security").length,
+    performance: ideas.filter(i => i.type === "performance").length,
+  };
 
   return (
-    <Card className="h-full p-4 flex flex-col bg-[var(--color-surface-secondary)] border-[var(--color-border)] shadow-sm">
+    <Card className="h-full p-4 flex flex-col bg-[var(--color-surface-secondary)] border-[var(--color-border)]">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-bold flex items-center gap-2 font-sans tracking-tight text-[var(--color-foreground)]">
+        <h2 className="text-lg font-bold flex items-center gap-2 text-[var(--color-foreground)]">
           <span className="text-xl">🔮</span>
           THE EYE
-          {isDreaming && (
-            <Badge variant="gold" className="animate-pulse bg-[var(--color-gold)]/20 text-[var(--color-gold)] border-[var(--color-gold)]/50">Dreaming</Badge>
-          )}
+          <Badge 
+            variant={daemonConnected ? (status === "dreaming" ? "gold" : "emerald") : "secondary"}
+            className={status === "dreaming" ? "animate-pulse" : ""}
+          >
+            {statusInfo.icon} {statusInfo.label}
+          </Badge>
         </h2>
         <span className="text-xs sm:text-sm text-[var(--color-silver-muted)] font-mono">
           Analysis & Ideation
@@ -86,28 +101,26 @@ export function TheEye() {
       </div>
 
       <div className="flex-1 overflow-hidden flex flex-col relative">
-        {/* Scanning Files Stream */}
         <div className="flex-1 relative border-l border-[var(--color-border)] pl-4 ml-2">
           <div className="absolute inset-0 overflow-hidden">
             <div className="font-mono text-xs text-[var(--color-silver-muted)] opacity-80 space-y-1">
-              <AnimatePresence>
-                {scanningFiles.map((file, i) => (
-                  <motion.div
-                    key={`${file}-${i}`}
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: 10 }}
-                    className="flex items-center gap-2"
-                  >
-                    <span className="text-[var(--color-emerald)]">▸</span>
-                    {file}
-                  </motion.div>
-                ))}
-              </AnimatePresence>
+              {currentFile ? (
+                <motion.div
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  className="flex items-center gap-2"
+                >
+                  <span className="text-[var(--color-emerald)]">▸</span>
+                  <span className="text-[var(--color-foreground)]">{currentFile}</span>
+                </motion.div>
+              ) : (
+                <div className="text-[var(--color-silver-muted)]/50 italic">
+                  {daemonConnected ? "Waiting for scan..." : "Disconnected from daemon"}
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Ideas Overlay */}
           <AnimatePresence>
             {ideas.map((idea, index) => (
               <motion.div
@@ -133,7 +146,6 @@ export function TheEye() {
           </AnimatePresence>
         </div>
 
-        {/* Footer Stats */}
         <div className="mt-4 grid grid-cols-3 gap-2 text-center border-t border-[var(--color-border)] pt-4">
           {(["code_improvements", "security", "performance"] as const).map((type) => (
             <div key={type} className="p-1 rounded hover:bg-[var(--color-surface-tertiary)] transition-colors">
@@ -141,7 +153,7 @@ export function TheEye() {
                 {ideaTypeConfig[type].label}
               </div>
               <div className="font-mono text-sm sm:text-base font-bold text-[var(--color-emerald)]">
-                {Math.floor(Math.random() * 5) + 2}
+                {stats[type === "code_improvements" ? "refactors" : type]}
               </div>
             </div>
           ))}

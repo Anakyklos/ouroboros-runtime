@@ -13,6 +13,7 @@ import { useDaemonAPI } from "@/hooks/use-daemon-api";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useMissionControlStore } from "@/stores/mission-control-store";
 import { useWaveManager } from "@/hooks/use-wave-manager";
+import { useLiveMissionControl } from "@/hooks/use-live-mission-control";
 import { Settings, Terminal, LayoutTemplate } from "lucide-react";
 import { CoilDashboard } from "@/components/swiss/layout/CoilDashboard";
 
@@ -30,9 +31,10 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
   const daemonConnected = useMissionControlStore((state) => state.daemonConnected);
   
   // Initialize daemon connections
-  useEventBus({ url: "ws://localhost:3001/ws" });
+  useEventBus();
   const { status, emergencyBrake } = useDaemonAPI();
   const { promotingWave, activateWave } = useWaveManager();
+  const liveData = useLiveMissionControl();
 
   // Keyboard shortcuts
   useKeyboardShortcuts({
@@ -238,9 +240,9 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
         onModeChange={setMode}
         confidence={confidence}
         onConfidenceChange={setConfidence}
-        waveNumber={status?.activeWaves || 42}
-        tasksDone={47}
-        tokens={status?.tokensUsed || 142000}
+        waveNumber={liveData.stats.waveNumber || status?.activeWaves || 0}
+        tasksDone={liveData.stats.tasksDone || 0}
+        tokens={liveData.stats.tokens || status?.tokensUsed || 0}
         onEmergencyBrake={handleEmergencyBrake}
       />
     </div>
