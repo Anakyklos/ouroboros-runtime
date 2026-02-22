@@ -147,7 +147,15 @@ function SortableWaveCard({ wave, isPromoting, onActivate, minimal }: SortableWa
 
       <div className={cn("space-y-1 pl-6", minimal && "pl-2")}>
         {wave.tasks.slice(0, minimal ? 2 : 3).map((task) => (
-          <div key={task.id} className="flex items-center gap-2 text-sm py-0.5">
+          <div 
+            key={task.id} 
+            className="flex items-center gap-2 text-sm py-0.5 cursor-pointer hover:bg-[var(--color-surface-tertiary)] rounded px-1 -mx-1"
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent("task:click", {
+                detail: { taskId: task.id, waveId: wave.id }
+              }));
+            }}
+          >
             <motion.span
               key={task.phase}
               initial={{ scale: 0.8, opacity: 0 }}

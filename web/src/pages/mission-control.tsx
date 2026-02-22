@@ -8,9 +8,11 @@ import { TheCouncil } from "@/components/quadrants/the-council";
 import { SnakeRing } from "@/components/layout/snake-ring";
 import { LogViewer } from "@/components/ui/log-viewer";
 import { TerminalGrid } from "@/components/terminal/terminal-grid";
+import { TaskDetailPanel } from "@/components/task-detail-panel";
 import { useEventBus } from "@/hooks/use-event-bus";
 import { useDaemonAPI } from "@/hooks/use-daemon-api";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { useMissionControlStore } from "@/stores/mission-control-store";
 import { useWaveManager } from "@/hooks/use-wave-manager";
 import { useLiveMissionControl } from "@/hooks/use-live-mission-control";
 import { Settings, Terminal, LayoutTemplate } from "lucide-react";
@@ -26,8 +28,14 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
   const [showLogs, setShowLogs] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
   const [theme, setTheme] = useState<"snake" | "swiss">("snake");
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [selectedWaveId, setSelectedWaveId] = useState<string | null>(null);
   
   const { connectionStatus } = useEventBus();
+  const waves = useMissionControlStore((state) => state.waves);
+  const selectedTask = selectedTaskId && selectedWaveId 
+    ? waves.find(w => w.id === selectedWaveId)?.tasks.find(t => t.id === selectedTaskId) 
+    : null;
   
   const { status, emergencyBrake } = useDaemonAPI();
   const { promotingWave, activateWave } = useWaveManager();
@@ -53,6 +61,16 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
       setMode("running");
     }
   }, [status]);
+
+  // Listen for task click events
+  useEffect(() => {
+    const handleTaskClick = (event: CustomEvent<{ taskId: string; waveId: string }>) => {
+      setSelectedTaskId(event.detail.taskId);
+      setSelectedWaveId(event.detail.waveId);
+    };
+    window.addEventListener("task:click" as any, handleTaskClick);
+    return () => window.removeEventListener("task:click" as any, handleTaskClick);
+  }, []);
 
   const handleEmergencyBrake = () => {
     emergencyBrake();
@@ -247,6 +265,20 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
         tasksDone={liveData.stats.tasksDone || 0}
         tokens={liveData.stats.tokens || status?.tokensUsed || 0}
         onEmergencyBrake={handleEmergencyBrake}
+      />
+
+      <TaskDetailPanel
+        task={selectedTask || null}
+        isOpen={!!selectedTask}
+        onClose={() => {
+          setSelectedTaskId(null);
+          setSelectedWaveId(null);
+        }}
+        onRetry={(taskId) => {
+          console.log("Retry task:", taskId);
+          setSelectedTaskId(null);
+          setSelectedWaveId(null);
+        }}
       />
     </div>
   );
