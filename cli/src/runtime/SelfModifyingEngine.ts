@@ -70,6 +70,14 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
     autoGitCommit: false,
 };
 
+const EXPORT_PATTERNS: ReadonlyArray<string> = Object.freeze([
+    'export\\s+(?:async\\s+)?function\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+class\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+const\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+interface\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+type\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+]);
+
 // ============================================================================
 // SelfModifyingEngine
 // ============================================================================
@@ -414,23 +422,53 @@ export class SelfModifyingEngine {
     private extractExports(code: string): string[] {
         const exports: string[] = [];
 
-        // Match export statements
-        const patterns = [
-            /export\s+(?:async\s+)?function\s+(\w+)/g,
-            /export\s+class\s+(\w+)/g,
-            /export\s+const\s+(\w+)/g,
-            /export\s+interface\s+(\w+)/g,
-            /export\s+type\s+(\w+)/g,
-        ];
-
-        for (const pattern of patterns) {
-            let match;
-            while ((match = pattern.exec(code)) !== null) {
-                exports.push(match[1]);
-            }
+        for (const patternString of EXPORT_PATTERNS) {
+            const pattern = new RegExp(patternString, 'gu');
+            exports.push(...SelfModifyingEngine.extractMatches(pattern, code));
         }
 
         return exports;
+    }
+
+    /**
+     * Extracts all matches for a given global regex pattern.
+     *
+     * Note: We use a manual exec loop instead of String.prototype.matchAll()
+     * because benchmarks show this approach is faster for our workload.
+     *
+     * Safety:
+     * - The pattern must be global to avoid infinite loops.
+     * - The method operates on the provided RegExp instance. Callers should ensure
+     *   the instance is not shared if concurrency/reentrancy is a concern.
+     */
+    private static extractMatches(
+        pattern: RegExp,
+        code: string,
+        groupIndex: number = 1
+    ): string[] {
+        if (!pattern.global) {
+            throw new Error('Pattern must be global');
+        }
+        if (!Number.isInteger(groupIndex) || groupIndex < 0) {
+            throw new Error(`groupIndex must be a non-negative integer, got: ${groupIndex}`);
+        }
+
+        // Use passed pattern directly (assumed fresh/reset by caller)
+        pattern.lastIndex = 0;
+
+        const results: string[] = [];
+        let match;
+
+        while ((match = pattern.exec(code)) !== null) {
+            if (groupIndex >= match.length) {
+                throw new Error(
+                    `RegExp match does not contain capture group at index ${groupIndex}. ` +
+                    `Pattern: /${pattern.source}/${pattern.flags}`
+                );
+            }
+            results.push(match[groupIndex]);
+        }
+        return results;
     }
 
     private async walkDir(dir: string): Promise<string[]> {
