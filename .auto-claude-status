@@ -1,5 +1,10 @@
 {
   "active": true,
+  "spec": "005-tui-keyboard-navigation-quadrant-switching",
+  "state": "building",
+  "subtasks": {
+    "completed": 7,
+    "total": 8,
   "spec": "003-sandbox-code-execution-safety",
   "state": "building",
   "subtasks": {
@@ -14,6 +19,9 @@
     "failed": 0
   },
   "phase": {
+    "current": "Integration and Testing",
+    "id": null,
+    "total": 1
     "current": "Testing & Verification",
     "current": "Specification Workflow Enhancement",
     "id": null,
@@ -24,6 +32,10 @@
     "max": 1
   },
   "session": {
+    "number": 9,
+    "started_at": "2026-02-21T09:09:39.093362"
+  },
+  "last_update": "2026-02-21T09:39:38.856121"
     "number": 53,
     "started_at": "2026-02-21T10:21:16.573285"
   },
