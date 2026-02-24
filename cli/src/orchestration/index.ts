@@ -24,6 +24,59 @@ export {
     createCustomValidationStrategy,
 } from "./strategies/index.js";
 
+// Promotion Manager (Anti-Vibe Quality Gates)
+export {
+    PromotionManager,
+    createPromotionManager,
+} from "./PromotionManager.js";
+
+export {
+    ValidationReporter,
+    createValidationReporter,
+    createQuietReporter,
+} from "./ValidationReporter.js";
+
+export {
+    PromotionStatus,
+    QualityGateType,
+    DEFAULT_PROMOTION_CONFIG,
+    QUALITY_GATE_COMMANDS,
+    type PromotionCandidate,
+    type PromotionConfig,
+    type PromotionResult,
+    type PromotionState,
+    type ApprovalCallback,
+    type PromotionValidation,
+} from "./promotion-types.js";
+
+// Approval Manager (Human Approval Gates)
+export {
+    ApprovalManager,
+    createApprovalManager,
+} from "./ApprovalManager.js";
+
+export {
+    ApprovalHistory,
+    createApprovalHistory,
+    type ApprovalHistoryEntry,
+    type ApprovalHistoryStats,
+    type ApprovalHistoryFilters,
+} from "./ApprovalHistory.js";
+
+export {
+    ApprovalStatus,
+    ApprovalPriority,
+    DEFAULT_APPROVAL_CONFIG,
+    DEFAULT_APPROVAL_PRIORITY,
+    type ApprovalRequest,
+    type ApprovalConfig,
+    type ApprovalResult,
+    type ApprovalState,
+    type ApprovalFilters,
+    type ApprovalStats,
+    type ApprovalNotificationCallback,
+} from "./approval-types.js";
+
 export {
     PersonaType,
     TaskStatus,

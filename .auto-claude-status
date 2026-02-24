@@ -5,6 +5,16 @@
   "subtasks": {
     "completed": 7,
     "total": 8,
+  "spec": "003-sandbox-code-execution-safety",
+  "state": "building",
+  "subtasks": {
+    "completed": 10,
+    "total": 16,
+  "spec": "002-complete-anti-vibe-protocol-quality-gates",
+  "state": "building",
+  "subtasks": {
+    "completed": 7,
+    "total": 19,
     "in_progress": 1,
     "failed": 0
   },
@@ -12,6 +22,10 @@
     "current": "Integration and Testing",
     "id": null,
     "total": 1
+    "current": "Testing & Verification",
+    "current": "Specification Workflow Enhancement",
+    "id": null,
+    "total": 3
   },
   "workers": {
     "active": 0,
@@ -22,4 +36,12 @@
     "started_at": "2026-02-21T09:09:39.093362"
   },
   "last_update": "2026-02-21T09:39:38.856121"
+    "number": 53,
+    "started_at": "2026-02-21T10:21:16.573285"
+  },
+  "last_update": "2026-02-21T13:50:12.809147"
+    "number": 2,
+    "started_at": "2026-02-21T08:30:26.400775"
+  },
+  "last_update": "2026-02-21T08:36:37.465849"
 }

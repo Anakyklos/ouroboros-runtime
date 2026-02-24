@@ -12,55 +12,128 @@ Examples:
 """
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
 SKILL_TEMPLATE = """---
 name: {skill_name}
-description: [TODO: Complete and informative explanation of what the skill does and when to use it. Include WHEN to use this skill - specific scenarios, file types, or tasks that trigger it.]
+description: "This skill should be used when the user asks to [trigger phrase 1], [trigger phrase 2], or [trigger phrase 3]. [Concise explanation of what the skill does and the primary value it provides]."
+version: 1.0.0
+author: [Your Name]
+created: {date}
+updated: {date}
+platforms: [github-copilot-cli, claude-code]
+category: [general|code|documentation|analysis|automation]
+tags: [tag1, tag2, tag3]
+risk: safe
 ---
 
 # {skill_title}
 
-## Overview
+## Purpose
 
-[TODO: 1-2 sentences explaining what this skill enables]
+To [verb phrase describing the primary function this skill enables]. This skill helps users [describe the key benefit or problem solved].
 
-## Structuring This Skill
+## When to Use This Skill
 
-[TODO: Choose the structure that best fits this skill's purpose. Common patterns:
+This skill should be used when:
+- User requests [specific trigger scenario 1]
+- User needs to [specific trigger scenario 2]
+- User wants to [specific trigger scenario 3]
+- Working with [specific file types or data formats]
+- [Additional trigger scenarios as needed]
 
-**1. Workflow-Based** (best for sequential processes)
-- Works well when there are clear step-by-step procedures
-- Example: DOCX skill with "Workflow Decision Tree" → "Reading" → "Creating" → "Editing"
-- Structure: ## Overview → ## Workflow Decision Tree → ## Step 1 → ## Step 2...
+## Core Capabilities
 
-**2. Task-Based** (best for tool collections)
-- Works well when the skill offers different operations/capabilities
-- Example: PDF skill with "Quick Start" → "Merge PDFs" → "Split PDFs" → "Extract Text"
-- Structure: ## Overview → ## Quick Start → ## Task Category 1 → ## Task Category 2...
+1. **[Capability Name]** - [Brief description of what this enables]
+2. **[Capability Name]** - [Brief description of what this enables]
+3. **[Capability Name]** - [Brief description of what this enables]
 
-**3. Reference/Guidelines** (best for standards or specifications)
-- Works well for brand guidelines, coding standards, or requirements
-- Example: Brand styling with "Brand Guidelines" → "Colors" → "Typography" → "Features"
-- Structure: ## Overview → ## Guidelines → ## Specifications → ## Usage...
+## Quick Start
 
-**4. Capabilities-Based** (best for integrated systems)
-- Works well when the skill provides multiple interrelated features
-- Example: Product Management with "Core Capabilities" → numbered capability list
-- Structure: ## Overview → ## Core Capabilities → ### 1. Feature → ### 2. Feature...
+### Basic Usage
 
-Patterns can be mixed and matched as needed. Most skills combine patterns (e.g., start with task-based, add workflow for complex operations).
+For most use cases, follow this simple workflow:
 
-Delete this entire "Structuring This Skill" section when done - it's just guidance.]
+1. [Step 1 - what to do first]
+2. [Step 2 - what to do next]
+3. [Step 3 - final step or result]
 
-## [TODO: Replace with the first main section based on chosen structure]
+Example:
+```
+[Provide a concrete example of using this skill]
+```
 
-[TODO: Add content here. See examples in existing skills:
-- Code samples for technical skills
-- Decision trees for complex workflows
-- Concrete examples with realistic user requests
-- References to scripts/templates/references as needed]
+## Main Features
+
+### Feature 1: [Feature Name]
+
+[Describe what this feature does and when to use it]
+
+**Usage:**
+```
+[Code example or command]
+```
+
+**Parameters:**
+- `param1`: [Description]
+- `param2`: [Description]
+
+### Feature 2: [Feature Name]
+
+[Describe what this feature does and when to use it]
+
+**Usage:**
+```
+[Code example or command]
+```
+
+## Advanced Usage
+
+[Describe advanced scenarios or edge cases]
+
+## Error Handling
+
+[Common errors and how to resolve them]
+
+## Bundled Resources
+
+This skill includes the following resource directories:
+
+### scripts/
+[Describe what scripts are included and what they do]
+
+### references/
+[Describe what reference documentation is included]
+
+### assets/
+[Describe what assets are included (templates, examples, etc.)]
+
+## Best Practices
+
+1. [Best practice 1]
+2. [Best practice 2]
+3. [Best practice 3]
+
+## Troubleshooting
+
+### Issue: [Common Issue]
+
+**Symptoms:** [What the user sees]
+**Solution:** [How to fix it]
+
+### Issue: [Common Issue]
+
+**Symptoms:** [What the user sees]
+**Solution:** [How to fix it]
+
+## Examples
+
+See the `examples/` directory for complete working examples demonstrating:
+- [Example 1 description]
+- [Example 2 description]
+- [Example 3 description]
 
 ## Resources
 
@@ -116,8 +189,8 @@ Example real scripts from other skills:
 
 def main():
     print("This is an example script for {skill_name}")
-    # TODO: Add actual script logic here
-    # This could be data processing, file conversion, API calls, etc.
+    # Replace this placeholder with your actual script logic
+    # Common uses: data processing, file conversion, API calls, automation
 
 if __name__ == "__main__":
     main()
@@ -220,9 +293,11 @@ def init_skill(skill_name, path):
 
     # Create SKILL.md from template
     skill_title = title_case_skill_name(skill_name)
+    current_date = datetime.now().strftime('%Y-%m-%d')
     skill_content = SKILL_TEMPLATE.format(
         skill_name=skill_name,
-        skill_title=skill_title
+        skill_title=skill_title,
+        date=current_date
     )
 
     skill_md_path = skill_dir / 'SKILL.md'
@@ -263,9 +338,10 @@ def init_skill(skill_name, path):
     # Print next steps
     print(f"\n✅ Skill '{skill_name}' initialized successfully at {skill_dir}")
     print("\nNext steps:")
-    print("1. Edit SKILL.md to complete the TODO items and update the description")
-    print("2. Customize or delete the example files in scripts/, references/, and assets/")
-    print("3. Run the validator when ready to check the skill structure")
+    print("1. Edit SKILL.md to customize the skill description and features")
+    print("2. Update the metadata (author, version, triggers, etc.)")
+    print("3. Customize or delete the example files in scripts/, references/, and assets/")
+    print("4. Run the validator when ready to check the skill structure")
 
     return skill_dir
 

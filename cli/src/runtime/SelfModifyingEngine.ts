@@ -11,6 +11,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { spawn } from 'child_process';
+import { Semaphore } from "../utils/Semaphore.js";
+
 
 // ============================================================================
 // Types
@@ -41,6 +43,10 @@ export interface MutationResult {
 }
 
 export interface SelfModifyingEngineConfig {
+    /** Max concurrent directory scans (default: 50) */
+    concurrencyLimit?: number;
+    /** Max items in semaphore queue (default: Infinity) */
+    maxQueueSize?: number;
     /** Diretório raiz do código fonte */
     sourceDir: string;
     /** Diretório para backups */
@@ -62,6 +68,8 @@ export interface SelfModifyingEngineConfig {
 // ============================================================================
 
 const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
+    concurrencyLimit: 50,
+    maxQueueSize: Infinity,
     backupDir: '.ouroboros/backups',
     validateSyntax: true,
     runTestsAfter: true,
@@ -70,12 +78,25 @@ const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
     autoGitCommit: false,
 };
 
+const EXPORT_PATTERNS: ReadonlyArray<string> = Object.freeze([
+    'export\\s+(?:async\\s+)?function\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+class\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+const\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+interface\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+    'export\\s+type\\s+([\\p{ID_Start}$_][\\p{ID_Continue}$]*)',
+]);
+
 // ============================================================================
 // SelfModifyingEngine
 // ============================================================================
 
+const IGNORED_FS_ERRORS = new Set(['ENOENT', 'EACCES', 'EPERM', 'EBUSY']);
+
 export class SelfModifyingEngine {
     private config: Required<SelfModifyingEngineConfig>;
+    /** Batch size for parallel deletion to prevent EMFILE errors */
+    private static readonly CLEANUP_CHUNK_SIZE = 20;
+    private semaphore: Semaphore;
     private mutationHistory: MutationProposal[] = [];
     private initialized: boolean = false;
 
@@ -84,6 +105,17 @@ export class SelfModifyingEngine {
             ...DEFAULT_CONFIG,
             ...config,
         };
+
+        // Validate and normalize concurrency limit
+        let limit = this.config.concurrencyLimit;
+        if (!Number.isFinite(limit) || limit <= 0) {
+            limit = DEFAULT_CONFIG.concurrencyLimit;
+        } else if (limit > 1024) {
+            limit = 1024; // Cap at 1024 to prevent resource exhaustion
+        }
+        this.config.concurrencyLimit = limit;
+
+        this.semaphore = new Semaphore(this.config.concurrencyLimit, this.config.maxQueueSize);
     }
 
     // ========================================================================
@@ -297,9 +329,9 @@ export class SelfModifyingEngine {
 
         return backupPath;
     }
-
     private async cleanOldBackups(basename: string): Promise<void> {
         const backupDir = path.join(this.config.sourceDir, this.config.backupDir);
+        const isDebug = process.env.DEBUG === 'true' || process.env.DEBUG === '1';
 
         try {
             const files = await fs.readdir(backupDir);
@@ -307,22 +339,34 @@ export class SelfModifyingEngine {
                 .filter(f => f.startsWith(basename) && f.endsWith('.bak'))
                 .sort()
                 .reverse();
-
-            // Remove backups excedentes
             const toRemove = backups.slice(this.config.maxBackupsPerFile);
-            for (const file of toRemove) {
-                await fs.unlink(path.join(backupDir, file));
+
+            // Process deletions in chunks to avoid overwhelming file system
+            for (let i = 0; i < toRemove.length; i += SelfModifyingEngine.CLEANUP_CHUNK_SIZE) {
+                const chunk = toRemove.slice(i, i + SelfModifyingEngine.CLEANUP_CHUNK_SIZE);
+                const results = await Promise.allSettled(chunk.map(file => fs.unlink(path.join(backupDir, file))));
+
+                // Log failures only in debug mode to avoid spam
+                if (isDebug) {
+                    results.forEach((result, index) => {
+                        if (result.status === 'rejected') {
+                            console.warn(`Failed to delete backup ${chunk[index]}:`, result.reason);
+                        }
+                    });
+                }
             }
         } catch (error) {
-            // Ignora erros de limpeza
+            // Gate noisy cleanup errors behind a debug flag
+            if (isDebug) {
+                console.warn('Failed to clean old backups:', error);
+            }
         }
     }
-
     private async validateSyntax(code: string, filePath: string): Promise<boolean> {
-        const tempFile = path.join('/tmp', `ouroboros-validate-${Date.now()}.ts`);
+        const tempFile = path.join("/tmp", `ouroboros-validate-${Date.now()}.ts`);
 
         try {
-            await fs.writeFile(tempFile, code, 'utf-8');
+            await fs.writeFile(tempFile, code, "utf-8");
 
             return new Promise((resolve) => {
                 const proc = spawn('bunx', ['tsc', '--noEmit', tempFile], {
@@ -414,48 +458,113 @@ export class SelfModifyingEngine {
     private extractExports(code: string): string[] {
         const exports: string[] = [];
 
-        // Match export statements
-        const patterns = [
-            /export\s+(?:async\s+)?function\s+(\w+)/g,
-            /export\s+class\s+(\w+)/g,
-            /export\s+const\s+(\w+)/g,
-            /export\s+interface\s+(\w+)/g,
-            /export\s+type\s+(\w+)/g,
-        ];
-
-        for (const pattern of patterns) {
-            let match;
-            while ((match = pattern.exec(code)) !== null) {
-                exports.push(match[1]);
-            }
+        for (const patternString of EXPORT_PATTERNS) {
+            const pattern = new RegExp(patternString, 'gu');
+            exports.push(...SelfModifyingEngine.extractMatches(pattern, code));
         }
 
         return exports;
     }
 
+    /**
+     * Extracts all matches for a given global regex pattern.
+     *
+     * Note: We use a manual exec loop instead of String.prototype.matchAll()
+     * because benchmarks show this approach is faster for our workload.
+     *
+     * Safety:
+     * - The pattern must be global to avoid infinite loops.
+     * - The method operates on the provided RegExp instance. Callers should ensure
+     *   the instance is not shared if concurrency/reentrancy is a concern.
+     */
+    private static extractMatches(
+        pattern: RegExp,
+        code: string,
+        groupIndex: number = 1
+    ): string[] {
+        if (!pattern.global) {
+            throw new Error('Pattern must be global');
+        }
+        if (!Number.isInteger(groupIndex) || groupIndex < 0) {
+            throw new Error(`groupIndex must be a non-negative integer, got: ${groupIndex}`);
+        }
+
+        // Use passed pattern directly (assumed fresh/reset by caller)
+        pattern.lastIndex = 0;
+
+        const results: string[] = [];
+        let match;
+
+        while ((match = pattern.exec(code)) !== null) {
+            if (groupIndex >= match.length) {
+                throw new Error(
+                    `RegExp match does not contain capture group at index ${groupIndex}. ` +
+                    `Pattern: /${pattern.source}/${pattern.flags}`
+                );
+            }
+            results.push(match[groupIndex]);
+        }
+        return results;
+    }
+
     private async walkDir(dir: string): Promise<string[]> {
         const files: string[] = [];
+        let entries: fs.Dirent[] = [];
 
         try {
-            const entries = await fs.readdir(dir, { withFileTypes: true });
+            entries = await this.semaphore.runWithPermit(async () => {
+                const results = await fs.readdir(dir, { withFileTypes: true });
+                // Sort entries for deterministic output
+                results.sort((a, b) => a.name.localeCompare(b.name));
+                return results;
+            });
+        } catch (error: any) {
+            // Ignore expected filesystem errors (e.g., permission denied, not found)
+            if (error && typeof error.code === "string" && IGNORED_FS_ERRORS.has(error.code)) {
+                return [];
+            }
+            throw error;
+        }
 
-            for (const entry of entries) {
-                const fullPath = path.join(dir, entry.name);
+        const directories: string[] = [];
 
-                if (entry.isDirectory()) {
-                    // Skip node_modules, .git, etc.
-                    if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
-                        files.push(...await this.walkDir(fullPath));
-                    }
-                } else {
-                    files.push(fullPath);
+        // Process files synchronously and collect directories
+        for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+
+            if (entry.isDirectory()) {
+                // Skip node_modules, .git, etc.
+                if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
+                    directories.push(fullPath);
+                }
+            } else {
+                files.push(fullPath);
+            }
+        }
+
+        // Recurse into directories in parallel, batched
+        if (directories.length > 0) {
+            const batchSize = this.config.concurrencyLimit;
+            for (let i = 0; i < directories.length; i += batchSize) {
+                const batch = directories.slice(i, i + batchSize);
+                const results = await Promise.all(
+                    batch.map(d => this.walkDir(d))
+                );
+                for (const result of results) {
+                    files.push(...result);
                 }
             }
-        } catch (error) {
-            // Ignora erros de leitura
         }
 
         return files;
+    }
+
+    /**
+     * Public wrapper for directory scanning (benchmarking purposes)
+     * @internal
+     */
+    async benchmarkScan(dir: string): Promise<string[]> {
+        return this.walkDir(dir);
     }
 }
 
