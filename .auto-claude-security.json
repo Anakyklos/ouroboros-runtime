@@ -218,8 +218,8 @@
     "cargo_aliases": [],
     "shell_scripts": []
   },
-  "project_dir": "/home/pedro/Projetos de I.A./ouroboros-runtime",
+  "project_dir": ".",
   "created_at": "2026-02-20T21:24:00.002840",
   "project_hash": "9a0557f90136289e20bd5015d915325c",
-  "inherited_from": "/home/pedro/Projetos de I.A./ouroboros-runtime"
+  "inherited_from": "."
 }
