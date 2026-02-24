@@ -115,14 +115,12 @@ export async function validatePath(
     // Resolve to absolute path for validation
     let resolvedPath: string;
     try {
-        // Try to resolve symlinks to get the real path
         if (!normalizedConfig.allowSymlinks) {
-            try {
-                resolvedPath = await realpath(inputPath);
-            } catch {
-                // File doesn't exist yet, use normal resolution
-                resolvedPath = resolve(normalizedPath);
-            }
+            // If realpath() fails (e.g. file doesn't exist), treat as a validation failure.
+            // Falling back to resolve() would create a TOCTOU race condition: an attacker
+            // could swap a non-existent path with a symlink between validation and the
+            // actual file operation (executeFile reads the file after this check).
+            resolvedPath = await realpath(inputPath);
         } else {
             resolvedPath = resolve(normalizedPath);
         }
