@@ -695,8 +695,8 @@ try:
 ${indentedCode}
 except Exception as __e:
     import traceback
-    print(f"ERROR: {__e}", file=__import__('sys').stderr)
-    traceback.print_exc(file=__import__('sys').stderr)
+    print(f"ERROR: {__e}", file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
 finally:
     print("${marker}")
 `;
