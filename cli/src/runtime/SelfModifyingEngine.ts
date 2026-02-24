@@ -94,6 +94,8 @@ const IGNORED_FS_ERRORS = new Set(['ENOENT', 'EACCES', 'EPERM', 'EBUSY']);
 
 export class SelfModifyingEngine {
     private config: Required<SelfModifyingEngineConfig>;
+    /** Batch size for parallel deletion to prevent EMFILE errors */
+    private static readonly CLEANUP_CHUNK_SIZE = 20;
     private semaphore: Semaphore;
     private mutationHistory: MutationProposal[] = [];
     private initialized: boolean = false;
@@ -327,9 +329,9 @@ export class SelfModifyingEngine {
 
         return backupPath;
     }
-
     private async cleanOldBackups(basename: string): Promise<void> {
         const backupDir = path.join(this.config.sourceDir, this.config.backupDir);
+        const isDebug = process.env.DEBUG === 'true' || process.env.DEBUG === '1';
 
         try {
             const files = await fs.readdir(backupDir);
@@ -337,22 +339,34 @@ export class SelfModifyingEngine {
                 .filter(f => f.startsWith(basename) && f.endsWith('.bak'))
                 .sort()
                 .reverse();
-
-            // Remove backups excedentes
             const toRemove = backups.slice(this.config.maxBackupsPerFile);
-            for (const file of toRemove) {
-                await fs.unlink(path.join(backupDir, file));
+
+            // Process deletions in chunks to avoid overwhelming file system
+            for (let i = 0; i < toRemove.length; i += SelfModifyingEngine.CLEANUP_CHUNK_SIZE) {
+                const chunk = toRemove.slice(i, i + SelfModifyingEngine.CLEANUP_CHUNK_SIZE);
+                const results = await Promise.allSettled(chunk.map(file => fs.unlink(path.join(backupDir, file))));
+
+                // Log failures only in debug mode to avoid spam
+                if (isDebug) {
+                    results.forEach((result, index) => {
+                        if (result.status === 'rejected') {
+                            console.warn(`Failed to delete backup ${chunk[index]}:`, result.reason);
+                        }
+                    });
+                }
             }
         } catch (error) {
-            // Ignora erros de limpeza
+            // Gate noisy cleanup errors behind a debug flag
+            if (isDebug) {
+                console.warn('Failed to clean old backups:', error);
+            }
         }
     }
-
     private async validateSyntax(code: string, filePath: string): Promise<boolean> {
-        const tempFile = path.join('/tmp', `ouroboros-validate-${Date.now()}.ts`);
+        const tempFile = path.join("/tmp", `ouroboros-validate-${Date.now()}.ts`);
 
         try {
-            await fs.writeFile(tempFile, code, 'utf-8');
+            await fs.writeFile(tempFile, code, "utf-8");
 
             return new Promise((resolve) => {
                 const proc = spawn('bunx', ['tsc', '--noEmit', tempFile], {
