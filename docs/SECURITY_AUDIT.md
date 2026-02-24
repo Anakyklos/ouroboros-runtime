@@ -569,10 +569,9 @@ eval(code)
 
 **Mitigation:**
 
-1. **Pattern Detection** blocks `eval(`
-2. **Code rejected** before execution
-3. **Hex encoding** doesn't bypass pattern check
-
+1. **Pattern Detection** blocks `eval()` which is the root of the vulnerability.
+2. **Code rejected** before execution because `eval()` is a blocked pattern.
+3. The content of the string passed to `eval()` is not analyzed, as the call to `eval()` itself is disallowed.
 **Result:** ❌ Blocked - "Security violation: Potential escape pattern detected: eval\\s*\\("
 
 #### Attack: Object Introspection Escape
