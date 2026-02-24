@@ -24,19 +24,13 @@ export interface ToolExecutorConfig {
     commandTimeout?: number; // ms
     maxOutputSize?: number; // chars
     verbose?: boolean;
+    concurrencyLimit?: number; // Max concurrent FS operations
 }
 
 export interface ToolResult {
     success: boolean;
     output: string;
     error?: string;
-}
-    /** Max output size per tool call (default: 50KB) */
-    maxOutputSize?: number;
-    /** Command timeout in ms (default: 30s) */
-    commandTimeout?: number;
-    /** Max concurrent FS operations (default: 20) */
-    concurrencyLimit?: number;
 }
 
 // ============================================================
@@ -170,14 +164,7 @@ export class ToolExecutor {
         };
         this.eventBus = globalEventBus;
         this.handlers = new Map();
-            workingDirectory: config.workingDirectory,
-            verbose: config.verbose ?? false,
-            maxOutputSize: config.maxOutputSize ?? 50 * 1024, // 50KB
-            commandTimeout: config.commandTimeout ?? 30_000, // 30s
-            concurrencyLimit: config.concurrencyLimit ?? 20,
-        };
-        this.eventBus = eventBus ?? globalEventBus;
-        this.concurrencyLimiter = new ConcurrencyLimiter(this.config.concurrencyLimit!);
+        this.concurrencyLimiter = new ConcurrencyLimiter(this.config.concurrencyLimit ?? 10);
 
         // Register tools
         this.registerHandler('read_file', this.handleReadFile.bind(this));
@@ -189,6 +176,13 @@ export class ToolExecutor {
 
     registerHandler(name: string, handler: (args: Record<string, unknown>) => Promise<ToolResult>): void {
         this.handlers.set(name, handler);
+    }
+
+    /**
+     * Returns tool definitions for Z.AI function calling
+     */
+    getToolDefinitions(): ToolDefinition[] {
+        return TOOL_DEFINITIONS;
     }
 
     /**
