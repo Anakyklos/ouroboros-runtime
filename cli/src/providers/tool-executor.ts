@@ -18,17 +18,19 @@ import type { ToolCall, ToolDefinition } from './direct-zai.js';
 // Types
 // ============================================================
 
+export interface ToolExecutorConfig {
+    workingDirectory: string;
+    allowedCommands?: string[]; // Allowlist for run_command
+    commandTimeout?: number; // ms
+    maxOutputSize?: number; // chars
+    verbose?: boolean;
+}
+
 export interface ToolResult {
     success: boolean;
     output: string;
     error?: string;
 }
-
-export type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
-
-export interface ToolExecutorConfig {
-    workingDirectory: string;
-    verbose?: boolean;
     /** Max output size per tool call (default: 50KB) */
     maxOutputSize?: number;
     /** Command timeout in ms (default: 30s) */
@@ -155,12 +157,19 @@ class ConcurrencyLimiter {
 
 export class ToolExecutor {
     private config: ToolExecutorConfig;
-    private handlers: Map<string, ToolHandler> = new Map();
     private eventBus: EventBus;
+    private handlers: Map<string, (args: Record<string, unknown>) => Promise<ToolResult>>;
     private concurrencyLimiter: ConcurrencyLimiter;
 
-    constructor(config: ToolExecutorConfig, eventBus?: EventBus) {
+    constructor(config: ToolExecutorConfig) {
         this.config = {
+            commandTimeout: 30000,
+            maxOutputSize: 100000,
+            verbose: false,
+            ...config
+        };
+        this.eventBus = globalEventBus;
+        this.handlers = new Map();
             workingDirectory: config.workingDirectory,
             verbose: config.verbose ?? false,
             maxOutputSize: config.maxOutputSize ?? 50 * 1024, // 50KB
@@ -170,32 +179,20 @@ export class ToolExecutor {
         this.eventBus = eventBus ?? globalEventBus;
         this.concurrencyLimiter = new ConcurrencyLimiter(this.config.concurrencyLimit!);
 
-        // Register built-in handlers
+        // Register tools
         this.registerHandler('read_file', this.handleReadFile.bind(this));
         this.registerHandler('write_file', this.handleWriteFile.bind(this));
         this.registerHandler('run_command', this.handleRunCommand.bind(this));
         this.registerHandler('list_directory', this.handleListDirectory.bind(this));
         this.registerHandler('grep_search', this.handleGrepSearch.bind(this));
-
-        this.log('info', `Initialized with working directory: ${this.config.workingDirectory}`);
     }
 
-    /**
-     * Get tool definitions for Z.AI function calling
-     */
-    getToolDefinitions(): ToolDefinition[] {
-        return TOOL_DEFINITIONS;
-    }
-
-    /**
-     * Register a custom tool handler
-     */
-    registerHandler(name: string, handler: ToolHandler): void {
+    registerHandler(name: string, handler: (args: Record<string, unknown>) => Promise<ToolResult>): void {
         this.handlers.set(name, handler);
     }
 
     /**
-     * Execute a tool call from Z.AI response
+     * Executes a tool call from Z.AI response
      */
     async execute(call: ToolCall): Promise<ToolResult> {
         const handler = this.handlers.get(call.function.name);
@@ -249,27 +246,29 @@ export class ToolExecutor {
         const startLine = args.start_line as number | undefined;
         const endLine = args.end_line as number | undefined;
 
-        if (!fs.existsSync(filePath)) {
-            return { success: false, output: '', error: `File not found: ${filePath}` };
+        try {
+            let content = await fs.promises.readFile(filePath, 'utf-8');
+
+            // Handle line range
+            if (startLine !== undefined || endLine !== undefined) {
+                const lines = content.split('\n');
+                const start = (startLine ?? 1) - 1;
+                const end = endLine ?? lines.length;
+                content = lines.slice(start, end).join('\n');
+            }
+
+            this.log('debug', `Read ${content.length} chars from ${filePath}`);
+            return { success: true, output: content };
+        } catch (error) {
+            const err = error as NodeJS.ErrnoException;
+            if (err.code === 'ENOENT') {
+                return { success: false, output: '', error: `File not found: ${filePath}` };
+            }
+            if (err.code === 'EISDIR') {
+                return { success: false, output: '', error: `Path is a directory: ${filePath}` };
+            }
+            return { success: false, output: '', error: `Error reading file: ${err.message}` };
         }
-
-        const stat = fs.statSync(filePath);
-        if (stat.isDirectory()) {
-            return { success: false, output: '', error: `Path is a directory: ${filePath}` };
-        }
-
-        let content = fs.readFileSync(filePath, 'utf-8');
-
-        // Handle line range
-        if (startLine !== undefined || endLine !== undefined) {
-            const lines = content.split('\n');
-            const start = (startLine ?? 1) - 1;
-            const end = endLine ?? lines.length;
-            content = lines.slice(start, end).join('\n');
-        }
-
-        this.log('debug', `Read ${content.length} chars from ${filePath}`);
-        return { success: true, output: content };
     }
 
     private async handleWriteFile(args: Record<string, unknown>): Promise<ToolResult> {
