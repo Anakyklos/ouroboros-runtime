@@ -232,3 +232,47 @@ bun test cli/src/utils/anti-vibe.test.ts --verbose
   - TUI mostra progress em tempo real com visualização de waves
   - Daemon persiste sessions e permite resumption
   - Anti-Vibe protocol enforce quality gates em todo workflow
+
+
+---
+
+## 🩺 Health Check & Bug Fixes (Feb 2026)
+
+### O que estava quebrado
+
+Após sync com o GitHub, foram identificados e corrigidos os seguintes problemas:
+
+| Arquivo | Problema | Gravidade |
+|---|---|---|
+| `cli/src/providers/tool-executor.ts` | Constructor duplicado por merge conflitado + campos de interface soltos (173 erros TS) | 🔴 Crítico |
+| `cli/src/runtime/SelfModifyingEngine.test.ts` | `import` da 2ª suite injetado dentro de bloco `try` aberto — crash antes de qualquer teste | 🔴 Crítico |
+| `cli/src/runtime/SelfModifyingEngine.ts` | `fs.Dirent` não existe em `fs/promises` — usar `import type { Dirent } from 'node:fs'` | 🟡 Erro |
+| `cli/src/adapters/channels/TelegramAdapter.ts` | 5 parâmetros com `any` implícito; `ctx.callbackQuery` sem optional chaining | 🟡 Erro |
+| `cli/src/adapters/channels/LarkAdapter.ts` | Parâmetro `err` sem tipo no catch | 🟡 Erro |
+| `cli/src/runtime/SandboxTool.ts` | Import path errado (`../../../core/ports/ITool.js` → 3 níveis acima do real) | 🟡 Erro |
+| `cli/src/workflows/VariableStore.ts` | Indexação `outputs[stepId]` sem cast — TS7053 | 🟡 Erro |
+| `cli/src/providers/agent-loop.ts` | Chamava `executor.getToolDefinitions()` que não existia | 🟡 Erro |
+| `scripts/agy-bridge.ts` | Import de `bun` sem `bun-types`; erro de comparação na linha de usage | 🟠 Erro |
+| `scripts/dev-tools/benchmark-read.ts` | Import sem extensão `.js` (obrigatório no NodeNext) | 🟠 Erro |
+| `setup_ouroboros.ts` | `gemini-chat-cli` não existe no PyPI — setup falhava ao criar venv | 🟠 Erro |
+| `@types/node`, `@types/react` | Type definitions ausentes — quebrava o build inteiro | 🔴 Crítico |
+| `grammy`, `@larksuiteoapi/node-sdk` | Pacotes usados pelos adapters não estavam instalados | 🟡 Erro |
+| `cli/src/ports/ITool.ts` | Arquivo ausente — `SandboxTool.ts` não conseguia importar o port | 🟡 Erro |
+
+### Resultado após correção
+
+```
+TypeScript build (tsc): 173 erros → 0 erros ✅
+Python venv (.ouroboros/venv): ausente → criado ✅
+SelfModifyingEngine.test.ts: crash → executa normalmente ✅
+test-glm-integration.test.ts: 1 pass, 0 fail ✅
+```
+
+### Arquivos criados
+
+- `cli/src/ports/ITool.ts` — interface `ITool<TInput, TOutput>` usada pelo `SandboxTool`
+
+### Conhecidos não corrigidos (pré-existentes)
+
+- `SandboxE2E.test.ts` — testes E2E criam seu próprio venv temporário em `temp_e2e_test/`; o setup interno desse venv falha (comportamento de design, não regressão)
+- `SandboxE2E.test.ts` — `Cannot access 'existsSync' before initialization` — bug de ordem de inicialização no próprio arquivo de teste
