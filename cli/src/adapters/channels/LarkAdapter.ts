@@ -81,7 +81,7 @@ export class LarkPlugin implements IMChannelPlugin {
             domain: lark.Domain.Feishu,
         });
 
-        this.wsClient.start({ eventDispatcher: this.eventDispatcher }).catch(err => {
+        this.wsClient.start({ eventDispatcher: this.eventDispatcher }).catch((err: unknown) => {
             console.error('[LarkPlugin] WS Error:', err);
         });
 

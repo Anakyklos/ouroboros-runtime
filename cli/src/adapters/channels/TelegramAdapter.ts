@@ -3,8 +3,8 @@
  * Utilizes grammY, ported from AionUi _extracted/components/channels/plugins/telegram/TelegramPlugin.ts
  */
 
-import { Bot } from 'grammy';
-import type { Context, SessionFlavor } from 'grammy';
+import { Bot, type Context } from 'grammy';
+import type { SessionFlavor } from 'grammy';
 import type {
     IMChannelPlugin,
     IChannelPluginConfig,
@@ -37,20 +37,20 @@ export class TelegramPlugin implements IMChannelPlugin {
         if (!this.bot) throw new Error('Bot not initialized');
         this.status = 'starting';
 
-        this.bot.on('message:text', async (ctx) => {
+        this.bot.on('message:text', async (ctx: Context) => {
             if (this.messageHandler) {
                 const msg = this.mapToUnified(ctx);
                 if (msg) void this.messageHandler(msg);
             }
         });
 
-        this.bot.on('callback_query:data', async (ctx) => {
-            if (this.confirmHandler && ctx.callbackQuery.data) {
+        this.bot.on('callback_query:data', async (ctx: Context) => {
+            if (this.confirmHandler && ctx.callbackQuery?.data) {
                 const data = ctx.callbackQuery.data;
                 const parts = data.split(':');
                 // pattern: confirm:{callId}:{value}
                 if (parts[0] === 'confirm' && parts.length >= 3) {
-                    const userId = ctx.from.id.toString();
+                    const userId = (ctx.from?.id ?? 0).toString();
                     const callId = parts[1];
                     const value = parts.slice(2).join(':');
 
@@ -63,13 +63,13 @@ export class TelegramPlugin implements IMChannelPlugin {
             }
         });
 
-        this.bot.catch((err) => {
+        this.bot.catch((err: unknown) => {
             console.error(`[TelegramPlugin] Bot Error:`, err);
         });
 
         // Run without awaiting to keep background polling
         this.bot.start({
-            onStart: (info) => {
+            onStart: (info: { id: number; username: string; first_name: string }) => {
                 this.status = 'running';
                 this.botInfo = {
                     id: info.id.toString(),
@@ -79,7 +79,7 @@ export class TelegramPlugin implements IMChannelPlugin {
                 console.log(`[TelegramPlugin] Polling started as @${info.username}`);
             },
             drop_pending_updates: true
-        }).catch(e => {
+        }).catch((e: unknown) => {
             this.status = 'error';
             console.error(e);
         });

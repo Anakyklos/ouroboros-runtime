@@ -34,7 +34,7 @@ export class VariableStore {
     }
 
     getOutput(stepId: string, outputName: string): unknown {
-        return this.context.outputs[stepId]?.[outputName];
+        return (this.context.outputs[stepId] as Record<string, unknown>)?.[outputName];
     }
 
     setStepResult(stepId: string, result: unknown): void {

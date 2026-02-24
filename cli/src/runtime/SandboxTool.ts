@@ -1,4 +1,4 @@
-import { ITool } from "../../../core/ports/ITool.js";
+import { ITool } from "../ports/ITool.js";
 import { z } from "zod";
 import { SandboxRunner, createSandboxRunner, type SandboxRunnerConfig, type SecurityViolation } from "./SandboxRunner.js";
 
