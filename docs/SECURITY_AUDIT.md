@@ -1029,7 +1029,7 @@ interface SecurityIncident {
     recommendedActions: string[];
 }
 
-function createIncidentReport(violation: SecurityViolation): SecurityIncident {
+async function createIncidentReport(violation: SecurityViolation): Promise<SecurityIncident> {
     return {
         incidentId: crypto.randomUUID(),
         timestamp: new Date(),
