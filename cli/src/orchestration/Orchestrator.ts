@@ -30,6 +30,8 @@ import { MemoryManager } from "./MemoryManager.js";
 import { MemoryRetriever, createMemoryRetriever } from "./MemoryRetriever.js";
 import { EventBus, globalEventBus } from "../daemon/event-bus.js";
 import { getWorkspacePath } from "../utils/ouroboros.js";
+import { QualityGateRegistry, createQualityGateRegistry, type QualityGatesReport } from "./strategies/QualityGateRegistry.js";
+import { SpecValidator, createDefaultSpecValidator } from "./validators/SpecValidator.js";
 
 /**
  * Orchestrator - Coordena execução de subagentes com auto-correção.
@@ -42,12 +44,25 @@ export class Orchestrator {
     private isPaused = false;
     private resumeResolver: (() => void) | null = null;
     private memoryRetriever: MemoryRetriever;
+    private qualityGateRegistry: QualityGateRegistry;
+    private enableQualityGates: boolean;
+    private specValidator: SpecValidator;
 
     constructor(config: Partial<OrchestratorConfig> = {}, eventBus?: EventBus) {
         this.config = { ...DEFAULT_ORCHESTRATOR_CONFIG, ...config };
         this.memory = new MemoryManager();
         this.memoryRetriever = createMemoryRetriever();
-        
+
+        // Initialize quality gate registry (disabled by default, can be enabled via config)
+        this.enableQualityGates = (config as any).enableQualityGates ?? false;
+        this.qualityGateRegistry = createQualityGateRegistry(
+            this.config.verbose,
+            this.enableQualityGates // only register defaults if enabled
+        );
+
+        // Initialize spec validator for enhanced phase gate validation
+        this.specValidator = createDefaultSpecValidator();
+
         if (eventBus) {
             this.eventBus = eventBus;
         } else {
@@ -165,7 +180,7 @@ export class Orchestrator {
                 // 2. Validate phase gate (blocks EXECUTION without spec)
                 // Skip if configured for simple tasks
                 if (!this.config.skipPhaseValidation) {
-                    await this.validatePhase(phase);
+                    await this.validatePhase(phase, task.workDir);
                 }
 
                 // 3. Execute via AgentLoop
@@ -217,7 +232,37 @@ export class Orchestrator {
                         this.log('info', `✅ Validation passed: ${validationResult.message}`);
                     }
 
-                    // 5.2 Sucesso confirmado (heurística + validação programática)
+                    // 5.2 NOVO: Quality Gates automáticos para fase EXECUTION
+                    // Protocolo Anti-Vibe: qualidade obrigatória após EXECUTION
+                    if (this.enableQualityGates && phase === WorkflowPhase.EXECUTION) {
+                        this.log('info', `🚦 Running quality gates for EXECUTION phase task`);
+
+                        const qualityReport = await this.runQualityGates(task);
+
+                        if (!qualityReport.passed) {
+                            // Quality gates failed - treat as validation failure
+                            const failedGates = qualityReport.failed.map(f => f.type).join(', ');
+                            lastError = `Quality gates failed: ${failedGates}`;
+
+                            this.log('error', `❌ Quality gates failed: ${failedGates}`);
+
+                            // Add quality gate failure to context history
+                            contextHistory.push({
+                                timestamp: new Date(),
+                                prompt: `[QUALITY_GATES]`,
+                                output: "",
+                                error: lastError,
+                                persona: task.persona,
+                            });
+
+                            retryCount++;
+                            continue; // Volta para o loop de retry
+                        }
+
+                        this.log('info', `✅ Quality gates passed (${qualityReport.succeeded.length} gates) in ${qualityReport.totalDurationMs}ms`);
+                    }
+
+                    // 5.3 Sucesso confirmado (heurística + validação programática + quality gates)
                     this.log('info', `✅ Task completed successfully!`);
                     const taskResult: TaskResult = {
                         status: TaskStatus.SUCCESS,
@@ -394,15 +439,56 @@ IMPORTANT: Analyze the error carefully before proceeding.
 
     /**
      * Validate Anti-Vibe phase gate.
+     * For EXECUTION phase, also validates spec content using SpecValidator.
      */
-    private async validatePhase(phase: WorkflowPhase): Promise<void> {
+    private async validatePhase(phase: WorkflowPhase, workDir?: string): Promise<void> {
         try {
+            // Basic phase gate validation (checks spec file existence)
             await validatePhaseGate(phase);
+
+            // Enhanced spec validation for EXECUTION phase
+            // Protocolo Anti-Vibe: "Trust but Verify"
+            if (phase === WorkflowPhase.EXECUTION) {
+                this.log('info', `🔬 Running enhanced spec validation for EXECUTION phase`);
+
+                const validationResult = await this.specValidator.validate({
+                    workDir: workDir || process.cwd(),
+                    taskId: `phase-gate-${Date.now()}`,
+                    output: "",
+                    additionalContext: "",
+                });
+
+                if (!validationResult.isValid) {
+                    // Spec validation failed - block execution
+                    const errorMsg = `Spec validation failed: ${validationResult.message}`;
+                    this.log('error', `❌ ${errorMsg}`);
+                    throw new Error(errorMsg);
+                }
+
+                this.log('info', `✅ Spec validation passed`);
+            }
         } catch (err) {
             // Re-throw with more context
             const message = err instanceof Error ? err.message : String(err);
             throw new Error(`Anti-Vibe Phase Gate Error: ${message}`);
         }
+    }
+
+    /**
+     * Run quality gates for a task.
+     * Returns report with pass/fail status for all gates.
+     */
+    private async runQualityGates(task: OrchestratorTask): Promise<QualityGatesReport> {
+        this.log('info', `🚦 Executing quality gates for task: ${task.id}`);
+
+        const report = await this.qualityGateRegistry.runAllGates({
+            workDir: task.workDir || process.cwd(),
+            taskId: task.id,
+            output: "", // Quality gates check the project state, not specific output
+            additionalContext: task.context,
+        });
+
+        return report;
     }
 
     /**
@@ -422,6 +508,21 @@ IMPORTANT: Analyze the error carefully before proceeding.
         if (this.config.verbose) {
             this.eventBus.log(level, message, 'Orchestrator');
         }
+    }
+
+    /**
+     * Enable or disable automatic quality gates for EXECUTION phase tasks.
+     */
+    setQualityGatesEnabled(enabled: boolean): void {
+        this.enableQualityGates = enabled;
+        this.log('info', `${enabled ? '✅' : '⛔'} Quality gates ${enabled ? 'enabled' : 'disabled'}`);
+    }
+
+    /**
+     * Get the quality gate registry instance for custom configuration.
+     */
+    getQualityGateRegistry(): QualityGateRegistry {
+        return this.qualityGateRegistry;
     }
 }
 
