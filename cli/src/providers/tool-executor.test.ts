@@ -82,6 +82,20 @@ describe("ToolExecutor.handleReadFile", () => {
         }
         fs.writeFileSync(testFile, "Hello, world!");
         fs.writeFileSync(multiLineFile, "Line 1\nLine 2\nLine 3\nLine 4\nLine 5");
+describe("ToolExecutor.handleGrepSearch", () => {
+    const testDir = path.join(process.cwd(), "test_grep_dir");
+
+    beforeAll(() => {
+        if (fs.existsSync(testDir)) {
+            fs.rmSync(testDir, { recursive: true, force: true });
+        }
+        fs.mkdirSync(testDir, { recursive: true });
+        fs.mkdirSync(path.join(testDir, "subdir1"), { recursive: true });
+
+        fs.writeFileSync(path.join(testDir, "file1.txt"), "This is a test file with pattern.");
+        fs.writeFileSync(path.join(testDir, "file2.js"), "This is a js file with pattern.");
+        fs.writeFileSync(path.join(testDir, "subdir1", "file3.txt"), "Nested file with pattern inside.");
+        fs.writeFileSync(path.join(testDir, "subdir1", "file4.txt"), "No match here.");
     });
 
     afterAll(() => {
@@ -147,5 +161,56 @@ describe("ToolExecutor.handleReadFile", () => {
         expect(result.success).toBe(false);
         // Expect failure, specific error message depends on implementation details
         expect(result.success).toBe(false);
+    test("should find pattern in files recursively", async () => {
+        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
+        const result = await (executor as any).handleGrepSearch({
+            path: "test_grep_dir",
+            pattern: "pattern"
+        });
+
+        expect(result.success).toBe(true);
+        const output = result.output;
+        expect(output).toContain("file1.txt");
+        expect(output).toContain("file2.js");
+        expect(output).toContain("subdir1/file3.txt");
+        expect(output).not.toContain("file4.txt");
+    });
+
+    test("should filter by include glob", async () => {
+        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
+        const result = await (executor as any).handleGrepSearch({
+            path: "test_grep_dir",
+            pattern: "pattern",
+            include: "*.txt"
+        });
+
+        expect(result.success).toBe(true);
+        const output = result.output;
+        expect(output).toContain("file1.txt");
+        expect(output).not.toContain("file2.js"); // JS file should be excluded
+        expect(output).toContain("subdir1/file3.txt");
+    });
+
+    test("should handle non-existent path gracefully", async () => {
+        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
+        const result = await (executor as any).handleGrepSearch({
+            path: "non_existent_grep_path",
+            pattern: "pattern"
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("Path not found");
+    });
+
+    test("should search specific file if path is a file", async () => {
+        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
+        const result = await (executor as any).handleGrepSearch({
+            path: "test_grep_dir/file1.txt",
+            pattern: "pattern"
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.output).toContain("file1.txt");
+        expect(result.output).not.toContain("file2.js");
     });
 });
