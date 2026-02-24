@@ -9,6 +9,7 @@
  */
 
 import * as fs from 'fs/promises';
+import type { Dirent } from 'node:fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import { Semaphore } from "../utils/Semaphore.js";
@@ -509,7 +510,7 @@ export class SelfModifyingEngine {
 
     private async walkDir(dir: string): Promise<string[]> {
         const files: string[] = [];
-        let entries: fs.Dirent[] = [];
+        let entries: Dirent[] = [];
 
         try {
             entries = await this.semaphore.runWithPermit(async () => {

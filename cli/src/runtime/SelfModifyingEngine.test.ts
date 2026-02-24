@@ -60,6 +60,9 @@ describe('SelfModifyingEngine', () => {
             console.error('Error reading backups:', e);
             expect(true).toBe(false); // Fail test
         }
+    });
+});
+
 import { describe, it, expect } from 'bun:test';
 import { SelfModifyingEngine, SelfModifyingEngineConfig } from './SelfModifyingEngine';
 
