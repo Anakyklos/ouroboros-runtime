@@ -11,6 +11,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { spawn } from 'child_process';
+import { Semaphore } from "../utils/Semaphore.js";
+
 
 // ============================================================================
 // Types
@@ -41,6 +43,10 @@ export interface MutationResult {
 }
 
 export interface SelfModifyingEngineConfig {
+    /** Max concurrent directory scans (default: 50) */
+    concurrencyLimit?: number;
+    /** Max items in semaphore queue (default: Infinity) */
+    maxQueueSize?: number;
     /** Diretório raiz do código fonte */
     sourceDir: string;
     /** Diretório para backups */
@@ -62,6 +68,8 @@ export interface SelfModifyingEngineConfig {
 // ============================================================================
 
 const DEFAULT_CONFIG: Required<Omit<SelfModifyingEngineConfig, 'sourceDir'>> = {
+    concurrencyLimit: 50,
+    maxQueueSize: Infinity,
     backupDir: '.ouroboros/backups',
     validateSyntax: true,
     runTestsAfter: true,
@@ -82,8 +90,11 @@ const EXPORT_PATTERNS: ReadonlyArray<string> = Object.freeze([
 // SelfModifyingEngine
 // ============================================================================
 
+const IGNORED_FS_ERRORS = new Set(['ENOENT', 'EACCES', 'EPERM', 'EBUSY']);
+
 export class SelfModifyingEngine {
     private config: Required<SelfModifyingEngineConfig>;
+    private semaphore: Semaphore;
     private mutationHistory: MutationProposal[] = [];
     private initialized: boolean = false;
 
@@ -92,6 +103,17 @@ export class SelfModifyingEngine {
             ...DEFAULT_CONFIG,
             ...config,
         };
+
+        // Validate and normalize concurrency limit
+        let limit = this.config.concurrencyLimit;
+        if (!Number.isFinite(limit) || limit <= 0) {
+            limit = DEFAULT_CONFIG.concurrencyLimit;
+        } else if (limit > 1024) {
+            limit = 1024; // Cap at 1024 to prevent resource exhaustion
+        }
+        this.config.concurrencyLimit = limit;
+
+        this.semaphore = new Semaphore(this.config.concurrencyLimit, this.config.maxQueueSize);
     }
 
     // ========================================================================
@@ -473,27 +495,62 @@ export class SelfModifyingEngine {
 
     private async walkDir(dir: string): Promise<string[]> {
         const files: string[] = [];
+        let entries: fs.Dirent[] = [];
 
         try {
-            const entries = await fs.readdir(dir, { withFileTypes: true });
+            entries = await this.semaphore.runWithPermit(async () => {
+                const results = await fs.readdir(dir, { withFileTypes: true });
+                // Sort entries for deterministic output
+                results.sort((a, b) => a.name.localeCompare(b.name));
+                return results;
+            });
+        } catch (error: any) {
+            // Ignore expected filesystem errors (e.g., permission denied, not found)
+            if (error && typeof error.code === "string" && IGNORED_FS_ERRORS.has(error.code)) {
+                return [];
+            }
+            throw error;
+        }
 
-            for (const entry of entries) {
-                const fullPath = path.join(dir, entry.name);
+        const directories: string[] = [];
 
-                if (entry.isDirectory()) {
-                    // Skip node_modules, .git, etc.
-                    if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
-                        files.push(...await this.walkDir(fullPath));
-                    }
-                } else {
-                    files.push(fullPath);
+        // Process files synchronously and collect directories
+        for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+
+            if (entry.isDirectory()) {
+                // Skip node_modules, .git, etc.
+                if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
+                    directories.push(fullPath);
+                }
+            } else {
+                files.push(fullPath);
+            }
+        }
+
+        // Recurse into directories in parallel, batched
+        if (directories.length > 0) {
+            const batchSize = this.config.concurrencyLimit;
+            for (let i = 0; i < directories.length; i += batchSize) {
+                const batch = directories.slice(i, i + batchSize);
+                const results = await Promise.all(
+                    batch.map(d => this.walkDir(d))
+                );
+                for (const result of results) {
+                    files.push(...result);
                 }
             }
-        } catch (error) {
-            // Ignora erros de leitura
         }
 
         return files;
+    }
+
+    /**
+     * Public wrapper for directory scanning (benchmarking purposes)
+     * @internal
+     */
+    async benchmarkScan(dir: string): Promise<string[]> {
+        return this.walkDir(dir);
     }
 }
 
