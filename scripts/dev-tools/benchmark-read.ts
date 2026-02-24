@@ -1,4 +1,4 @@
-import { ToolExecutor } from '../../cli/src/providers/tool-executor';
+import { ToolExecutor } from '../../cli/src/providers/tool-executor.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';

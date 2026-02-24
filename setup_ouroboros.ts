@@ -80,7 +80,7 @@ function installBaseDependencies(): void {
     execSync(`"${pipPath}" install --upgrade pip`, { stdio: "inherit" });
 
     // Base dependencies for the agent
-    const baseDeps = ["requests", "gemini-chat-cli"];
+    const baseDeps = ["requests"];
 
     log("📦", `Installing base dependencies: ${baseDeps.join(", ")}`);
     execSync(`"${pipPath}" install ${baseDeps.join(" ")}`, { stdio: "inherit" });
