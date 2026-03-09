@@ -110,6 +110,7 @@ describe('EvolutionScheduler', () => {
                 output: '',
                 error: 'Compilation error',
             }));
+            scheduler.setValidator(async () => ({ isValid: true, message: 'ok' }));
 
             const result = await scheduler.evolve(mockProposal);
             expect(result.success).toBe(false);
@@ -131,10 +132,17 @@ describe('EvolutionScheduler', () => {
             expect(result.error).toContain('Anti-Vibe gate failed');
         });
 
-        it('fails without executor', async () => {
+        it('fails without executor (but with validator, ADR-03)', async () => {
+            scheduler.setValidator(async () => ({ isValid: true, message: 'ok' }));
             const result = await scheduler.evolve(mockProposal);
             expect(result.success).toBe(false);
             expect(result.error).toContain('No executor');
+        });
+
+        it('fails without validator (ADR-03 enforcement)', async () => {
+            const result = await scheduler.evolve(mockProposal);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Anti-Vibe validator');
         });
     });
 
@@ -149,6 +157,7 @@ describe('EvolutionScheduler', () => {
                 output: '',
                 error: 'fail',
             }));
+            scheduler.setValidator(async () => ({ isValid: true, message: 'ok' }));
 
             // 3 consecutive failures
             await scheduler.evolve(mockProposal);
@@ -165,6 +174,7 @@ describe('EvolutionScheduler', () => {
                 output: '',
                 error: 'fail',
             }));
+            scheduler.setValidator(async () => ({ isValid: true, message: 'ok' }));
 
             for (let i = 0; i < 3; i++) {
                 await scheduler.evolve(mockProposal);
@@ -182,6 +192,7 @@ describe('EvolutionScheduler', () => {
                 output: '',
                 error: 'fail',
             }));
+            scheduler.setValidator(async () => ({ isValid: true, message: 'ok' }));
 
             for (let i = 0; i < 3; i++) {
                 await scheduler.evolve(mockProposal);
@@ -202,6 +213,7 @@ describe('EvolutionScheduler', () => {
                 }
                 return { success: true, output: 'ok' };
             });
+            scheduler.setValidator(async () => ({ isValid: true, message: 'ok' }));
 
             await scheduler.evolve(mockProposal);
             await scheduler.evolve(mockProposal);
@@ -235,6 +247,7 @@ describe('EvolutionScheduler', () => {
                 success: true,
                 output: 'ok',
             }));
+            limited.setValidator(async () => ({ isValid: true, message: 'ok' }));
 
             await limited.evolve(mockProposal);
             await limited.evolve(mockProposal);
@@ -301,6 +314,7 @@ describe('EvolutionScheduler', () => {
                 success: true,
                 output: 'done',
             }));
+            scheduler.setValidator(async () => ({ isValid: true, message: 'ok' }));
 
             await scheduler.evolve(mockProposal);
             expect(scheduler.recentHistory.length).toBe(1);

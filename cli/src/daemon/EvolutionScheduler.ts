@@ -215,7 +215,12 @@ export class EvolutionScheduler {
         this.state = 'evolving';
         this.resetDayCounterIfNeeded();
 
-        // 2. Git snapshot
+        // 2. Mandatory validator check (ADR-03: Evolution ALWAYS requires Anti-Vibe gates)
+        if (!this.validator) {
+            return this.createResult(proposal, false, 'No Anti-Vibe validator configured (required by ADR-03)', startTime);
+        }
+
+        // 3. Git snapshot
         let snapshotRef: string | null = null;
         if (this.config.createGitSnapshot && this.snapshotCreator) {
             try {
@@ -226,7 +231,7 @@ export class EvolutionScheduler {
             }
         }
 
-        // 3. Execute evolution
+        // 4. Execute evolution
         if (!this.executor) {
             return this.createResult(proposal, false, 'No executor configured', startTime);
         }

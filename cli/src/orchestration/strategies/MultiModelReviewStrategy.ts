@@ -203,11 +203,16 @@ export class MultiModelReviewStrategy implements ValidationStrategy {
     // ============================================================
 
     private buildReviewPrompt(context: ValidationContext): string {
+        // Sanitize output to prevent prompt injection via triple backticks
+        const sanitizedOutput = context.output
+            .substring(0, 8000)
+            .replace(/```/g, '\u0060\u0060\u0060');
+
         return `## Task ID: ${context.taskId}
 
 ## Code Output to Review
 \`\`\`
-${context.output.substring(0, 8000)}
+${sanitizedOutput}
 \`\`\`
 
 ${context.additionalContext ? `## Additional Context\n${context.additionalContext}` : ''}
@@ -274,11 +279,11 @@ Please review the code above and provide your assessment.`;
             });
         }
 
-        if (output.includes('catch (') && output.includes('catch (e)')) {
+        if (output.match(/\bcatch\s*\(/)) {
             findings.push({
                 severity: 'info',
                 category: 'error_handling',
-                message: 'Generic catch clause — consider specific error types',
+                message: 'Contains catch clauses — verify specific error types are handled',
             });
         }
 
@@ -309,7 +314,12 @@ Please review the code above and provide your assessment.`;
             });
         }
 
-        if (output.match(/password|secret|api.?key/i) && output.match(/['"][^'"]{8,}['"]/)) {
+        // Localized credential check: keyword and long string must appear on same line
+        const lines = output.split('\n');
+        const hasHardcodedCreds = lines.some(line =>
+            /password|secret|api.?key/i.test(line) && /['"][^'"]{8,}['"]/.test(line)
+        );
+        if (hasHardcodedCreds) {
             findings.push({
                 severity: 'error',
                 category: 'security',

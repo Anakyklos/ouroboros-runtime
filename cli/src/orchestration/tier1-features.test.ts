@@ -102,6 +102,7 @@ describe('HealthInvariantsCollector', () => {
             eventBus,
         );
         brokenEvo.setExecutor(async () => ({ success: false, output: '', error: 'fail' }));
+        brokenEvo.setValidator(async () => ({ isValid: true, message: 'ok' }));
         await brokenEvo.evolve({
             id: 'test', type: 'cleanup', description: 'test',
             affectedFiles: [], risk: 1, impact: 1, createdAt: new Date(),

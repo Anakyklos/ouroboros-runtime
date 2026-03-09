@@ -82,11 +82,13 @@ export class SafeRestart {
     createRescueSnapshot(reason: string = 'pre-restart'): RestartResult {
         try {
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            // Sanitize reason to prevent path traversal
+            const safeReason = reason.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
             const rescueDir = path.join(
                 this.config.projectRoot,
                 this.config.stateDir,
                 'rescue',
-                `${timestamp}_${reason}`,
+                `${timestamp}_${safeReason}`,
             );
 
             fs.mkdirSync(rescueDir, { recursive: true });
@@ -230,8 +232,8 @@ export class SafeRestart {
     private getUntrackedAndModified(): string[] {
         try {
             const output = execSync(
-                'git status --porcelain --untracked-files=all 2>/dev/null',
-                { cwd: this.config.projectRoot, encoding: 'utf-8' },
+                'git status --porcelain --untracked-files=all',
+                { cwd: this.config.projectRoot, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] },
             );
 
             return output
