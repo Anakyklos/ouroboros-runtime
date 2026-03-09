@@ -45,6 +45,16 @@ export interface WaveEvent {
     }[];
 }
 
+export interface BudgetEvent {
+    type: 'usage_recorded' | 'threshold_warning' | 'threshold_critical' | 'budget_exceeded';
+    model: string;
+    costUsd: number;
+    totalSpentUsd: number;
+    budgetLimitUsd: number;
+    usedPct: number;
+    timestamp: Date;
+}
+
 // Union of all event types
 export type EventMap = {
     log: LogEvent;
@@ -52,6 +62,7 @@ export type EventMap = {
     daemon: DaemonEvent;
     thought: ThoughtEvent;
     wave: WaveEvent;
+    budget: BudgetEvent;
     '*': unknown; // Wildcard listener support
 };
 
