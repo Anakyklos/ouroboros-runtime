@@ -22,10 +22,13 @@ export {
 
 export {
     QualityGateRegistry,
-    QualityGateConfig,
-    QualityGateResult,
-    QualityGatesReport,
     createQualityGateRegistry,
     createCustomQualityGateRegistry,
     createMinimalQualityGateRegistry,
+} from "./QualityGateRegistry.js";
+
+export type {
+    QualityGateConfig,
+    QualityGateResult,
+    QualityGatesReport,
 } from "./QualityGateRegistry.js";

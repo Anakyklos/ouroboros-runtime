@@ -195,30 +195,100 @@ Rules:
         const parseResult = await parser.run(parsePrompt);
 
         if (!parseResult.success || !parseResult.content) {
-            throw new Error(`Failed to parse wave tasks: ${parseResult.content}`);
+            throw new Error(`Failed to parse wave tasks: ${parseResult.content ?? 'No response from parser'}`);
         }
 
-        const cleanedContent = parseResult.content
-            .replace(/```json\n?/g, '')
-            .replace(/```\n?/g, '')
-            .trim();
+        const jsonContent = this.extractJsonArray(parseResult.content);
 
         try {
-            const tasks = JSON.parse(cleanedContent) as WaveTask[];
+            const tasks = JSON.parse(jsonContent) as WaveTask[];
 
             if (!Array.isArray(tasks)) {
                 throw new Error('Parsed result is not an array');
             }
 
+            // Validate each task has required fields
             for (const task of tasks) {
-                if (!task.id || typeof task.id !== 'string') {
-                    throw new Error(`Invalid task missing id: ${JSON.stringify(task)}`);
-                }
+                this.validateWaveTask(task);
             }
 
             return tasks;
         } catch (error) {
-            throw new Error(`Invalid JSON in parsed tasks: ${error instanceof Error ? error.message : String(error)}\nContent: ${cleanedContent}`);
+            throw new Error(`Invalid JSON in parsed tasks: ${error instanceof Error ? error.message : String(error)}\nContent: ${jsonContent}`);
+        }
+    }
+
+    /**
+     * Extract JSON array from LLM response, handling various formats:
+     * - Plain JSON array
+     * - Markdown code blocks (```json, ``` json, ```)
+     * - JSON embedded in explanatory text
+     */
+    private extractJsonArray(content: string): string {
+        // Strategy 1: Try to find JSON in markdown code block
+        const codeBlockMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+        if (codeBlockMatch) {
+            const extracted = codeBlockMatch[1].trim();
+            if (extracted.startsWith('[')) {
+                return extracted;
+            }
+        }
+
+        // Strategy 2: Find the first [ and last ] to extract array
+        const firstBracket = content.indexOf('[');
+        const lastBracket = content.lastIndexOf(']');
+        
+        if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+            const extracted = content.slice(firstBracket, lastBracket + 1);
+            // Quick validation: try parsing it
+            try {
+                JSON.parse(extracted);
+                return extracted;
+            } catch {
+                // Fall through to next strategy
+            }
+        }
+
+        // Strategy 3: Clean common markdown artifacts and try raw content
+        const cleaned = content
+            .replace(/```json\s*/gi, '')
+            .replace(/```\s*/g, '')
+            .trim();
+        
+        return cleaned;
+    }
+
+    /**
+     * Validate a WaveTask has all required fields with correct types.
+     */
+    private validateWaveTask(task: unknown): asserts task is WaveTask {
+        if (!task || typeof task !== 'object') {
+            throw new Error(`Invalid task: expected object, got ${typeof task}`);
+        }
+
+        const t = task as Record<string, unknown>;
+
+        if (!t.id || typeof t.id !== 'string') {
+            throw new Error(`Invalid task: missing or invalid 'id' field: ${JSON.stringify(task)}`);
+        }
+
+        if (t.name !== undefined && typeof t.name !== 'string') {
+            throw new Error(`Invalid task '${t.id}': 'name' must be a string`);
+        }
+
+        if (t.instruction !== undefined && typeof t.instruction !== 'string') {
+            throw new Error(`Invalid task '${t.id}': 'instruction' must be a string`);
+        }
+
+        if (t.dependsOn !== undefined) {
+            if (!Array.isArray(t.dependsOn)) {
+                throw new Error(`Invalid task '${t.id}': 'dependsOn' must be an array`);
+            }
+            for (const dep of t.dependsOn) {
+                if (typeof dep !== 'string') {
+                    throw new Error(`Invalid task '${t.id}': 'dependsOn' must contain only strings`);
+                }
+            }
         }
     }
 

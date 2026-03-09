@@ -14,6 +14,7 @@ import type {
     IUnifiedIncomingMessage,
     IUnifiedOutgoingMessage
 } from '../../ports/IChannelPlugin.js';
+import { globalEventBus, type EventBus } from '../../daemon/event-bus.js';
 
 export class TelegramPlugin implements IMChannelPlugin {
     readonly type: PluginType = 'telegram';
@@ -21,8 +22,13 @@ export class TelegramPlugin implements IMChannelPlugin {
 
     private bot: Bot | null = null;
     private botInfo: BotInfo | null = null;
+    private eventBus: EventBus;
     private messageHandler?: (msg: IUnifiedIncomingMessage) => Promise<void>;
     private confirmHandler?: (userId: string, platform: string, callId: string, value: string) => Promise<void>;
+
+    constructor(eventBus?: EventBus) {
+        this.eventBus = eventBus ?? globalEventBus;
+    }
 
     async initialize(config: IChannelPluginConfig): Promise<void> {
         if (!config.credentials?.token) {
@@ -57,14 +63,17 @@ export class TelegramPlugin implements IMChannelPlugin {
                     await this.confirmHandler(userId, this.type, callId, value);
                     try {
                         await ctx.editMessageReplyMarkup({ reply_markup: undefined });
-                    } catch (e) { } // ignore
+                    } catch { 
+                        // Ignore errors when removing reply markup
+                    }
                     await ctx.answerCallbackQuery();
                 }
             }
         });
 
         this.bot.catch((err: unknown) => {
-            console.error(`[TelegramPlugin] Bot Error:`, err);
+            const message = err instanceof Error ? err.message : String(err);
+            this.log('error', `Bot Error: ${message}`);
         });
 
         // Run without awaiting to keep background polling
@@ -76,12 +85,13 @@ export class TelegramPlugin implements IMChannelPlugin {
                     username: info.username,
                     displayName: info.first_name
                 };
-                console.log(`[TelegramPlugin] Polling started as @${info.username}`);
+                this.log('info', `Polling started as @${info.username}`);
             },
             drop_pending_updates: true
         }).catch((e: unknown) => {
             this.status = 'error';
-            console.error(e);
+            const message = e instanceof Error ? e.message : String(e);
+            this.log('error', `Failed to start bot: ${message}`);
         });
     }
 
@@ -112,8 +122,9 @@ export class TelegramPlugin implements IMChannelPlugin {
         if (!this.bot) throw new Error('Not running');
         try {
             await this.bot.api.editMessageText(chatId, parseInt(messageId), message.text || '');
-        } catch (e: any) {
-            if (!e.message?.includes('message is not modified')) {
+        } catch (e: unknown) {
+            const errorMessage = e instanceof Error ? e.message : String(e);
+            if (!errorMessage.includes('message is not modified')) {
                 throw e;
             }
         }
@@ -141,5 +152,9 @@ export class TelegramPlugin implements IMChannelPlugin {
             },
             timestamp: ctx.message.date * 1000
         };
+    }
+
+    private log(level: 'debug' | 'info' | 'warn' | 'error', message: string): void {
+        this.eventBus.log(level, message, 'TelegramPlugin');
     }
 }
