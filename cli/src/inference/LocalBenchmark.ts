@@ -8,10 +8,16 @@
 
 import { LocalInferenceProvider } from "./LocalInferenceProvider.js";
 import { ModelRegistry } from "./ModelRegistry.js";
-import { ModelRouter } from "./ModelRouter.js";
 import { EmbeddingEngine } from "./EmbeddingEngine.js";
 import { EventBus, globalEventBus } from "../daemon/event-bus.js";
 import type { InferenceMessage } from "./types/inference-types.js";
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+/** Timeout para cada chamada individual de benchmark */
+const BENCHMARK_TIMEOUT_MS = 30_000;
 
 // ============================================================================
 // Types
@@ -203,7 +209,7 @@ export class LocalBenchmark {
                 maxTokens: 256,
                 responseSchema: {},
                 traceId: `bench_${role}_${Date.now()}`,
-                timeoutMs: 30000,
+                timeoutMs: BENCHMARK_TIMEOUT_MS,
             });
 
             return {

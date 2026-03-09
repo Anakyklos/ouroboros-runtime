@@ -8,6 +8,7 @@
  * Todas as saídas são validadas por Zod antes de retornar.
  */
 
+import * as crypto from "node:crypto";
 import { LocalInferenceProvider } from "./LocalInferenceProvider.js";
 import { ModelRegistry } from "./ModelRegistry.js";
 import {
@@ -76,7 +77,7 @@ Valid actions: call_tool, generate_code, retrieve_memory, escalate, summarize, c
             temperature: model.defaultTemperature,
             maxTokens: model.maxTokens,
             responseSchema: {},
-            traceId: `policy_action_${Date.now()}`,
+            traceId: `policy_action_${crypto.randomUUID()}`,
         });
 
         return this.parseAndValidate(response.content, ActionDecisionSchema, "decideNextAction");
@@ -110,7 +111,7 @@ Respond with JSON: { "toolName": "...", "arguments": {...}, "reasoning": "...", 
             temperature: model.defaultTemperature,
             maxTokens: model.maxTokens,
             responseSchema: {},
-            traceId: `policy_tool_${Date.now()}`,
+            traceId: `policy_tool_${crypto.randomUUID()}`,
         });
 
         return this.parseAndValidate(response.content, ToolCallProposalSchema, "selectTool");
@@ -143,16 +144,11 @@ Respond with JSON: { "intent": "...", "confidence": 0.0-1.0 }`,
             temperature: 0.1,
             maxTokens: 128,
             responseSchema: {},
-            traceId: `policy_intent_${Date.now()}`,
+            traceId: `policy_intent_${crypto.randomUUID()}`,
         });
 
-        try {
-            const parsed = JSON.parse(response.content);
-            return parsed.intent ?? "unknown";
-        } catch {
-            this.log("warn", `Intent classification returned non-JSON: ${response.content.slice(0, 100)}`);
-            return "unknown";
-        }
+        const parsed = this.safeParseJSON<{ intent?: string }>(response.content);
+        return parsed?.intent ?? "unknown";
     }
 
     /**
@@ -181,18 +177,14 @@ Respond with JSON: { "retrieve": true/false, "reasoning": "..." }`,
             temperature: 0.1,
             maxTokens: 256,
             responseSchema: {},
-            traceId: `policy_retrieve_${Date.now()}`,
+            traceId: `policy_retrieve_${crypto.randomUUID()}`,
         });
 
-        try {
-            const parsed = JSON.parse(response.content);
-            return {
-                retrieve: !!parsed.retrieve,
-                reasoning: parsed.reasoning ?? "",
-            };
-        } catch {
-            return { retrieve: false, reasoning: "Failed to parse policy response" };
-        }
+        const parsed = this.safeParseJSON<{ retrieve?: boolean; reasoning?: string }>(response.content);
+        return {
+            retrieve: !!parsed?.retrieve,
+            reasoning: parsed?.reasoning ?? "Failed to parse policy response",
+        };
     }
 
     /**
@@ -232,7 +224,7 @@ Respond with JSON: { "shouldEscalate": bool, "reason": "...", "targetRole": "cod
             temperature: 0.1,
             maxTokens: 256,
             responseSchema: {},
-            traceId: `policy_escalate_${Date.now()}`,
+            traceId: `policy_escalate_${crypto.randomUUID()}`,
         });
 
         return this.parseAndValidate(response.content, EscalationDecisionSchema, "shouldEscalate");
@@ -264,15 +256,11 @@ Respond with JSON: { "summary": "...", "status": "healthy|degraded|failing", "ac
             temperature: 0.2,
             maxTokens: 256,
             responseSchema: {},
-            traceId: `policy_summary_${Date.now()}`,
+            traceId: `policy_summary_${crypto.randomUUID()}`,
         });
 
-        try {
-            const parsed = JSON.parse(response.content);
-            return parsed.summary ?? response.content;
-        } catch {
-            return response.content.slice(0, 500);
-        }
+        const parsed = this.safeParseJSON<{ summary?: string }>(response.content);
+        return parsed?.summary ?? response.content.slice(0, 500);
     }
 
     // ========================================================================
@@ -299,6 +287,21 @@ Respond with JSON: { "summary": "...", "status": "healthy|degraded|failing", "ac
             }
 
             throw new Error(`PolicyEngine.${method}: Invalid model output — ${(error as Error).message}`);
+        }
+    }
+
+    /**
+     * Parse JSON seguro sem schema — para métodos que retornam fallback.
+     */
+    private safeParseJSON<T>(content: string): T | null {
+        try {
+            return JSON.parse(content) as T;
+        } catch {
+            const match = content.match(/\{[\s\S]*\}/);
+            if (match) {
+                try { return JSON.parse(match[0]) as T; } catch { /* ignore */ }
+            }
+            return null;
         }
     }
 

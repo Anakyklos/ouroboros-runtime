@@ -81,6 +81,13 @@ Output format: Always valid JSON with filePath, originalSnippet, patchedSnippet,
  */
 
 // ============================================================================
+// Constants
+// ============================================================================
+
+/** Dimensão padrão de embedding (all-minilm:33m) */
+export const DEFAULT_EMBEDDING_DIMENSION = 384;
+
+// ============================================================================
 // Default Model Registry
 // ============================================================================
 

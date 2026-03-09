@@ -6,6 +6,7 @@
  * Nunca aplica mudanças — sempre proposta ao runtime.
  */
 
+import * as crypto from "node:crypto";
 import { LocalInferenceProvider } from "./LocalInferenceProvider.js";
 import { ModelRegistry } from "./ModelRegistry.js";
 import {
@@ -16,6 +17,33 @@ import {
 } from "./schemas/inference-schemas.js";
 import type { InferenceMessage } from "./types/inference-types.js";
 import { EventBus, globalEventBus } from "../daemon/event-bus.js";
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+/** Limite de conteúdo de arquivo para o prompt (evitar sobrecarregar modelos pequenos) */
+const MAX_FILE_CONTENT_LENGTH = 3000;
+/** Limite de contexto adicional no prompt */
+const MAX_CONTEXT_LENGTH = 500;
+/** Limite de conteúdo de código para explicação */
+const MAX_EXPLAIN_LENGTH = 2000;
+/** Limite de conteúdo de teste no prompt */
+const MAX_TEST_CONTENT_LENGTH = 2000;
+/** Limite de conteúdo de source no prompt */
+const MAX_SOURCE_CONTENT_LENGTH = 2000;
+/** Limite de fallback para explicação textual */
+const MAX_EXPLANATION_FALLBACK_LENGTH = 300;
+
+// ============================================================================
+// Types
+// ============================================================================
+
+interface ParseResult<T> {
+    success: boolean;
+    data?: T;
+    error?: string;
+}
 
 // ============================================================================
 // CodeWorker
@@ -49,13 +77,12 @@ export class CodeWorker {
         const model = this.registry.getByRole("coder");
         if (!model) throw new Error("No coder model registered");
 
-        // Truncate file content to avoid overwhelming small model
-        const truncatedContent = fileContent.length > 3000
-            ? fileContent.slice(0, 3000) + "\n... (truncated)"
+        const truncatedContent = fileContent.length > MAX_FILE_CONTENT_LENGTH
+            ? fileContent.slice(0, MAX_FILE_CONTENT_LENGTH) + "\n... (truncated)"
             : fileContent;
 
         const contextSection = context
-            ? `\nAdditional Context:\n${context.slice(0, 500)}`
+            ? `\nAdditional Context:\n${context.slice(0, MAX_CONTEXT_LENGTH)}`
             : "";
 
         const messages: InferenceMessage[] = [
@@ -93,10 +120,14 @@ Respond with JSON:
             temperature: model.defaultTemperature,
             maxTokens: model.maxTokens,
             responseSchema: {},
-            traceId: `coder_patch_${Date.now()}`,
+            traceId: `coder_patch_${crypto.randomUUID()}`,
         });
 
-        return this.parseAndValidate(response.content, PatchProposalSchema, "generatePatch");
+        const result = this.safeParseAndValidate(response.content, PatchProposalSchema, "generatePatch");
+        if (!result.success) {
+            throw new Error(`CodeWorker.generatePatch: ${result.error}`);
+        }
+        return result.data!;
     }
 
     /**
@@ -113,7 +144,7 @@ Respond with JSON:
         if (!model) throw new Error("No coder model registered");
 
         const sourceSection = sourceFile && sourceContent
-            ? `\nSource file (${sourceFile}):\n\`\`\`\n${sourceContent.slice(0, 2000)}\n\`\`\``
+            ? `\nSource file (${sourceFile}):\n\`\`\`\n${sourceContent.slice(0, MAX_SOURCE_CONTENT_LENGTH)}\n\`\`\``
             : "";
 
         const messages: InferenceMessage[] = [
@@ -127,7 +158,7 @@ Error: ${errorMessage}
 
 Test content:
 \`\`\`
-${testContent.slice(0, 2000)}
+${testContent.slice(0, MAX_TEST_CONTENT_LENGTH)}
 \`\`\`
 ${sourceSection}
 
@@ -156,10 +187,14 @@ Respond with JSON:
             temperature: model.defaultTemperature,
             maxTokens: model.maxTokens,
             responseSchema: {},
-            traceId: `coder_testfix_${Date.now()}`,
+            traceId: `coder_testfix_${crypto.randomUUID()}`,
         });
 
-        return this.parseAndValidate(response.content, TestFixResultSchema, "fixTest");
+        const result = this.safeParseAndValidate(response.content, TestFixResultSchema, "fixTest");
+        if (!result.success) {
+            throw new Error(`CodeWorker.fixTest: ${result.error}`);
+        }
+        return result.data!;
     }
 
     /**
@@ -177,7 +212,7 @@ Respond with JSON:
 ${filePath ? `File: ${filePath}` : ""}
 
 \`\`\`
-${code.slice(0, 2000)}
+${code.slice(0, MAX_EXPLAIN_LENGTH)}
 \`\`\`
 
 Respond with JSON: { "explanation": "2-3 sentence summary", "complexity": "low|medium|high" }`,
@@ -190,28 +225,32 @@ Respond with JSON: { "explanation": "2-3 sentence summary", "complexity": "low|m
             temperature: 0.2,
             maxTokens: 256,
             responseSchema: {},
-            traceId: `coder_explain_${Date.now()}`,
+            traceId: `coder_explain_${crypto.randomUUID()}`,
         });
 
-        try {
-            const parsed = JSON.parse(response.content);
-            return {
-                explanation: parsed.explanation ?? response.content.slice(0, 300),
-                complexity: parsed.complexity ?? "unknown",
-            };
-        } catch {
-            return { explanation: response.content.slice(0, 300), complexity: "unknown" };
-        }
+        const result = this.safeParseJSON<{ explanation?: string; complexity?: string }>(response.content);
+        return {
+            explanation: result?.explanation ?? response.content.slice(0, MAX_EXPLANATION_FALLBACK_LENGTH),
+            complexity: result?.complexity ?? "unknown",
+        };
     }
 
     // ========================================================================
     // Private
     // ========================================================================
 
-    private parseAndValidate<T>(content: string, schema: { parse: (data: unknown) => T }, method: string): T {
+    /**
+     * Parse + validate com retorno de resultado (sem throw).
+     * Padrão consistente para todos os métodos.
+     */
+    private safeParseAndValidate<T>(
+        content: string,
+        schema: { parse: (data: unknown) => T },
+        method: string,
+    ): ParseResult<T> {
         try {
             const parsed = JSON.parse(content);
-            return schema.parse(parsed);
+            return { success: true, data: schema.parse(parsed) };
         } catch (error) {
             this.log("error", `${method}: Failed to parse/validate: ${(error as Error).message}`);
 
@@ -220,13 +259,28 @@ Respond with JSON: { "explanation": "2-3 sentence summary", "complexity": "low|m
             if (jsonMatch) {
                 try {
                     const extracted = JSON.parse(jsonMatch[0]);
-                    return schema.parse(extracted);
+                    return { success: true, data: schema.parse(extracted) };
                 } catch {
                     // Fall through
                 }
             }
 
-            throw new Error(`CodeWorker.${method}: Invalid model output — ${(error as Error).message}`);
+            return { success: false, error: `Invalid model output — ${(error as Error).message}` };
+        }
+    }
+
+    /**
+     * Parse JSON sem schema — para métodos que retornam fallback.
+     */
+    private safeParseJSON<T>(content: string): T | null {
+        try {
+            return JSON.parse(content) as T;
+        } catch {
+            const match = content.match(/\{[\s\S]*\}/);
+            if (match) {
+                try { return JSON.parse(match[0]) as T; } catch { /* ignore */ }
+            }
+            return null;
         }
     }
 

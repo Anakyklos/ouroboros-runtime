@@ -9,6 +9,7 @@
 import { LocalInferenceProvider } from "./LocalInferenceProvider.js";
 import { ModelRegistry } from "./ModelRegistry.js";
 import { EventBus, globalEventBus } from "../daemon/event-bus.js";
+import { DEFAULT_EMBEDDING_DIMENSION } from "./inference-config.js";
 
 // ============================================================================
 // EmbeddingEngine
@@ -118,7 +119,7 @@ export class EmbeddingEngine {
      */
     getDimension(): number {
         const model = this.registry.getByRole("embedding");
-        return model?.embeddingDimension ?? 384;
+        return model?.embeddingDimension ?? DEFAULT_EMBEDDING_DIMENSION;
     }
 
     /**

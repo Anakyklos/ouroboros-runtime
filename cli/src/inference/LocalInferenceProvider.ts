@@ -318,6 +318,7 @@ export class LocalInferenceProvider {
             totalRequests: 0,
             successCount: 0,
             failureCount: 0,
+            validJSONCount: 0,
             totalDurationMs: 0,
             avgDurationMs: 0,
             validJSONRate: 0,
@@ -327,10 +328,11 @@ export class LocalInferenceProvider {
         existing.totalRequests++;
         if (success) existing.successCount++;
         else existing.failureCount++;
+        if (validJSON) existing.validJSONCount++;
         existing.totalDurationMs += durationMs;
         existing.avgDurationMs = existing.totalDurationMs / existing.totalRequests;
         existing.validJSONRate = existing.totalRequests > 0
-            ? (validJSON ? existing.successCount : existing.successCount - 1) / existing.totalRequests
+            ? existing.validJSONCount / existing.totalRequests
             : 0;
         existing.lastRequestAt = new Date().toISOString();
 

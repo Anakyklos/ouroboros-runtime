@@ -13,7 +13,6 @@ import type {
 } from "./types/inference-types.js";
 import { ModelRegistry } from "./ModelRegistry.js";
 import { EventBus, globalEventBus } from "../daemon/event-bus.js";
-import { ModelFailureReportSchema, type ModelFailureReport } from "./schemas/inference-schemas.js";
 
 // ============================================================================
 // Task → Role Mapping

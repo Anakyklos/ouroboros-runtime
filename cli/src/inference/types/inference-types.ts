@@ -230,6 +230,7 @@ export interface ModelMetrics {
     totalRequests: number;
     successCount: number;
     failureCount: number;
+    validJSONCount: number;
     totalDurationMs: number;
     avgDurationMs: number;
     validJSONRate: number;

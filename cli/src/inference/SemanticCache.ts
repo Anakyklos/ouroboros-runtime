@@ -11,6 +11,13 @@ import type { SemanticCacheHit } from "./schemas/inference-schemas.js";
 import { EventBus, globalEventBus } from "../daemon/event-bus.js";
 
 // ============================================================================
+// Constants
+// ============================================================================
+
+/** Peso do contador de reuso no cálculo de evicção (prioriza reuso sobre idade) */
+const REUSE_COUNT_WEIGHT = 1_000_000;
+
+// ============================================================================
 // Types
 // ============================================================================
 
@@ -180,7 +187,7 @@ export class SemanticCache {
         let minScore = Infinity;
 
         for (let i = 0; i < this.entries.length; i++) {
-            const score = this.entries[i].reuseCount * 1_000_000 + this.entries[i].createdAt;
+            const score = this.entries[i].reuseCount * REUSE_COUNT_WEIGHT + this.entries[i].createdAt;
             if (score < minScore) {
                 minScore = score;
                 minIdx = i;

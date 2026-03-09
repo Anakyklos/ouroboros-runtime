@@ -73,9 +73,11 @@ const PROTECTED_FILE_PATTERNS = [
 export class InferenceGuardrails {
     private eventBus: EventBus;
     private iterationCounts: Map<string, number> = new Map();
+    private projectRoot: string;
 
-    constructor(eventBus?: EventBus) {
+    constructor(eventBus?: EventBus, projectRoot?: string) {
         this.eventBus = eventBus ?? globalEventBus;
+        this.projectRoot = projectRoot ?? process.cwd();
     }
 
     /**
@@ -145,9 +147,9 @@ export class InferenceGuardrails {
             }
         }
 
-        // Block absolute paths outside project
-        if (filePath.startsWith("/") && !filePath.includes("ouroboros")) {
-            return { valid: false, reason: "Absolute path outside project" };
+        // Block absolute paths outside project root
+        if (filePath.startsWith("/") && !filePath.startsWith(this.projectRoot)) {
+            return { valid: false, reason: `Absolute path outside project root: ${this.projectRoot}` };
         }
 
         return { valid: true, reason: "Path is within scope" };
