@@ -14,6 +14,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'child_process';
 import { EventBus, globalEventBus } from './event-bus.js';
+import { createEventLogger } from './event-logger.js';
 
 // ============================================================
 // Types
@@ -62,10 +63,12 @@ export interface ResumeInfo {
 export class SafeRestart {
     private config: SafeRestartConfig;
     private eventBus: EventBus;
+    private log: ReturnType<typeof createEventLogger>;
 
     constructor(config?: Partial<SafeRestartConfig>, eventBus?: EventBus) {
         this.config = { ...DEFAULT_RESTART_CONFIG, ...config };
         this.eventBus = eventBus ?? globalEventBus;
+        this.log = createEventLogger('SafeRestart', this.eventBus);
     }
 
     // ============================================================
@@ -241,18 +244,8 @@ export class SafeRestart {
         }
     }
 
-    // ============================================================
-    // Logging
-    // ============================================================
-
-    private log(level: 'debug' | 'info' | 'warn' | 'error', message: string): void {
-        this.eventBus.emit('log', {
-            level,
-            message,
-            timestamp: new Date(),
-            source: 'SafeRestart',
-        });
-    }
+    // log is now created by createEventLogger in constructor
+    // Kept comment for searchability
 }
 
 // ============================================================

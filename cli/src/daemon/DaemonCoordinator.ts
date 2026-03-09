@@ -15,6 +15,7 @@
  */
 
 import { EventBus, globalEventBus } from './event-bus.js';
+import { createEventLogger } from './event-logger.js';
 import { BackgroundConsciousness, type ConsciousnessConfig } from './BackgroundConsciousness.js';
 import { EvolutionScheduler, type EvolutionConfig } from './EvolutionScheduler.js';
 import { BudgetTracker } from '../adapters/budget-tracker.js';
@@ -67,7 +68,6 @@ export interface DaemonHealth {
 
 // State file names
 const QUEUE_STATE_FILE = 'queue-state.json';
-const DAEMON_STATE_FILE = 'daemon-state.json';
 
 // ============================================================
 // DaemonCoordinator
@@ -76,6 +76,7 @@ const DAEMON_STATE_FILE = 'daemon-state.json';
 export class DaemonCoordinator {
     private config: DaemonConfig;
     private eventBus: EventBus;
+    private log: ReturnType<typeof createEventLogger>;
     private status: DaemonStatus = 'uninitialized';
     private startTime: number = 0;
 
@@ -91,6 +92,7 @@ export class DaemonCoordinator {
     constructor(config?: Partial<DaemonConfig>, eventBus?: EventBus) {
         this.config = { ...DEFAULT_DAEMON_CONFIG, ...config };
         this.eventBus = eventBus ?? globalEventBus;
+        this.log = createEventLogger('DaemonCoordinator', this.eventBus);
     }
 
     // ============================================================
@@ -334,14 +336,7 @@ export class DaemonCoordinator {
         }
     }
 
-    private log(level: 'debug' | 'info' | 'warn' | 'error', message: string): void {
-        this.eventBus.emit('log', {
-            level,
-            message,
-            timestamp: new Date(),
-            source: 'DaemonCoordinator',
-        });
-    }
+    // log is now created by createEventLogger in constructor
 }
 
 // ============================================================

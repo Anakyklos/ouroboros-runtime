@@ -19,6 +19,7 @@
  */
 
 import { EventBus, globalEventBus } from '../daemon/event-bus.js';
+import { createEventLogger } from '../daemon/event-logger.js';
 import type { BudgetPort } from '../ports/budget.port.js';
 import type { ValidationContext, ValidationResult } from '../orchestration/types.js';
 
@@ -104,6 +105,7 @@ export type EvolutionState = 'idle' | 'analyzing' | 'evolving' | 'validating' | 
 export class EvolutionScheduler {
     private config: EvolutionConfig;
     private eventBus: EventBus;
+    private log: ReturnType<typeof createEventLogger>;
     private budgetTracker?: BudgetPort;
 
     private state: EvolutionState = 'idle';
@@ -127,6 +129,7 @@ export class EvolutionScheduler {
     ) {
         this.config = { ...DEFAULT_EVOLUTION_CONFIG, ...config };
         this.eventBus = eventBus ?? globalEventBus;
+        this.log = createEventLogger('EvolutionScheduler', this.eventBus);
         this.budgetTracker = budgetTracker;
     }
 
@@ -413,18 +416,7 @@ export class EvolutionScheduler {
         return this.state === 'disabled';
     }
 
-    // ============================================================
-    // Logging
-    // ============================================================
-
-    private log(level: 'debug' | 'info' | 'warn' | 'error', message: string): void {
-        this.eventBus.emit('log', {
-            level,
-            message,
-            timestamp: new Date(),
-            source: 'EvolutionScheduler',
-        });
-    }
+    // log is created by createEventLogger in constructor
 }
 
 // ============================================================

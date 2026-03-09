@@ -22,6 +22,7 @@
  */
 
 import { EventBus, globalEventBus, type BudgetEvent } from './event-bus.js';
+import { createEventLogger } from './event-logger.js';
 import type { BudgetPort } from '../ports/budget.port.js';
 import { MemoryManager } from '../orchestration/MemoryManager.js';
 
@@ -111,6 +112,7 @@ Respond with a JSON object:
 export class BackgroundConsciousness {
     private config: ConsciousnessConfig;
     private eventBus: EventBus;
+    private log: ReturnType<typeof createEventLogger>;
     private budgetTracker?: BudgetPort;
     private memoryManager: MemoryManager;
 
@@ -128,6 +130,7 @@ export class BackgroundConsciousness {
     ) {
         this.config = { ...DEFAULT_CONSCIOUSNESS_CONFIG, ...config };
         this.eventBus = eventBus ?? globalEventBus;
+        this.log = createEventLogger('BackgroundConsciousness', this.eventBus);
         this.budgetTracker = budgetTracker;
         this.memoryManager = new MemoryManager(this.config.projectRoot);
     }
@@ -464,18 +467,7 @@ export class BackgroundConsciousness {
         }
     }
 
-    // ============================================================
-    // Logging
-    // ============================================================
-
-    private log(level: 'debug' | 'info' | 'warn' | 'error', message: string): void {
-        this.eventBus.emit('log', {
-            level,
-            message,
-            timestamp: new Date(),
-            source: 'BackgroundConsciousness',
-        });
-    }
+    // log is created by createEventLogger in constructor
 }
 
 // ============================================================

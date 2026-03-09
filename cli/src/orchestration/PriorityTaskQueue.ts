@@ -16,6 +16,7 @@
 
 import { createHash } from 'crypto';
 import { EventBus, globalEventBus } from '../daemon/event-bus.js';
+import { createEventLogger } from '../daemon/event-logger.js';
 
 // ============================================================
 // Types
@@ -81,11 +82,13 @@ export class PriorityTaskQueue {
     private queue: QueuedTask[] = [];
     private config: QueueConfig;
     private eventBus: EventBus;
+    private log: ReturnType<typeof createEventLogger>;
     private knownHashes: Set<string> = new Set();
 
     constructor(config?: Partial<QueueConfig>, eventBus?: EventBus) {
         this.config = { ...DEFAULT_QUEUE_CONFIG, ...config };
         this.eventBus = eventBus ?? globalEventBus;
+        this.log = createEventLogger('PriorityTaskQueue', this.eventBus);
     }
 
     // ============================================================
@@ -357,14 +360,7 @@ export class PriorityTaskQueue {
         return createHash('sha256').update(normalized).digest('hex').substring(0, 16);
     }
 
-    private log(level: 'debug' | 'info' | 'warn' | 'error', message: string): void {
-        this.eventBus.emit('log', {
-            level,
-            message,
-            timestamp: new Date(),
-            source: 'PriorityTaskQueue',
-        });
-    }
+    // log is created by createEventLogger in constructor
 }
 
 // ============================================================
