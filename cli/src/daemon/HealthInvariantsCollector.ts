@@ -168,14 +168,23 @@ export class HealthInvariantsCollector {
             });
         }
 
-        // Check for timed-out tasks
+        // Check running tasks and detect potential timeouts
         const running = this.taskQueue.runningTasks;
         if (running.length > 0) {
-            checks.push({
-                status: 'OK',
-                category: 'running_tasks',
-                message: `${running.length} task(s) running`,
-            });
+            const timedOut = this.taskQueue.enforceTimeouts();
+            if (timedOut.length > 0) {
+                checks.push({
+                    status: 'WARNING',
+                    category: 'timed_out_tasks',
+                    message: `${timedOut.length} task(s) timed out: ${timedOut.map(t => t.id).join(', ')}`,
+                });
+            } else {
+                checks.push({
+                    status: 'OK',
+                    category: 'running_tasks',
+                    message: `${running.length} task(s) running`,
+                });
+            }
         }
 
         return checks;

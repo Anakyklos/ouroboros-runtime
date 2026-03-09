@@ -117,11 +117,11 @@ export class ContextBuilder {
      * @param userMessage - Mensagem do usuário
      * @param additionalContext - Contexto adicional (e.g., task history)
      */
-    build(userMessage: string, additionalContext?: string): ContextBuildResult {
+    async build(userMessage: string, additionalContext?: string): Promise<ContextBuildResult> {
         // 1. Collect block content
         const staticText = this.buildStaticBlock();
         const semiStableText = this.buildSemiStableBlock();
-        const dynamicText = this.buildDynamicBlock(additionalContext);
+        const dynamicText = await this.buildDynamicBlock(additionalContext);
 
         // 2. Estimate tokens
         const staticTokens = estimateTokens(staticText);
@@ -186,10 +186,10 @@ export class ContextBuilder {
      * Build simplificado que retorna apenas string (para AgentLoop existente).
      * Usa flat system prompt sem cache hints.
      */
-    buildFlat(userMessage: string, additionalContext?: string): { systemPrompt: string; estimatedTokens: number } {
+    async buildFlat(userMessage: string, additionalContext?: string): Promise<{ systemPrompt: string; estimatedTokens: number }> {
         const staticText = this.buildStaticBlock();
         const semiStableText = this.buildSemiStableBlock();
-        const dynamicText = this.buildDynamicBlock(additionalContext);
+        const dynamicText = await this.buildDynamicBlock(additionalContext);
 
         const parts = [staticText];
         if (semiStableText.trim()) parts.push(semiStableText);
@@ -219,7 +219,7 @@ export class ContextBuilder {
         return '';
     }
 
-    private buildDynamicBlock(additionalContext?: string): string {
+    private async buildDynamicBlock(additionalContext?: string): Promise<string> {
         const parts: string[] = [];
 
         // Runtime context
@@ -228,12 +228,12 @@ export class ContextBuilder {
             projectRoot: this.config.projectRoot,
         }, null, 2)}`);
 
-        // Budget info
+        // Budget info (now async — actual data injected into LLM context)
         if (this.budgetTracker) {
             try {
-                // Note: getSummary is async but we do sync build
-                // Budget info will be available if pre-fetched
-            } catch { /* ignore */ }
+                const summary = await this.budgetTracker.getSummary();
+                parts.push(`## Budget Status\n\n- Total spent: $${summary.totalSpentUsd.toFixed(2)}\n- Budget limit: $${summary.budgetLimitUsd.toFixed(2)}\n- Used: ${summary.budgetUsedPct.toFixed(1)}%\n- Total calls: ${summary.totalCalls}`);
+            } catch { /* budget not available */ }
         }
 
         // Dynamic provider (health invariants, recent logs, etc.)

@@ -28,11 +28,11 @@ describe('ContextBuilder', () => {
     // ============================================================
 
     describe('build', () => {
-        it('builds messages with 3-block system message', () => {
+        it('builds messages with 3-block system message', async () => {
             builder.setSemiStableProvider(() => '## Identity\n\nI am Ouroboros.');
             builder.setDynamicProvider(() => '## Health\n\nAll OK');
 
-            const result = builder.build('Hello');
+            const result = await builder.build('Hello');
 
             expect(result.messages.length).toBe(2);
             expect(result.messages[0].role).toBe('system');
@@ -45,16 +45,16 @@ describe('ContextBuilder', () => {
             expect(blocks.length).toBe(3); // static + semi-stable + dynamic
         });
 
-        it('static block has 1h cache control', () => {
-            const result = builder.build('Hi');
+        it('static block has 1h cache control', async () => {
+            const result = await builder.build('Hi');
             const blocks = result.messages[0].content as ContentBlock[];
 
             expect(blocks[0].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
         });
 
-        it('semi-stable block has ephemeral cache control', () => {
+        it('semi-stable block has ephemeral cache control', async () => {
             builder.setSemiStableProvider(() => 'Identity content');
-            const result = builder.build('Hi');
+            const result = await builder.build('Hi');
             const blocks = result.messages[0].content as ContentBlock[];
 
             const semiBlock = blocks.find(b =>
@@ -64,34 +64,34 @@ describe('ContextBuilder', () => {
             expect(semiBlock!.cache_control).toEqual({ type: 'ephemeral' });
         });
 
-        it('dynamic block has no cache control', () => {
+        it('dynamic block has no cache control', async () => {
             builder.setDynamicProvider(() => 'Health check');
-            const result = builder.build('Hi');
+            const result = await builder.build('Hi');
             const blocks = result.messages[0].content as ContentBlock[];
 
             const dynamicBlock = blocks.find(b => !b.cache_control);
             expect(dynamicBlock).toBeDefined();
         });
 
-        it('omits empty semi-stable block', () => {
+        it('omits empty semi-stable block', async () => {
             // No semi-stable provider set
-            const result = builder.build('Hi');
+            const result = await builder.build('Hi');
             const blocks = result.messages[0].content as ContentBlock[];
 
             // Should have static + dynamic only (2 blocks)
             expect(blocks.length).toBe(2);
         });
 
-        it('includes additional context in dynamic block', () => {
-            const result = builder.build('Hi', 'Task history data here');
+        it('includes additional context in dynamic block', async () => {
+            const result = await builder.build('Hi', 'Task history data here');
             const blocks = result.messages[0].content as ContentBlock[];
 
             const dynamicBlock = blocks.find(b => !b.cache_control);
             expect(dynamicBlock!.text).toContain('Task history data');
         });
 
-        it('returns token estimates', () => {
-            const result = builder.build('Hello world');
+        it('returns token estimates', async () => {
+            const result = await builder.build('Hello world');
 
             expect(result.estimatedTokens).toBeGreaterThan(0);
             expect(result.blocks.staticTokens).toBeGreaterThan(0);
@@ -103,11 +103,11 @@ describe('ContextBuilder', () => {
     // ============================================================
 
     describe('buildFlat', () => {
-        it('returns flat system prompt string', () => {
+        it('returns flat system prompt string', async () => {
             builder.setSemiStableProvider(() => 'Identity block');
             builder.setDynamicProvider(() => 'Dynamic block');
 
-            const { systemPrompt, estimatedTokens } = builder.buildFlat('Hello');
+            const { systemPrompt, estimatedTokens } = await builder.buildFlat('Hello');
 
             expect(typeof systemPrompt).toBe('string');
             expect(systemPrompt).toContain('test assistant');
@@ -122,7 +122,7 @@ describe('ContextBuilder', () => {
     // ============================================================
 
     describe('soft cap trimming', () => {
-        it('trims when exceeding soft cap', () => {
+        it('trims when exceeding soft cap', async () => {
             // Create a builder with very low cap
             const tinyBuilder = createContextBuilder({
                 systemPrompt: 'Short prompt',
@@ -135,14 +135,14 @@ describe('ContextBuilder', () => {
                 '## Health\n\nAll OK',
             ].join('\n\n'));
 
-            const result = tinyBuilder.build('Hi');
+            const result = await tinyBuilder.build('Hi');
 
             // Should have trimmed some sections
             expect(result.trimmedSections.length).toBeGreaterThan(0);
         });
 
-        it('does not trim when under soft cap', () => {
-            const result = builder.build('Short message');
+        it('does not trim when under soft cap', async () => {
+            const result = await builder.build('Short message');
             expect(result.trimmedSections.length).toBe(0);
         });
     });
@@ -181,9 +181,9 @@ describe('ContextBuilder', () => {
     // ============================================================
 
     describe('factory', () => {
-        it('creates with defaults', () => {
+        it('creates with defaults', async () => {
             const b = createContextBuilder();
-            const result = b.build('Test');
+            const result = await b.build('Test');
             expect(result.messages.length).toBe(2);
         });
     });

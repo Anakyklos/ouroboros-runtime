@@ -25,6 +25,7 @@ import { EventBus, globalEventBus, type BudgetEvent } from './event-bus.js';
 import { createEventLogger } from './event-logger.js';
 import type { BudgetPort } from '../ports/budget.port.js';
 import { MemoryManager } from '../orchestration/MemoryManager.js';
+import * as fs from 'node:fs';
 
 // ============================================================
 // Types
@@ -441,8 +442,7 @@ export class BackgroundConsciousness {
                 cycle: this.cycleCount,
             }) + '\n';
 
-            const { promises: fsPromises } = await import('node:fs');
-            await fsPromises.appendFile(logPath, entry, 'utf-8');
+            await fs.promises.appendFile(logPath, entry, 'utf-8');
         } catch {
             // Non-critical — log best-effort
         }

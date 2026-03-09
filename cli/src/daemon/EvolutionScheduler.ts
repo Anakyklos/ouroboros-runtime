@@ -222,7 +222,7 @@ export class EvolutionScheduler {
                 snapshotRef = await this.snapshotCreator();
                 this.log('debug', `🧬 Git snapshot created: ${snapshotRef}`);
             } catch (err) {
-                return this.createResult(proposal, false, `Git snapshot failed: ${err}`, startTime);
+                return this.createResult(proposal, false, `Git snapshot failed: ${err instanceof Error ? err.message : String(err)}`, startTime);
             }
         }
 
@@ -236,7 +236,7 @@ export class EvolutionScheduler {
             executionResult = await this.executor(proposal);
         } catch (err) {
             this.recordFailure();
-            return this.createResult(proposal, false, `Execution error: ${err}`, startTime);
+            return this.createResult(proposal, false, `Execution error: ${err instanceof Error ? err.message : String(err)}`, startTime);
         }
 
         if (!executionResult.success) {
@@ -264,7 +264,7 @@ export class EvolutionScheduler {
                 }
             } catch (err) {
                 this.recordFailure();
-                return this.createResult(proposal, false, `Validation error: ${err}`, startTime);
+                return this.createResult(proposal, false, `Validation error: ${err instanceof Error ? err.message : String(err)}`, startTime);
             }
         }
 
