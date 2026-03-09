@@ -41,6 +41,8 @@ export enum QualityGateType {
     LINT = "LINT",
     /** Cobertura de testes */
     COVERAGE = "COVERAGE",
+    /** Review por segundo modelo LLM */
+    MULTI_MODEL_REVIEW = "MULTI_MODEL_REVIEW",
     /** Validação customizada */
     CUSTOM = "CUSTOM",
 }
@@ -155,5 +157,6 @@ export const QUALITY_GATE_COMMANDS: Record<QualityGateType, string> = {
     [QualityGateType.TYPE_CHECK]: "bun run typecheck",
     [QualityGateType.LINT]: "bun run lint",
     [QualityGateType.COVERAGE]: "bun test --coverage",
+    [QualityGateType.MULTI_MODEL_REVIEW]: "", // LLM-based, no shell command
     [QualityGateType.CUSTOM]: "",
 };
