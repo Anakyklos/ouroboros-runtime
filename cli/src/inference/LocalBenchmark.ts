@@ -6,6 +6,7 @@
  * tempo de retrieval e custo de memória.
  */
 
+import * as crypto from "node:crypto";
 import { LocalInferenceProvider } from "./LocalInferenceProvider.js";
 import { ModelRegistry } from "./ModelRegistry.js";
 import { EmbeddingEngine } from "./EmbeddingEngine.js";
@@ -208,7 +209,7 @@ export class LocalBenchmark {
                 temperature: 0.1,
                 maxTokens: 256,
                 responseSchema: {},
-                traceId: `bench_${role}_${Date.now()}`,
+                traceId: `bench_${role}_${crypto.randomUUID()}`,
                 timeoutMs: BENCHMARK_TIMEOUT_MS,
             });
 

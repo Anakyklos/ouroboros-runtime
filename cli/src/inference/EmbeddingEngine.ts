@@ -6,6 +6,7 @@
  * Gera embeddings, calcula similaridade, suporta batch.
  */
 
+import * as crypto from "node:crypto";
 import { LocalInferenceProvider } from "./LocalInferenceProvider.js";
 import { ModelRegistry } from "./ModelRegistry.js";
 import { EventBus, globalEventBus } from "../daemon/event-bus.js";
@@ -44,7 +45,7 @@ export class EmbeddingEngine {
         const response = await this.provider.embed({
             text,
             modelId: model.ollamaModel,
-            traceId: `emb_${Date.now()}`,
+            traceId: `emb_${crypto.randomUUID()}`,
         });
 
         return response.vector;

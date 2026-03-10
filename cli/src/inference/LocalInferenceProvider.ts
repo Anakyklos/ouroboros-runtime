@@ -10,6 +10,7 @@
  * - Trace ID por requisição
  */
 
+import * as crypto from "node:crypto";
 import { EventBus, globalEventBus } from "../daemon/event-bus.js";
 import type {
     InferenceRequest,
@@ -376,7 +377,7 @@ export class LocalInferenceProvider {
     }
 
     private generateTraceId(): string {
-        return `trace_${Date.now()}_${++this.requestCounter}`;
+        return `trace_${crypto.randomUUID()}`;
     }
 
     private sleep(ms: number): Promise<void> {
