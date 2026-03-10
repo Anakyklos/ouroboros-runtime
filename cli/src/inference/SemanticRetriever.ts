@@ -76,15 +76,16 @@ export class SemanticRetriever {
             if (entry.similarity < minSim) continue;
 
             // Source filter
-            if (validated.source !== "all" && entry.artifactType !== validated.source) {
-                // Map source to artifact types
+            if (validated.source !== "all") {
                 const sourceMap: Record<string, string[]> = {
                     memory: ["task_summary", "decision", "solution", "failure", "correction"],
                     codebase: ["code_snippet", "document"],
                     traces: ["trace"],
                 };
                 const allowed = sourceMap[validated.source];
-                if (allowed && !allowed.includes(entry.artifactType)) continue;
+                if (!allowed || !allowed.includes(entry.artifactType)) {
+                    continue;
+                }
             }
 
             results.push({
