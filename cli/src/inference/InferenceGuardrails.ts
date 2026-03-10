@@ -97,8 +97,8 @@ export class InferenceGuardrails {
             if (match) {
                 try {
                     parsed = JSON.parse(match[0]);
-                } catch {
-                    return { valid: false, error: `Invalid JSON: ${(error as Error).message}` };
+                } catch (extractionError) {
+                    return { valid: false, error: `Invalid JSON (after extraction): ${(extractionError as Error).message}` };
                 }
             } else {
                 return { valid: false, error: `Invalid JSON: ${(error as Error).message}` };
