@@ -33,6 +33,10 @@ export { InferenceGuardrails, createInferenceGuardrails } from "./InferenceGuard
 export { DatasetPipeline, createDatasetPipeline } from "./DatasetPipeline.js";
 export { LocalBenchmark, createLocalBenchmark } from "./LocalBenchmark.js";
 
+// --- Subsystem Facade ---
+export { InferenceSubsystem, createInferenceSubsystem } from "./InferenceSubsystem.js";
+export type { InferenceSubsystemConfig, InferenceStatus } from "./InferenceSubsystem.js";
+
 // --- Config ---
 export {
     loadInferenceConfig,
