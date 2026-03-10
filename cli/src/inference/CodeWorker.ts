@@ -260,8 +260,8 @@ Respond with JSON: { "explanation": "2-3 sentence summary", "complexity": "low|m
                 try {
                     const extracted = JSON.parse(jsonMatch[0]);
                     return { success: true, data: schema.parse(extracted) };
-                } catch {
-                    // Fall through
+                } catch (extractionError) {
+                    return { success: false, error: `Invalid model output (after extraction) — ${(extractionError as Error).message}` };
                 }
             }
 

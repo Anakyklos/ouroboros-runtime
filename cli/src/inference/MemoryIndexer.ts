@@ -134,7 +134,7 @@ export class MemoryIndexer {
 
         // Check capacity
         if (this.entries.size >= this.config.maxEntries) {
-            this.evictOldest();
+            this.evictLeastValuable();
         }
 
         // Generate embedding
@@ -266,21 +266,27 @@ export class MemoryIndexer {
         return age > entry.ttlHours * 3600_000;
     }
 
-    private evictOldest(): void {
-        let oldest: string | null = null;
-        let oldestTime = Infinity;
+    /**
+     * Evicção LRU ponderada: prioriza remoção de entradas menos usadas (version baixa)
+     * e mais antigas. Semelhante à estratégia de SemanticCache.
+     */
+    private evictLeastValuable(): void {
+        let evictId: string | null = null;
+        let minScore = Infinity;
 
         for (const [id, entry] of this.entries) {
-            const time = new Date(entry.timestamp).getTime();
-            if (time < oldestTime) {
-                oldestTime = time;
-                oldest = id;
+            // Score = version weight + timestamp (higher = more valuable)
+            const timestamp = new Date(entry.timestamp).getTime();
+            const score = entry.version * 1_000_000 + timestamp;
+            if (score < minScore) {
+                minScore = score;
+                evictId = id;
             }
         }
 
-        if (oldest) {
-            this.entries.delete(oldest);
-            this.log("debug", `Evicted oldest entry: ${oldest}`);
+        if (evictId) {
+            this.entries.delete(evictId);
+            this.log("debug", `Evicted least valuable entry: ${evictId}`);
         }
     }
 

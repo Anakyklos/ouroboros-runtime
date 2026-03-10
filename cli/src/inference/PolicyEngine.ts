@@ -281,8 +281,8 @@ Respond with JSON: { "summary": "...", "status": "healthy|degraded|failing", "ac
                 try {
                     const extracted = JSON.parse(jsonMatch[0]);
                     return schema.parse(extracted);
-                } catch {
-                    // Fall through to rethrow
+                } catch (extractionError) {
+                    throw new Error(`PolicyEngine.${method}: Invalid model output (after extraction) — ${(extractionError as Error).message}`);
                 }
             }
 

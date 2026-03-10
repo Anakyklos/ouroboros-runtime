@@ -185,65 +185,86 @@ export class LocalInferenceProvider {
 
         this.log("debug", `[${traceId}] Embedding request (${request.text.length} chars)`);
 
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(
-                () => controller.abort(),
-                this.config.defaultTimeoutMs,
-            );
+        let lastError: Error | null = null;
 
+        for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
             try {
-                const response = await fetch(`${this.config.ollamaBaseUrl}/api/embeddings`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        model: modelId,
-                        prompt: request.text,
-                    }),
-                    signal: controller.signal,
-                });
-
-                clearTimeout(timeoutId);
-
-                if (!response.ok) {
-                    const errText = await response.text();
-                    throw new Error(`Ollama embed HTTP ${response.status}: ${errText}`);
+                if (attempt > 0) {
+                    const delay = this.config.retryDelayMs * Math.pow(2, attempt - 1);
+                    this.log("warn", `[${traceId}] Embed retry ${attempt}/${this.config.maxRetries} after ${delay}ms`);
+                    await this.sleep(delay);
                 }
 
-                const data = await response.json() as { embedding?: number[] };
+                const controller = new AbortController();
+                const timeoutId = setTimeout(
+                    () => controller.abort(),
+                    this.config.defaultTimeoutMs,
+                );
 
-                if (!data.embedding || !Array.isArray(data.embedding)) {
-                    throw new Error("Invalid embedding response from Ollama");
+                try {
+                    const response = await fetch(`${this.config.ollamaBaseUrl}/api/embeddings`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            model: modelId,
+                            prompt: request.text,
+                        }),
+                        signal: controller.signal,
+                    });
+
+                    clearTimeout(timeoutId);
+
+                    if (!response.ok) {
+                        const errText = await response.text();
+                        throw new Error(`Ollama embed HTTP ${response.status}: ${errText}`);
+                    }
+
+                    const data = await response.json() as { embedding?: number[] };
+
+                    if (!data.embedding || !Array.isArray(data.embedding)) {
+                        throw new Error("Invalid embedding response from Ollama");
+                    }
+
+                    const durationMs = Date.now() - startTime;
+                    this.recordMetric(modelId, durationMs, true, true);
+
+                    this.log("debug", `[${traceId}] Embedding done: dim=${data.embedding.length} in ${durationMs}ms`);
+
+                    return {
+                        vector: data.embedding,
+                        dimension: data.embedding.length,
+                        modelId,
+                        durationMs,
+                        traceId,
+                    };
+                } finally {
+                    clearTimeout(timeoutId);
                 }
-
+            } catch (error) {
+                lastError = error as Error;
                 const durationMs = Date.now() - startTime;
-                this.recordMetric(modelId, durationMs, true, true);
 
-                this.log("debug", `[${traceId}] Embedding done: dim=${data.embedding.length} in ${durationMs}ms`);
+                this.log("error", `[${traceId}] Embed attempt ${attempt} failed: ${lastError.message}`);
+                this.recordMetric(modelId, durationMs, false, false);
 
-                return {
-                    vector: data.embedding,
-                    dimension: data.embedding.length,
-                    modelId,
-                    durationMs,
-                    traceId,
-                };
-            } finally {
-                clearTimeout(timeoutId);
+                // Don't retry on abort (timeout)
+                if (lastError.name === "AbortError") {
+                    break;
+                }
             }
-        } catch (error) {
-            const durationMs = Date.now() - startTime;
-            this.recordMetric(modelId, durationMs, false, false);
-            this.log("error", `[${traceId}] Embedding failed: ${(error as Error).message}`);
-
-            return {
-                vector: [],
-                dimension: 0,
-                modelId,
-                durationMs,
-                traceId,
-            };
         }
+
+        // All retries exhausted
+        const durationMs = Date.now() - startTime;
+        this.log("error", `[${traceId}] All embed retries exhausted for ${modelId}`);
+
+        return {
+            vector: [],
+            dimension: 0,
+            modelId,
+            durationMs,
+            traceId,
+        };
     }
 
     // ========================================================================
