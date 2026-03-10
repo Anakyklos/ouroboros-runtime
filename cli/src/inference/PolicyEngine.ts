@@ -296,10 +296,14 @@ Respond with JSON: { "summary": "...", "status": "healthy|degraded|failing", "ac
     private safeParseJSON<T>(content: string): T | null {
         try {
             return JSON.parse(content) as T;
-        } catch {
+        } catch (initialError) {
             const match = content.match(/\{[\s\S]*\}/);
             if (match) {
-                try { return JSON.parse(match[0]) as T; } catch { /* ignore */ }
+                try {
+                    return JSON.parse(match[0]) as T;
+                } catch (extractionError) {
+                    this.log("warn", `Failed to parse extracted JSON: ${(extractionError as Error).message}`);
+                }
             }
             return null;
         }
