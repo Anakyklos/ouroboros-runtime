@@ -231,6 +231,21 @@ export async function runBootWizard(): Promise<BootConfig> {
         geminiSpinner.warn('Gemini CLI not found (optional - some features will be limited)');
     }
 
+    // 5.5 Check Ollama for local inference
+    const ollamaSpinner = ora('Checking for Ollama (local inference)...').start();
+    try {
+        const ollamaResp = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(3000) });
+        if (ollamaResp.ok) {
+            const data = await ollamaResp.json() as { models?: Array<{ name: string }> };
+            const count = data.models?.length ?? 0;
+            ollamaSpinner.succeed(`Ollama running — ${count} model(s) available`);
+        } else {
+            ollamaSpinner.warn('Ollama reachable but returned error (optional)');
+        }
+    } catch {
+        ollamaSpinner.warn('Ollama not running (optional - local inference will be unavailable)');
+    }
+
     // 6. Build and save config
     const config: BootConfig = {
         groqApiKey,

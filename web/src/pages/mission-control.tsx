@@ -43,6 +43,14 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
     ? waves.find(w => w.id === selectedWaveId)?.tasks.find(t => t.id === selectedTaskId) 
     : null;
   
+  const daemonConnected = useMissionControlStore((state) => state.daemonConnected);
+  const activeQuadrant = useMissionControlStore((state) => state.activeQuadrant);
+  const viewMode = useMissionControlStore((state) => state.viewMode);
+  const setActiveQuadrant = useMissionControlStore((state) => state.setActiveQuadrant);
+  const setViewMode = useMissionControlStore((state) => state.setViewMode);
+
+  // Initialize daemon connections
+  useEventBus({ url: "ws://localhost:3001/ws" });
   const { status, emergencyBrake } = useDaemonAPI();
   const { promotingWave, activateWave } = useWaveManager();
   const liveData = useLiveMissionControl();
@@ -54,6 +62,10 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
     onEmergencyBrake: () => setShowEmergencyDialog(true),
     onToggleLogs: () => setShowLogs((prev) => !prev),
     onFocusTerminal: () => setShowTerminal(true),
+    onQuadrantSwitch: (quadrant: 1 | 2 | 3 | 4) => {
+      setActiveQuadrant(quadrant);
+      setViewMode("focused");
+    },
   });
 
   // Listen for keyboard shortcuts modal
@@ -107,6 +119,27 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
 
   const toggleTheme = () => {
     setTheme(prev => prev === "snake" ? "swiss" : "snake");
+  };
+
+  // Render the focused quadrant component
+  const renderFocusedQuadrant = () => {
+    switch (activeQuadrant) {
+      case 1:
+        return <TheEye />;
+      case 2:
+        return (
+          <TheCoil
+            onWaveActivate={activateWave}
+            promotingWave={promotingWave}
+          />
+        );
+      case 3:
+        return <TheCouncil />;
+      case 4:
+        return <TheStrike />;
+      default:
+        return null;
+    }
   };
 
   if (theme === "swiss") {
@@ -181,68 +214,82 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
         </div>
       </header>
 
-      {/* Main Responsive Grid Layout */}
+      {/* Main Content - Grid or Focused View */}
       <main className="flex-1 p-4 sm:p-6 overflow-y-auto sm:overflow-hidden">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 lg:grid-rows-2 gap-4 sm:gap-6 h-full min-h-[800px] sm:min-h-0 relative">
+        {viewMode === "focused" && activeQuadrant ? (
+          <AnimatePresence mode="wait">
+            <motion.div
+              key="focused-view"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ duration: 0.2 }}
+              className="h-full relative"
+            >
+              {renderFocusedQuadrant()}
+            </motion.div>
+          </AnimatePresence>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 lg:grid-rows-2 gap-4 sm:gap-6 h-full min-h-[800px] sm:min-h-0 relative">
+            {/* Top Left: The Eye */}
+            <motion.section
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.1 }}
+              className="col-span-1 row-span-1 h-64 sm:h-auto"
+            >
+              <TheEye />
+            </motion.section>
 
-          {/* Top Left: The Eye */}
-          <motion.section
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="col-span-1 row-span-1 h-64 sm:h-auto"
-          >
-            <TheEye />
-          </motion.section>
+            {/* Top Right: The Coil */}
+            <motion.section
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.2 }}
+              className="col-span-1 row-span-1 h-64 sm:h-auto"
+            >
+              <TheCoil
+                onWaveActivate={activateWave}
+                promotingWave={promotingWave}
+              />
+            </motion.section>
 
-          {/* Top Right: The Coil */}
-          <motion.section
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="col-span-1 row-span-1 h-64 sm:h-auto"
-          >
-            <TheCoil
-              onWaveActivate={activateWave}
-              promotingWave={promotingWave}
-            />
-          </motion.section>
+            {/* Center: The Snake Ring (Hidden on Mobile, Visible on Tablet/Desktop) */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ delay: 0.5, type: "spring" }}
+              className="pointer-events-none z-0 hidden lg:block absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[400px] h-[400px]"
+            >
+               {/* Center overlay container for desktop */}
+              <div className="relative w-full h-full flex items-center justify-center">
+                 {/* Background blur to separate ring from grid lines if needed */}
+                <div className="absolute inset-0 bg-[var(--color-background)]/80 backdrop-blur-sm rounded-full -z-10 scale-75 blur-3xl" />
+                <SnakeRing status={getSnakeStatus()} pulseEnabled={mode !== "pause"} />
+              </div>
+            </motion.div>
 
-          {/* Center: The Snake Ring (Hidden on Mobile, Visible on Tablet/Desktop) */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 0.5, type: "spring" }}
-            className="pointer-events-none z-0 hidden lg:block absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[400px] h-[400px]"
-          >
-             {/* Center overlay container for desktop */}
-            <div className="relative w-full h-full flex items-center justify-center">
-               {/* Background blur to separate ring from grid lines if needed */}
-              <div className="absolute inset-0 bg-[var(--color-background)]/80 backdrop-blur-sm rounded-full -z-10 scale-75 blur-3xl" />
-              <SnakeRing status={getSnakeStatus()} pulseEnabled={mode !== "pause"} />
-            </div>
-          </motion.div>
+            {/* Bottom Left: The Council */}
+            <motion.section
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3 }}
+              className="col-span-1 row-span-1 h-64 sm:h-auto"
+            >
+              <TheCouncil />
+            </motion.section>
 
-          {/* Bottom Left: The Council */}
-          <motion.section
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-            className="col-span-1 row-span-1 h-64 sm:h-auto"
-          >
-            <TheCouncil />
-          </motion.section>
-
-          {/* Bottom Right: The Strike */}
-          <motion.section
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.4 }}
-            className="col-span-1 row-span-1 h-64 sm:h-auto"
-          >
-            <TheStrike />
-          </motion.section>
-        </div>
+            {/* Bottom Right: The Strike */}
+            <motion.section
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.4 }}
+              className="col-span-1 row-span-1 h-64 sm:h-auto"
+            >
+              <TheStrike />
+            </motion.section>
+          </div>
+        )}
       </main>
 
       {/* Overlays */}

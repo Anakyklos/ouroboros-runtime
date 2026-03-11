@@ -1,0 +1,342 @@
+{
+  "feature": "TUI Keyboard Navigation & Quadrant Switching",
+  "description": "Complete the TUI keyboard shortcuts implementation including quadrant switching (Ctrl+1/2/3/4), focused view mode, and discoverable help text for keyboard navigation.",
+  "workflow_type": "feature",
+  "workflow_rationale": "This is a FEATURE workflow because we're implementing new functionality (quadrant switching keyboard navigation) that adds to the existing TUI system. The changes are focused on the web frontend and enhance existing user interaction patterns.",
+  "phases": [
+    {
+      "id": "phase-1-state",
+      "name": "Add Quadrant State Management",
+      "type": "implementation",
+      "description": "Add activeQuadrant state to mission-control-store.ts to track which quadrant currently has focus, and a view mode state for grid vs focused view.",
+      "depends_on": [],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-1-1",
+          "description": "Add activeQuadrant and viewMode state to mission-control store",
+          "service": "web",
+          "files_to_modify": [
+            "web/src/stores/mission-control-store.ts"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "web/src/stores/mission-control-store.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "cd web && bun run build 2>&1 | head -20",
+            "expected": "Build successful or no TypeScript errors"
+          },
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-2-keyboard",
+      "name": "Implement Keyboard Handlers",
+      "type": "implementation",
+      "description": "Implement the Ctrl+1/2/3/4 keyboard handlers in use-keyboard-shortcuts.ts to switch between quadrants.",
+      "depends_on": [
+        "phase-1-state"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-2-1",
+          "description": "Implement quadrant switching keyboard handlers (Ctrl+1/2/3/4)",
+          "service": "web",
+          "files_to_modify": [
+            "web/src/hooks/use-keyboard-shortcuts.ts"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "web/src/hooks/use-keyboard-shortcuts.ts"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "cd web && grep -n 'case \"1\"' src/hooks/use-keyboard-shortcuts.ts | head -5",
+            "expected": "Keyboard handler code for case \"1\" found"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-2-2",
+          "description": "Add onQuadrantSwitch callback to useKeyboardShortcuts hook",
+          "service": "web",
+          "files_to_modify": [
+            "web/src/hooks/use-keyboard-shortcuts.ts"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "web/src/hooks/use-keyboard-shortcuts.ts"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Review that onQuadrantSwitch callback is added to UseKeyboardShortcutsOptions interface and implemented in the hook"
+          },
+          "status": "completed",
+          "notes": "Successfully added onQuadrantSwitch callback to useKeyboardShortcuts hook:\n- Added onQuadrantSwitch?: (quadrant: 1 | 2 | 3 | 4) => void to UseKeyboardShortcutsOptions interface\n- Extracted onQuadrantSwitch from options\n- Call callback when switching quadrants (after setActiveQuadrant and setViewMode)\n- Added to useCallback dependency array\n- TypeScript verification passed with no errors",
+          "updated_at": "2026-02-21T13:21:23.435844+00:00"
+        }
+      ]
+    },
+    {
+      "id": "phase-3-view",
+      "name": "Implement Focused View Mode",
+      "type": "implementation",
+      "description": "Implement the focused view mode in mission-control.tsx that shows one quadrant at full screen when active, with smooth transitions.",
+      "depends_on": [
+        "phase-1-state",
+        "phase-2-keyboard"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-3-1",
+          "description": "Add focused view rendering logic to mission-control.tsx",
+          "service": "web",
+          "files_to_modify": [
+            "web/src/pages/mission-control.tsx"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "web/src/pages/mission-control.tsx"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Review that conditional rendering exists for grid vs focused view based on activeQuadrant state"
+          },
+          "status": "completed",
+          "notes": "Successfully added focused view rendering logic:\n- Imported activeQuadrant and viewMode state from mission-control-store\n- Added renderFocusedQuadrant helper function that returns the appropriate quadrant component based on activeQuadrant (1-4)\n- Implemented conditional rendering in main content area: focused view when viewMode === 'focused' && activeQuadrant is set, otherwise grid view\n- Used Framer Motion AnimatePresence for smooth transitions between views\n- TypeScript compilation passes with no errors",
+          "updated_at": "2026-02-21T13:25:00.000Z"
+        },
+        {
+          "id": "subtask-3-2",
+          "description": "Wire up keyboard shortcuts to trigger quadrant changes",
+          "service": "web",
+          "files_to_modify": [
+            "web/src/pages/mission-control.tsx"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "web/src/pages/mission-control.tsx"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Verify that onQuadrantSwitch callback is passed to useKeyboardShortcuts and triggers state changes"
+          },
+          "status": "completed",
+          "notes": "Successfully wired up keyboard shortcuts to trigger quadrant changes:\n- Added setActiveQuadrant and setViewMode selectors from mission-control-store\n- Added onQuadrantSwitch callback to useKeyboardShortcuts hook options\n- Callback properly updates store state: setActiveQuadrant(quadrant) and setViewMode('focused')\n- When Ctrl+1/2/3/4 is pressed, the hook calls the callback which triggers state changes\n- TypeScript compilation passes with no errors\n- No console.log statements present",
+          "updated_at": "2026-02-21T13:35:00.000Z"
+        }
+      ]
+    },
+    {
+      "id": "phase-4-help",
+      "name": "Update Help Text and Polish",
+      "type": "implementation",
+      "description": "Update the keyboard shortcuts help display in settings.tsx to include quadrant switching shortcuts, and add any inline help text.",
+      "depends_on": [
+        "phase-2-keyboard"
+      ],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-4-1",
+          "description": "Add quadrant switching shortcuts to settings page help",
+          "service": "web",
+          "files_to_modify": [
+            "web/src/pages/settings.tsx"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "web/src/pages/settings.tsx"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "cd web && grep -A2 'Ctrl.*[1234]' src/pages/settings.tsx | head -10",
+            "expected": "Quadrant shortcuts found in settings help"
+          },
+          "status": "completed",
+          "notes": "Successfully added quadrant switching shortcuts to settings page:\n- Added Ctrl+1, Ctrl+2, Ctrl+3, Ctrl+4 shortcuts to Keyboard Shortcuts section\n- Each shortcut displays action: 'Switch to Quadrant 1/2/3/4'\n- Shortcuts are positioned logically after existing navigation shortcuts\n- Follows existing pattern for keyboard shortcut display\n- Verification command confirms quadrant shortcuts are present in settings help",
+          "updated_at": "2026-02-21T13:40:00.000Z"
+        },
+        {
+          "id": "subtask-4-2",
+          "description": "Remove TODO comments from keyboard shortcut handling",
+          "service": "web",
+          "files_to_modify": [
+            "web/src/hooks/use-keyboard-shortcuts.ts"
+          ],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "command",
+            "command": "cd web && grep -i 'TODO.*quadrant' src/hooks/use-keyboard-shortcuts.ts || echo 'No TODO found'",
+            "expected": "No TODO found"
+          },
+          "status": "completed",
+          "notes": "Verification passed - no TODO comments found in use-keyboard-shortcuts.ts. The file is clean and ready for production.",
+          "updated_at": "2026-02-21T13:45:00.000Z"
+        }
+      ]
+    },
+    {
+      "id": "phase-5-integration",
+      "name": "Integration and Testing",
+      "type": "integration",
+      "description": "End-to-end verification of keyboard navigation including quadrant switching, focused view mode, and help text display.",
+      "depends_on": [
+        "phase-3-view",
+        "phase-4-help"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-5-1",
+          "description": "Browser verification of quadrant switching functionality",
+          "all_services": false,
+          "service": "web",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "browser",
+            "url": "http://localhost:5173/",
+            "checks": [
+              "Pressing Ctrl+1 switches to The Eye (top-left) quadrant focused view",
+              "Pressing Ctrl+2 switches to The Coil (top-right) quadrant focused view",
+              "Pressing Ctrl+3 switches to The Council (bottom-left) quadrant focused view",
+              "Pressing Ctrl+4 switches to The Strike (bottom-right) quadrant focused view",
+              "Pressing Ctrl+0 or Escape returns to grid view showing all 4 quadrants",
+              "Settings page displays all keyboard shortcuts including quadrant switching",
+              "No console errors during keyboard navigation",
+              "Smooth transitions between grid and focused views"
+            ]
+          },
+          "status": "completed",
+          "notes": "Successfully verified and enhanced quadrant switching functionality:\n- Fixed Escape key to have dual behavior: returns to grid view when in focused mode, triggers emergency brake when in grid mode\n- Added Ctrl+0 shortcut to return to grid view\n- Imported viewMode and activeQuadrant state in use-keyboard-shortcuts.ts\n- Updated keyboard handlers to support both Escape and Ctrl+0 for grid view navigation\n- Updated settings.tsx to display all shortcuts including Ctrl+0\n- TypeScript compilation: PASSED (no errors)\n- All acceptance criteria verified",
+          "updated_at": "2026-02-21T14:00:00.000Z"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_phases": 5,
+    "total_subtasks": 9,
+    "services_involved": [
+      "web"
+    ],
+    "parallelism": {
+      "max_parallel_phases": 2,
+      "parallel_groups": [
+        {
+          "phases": [
+            "phase-4-help"
+          ],
+          "reason": "Phase 4 can run in parallel with Phase 3 once keyboard handlers are implemented in Phase 2"
+        }
+      ],
+      "recommended_workers": 1,
+      "speedup_estimate": "Sequential execution recommended due to tight dependencies"
+    },
+    "startup_command": "cd web && bun run dev"
+  },
+  "verification_strategy": {
+    "risk_level": "low",
+    "skip_validation": false,
+    "test_creation_phase": "manual",
+    "test_types_required": [
+      "manual"
+    ],
+    "security_scanning_required": false,
+    "staging_deployment_required": false,
+    "acceptance_criteria": [
+      "All keyboard shortcuts defined in use-keyboard-shortcuts.ts are implemented",
+      "Quadrant switching works correctly to navigate between TUI sections",
+      "Focused view mode displays selected quadrant at full screen",
+      "No TODO comments remain in keyboard shortcut handling",
+      "Keyboard navigation is discoverable with help text in settings"
+    ],
+    "verification_steps": [
+      {
+        "name": "Build Verification",
+        "command": "cd web && bun run build",
+        "expected_outcome": "Build completes without TypeScript errors",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "TODO Check",
+        "command": "cd web && grep -rn 'TODO.*quadrant\\|TODO.*keyboard' src/hooks/use-keyboard-shortcuts.ts || echo 'No TODOs found'",
+        "expected_outcome": "No TODO comments related to quadrants or keyboard navigation",
+        "type": "test",
+        "required": true,
+        "blocking": false
+      },
+      {
+        "name": "Browser Testing",
+        "command": "Manual browser verification at http://localhost:5173",
+        "expected_outcome": "All keyboard shortcuts work smoothly, quadrant switching functions correctly",
+        "type": "manual",
+        "required": true,
+        "blocking": true
+      }
+    ],
+    "reasoning": "Low risk UI enhancement with no backend changes or security implications. Manual browser testing sufficient for verification."
+  },
+  "qa_acceptance": {
+    "unit_tests": {
+      "required": false,
+      "commands": [],
+      "minimum_coverage": null
+    },
+    "integration_tests": {
+      "required": false,
+      "commands": [],
+      "services_to_test": []
+    },
+    "e2e_tests": {
+      "required": false,
+      "commands": [],
+      "flows": []
+    },
+    "browser_verification": {
+      "required": true,
+      "pages": [
+        {
+          "url": "http://localhost:5173/",
+          "checks": [
+            "Mission Control page loads with 4-quadrant grid layout",
+            "Ctrl+1/2/3/4 switches to focused quadrant view",
+            "Ctrl+0 or Escape returns to grid view",
+            "Smooth animations between views",
+            "No console errors"
+          ]
+        },
+        {
+          "url": "http://localhost:5173/settings",
+          "checks": [
+            "Keyboard shortcuts section displays all shortcuts",
+            "Quadrant switching shortcuts (Ctrl+1/2/3/4) are listed",
+            "Help text is clear and discoverable"
+          ]
+        }
+      ]
+    },
+    "database_verification": {
+      "required": false,
+      "checks": []
+    }
+  },
+  "qa_signoff": null,
+  "status": "human_review",
+  "planStatus": "review",
+  "xstateState": "human_review",
+  "executionPhase": "complete",
+  "updated_at": "2026-02-21T13:42:53.715Z",
+  "last_updated": "2026-02-21T13:21:23.435851+00:00",
+  "reviewReason": "completed"
+}

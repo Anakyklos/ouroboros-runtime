@@ -16,6 +16,9 @@ import { QualityGateType } from "../promotion-types.js";
 import { CommandValidationStrategy } from "./CommandValidationStrategy.js";
 import { TestValidationStrategy } from "./TestValidationStrategy.js";
 
+// Re-export QualityGateType for convenience
+export { QualityGateType } from "../promotion-types.js";
+
 /**
  * Configuração de um quality gate registrado.
  */

@@ -9,6 +9,7 @@ interface UseKeyboardShortcutsOptions {
   onEmergencyBrake?: () => void;
   onToggleLogs?: () => void;
   onFocusTerminal?: () => void;
+  onQuadrantSwitch?: (quadrant: 1 | 2 | 3 | 4) => void;
 }
 
 export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) {
@@ -18,10 +19,15 @@ export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) 
     onEmergencyBrake,
     onToggleLogs,
     onFocusTerminal,
+    onQuadrantSwitch,
   } = options;
 
   const mode = useMissionControlStore((state) => state.mode);
   const setMode = useMissionControlStore((state) => state.setMode);
+  const setActiveQuadrant = useMissionControlStore((state) => state.setActiveQuadrant);
+  const setViewMode = useMissionControlStore((state) => state.setViewMode);
+  const viewMode = useMissionControlStore((state) => state.viewMode);
+  const activeQuadrant = useMissionControlStore((state) => state.activeQuadrant);
   const addLogEntry = useLogStore((state) => state.addEntry);
   const confirmEmergency = useSettingsStore((state) => state.confirmEmergencyBrake);
 
@@ -60,21 +66,31 @@ export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) 
           break;
 
         case "Escape":
-          // Escape for emergency brake
+          // Escape to exit focused view or trigger emergency brake
           event.preventDefault();
-          if (confirmEmergency) {
-            const confirmed = window.confirm(
-              "🛑 EMERGENCY BRAKE\n\nThis will immediately stop all active tasks. Are you sure?"
-            );
-            if (!confirmed) return;
+          if (viewMode === "focused" && activeQuadrant) {
+            setActiveQuadrant(null);
+            setViewMode("grid");
+            addLogEntry({
+              level: "info",
+              message: "Returned to grid view",
+              source: "Keyboard",
+            });
+          } else {
+            if (confirmEmergency) {
+              const confirmed = window.confirm(
+                "🛑 EMERGENCY BRAKE\n\nThis will immediately stop all active tasks. Are you sure?"
+              );
+              if (!confirmed) return;
+            }
+            setMode("pause");
+            onEmergencyBrake?.();
+            addLogEntry({
+              level: "error",
+              message: "EMERGENCY BRAKE activated via keyboard",
+              source: "Keyboard",
+            });
           }
-          setMode("pause");
-          onEmergencyBrake?.();
-          addLogEntry({
-            level: "error",
-            message: "EMERGENCY BRAKE activated via keyboard",
-            source: "Keyboard",
-          });
           break;
 
         case "l":
@@ -93,14 +109,36 @@ export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) 
           onFocusTerminal?.();
           break;
 
+        case "0":
+          // Ctrl+0 to return to grid view
+          if (event.ctrlKey || event.metaKey) {
+            event.preventDefault();
+            setActiveQuadrant(null);
+            setViewMode("grid");
+            addLogEntry({
+              level: "info",
+              message: "Returned to grid view",
+              source: "Keyboard",
+            });
+          }
+          break;
+
         case "1":
         case "2":
         case "3":
         case "4":
-          // Number keys to switch quadrants (if we add tabs)
+          // Number keys to switch quadrants
           if (event.ctrlKey || event.metaKey) {
             event.preventDefault();
-            // TODO: Implement quadrant switching
+            const quadrant = parseInt(event.key) as 1 | 2 | 3 | 4;
+            setActiveQuadrant(quadrant);
+            setViewMode("focused");
+            onQuadrantSwitch?.(quadrant);
+            addLogEntry({
+              level: "info",
+              message: `Switched to quadrant ${quadrant}`,
+              source: "Keyboard",
+            });
           }
           break;
 
@@ -124,7 +162,7 @@ export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) 
           break;
       }
     },
-    [mode, setMode, onPause, onResume, onEmergencyBrake, onToggleLogs, onFocusTerminal, confirmEmergency, addLogEntry]
+    [mode, setMode, setActiveQuadrant, setViewMode, viewMode, activeQuadrant, onPause, onResume, onEmergencyBrake, onToggleLogs, onFocusTerminal, onQuadrantSwitch, confirmEmergency, addLogEntry]
   );
 
   useEffect(() => {
@@ -135,9 +173,11 @@ export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) 
   return {
     shortcuts: [
       { key: "Space", action: "Pause/Resume" },
-      { key: "Esc", action: "Emergency Brake" },
+      { key: "Esc", action: "Emergency Brake / Exit Focused View" },
+      { key: "Ctrl+0", action: "Return to Grid View" },
       { key: "Ctrl+L", action: "Toggle Logs" },
       { key: "`", action: "Focus Terminal" },
+      { key: "Ctrl+1/2/3/4", action: "Switch Quadrant" },
       { key: "Shift+F", action: "Frenzy Mode" },
     ],
   };

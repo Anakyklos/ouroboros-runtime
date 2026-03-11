@@ -81,7 +81,7 @@ export interface DirectZAIConfig {
 
 export class DirectZAIProvider {
     private apiKey: string;
-    private model: string;
+    private _model: string;
     private baseUrl: string;
     private timeout: number;
     private verbose: boolean;
@@ -93,13 +93,18 @@ export class DirectZAIProvider {
         }
 
         this.apiKey = config.apiKey;
-        this.model = config.model ?? 'glm-4.7';
+        this._model = config.model ?? 'glm-4.7';
         this.baseUrl = config.baseUrl ?? 'https://api.z.ai/api/coding/paas/v4';
         this.timeout = config.timeout ?? 120_000; // 2 min default
         this.verbose = config.verbose ?? false;
         this.eventBus = eventBus ?? globalEventBus;
 
-        this.log('info', `Initialized with model: ${this.model}`);
+        this.log('info', `Initialized with model: ${this._model}`);
+    }
+
+    /** Current model name */
+    get modelName(): string {
+        return this._model;
     }
 
     /**
@@ -111,7 +116,7 @@ export class DirectZAIProvider {
         options?: { temperature?: number; max_tokens?: number }
     ): Promise<ChatResponse> {
         const body = {
-            model: this.model,
+            model: this._model,
             messages,
             tools,
             temperature: options?.temperature ?? 0.7,
@@ -148,7 +153,7 @@ export class DirectZAIProvider {
         options?: { temperature?: number; max_tokens?: number }
     ): AsyncGenerator<StreamChunk> {
         const body = {
-            model: this.model,
+            model: this._model,
             messages,
             tools,
             temperature: options?.temperature ?? 0.7,

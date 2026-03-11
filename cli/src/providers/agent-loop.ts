@@ -6,6 +6,7 @@
  */
 
 import { EventBus, globalEventBus, type ThoughtEvent } from '../daemon/event-bus.js';
+import type { BudgetPort, BudgetCategory } from '../ports/budget.port.js';
 import {
     DirectZAIProvider,
     createDirectZAI,
@@ -28,6 +29,7 @@ export interface AgentResult {
     content: string;
     toolCallsCount: number;
     totalTokens?: number;
+    estimatedCostUsd?: number;
     durationMs: number;
 }
 
@@ -78,17 +80,23 @@ export class AgentLoop {
     private provider: DirectZAIProvider;
     private executor: ToolExecutor;
     private eventBus: EventBus;
+    private budgetTracker?: BudgetPort;
+    private budgetCategory: BudgetCategory;
     private config: Required<AgentLoopConfig>;
 
     constructor(
         provider: DirectZAIProvider,
         executor: ToolExecutor,
         config?: AgentLoopConfig,
-        eventBus?: EventBus
+        eventBus?: EventBus,
+        budgetTracker?: BudgetPort,
+        budgetCategory?: BudgetCategory
     ) {
         this.provider = provider;
         this.executor = executor;
         this.eventBus = eventBus ?? globalEventBus;
+        this.budgetTracker = budgetTracker;
+        this.budgetCategory = budgetCategory ?? 'task';
         this.config = {
             maxIterations: config?.maxIterations ?? 20,
             systemPrompt: config?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
@@ -100,10 +108,11 @@ export class AgentLoop {
     /**
      * Run the agent with a prompt until completion or max iterations
      */
-    async run(prompt: string): Promise<AgentResult> {
+    async run(prompt: string, sessionId?: string): Promise<AgentResult> {
         const startTime = Date.now();
         let totalToolCalls = 0;
         let totalTokens = 0;
+        let totalCostUsd = 0;
 
         // Initialize message history
         const messages: Message[] = [
@@ -126,6 +135,23 @@ export class AgentLoop {
 
             if (response.usage) {
                 totalTokens += response.usage.total_tokens;
+
+                // Record usage in BudgetTracker
+                if (this.budgetTracker) {
+                    try {
+                        const record = await this.budgetTracker.recordUsage({
+                            sessionId,
+                            model: this.provider.modelName ?? 'unknown',
+                            promptTokens: response.usage.prompt_tokens,
+                            completionTokens: response.usage.completion_tokens,
+                            totalTokens: response.usage.total_tokens,
+                            category: this.budgetCategory,
+                        });
+                        totalCostUsd += record.costUsd;
+                    } catch (err) {
+                        this.log('warn', `Failed to record budget usage: ${err}`);
+                    }
+                }
             }
 
             const choice = response.choices[0];
@@ -193,6 +219,7 @@ export class AgentLoop {
                     content: choice.message.content ?? '',
                     toolCallsCount: totalToolCalls,
                     totalTokens,
+                    estimatedCostUsd: totalCostUsd > 0 ? totalCostUsd : undefined,
                     durationMs: Date.now() - startTime,
                 };
             }

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+/// <reference types="bun-types" />
 /**
  * 🌉 Antigravity Bridge
  * 
@@ -18,7 +19,7 @@ const command = process.argv[2];
 
 if (!command) {
     console.error("❌ Error: No command provided.");
-    console.error("Usage: bun run scripts/agy-bridge.ts "<command>"");
+    console.error("Usage: bun run scripts/agy-bridge.ts '<command>'");
     process.exit(1);
 }
 

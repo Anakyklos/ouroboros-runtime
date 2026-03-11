@@ -13,6 +13,7 @@ import type {
     IUnifiedIncomingMessage,
     IUnifiedOutgoingMessage
 } from '../../ports/IChannelPlugin.js';
+import { globalEventBus, type EventBus } from '../../daemon/event-bus.js';
 
 export class LarkPlugin implements IMChannelPlugin {
     readonly type: PluginType = 'lark';
@@ -22,9 +23,14 @@ export class LarkPlugin implements IMChannelPlugin {
     private wsClient: lark.WSClient | null = null;
     private eventDispatcher: lark.EventDispatcher | null = null;
     private botInfo: BotInfo | null = null;
+    private eventBus: EventBus;
 
     private messageHandler?: (msg: IUnifiedIncomingMessage) => Promise<void>;
     private confirmHandler?: (userId: string, platform: string, callId: string, value: string) => Promise<void>;
+
+    constructor(eventBus?: EventBus) {
+        this.eventBus = eventBus ?? globalEventBus;
+    }
 
     async initialize(config: IChannelPluginConfig): Promise<void> {
         const { appId, appSecret } = config.credentials || {};
@@ -53,18 +59,19 @@ export class LarkPlugin implements IMChannelPlugin {
         });
 
         this.eventDispatcher.register({
-            'im.message.receive_v1': async (data: any) => {
+            'im.message.receive_v1': async (data: unknown) => {
                 if (this.messageHandler) {
                     const msg = this.mapToUnified(data);
                     if (msg) void this.messageHandler(msg);
                 }
             },
-            'card.action.trigger': async (data: any) => {
-                const action = data?.event?.action;
-                const operator = data?.event?.operator;
+            'card.action.trigger': async (data: unknown) => {
+                const eventData = data as { event?: { action?: { value?: { action?: string; callId?: string; result?: string } }; operator?: { user_id?: string; open_id?: string } } };
+                const action = eventData?.event?.action;
+                const operator = eventData?.event?.operator;
 
                 if (action?.value?.action === 'tool_confirm' && this.confirmHandler) {
-                    const userId = operator.user_id || operator.open_id;
+                    const userId = operator?.user_id || operator?.open_id;
                     const callId = action.value.callId;
                     const value = action.value.result;
                     if (userId && callId && value) {
@@ -81,11 +88,13 @@ export class LarkPlugin implements IMChannelPlugin {
             domain: lark.Domain.Feishu,
         });
 
-        this.wsClient.start({ eventDispatcher: this.eventDispatcher }).catch(err => {
-            console.error('[LarkPlugin] WS Error:', err);
+        this.wsClient.start({ eventDispatcher: this.eventDispatcher }).catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            this.log('error', `WS Error: ${message}`);
         });
 
         this.status = 'running';
+        this.log('info', 'Lark WebSocket client started');
     }
 
     async stop(): Promise<void> {
@@ -133,7 +142,7 @@ export class LarkPlugin implements IMChannelPlugin {
                 path: { message_id: messageId },
                 data: { content: JSON.stringify(card) },
             });
-        } catch (e: any) {
+        } catch {
             // Ignore not modified errors
         }
     }
@@ -156,29 +165,30 @@ export class LarkPlugin implements IMChannelPlugin {
         };
     }
 
-    private mapToUnified(event: any): IUnifiedIncomingMessage | null {
-        const message = event?.event?.message;
-        const sender = event?.event?.sender;
+    private mapToUnified(event: unknown): IUnifiedIncomingMessage | null {
+        const eventData = event as { event?: { message?: { message_id?: string; chat_id?: string; message_type?: string; content?: string; create_time?: string }; sender?: { sender_id?: { user_id?: string; open_id?: string } } } };
+        const message = eventData?.event?.message;
+        const sender = eventData?.event?.sender;
 
         if (!message || !sender) return null;
 
-        const userId = sender.sender_id?.user_id || sender.sender_id?.open_id;
+        const userId = sender.sender_id?.user_id || sender.sender_id?.open_id || 'unknown';
         const isText = message.message_type === 'text';
         let text = '';
 
         if (isText && message.content) {
             try {
-                const parsed = JSON.parse(message.content);
+                const parsed = JSON.parse(message.content) as { text?: string };
                 text = parsed.text || '';
-            } catch (e) {
+            } catch {
                 text = message.content;
             }
         }
 
         return {
-            id: message.message_id,
+            id: message.message_id || '',
             platform: this.type,
-            chatId: message.chat_id,
+            chatId: message.chat_id || '',
             user: {
                 id: userId,
                 displayName: `LarkUser_${userId.substring(0, 6)}`
@@ -187,7 +197,11 @@ export class LarkPlugin implements IMChannelPlugin {
                 type: 'text',
                 text: text
             },
-            timestamp: parseInt(message.create_time, 10) || Date.now()
+            timestamp: parseInt(message.create_time || '0', 10) || Date.now()
         };
+    }
+
+    private log(level: 'debug' | 'info' | 'warn' | 'error', message: string): void {
+        this.eventBus.log(level, message, 'LarkPlugin');
     }
 }
