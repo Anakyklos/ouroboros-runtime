@@ -26,6 +26,7 @@ import { type WaveTask, type WaveExecutionResult } from "./wave-types.js";
 import { AntigravityBridge, createAntigravityBridge, type AntigravityConfig } from "../bridges/AntigravityBridge.js";
 import { GeminiCliBridge, createGeminiCliBridge, type GeminiCliConfig, type GeminiModel, type AuthStatus, type GeminiVersion } from "../bridges/GeminiCliBridge.js";
 import { JulesBridge, createJulesBridge, type JulesConfig, type JulesSession, type JulesTaskResult } from "../bridges/JulesBridge.js";
+import { InferenceSubsystem, createInferenceSubsystem, type InferenceSubsystemConfig, type InferenceStatus } from "../inference/InferenceSubsystem.js";
 
 export interface GatewayOrchestratorConfig {
     gateway: Partial<GatewayConfig>;
@@ -36,6 +37,7 @@ export interface GatewayOrchestratorConfig {
     antigravity: Partial<AntigravityConfig>;
     gemini: Partial<GeminiCliConfig>;
     jules: Partial<JulesConfig> & { apiKey?: string };
+    inference: Partial<InferenceSubsystemConfig>;
 }
 
 const DEFAULT_CONFIG: GatewayOrchestratorConfig = {
@@ -47,6 +49,7 @@ const DEFAULT_CONFIG: GatewayOrchestratorConfig = {
     antigravity: {},
     gemini: {},
     jules: {},
+    inference: {},
 };
 
 /**
@@ -71,6 +74,7 @@ export class GatewayOrchestrator {
     private antigravity: AntigravityBridge;
     private gemini: GeminiCliBridge;
     private jules: JulesBridge | null = null;
+    private inference: InferenceSubsystem;
     private eventBus: EventBus;
     private config: GatewayOrchestratorConfig;
 
@@ -85,6 +89,7 @@ export class GatewayOrchestrator {
         this.waveExecutor = createWaveExecutor(this.orchestrator, this.config.wave);
         this.antigravity = createAntigravityBridge(this.config.antigravity);
         this.gemini = createGeminiCliBridge(this.config.gemini);
+        this.inference = createInferenceSubsystem(this.config.inference, this.eventBus);
 
         // Jules is optional (requires API key)
         if (this.config.jules?.apiKey) {
@@ -97,6 +102,18 @@ export class GatewayOrchestrator {
      */
     initialize(apiKey: string): void {
         this.orchestrator.initialize(apiKey);
+
+        // Inference init is async and non-blocking — it runs in background
+        this.inference.initialize().then(result => {
+            if (result.ready) {
+                this.log("info", `🧠 Local inference ready — models: ${result.availableModels.join(", ")}`);
+            } else {
+                this.log("warn", "🧠 Local inference unavailable (Ollama not reachable)");
+            }
+        }).catch(err => {
+            this.log("warn", `🧠 Local inference init failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+
         this.log("info", "✅ GatewayOrchestrator initialized");
     }
 
@@ -113,6 +130,12 @@ export class GatewayOrchestrator {
      */
     stop(): void {
         this.gateway.stop();
+        // Persist inference memory if available
+        if (this.inference.isReady()) {
+            this.inference.persistMemory().catch(err => {
+                this.log("warn", `Failed to persist inference memory: ${err instanceof Error ? err.message : String(err)}`);
+            });
+        }
         this.log("info", "🛑 GatewayOrchestrator stopped");
     }
 
@@ -263,6 +286,29 @@ export class GatewayOrchestrator {
      */
     async getRelevantContext(taskPrompt: string): Promise<string> {
         return this.memory.getRelevantContext(taskPrompt);
+    }
+
+    // --- LOCAL INFERENCE METHODS ---
+
+    /**
+     * Get the local inference subsystem.
+     */
+    getInference(): InferenceSubsystem {
+        return this.inference;
+    }
+
+    /**
+     * Check if local inference is available.
+     */
+    isLocalInferenceAvailable(): boolean {
+        return this.inference.isReady();
+    }
+
+    /**
+     * Get inference status (model availability, metrics, cache).
+     */
+    async getInferenceStatus(): Promise<InferenceStatus> {
+        return this.inference.getStatus();
     }
 
     private log(level: "debug" | "info" | "warn" | "error", message: string): void {

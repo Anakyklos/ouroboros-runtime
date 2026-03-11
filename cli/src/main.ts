@@ -94,6 +94,8 @@ async function handleHelp(): Promise<string> {
 /task <desc>      - Dispatch a task to Gemini
                     Prefix with (agy) to use Antigravity
 /memory <query>   - Search memory/context
+/inference        - Local inference status and benchmarks
+/local <prompt>   - Query local models directly
 /help             - Show this help message
 /exit             - Exit Ouroboros
 
@@ -101,6 +103,58 @@ ${geminiHelp}
 
 Or just type naturally - Ouroboros will understand your intent!
 `.trim();
+}
+
+async function handleInference(subCmd: string): Promise<string> {
+    try {
+        if (!go.isLocalInferenceAvailable()) {
+            return '🧠 Local inference is not available. Is Ollama running?';
+        }
+
+        if (subCmd === 'bench' || subCmd === 'benchmark') {
+            const report = await go.getInference().runBenchmark();
+            const jsonRate = (report.summary.validJSONRate * 100).toFixed(0);
+            return `🧠 Benchmark Report\n\nJSON Rate: ${jsonRate}%\nDuration: ${report.duration}ms\n\nModels:\n${report.results.map(r => `  ${r.isValidJSON ? '✅' : '❌'} ${r.modelId} [${r.role}] — ${r.latencyMs}ms${r.error ? ` (${r.error})` : ''}`).join('\n')}`;
+        }
+
+        // Default: status
+        const status = await go.getInferenceStatus();
+        const modelLines = status.models.map(m => `  ${m.available ? '✅' : '❌'} ${m.name} (${m.id}) [${m.role}]`);
+        const metricsLines = Object.entries(status.metrics).map(
+            ([id, m]) => `  ${id}: ${m.totalRequests} reqs, avg ${m.avgDurationMs}ms, JSON ${(m.validJSONRate * 100).toFixed(0)}%`
+        );
+
+        return [
+            `🧠 **Local Inference Status**`,
+            `Ollama: ${status.ollamaHealthy ? '✅ Healthy' : '❌ Down'}`,
+            `Memory: ${status.memoryEntries} entries`,
+            `Cache: ${status.cacheStats.size} entries (hit rate: ${(status.cacheStats.hitRate * 100).toFixed(0)}%)`,
+            '',
+            '**Models:**',
+            ...modelLines,
+            ...(metricsLines.length > 0 ? ['', '**Metrics:**', ...metricsLines] : []),
+        ].join('\n');
+    } catch (e) {
+        return `Error: ${e instanceof Error ? e.message : String(e)}`;
+    }
+}
+
+async function handleLocal(prompt: string): Promise<string> {
+    try {
+        if (!go.isLocalInferenceAvailable()) {
+            return '🧠 Local inference is not available. Is Ollama running?';
+        }
+
+        const inference = go.getInference();
+
+        // Get semantic context if available
+        const context = await inference.getRetriever().getContextString(prompt, 3);
+
+        const intent = await inference.getPolicy().classifyIntent(prompt);
+        return `🧠 **Local Model Response**\n\n**Intent:** ${intent}${context ? `\n\n**Semantic Context:**\n${context}` : ''}`;
+    } catch (e) {
+        return `Error: ${e instanceof Error ? e.message : String(e)}`;
+    }
 }
 
 // ============================================================================
@@ -131,6 +185,12 @@ async function handleMessage(input: string): Promise<void> {
                 break;
             case 'memory':
                 response = argStr ? await handleMemory(argStr) : 'Usage: /memory <query>';
+                break;
+            case 'inference':
+                response = await handleInference(argStr);
+                break;
+            case 'local':
+                response = argStr ? await handleLocal(argStr) : 'Usage: /local <prompt>';
                 break;
             case 'gemini':
                 // Handle all /gemini:* commands
