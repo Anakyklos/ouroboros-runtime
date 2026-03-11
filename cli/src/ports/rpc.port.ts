@@ -7,14 +7,15 @@
 
 export interface RpcRequest {
     jsonrpc: '2.0';
-    id: string | number;
+    id: string | number | null;
     method: string;
     params?: Record<string, unknown>;
+    apiKey?: string;
 }
 
 export interface RpcResponse {
     jsonrpc: '2.0';
-    id: string | number;
+    id: string | number | null;
     result?: unknown;
     error?: RpcError;
 }
@@ -44,3 +45,11 @@ export interface RpcPort {
     registerMethod(name: string, handler: RpcMethodHandler): void;
     handleRequest(request: RpcRequest): Promise<RpcResponse>;
 }
+
+export interface DaemonConfig {
+    port: number;
+    host: string;
+    sessionToken?: string;
+    apiKey?: string;
+}
+

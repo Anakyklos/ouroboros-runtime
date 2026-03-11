@@ -5,8 +5,11 @@
  * Roteia métodos para handlers apropriados.
  */
 
-import type { RpcPort, RpcRequest, RpcResponse, RpcMethodHandler } from '../ports/rpc.port.js';
+import type { RpcPort, RpcRequest, RpcResponse, RpcMethodHandler, DaemonConfig } from '../ports/rpc.port.js';
 import { RPC_ERROR_CODES } from '../ports/rpc.port.js';
+import { FastifyRequest } from 'fastify';
+import { WebSocket, type RawData } from 'ws';
+import { z } from 'zod';
 import { SessionManager } from './session-manager.js';
 import { GatewayOrchestrator } from '../orchestration/GatewayOrchestrator.js';
 import type { StoragePort } from '../ports/storage.port.js';
@@ -19,23 +22,128 @@ import { Orchestrator } from '../orchestration/Orchestrator.js';
 import { WaveExecutor } from '../orchestration/WaveExecutor.js';
 import type { WaveTask, WaveExecutionResult } from '../orchestration/wave-types.js';
 
+// --- RPC Validation Schemas ---
+const SessionCreateSchema = z.object({
+    context: z.string().optional().default(''),
+    metadata: z.record(z.string(), z.unknown()).optional().default({}),
+});
+
+const SessionIdSchema = z.object({
+    id: z.string(),
+});
+
+const SessionIdParamsSchema = z.object({
+    sessionId: z.string(),
+});
+
+const SessionListSchema = z.object({
+    status: z.string().optional(),
+});
+
+const AgentInputSchema = z.object({
+    sessionId: z.string(),
+    prompt: z.string(),
+});
+
+const DaemonDelegateSchema = z.object({
+    agent: z.string(),
+    prompt: z.string(),
+    context: z.unknown().optional(),
+});
+
 export class RpcGateway implements RpcPort {
     private methods: Map<string, RpcMethodHandler> = new Map();
     private gatewayOrchestrator: GatewayOrchestrator;
     private sessionManager: SessionManager;
+    private config: DaemonConfig;
+    private clients: Set<WebSocket> = new Set();
 
     constructor(
         gatewayOrchestrator: GatewayOrchestrator,
         storage: StoragePort,
         eventBus: EventBus,
-        apiKey?: string
+        sessionManager: SessionManager,
+        config: DaemonConfig
     ) {
         this.gatewayOrchestrator = gatewayOrchestrator;
-        this.sessionManager = new SessionManager(storage, eventBus, apiKey);
+        this.sessionManager = sessionManager;
+        this.config = config;
+
         this.registerSystemMethods();
         this.registerSessionMethods();
         this.registerAgentMethods();
         this.registerDaemonMethods();
+
+        this.setupEventForwarding(eventBus);
+    }
+
+    public handleConnection(socket: WebSocket, req: FastifyRequest): void {
+        const apiKey = req.headers['x-api-key'];
+        console.log(`[RpcGateway] New connection attempt. API Key: ${apiKey}`);
+
+        if (!apiKey || apiKey !== this.config.apiKey) {
+            console.warn(`[RpcGateway] Unauthorized attempt with key: ${apiKey}`);
+            if (typeof (socket as any).close === 'function') {
+                (socket as any).close(4001, 'Unauthorized');
+            } else if (typeof (socket as any).destroy === 'function') {
+                (socket as any).destroy();
+            }
+            return;
+        }
+
+        console.log(`[RpcGateway] Connection authorized`);
+        this.clients.add(socket);
+
+        socket.on('message', async (message: RawData) => {
+            console.log(`[RpcGateway] Received message: ${message.toString()}`);
+            try {
+                const data = JSON.parse(message.toString()) as RpcRequest;
+                const response = await this.handleRequest({
+                    ...data,
+                    apiKey: apiKey as string
+                });
+                console.log(`[RpcGateway] Sending response: ${JSON.stringify(response)}`);
+                socket.send(JSON.stringify(response));
+            } catch (err) {
+                console.error(`[RpcGateway] Error handling message:`, err);
+                const errorResponse: RpcResponse = {
+                    jsonrpc: '2.0',
+                    id: null,
+                    error: {
+                        code: RPC_ERROR_CODES.PARSE_ERROR,
+                        message: 'Parse error'
+                    }
+                };
+                socket.send(JSON.stringify(errorResponse));
+            }
+        });
+
+        socket.on('close', () => {
+            console.log(`[RpcGateway] Connection closed`);
+            this.clients.delete(socket);
+        });
+
+        socket.on('error', (err) => {
+            console.error(`[RpcGateway] Socket error:`, err);
+            this.clients.delete(socket);
+        });
+    }
+
+    private setupEventForwarding(eventBus: EventBus): void {
+        eventBus.on('*', (payload: any) => {
+            const notification = {
+                jsonrpc: '2.0',
+                method: `event.${payload.event}`,
+                params: payload.data
+            };
+
+            const message = JSON.stringify(notification);
+            for (const client of this.clients) {
+                if (client.readyState === WebSocket.OPEN) {
+                    client.send(message);
+                }
+            }
+        });
     }
 
     registerMethod(name: string, handler: RpcMethodHandler): void {
@@ -64,6 +172,17 @@ export class RpcGateway implements RpcPort {
                 result,
             };
         } catch (err) {
+            if (err instanceof z.ZodError) {
+                return {
+                    jsonrpc: '2.0',
+                    id: request.id,
+                    error: {
+                        code: RPC_ERROR_CODES.INVALID_PARAMS,
+                        message: 'Invalid parameters',
+                        data: err.issues,
+                    },
+                };
+            }
             return {
                 jsonrpc: '2.0',
                 id: request.id,
@@ -100,39 +219,51 @@ export class RpcGateway implements RpcPort {
                 name: 'ouroboros-daemon',
             };
         });
+
+        // system.ping - Simple connectivity check
+        this.registerMethod('system.ping', async () => {
+            return { status: 'pong', timestamp: new Date().toISOString() };
+        });
+
+        // ping - Alias for health check
+        this.registerMethod('ping', async () => {
+            return { status: 'pong', timestamp: new Date().toISOString() };
+        });
     }
 
     private registerSessionMethods(): void {
         // session.create - Create new session
         this.registerMethod('session.create', async (params) => {
+            const { context, metadata } = SessionCreateSchema.parse(params);
             const session = await this.sessionManager.createSession({
                 status: 'active',
-                contextSnapshot: params.context as string ?? '',
-                metadata: params.metadata as Record<string, unknown> ?? {},
+                contextSnapshot: context,
+                metadata,
             });
             return { sessionId: session.id };
         });
 
         // session.list - List all sessions
         this.registerMethod('session.list', async (params) => {
-            const sessions = await this.sessionManager.listSessions(
-                params.status as string | undefined
-            );
+            const { status } = SessionListSchema.parse(params);
+            const sessions = await this.sessionManager.listSessions(status);
             return { sessions };
         });
 
         // session.get - Get session by ID
         this.registerMethod('session.get', async (params) => {
-            const session = await this.sessionManager.getSession(params.id as string);
+            const { id } = SessionIdSchema.parse(params);
+            const session = await this.sessionManager.getSession(id);
             if (!session) {
-                throw new Error(`Session not found: ${params.id}`);
+                throw new Error(`Session not found: ${id}`);
             }
             return { session };
         });
 
         // session.attach - Attach to existing session
         this.registerMethod('session.attach', async (params) => {
-            const session = await this.sessionManager.attachSession(params.id as string);
+            const { id } = SessionIdSchema.parse(params);
+            const session = await this.sessionManager.attachSession(id);
             return { session };
         });
     }
@@ -140,23 +271,30 @@ export class RpcGateway implements RpcPort {
     private registerAgentMethods(): void {
         // agent.input - Send input to agent
         this.registerMethod('agent.input', async (params) => {
-            const result = await this.sessionManager.sendInput(
-                params.sessionId as string,
-                params.prompt as string
-            );
+            const { sessionId, prompt } = AgentInputSchema.parse(params);
+            const result = await this.sessionManager.sendInput(sessionId, prompt);
             return { status: 'task_started', taskId: result.taskId };
         });
 
         // agent.interrupt - Interrupt agent execution
         this.registerMethod('agent.interrupt', async (params) => {
-            await this.sessionManager.interruptSession(params.sessionId as string);
+            const { sessionId } = SessionIdParamsSchema.parse(params);
+            await this.sessionManager.interruptSession(sessionId);
             return { status: 'interrupted' };
         });
 
         // agent.resume - Resume paused agent execution
         this.registerMethod('agent.resume', async (params) => {
-            await this.sessionManager.resumeSession(params.sessionId as string);
+            const { sessionId } = SessionIdParamsSchema.parse(params);
+            await this.sessionManager.resumeSession(sessionId);
             return { status: 'resumed' };
+        });
+
+        // agent.chat - Main chat interface
+        this.registerMethod('agent.chat', async (params) => {
+            const { sessionId, prompt } = AgentInputSchema.parse(params);
+            const result = await this.sessionManager.sendInput(sessionId, prompt);
+            return { status: 'message_sent', taskId: result.taskId };
         });
     }
 
@@ -327,9 +465,7 @@ Rules:
     private registerDaemonMethods(): void {
         // daemon.delegate - Delegate task to specific agent
         this.registerMethod('daemon.delegate', async (params) => {
-            const agent = params.agent as string;
-            const prompt = params.prompt as string;
-            const context = params.context as string | object | undefined;
+            const { agent, prompt, context } = DaemonDelegateSchema.parse(params);
 
             try {
                 let result: unknown;
@@ -338,7 +474,7 @@ Rules:
                     case 'gemini':
                         result = await this.gatewayOrchestrator.delegateToGemini(
                             prompt,
-                            params.model as GeminiModel ?? 'flash'
+                            (params as any).model as GeminiModel ?? 'flash'
                         );
                         break;
                     case 'claude':

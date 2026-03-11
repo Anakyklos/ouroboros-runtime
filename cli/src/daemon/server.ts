@@ -10,19 +10,15 @@ import { EventBus, globalEventBus } from './event-bus.js';
 import { RpcGateway } from './rpc-gateway.js';
 import { GatewayOrchestrator } from '../orchestration/GatewayOrchestrator.js';
 import type { StoragePort } from '../ports/storage.port.js';
+import type { DaemonConfig } from '../ports/rpc.port.js';
+import { SessionManager } from './session-manager.js';
 import fastifyWebsocket from '@fastify/websocket';
-import type { SocketStream } from '@fastify/websocket';
-
-export interface DaemonConfig {
-    port: number;
-    host: string;
-    sessionToken?: string;
-    apiKey?: string;
-}
+import type { RawData, WebSocket } from 'ws';
 
 const DEFAULT_CONFIG: DaemonConfig = {
     port: 7777,
     host: '127.0.0.1',  // Localhost only for security
+    apiKey: process.env.DAEMON_API_KEY || 'ouroboros_dev_key'
 };
 
 export class DaemonServer {
@@ -31,6 +27,7 @@ export class DaemonServer {
     private eventBus: EventBus;
     private rpcGateway: RpcGateway;
     private gatewayOrchestrator: GatewayOrchestrator;
+    private sessionManager: SessionManager;
     private isRunning = false;
 
     constructor(
@@ -45,8 +42,15 @@ export class DaemonServer {
         if (this.config.apiKey) {
             this.gatewayOrchestrator.initialize(this.config.apiKey);
         }
-        
-        this.rpcGateway = new RpcGateway(this.gatewayOrchestrator, storage, eventBus, this.config.apiKey);
+
+        this.sessionManager = new SessionManager(storage, eventBus);
+        this.rpcGateway = new RpcGateway(
+            this.gatewayOrchestrator,
+            storage,
+            eventBus,
+            this.sessionManager,
+            this.config
+        );
 
         this.app = Fastify({
             logger: false,
@@ -54,6 +58,11 @@ export class DaemonServer {
 
         this.app.register(fastifyWebsocket);
         this.setupRoutes();
+
+        this.app.ready(() => {
+            console.log('[DaemonServer] Routes registered:');
+            console.log(this.app.printRoutes());
+        });
     }
     private setupRoutes(): void {
         // Health check
@@ -68,6 +77,7 @@ export class DaemonServer {
                 id: string | number;
                 method: string;
                 params?: Record<string, unknown>;
+                apiKey?: string;
             };
 
             // Validate JSON-RPC format
@@ -84,26 +94,19 @@ export class DaemonServer {
                 id: rpcRequest.id,
                 method: rpcRequest.method,
                 params: rpcRequest.params,
+                apiKey: rpcRequest.apiKey
             });
 
             return response;
         });
 
-        // WebSocket endpoint for real-time events
+        // JSON-RPC via WebSocket (Unified RPC + Events)
         this.app.register(async (fastify) => {
-            fastify.get('/ws', { websocket: true }, (connection: SocketStream, req) => {
-                // Subscribe to all events and push to client
-                const onEvent = (payload: unknown) => {
-                    if (connection.socket.readyState === 1) { // WebSocket.OPEN
-                        connection.socket.send(JSON.stringify(payload));
-                    }
-                };
-                
-                const unsubscribe = this.eventBus.on('*' as any, onEvent as any);
-                
-                connection.socket.on('close', () => {
-                    unsubscribe();
-                });
+            fastify.get('/rpc-ws', { websocket: true }, (connection: any, req: any) => {
+                console.log(`[DaemonServer] WebSocket connection reached /rpc-ws from ${req.ip}`);
+                // connection in @fastify/websocket v11 is SocketStream
+                const socket = connection.socket || connection;
+                this.rpcGateway.handleConnection(socket, req);
             });
         });
     }

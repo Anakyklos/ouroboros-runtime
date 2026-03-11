@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
 
 export type DaemonMode = "pause" | "running" | "frenzy";
 export type ViewMode = "grid" | "focused";
@@ -75,6 +76,17 @@ export interface DaemonSession {
   metadata?: Record<string, unknown>;
 }
 
+/** Resultado de uma delegação a um agente externo */
+export interface DelegationResult {
+  id: string;
+  agent: string;
+  prompt: string;
+  status: "pending" | "success" | "error";
+  result?: unknown;
+  error?: string;
+  timestamp: string;
+}
+
 interface MissionControlState {
   mode: DaemonMode;
   confidence: number;
@@ -119,6 +131,13 @@ interface MissionControlState {
   /** Se true, daemon.list_agents retornou timeout */
   agentsStatusTimedOut: boolean;
 
+  /** Resultados de delegações a agentes externos */
+  delegationResults: DelegationResult[];
+  /** Flag global de delegação em andamento */
+  isDelegating: boolean;
+  /** Último resultado de delegação (para feedback rápido) */
+  lastDelegation: DelegationResult | null;
+
   activeQuadrant: Quadrant;
   viewMode: ViewMode;
 
@@ -152,9 +171,16 @@ interface MissionControlState {
     status: Record<string, AgentBridgeStatus>,
     timedOut?: boolean
   ) => void;
+
+  /** Delegation actions */
+  addDelegationResult: (result: DelegationResult) => void;
+  setDelegating: (value: boolean) => void;
+  clearDelegationResults: () => void;
 }
 
-export const useMissionControlStore = create<MissionControlState>((set) => ({
+export const useMissionControlStore = create<MissionControlState>()(
+  persist(
+    (set) => ({
   mode: "running",
   confidence: 80,
 
@@ -180,10 +206,19 @@ export const useMissionControlStore = create<MissionControlState>((set) => ({
   agentBridgeStatus: {},
   agentsStatusTimedOut: false,
 
+  delegationResults: [],
+  isDelegating: false,
+  lastDelegation: null,
+
   activeQuadrant: null,
   viewMode: "grid",
 
-  setMode: (mode) => set({ mode }),
+  setMode: (mode) =>
+    set((state) => ({
+      mode,
+      // Se pausar, limpamos estados transientes de carregamento
+      isDelegating: mode === "pause" ? false : state.isDelegating,
+    })),
   setConfidence: (confidence) => set({ confidence }),
 
   updateWave: (waveId, updates) =>
@@ -234,6 +269,7 @@ export const useMissionControlStore = create<MissionControlState>((set) => ({
   emergencyBrake: () =>
     set((state) => ({
       mode: "pause",
+      isDelegating: false,
       waves: state.waves.map((w) => ({
         ...w,
         tasks: w.tasks.map((t) => ({
@@ -247,4 +283,45 @@ export const useMissionControlStore = create<MissionControlState>((set) => ({
 
   setAgentBridgeStatus: (status, timedOut = false) =>
     set({ agentBridgeStatus: status, agentsStatusTimedOut: timedOut }),
-}));
+
+  addDelegationResult: (result) =>
+    set((state) => {
+      const existingIndex = state.delegationResults.findIndex(
+        (r) => r.id === result.id
+      );
+
+      let nextResults;
+      if (existingIndex >= 0) {
+        nextResults = [...state.delegationResults];
+        nextResults[existingIndex] = result;
+      } else {
+        nextResults = [result, ...state.delegationResults];
+      }
+
+      return {
+        delegationResults: nextResults.slice(0, 50),
+        lastDelegation: result,
+      };
+    }),
+
+  setDelegating: (isDelegating) => set({ isDelegating }),
+
+  clearDelegationResults: () =>
+    set({ delegationResults: [], lastDelegation: null }),
+    }),
+    {
+      name: "mission-control-storage",
+      storage: createJSONStorage(() => localStorage),
+      partialize: (state) => ({
+        viewMode: state.viewMode,
+        delegationResults: state.delegationResults,
+      }),
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          // Garante a limpeza de qualquer race condition / ghost state no unmount ou cross-sessions
+          state.setDelegating(false);
+        }
+      },
+    }
+  )
+);

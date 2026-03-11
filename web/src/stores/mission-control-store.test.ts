@@ -22,6 +22,9 @@ beforeEach(() => {
     daemonSessions: [],
     agentBridgeStatus: {},
     agentsStatusTimedOut: false,
+    delegationResults: [],
+    isDelegating: false,
+    lastDelegation: null,
     activeQuadrant: null,
     viewMode: "grid",
     uptime: "0h 0m",
@@ -139,5 +142,70 @@ describe("MissionControlStore", () => {
     expect(state.agentBridgeStatus.gemini).toBe("available");
     expect(state.agentBridgeStatus.antigravity).toBe("unavailable");
     expect(state.agentsStatusTimedOut).toBe(true);
+  });
+
+  it("should track delegation results and cap at 50", () => {
+    const store = useMissionControlStore.getState();
+
+    // Add a result
+    store.addDelegationResult({
+      id: "del-1",
+      agent: "gemini",
+      prompt: "test prompt",
+      status: "success",
+      timestamp: new Date().toISOString(),
+    });
+
+    let state = useMissionControlStore.getState();
+    expect(state.delegationResults).toHaveLength(1);
+    expect(state.delegationResults[0].agent).toBe("gemini");
+    expect(state.lastDelegation?.id).toBe("del-1");
+
+    // Latest result should be first (prepended)
+    store.addDelegationResult({
+      id: "del-2",
+      agent: "claude",
+      prompt: "second prompt",
+      status: "pending",
+      timestamp: new Date().toISOString(),
+    });
+
+    state = useMissionControlStore.getState();
+    expect(state.delegationResults).toHaveLength(2);
+    expect(state.delegationResults[0].id).toBe("del-2"); // newest first
+    expect(state.lastDelegation?.id).toBe("del-2");
+  });
+
+  it("should set delegating flag", () => {
+    const store = useMissionControlStore.getState();
+
+    expect(store.isDelegating).toBe(false);
+
+    store.setDelegating(true);
+    expect(useMissionControlStore.getState().isDelegating).toBe(true);
+
+    store.setDelegating(false);
+    expect(useMissionControlStore.getState().isDelegating).toBe(false);
+  });
+
+  it("should clear delegation results and lastDelegation", () => {
+    const store = useMissionControlStore.getState();
+
+    store.addDelegationResult({
+      id: "del-1",
+      agent: "gemini",
+      prompt: "test",
+      status: "success",
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(useMissionControlStore.getState().delegationResults).toHaveLength(1);
+    expect(useMissionControlStore.getState().lastDelegation).not.toBeNull();
+
+    store.clearDelegationResults();
+
+    const state = useMissionControlStore.getState();
+    expect(state.delegationResults).toHaveLength(0);
+    expect(state.lastDelegation).toBeNull();
   });
 });

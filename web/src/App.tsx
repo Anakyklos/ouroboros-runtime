@@ -9,6 +9,7 @@ import { AnalysisPage } from "@/pages/analysis";
 import { LogsPage } from "@/pages/logs";
 import { Settings } from "@/pages/settings";
 import { useEventBus } from "@/hooks/use-event-bus";
+import { Toaster } from "sonner";
 import "@/styles/globals.css";
 
 export function App() {
@@ -17,6 +18,7 @@ export function App() {
 
   return (
     <ErrorBoundary>
+      <Toaster position="bottom-right" richColors theme="system" />
       <div className="h-screen w-screen bg-[var(--color-background)] text-[var(--color-foreground)] flex flex-col overflow-hidden">
         {/* Top Status Bar */}
         <StatusBar />

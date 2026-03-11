@@ -11,12 +11,16 @@ import type { RpcRequest } from '../ports/rpc.port.js';
 import type { StoragePort } from '../ports/storage.port.js';
 import { EventBus } from './event-bus.js';
 import type { GatewayOrchestrator } from '../orchestration/GatewayOrchestrator.js';
+import { SessionManager } from './session-manager.js';
+import type { DaemonConfig } from '../ports/rpc.port.js';
 
 describe('RpcGateway', () => {
     let gateway: RpcGateway;
     let mockStorage: StoragePort;
     let mockEventBus: EventBus;
     let mockOrchestrator: GatewayOrchestrator;
+    let mockSessionManager: SessionManager;
+    let mockConfig: DaemonConfig;
 
     beforeEach(() => {
         mockEventBus = new EventBus();
@@ -79,7 +83,15 @@ describe('RpcGateway', () => {
             })),
         } as unknown as GatewayOrchestrator;
 
-        gateway = new RpcGateway(mockOrchestrator, mockStorage, mockEventBus);
+        mockConfig = {
+            port: 3000,
+            host: 'localhost',
+            apiKey: 'test-key',
+        };
+
+        mockSessionManager = new SessionManager(mockStorage, mockEventBus, 'test-key');
+
+        gateway = new RpcGateway(mockOrchestrator, mockStorage, mockEventBus, mockSessionManager, mockConfig);
     });
 
     describe('handleRequest', () => {

@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useRef, useCallback, useState } from "react";
+import { toast } from "sonner";
 import {
   useMissionControlStore,
   type DaemonSession,
@@ -221,7 +222,9 @@ export function useDaemonAPI(options: DaemonAPIOptions = {}) {
         updatedAt: new Date().toISOString(),
       };
     } catch (err) {
-      console.error("[DaemonAPI] session.create falhou:", err instanceof Error ? err.message : err);
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[DaemonAPI] session.create falhou:", message);
+      toast.error(`Falha ao criar sessão: ${message}`);
       return null;
     }
   }, [rpcCall, fetchSessions]);
@@ -237,7 +240,9 @@ export function useDaemonAPI(options: DaemonAPIOptions = {}) {
       });
       return result;
     } catch (err) {
-      console.error("[DaemonAPI] agent.input falhou:", err instanceof Error ? err.message : err);
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[DaemonAPI] agent.input falhou:", message);
+      toast.error(`Falha ao enviar input: ${message}`);
       return null;
     }
   }, [rpcCall]);
@@ -292,6 +297,17 @@ export function useDaemonAPI(options: DaemonAPIOptions = {}) {
   ): Promise<DelegateResponse | null> => {
     const isWaveMode = agent === "glm" && prompt.trim().toUpperCase().startsWith("WAVE:");
     const timeoutMs = isWaveMode ? 120000 : 30000;
+    const store = useMissionControlStore.getState();
+    const resultId = `del-${Date.now()}`;
+
+    store.setDelegating(true);
+    store.addDelegationResult({
+      id: resultId,
+      agent,
+      prompt,
+      status: "pending",
+      timestamp: new Date().toISOString(),
+    });
 
     try {
       setIsLoading(true);
@@ -300,15 +316,73 @@ export function useDaemonAPI(options: DaemonAPIOptions = {}) {
         { agent, prompt, context },
         timeoutMs
       );
+
+      store.addDelegationResult({
+        id: resultId,
+        agent,
+        prompt,
+        status: "success",
+        result: result.result,
+        timestamp: result.timestamp,
+      });
+
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       console.error(`[DaemonAPI] daemon.delegate(${agent}) falhou:`, message);
+
+      store.addDelegationResult({
+        id: resultId,
+        agent,
+        prompt,
+        status: "error",
+        error: message,
+        timestamp: new Date().toISOString(),
+      });
+
+      toast.error(`Falha na delegação do agente ${agent}: ${message}`);
       return null;
     } finally {
+      store.setDelegating(false);
       if (mountedRef.current) setIsLoading(false);
     }
   }, [rpcCall]);
+
+  // ─── Session Control Actions ──────────────────────────────────────────────
+
+  const interruptSession = useCallback(async (sessionId: string): Promise<boolean> => {
+    try {
+      await rpcCall<{ status: string }>(
+        "agent.interrupt",
+        { sessionId },
+        10000
+      );
+      await fetchSessions();
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[DaemonAPI] agent.interrupt falhou:", message);
+      toast.error(`Falha ao interromper agente: ${message}`);
+      return false;
+    }
+  }, [rpcCall, fetchSessions]);
+
+  const resumeSession = useCallback(async (sessionId: string): Promise<boolean> => {
+    try {
+      await rpcCall<{ status: string }>(
+        "agent.resume",
+        { sessionId },
+        10000
+      );
+      await fetchSessions();
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[DaemonAPI] agent.resume falhou:", message);
+      toast.error(`Falha ao resumir agente: ${message}`);
+      return false;
+    }
+  }, [rpcCall, fetchSessions]);
 
   // ─── Local-only actions (sem RPC equivalente no daemon) ─────────────────
 
@@ -333,6 +407,9 @@ export function useDaemonAPI(options: DaemonAPIOptions = {}) {
     createSession,
     sendInput,
     refreshSessions: fetchSessions,
+    // Session control
+    interruptSession,
+    resumeSession,
     // Agents
     fetchAgents,
     delegateTask,

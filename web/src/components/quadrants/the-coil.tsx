@@ -3,9 +3,10 @@
  *
  * Estado desta fase:
  * - Sessions REAIS do daemon aparecem como "execuções ativas" (isLocal: false)
- * - Waves LOCAIS (criadas pelo usuário, ainda não enviadas ao daemon) aparecem com badge "Local"
+ * - Waves LOCAIS (criadas pelo usuário, ainda não enviadas ao daemon) aparecem com badge "LOCAL"
  * - Fila de drag-and-drop funciona para waves locais
- * - Botão "Send to Daemon" cria uma session real via session.create + agent.input
+ * - Botão "→ Daemon" delega via daemon.delegate RPC (não mais session.create)
+ * - Seletor de agente por wave card (default: glm)
  */
 
 import { useState, useCallback } from "react";
@@ -28,22 +29,31 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "@/lib/utils";
-import { useMissionControlStore, type Wave } from "@/stores/mission-control-store";
+import {
+  useMissionControlStore,
+  type Wave,
+  type DelegationResult,
+} from "@/stores/mission-control-store";
 import { useDaemonAPI } from "@/hooks/use-daemon-api";
-import { Play, CheckCircle, Clock, Server, Cpu, Plus } from "lucide-react";
+import { Play, CheckCircle, Clock, Server, Cpu, Plus, Loader2, ChevronDown } from "lucide-react";
+
+const DELEGATE_AGENTS = ["glm", "gemini", "antigravity", "claude", "jules"];
 
 interface WaveCardProps {
   wave: Wave;
   isPromoting?: boolean;
   onActivate?: (waveId: string) => void;
-  onSendToDaemon?: (wave: Wave) => void;
+  onSendToDaemon?: (wave: Wave, agent: string) => void;
   isSending?: boolean;
   minimal?: boolean;
+  delegationResult?: DelegationResult | null;
 }
 
-function WaveCard({ wave, isPromoting, onActivate, onSendToDaemon, isSending, minimal }: WaveCardProps) {
+function WaveCard({ wave, isPromoting, onActivate, onSendToDaemon, isSending, minimal, delegationResult }: WaveCardProps) {
   const isLocal = wave.isLocal !== false;
   const isDaemonSession = !isLocal;
+  const [selectedAgent, setSelectedAgent] = useState("glm");
+  const [showAgentPicker, setShowAgentPicker] = useState(false);
 
   const statusConfig = {
     pending: { border: "border-[var(--color-silver-muted)]", icon: Clock },
@@ -93,17 +103,69 @@ function WaveCard({ wave, isPromoting, onActivate, onSendToDaemon, isSending, mi
             </button>
           )}
           {isLocal && onSendToDaemon && !minimal && (
-            <button
-              onClick={() => onSendToDaemon(wave)}
-              disabled={isSending}
-              className="px-2 py-1 rounded-md text-[10px] bg-[var(--color-gold)]/20 text-[var(--color-gold)] hover:bg-[var(--color-gold)] hover:text-[var(--color-obsidian)] transition-colors disabled:opacity-50 font-semibold"
-              title="Send to daemon"
-            >
-              {isSending ? "Sending..." : "→ Daemon"}
-            </button>
+            <div className="flex items-center gap-1">
+              {/* Agent selector */}
+              <div className="relative">
+                <button
+                  onClick={() => setShowAgentPicker(!showAgentPicker)}
+                  className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono bg-[var(--color-surface-tertiary)] border border-[var(--color-border)] text-[var(--color-silver-muted)] hover:text-[var(--color-foreground)] transition-colors"
+                  title="Select agent"
+                >
+                  {selectedAgent}
+                  <ChevronDown className="w-2.5 h-2.5" />
+                </button>
+                {showAgentPicker && (
+                  <div className="absolute top-full left-0 mt-1 bg-[var(--color-surface-primary)] border border-[var(--color-border)] rounded-md shadow-lg z-10 min-w-[90px]">
+                    {DELEGATE_AGENTS.map((a) => (
+                      <button
+                        key={a}
+                        onClick={() => {
+                          setSelectedAgent(a);
+                          setShowAgentPicker(false);
+                        }}
+                        className={cn(
+                          "w-full text-left px-2 py-1 text-[10px] font-mono hover:bg-[var(--color-surface-secondary)] transition-colors",
+                          a === selectedAgent && "text-[var(--color-emerald)] font-semibold"
+                        )}
+                      >
+                        {a}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Send button */}
+              <button
+                onClick={() => onSendToDaemon(wave, selectedAgent)}
+                disabled={isSending}
+                className="px-2 py-1 rounded-md text-[10px] bg-[var(--color-gold)]/20 text-[var(--color-gold)] hover:bg-[var(--color-gold)] hover:text-[var(--color-obsidian)] transition-colors disabled:opacity-50 font-semibold flex items-center gap-1"
+                title={`Delegate to ${selectedAgent}`}
+              >
+                {isSending ? (
+                  <><Loader2 className="w-3 h-3 animate-spin" /> Sending...</>
+                ) : (
+                  `→ ${selectedAgent}`
+                )}
+              </button>
+            </div>
           )}
         </div>
       </div>
+
+      {/* Delegation result badge */}
+      {delegationResult && (
+        <div className="mb-1">
+          <Badge
+            variant={delegationResult.status === "success" ? "emerald" : delegationResult.status === "error" ? "ruby" : "secondary"}
+            className="text-[9px] py-0"
+          >
+            {delegationResult.status === "pending" && <><Loader2 className="w-2.5 h-2.5 animate-spin mr-0.5" /> Delegating…</>}
+            {delegationResult.status === "success" && "✓ Delegated"}
+            {delegationResult.status === "error" && `✗ ${delegationResult.error?.slice(0, 40) ?? "Error"}`}
+          </Badge>
+        </div>
+      )}
 
       {wave.tasks.length > 0 && (
         <div className={cn("space-y-1 pl-6", minimal && "pl-2")}>
@@ -157,8 +219,9 @@ export function TheCoil({ onWaveActivate, promotingWave, className, minimal = fa
   const waveNumber = useMissionControlStore((state) => state.waveNumber);
   const setWaveNumber = useMissionControlStore((state) => state.setWaveNumber);
 
-  const { createSession, sendInput, isLoading } = useDaemonAPI();
+  const { delegateTask, isLoading } = useDaemonAPI();
   const [sendingWaveId, setSendingWaveId] = useState<string | null>(null);
+  const delegationResults = useMissionControlStore((state) => state.delegationResults);
 
   const isDisconnected = connectionStatus === "disconnected" || connectionStatus === "unknown";
 
@@ -184,18 +247,29 @@ export function TheCoil({ onWaveActivate, promotingWave, className, minimal = fa
     setWaveNumber(newNumber);
   }, [waveNumber, addWave, setWaveNumber]);
 
-  const handleSendToDaemon = useCallback(async (wave: Wave) => {
+  /**
+   * Delega wave ao daemon via daemon.delegate RPC.
+   *
+   * - Para GLM com múltiplas tasks: prefixo WAVE: habilita wave mode
+   * - Para outros agentes: envia prompt simples com lista de tasks
+   */
+  const handleSendToDaemon = useCallback(async (wave: Wave, agent: string) => {
     setSendingWaveId(wave.id);
     try {
-      const session = await createSession(`Wave #${wave.number}: ${wave.title ?? ""}`);
-      if (session && wave.tasks.length > 0) {
-        const prompt = wave.tasks.map((t) => `- ${t.title}`).join("\n");
-        await sendInput(session.id, `Execute these tasks:\n${prompt}`);
-      }
+      const taskList = wave.tasks.length > 0
+        ? wave.tasks.map((t) => `- ${t.title}`).join("\n")
+        : wave.title ?? `Wave #${wave.number}`;
+
+      const isMultitask = wave.tasks.length > 1 && agent === "glm";
+      const prompt = isMultitask
+        ? `WAVE: Execute these tasks:\n${taskList}`
+        : `Execute: ${taskList}`;
+
+      await delegateTask(agent, prompt);
     } finally {
       setSendingWaveId(null);
     }
-  }, [createSession, sendInput]);
+  }, [delegateTask]);
 
   const localWaves = waves.filter((w) => w.isLocal !== false);
   const daemonWaves = waves.filter((w) => w.isLocal === false);
@@ -274,17 +348,25 @@ export function TheCoil({ onWaveActivate, promotingWave, className, minimal = fa
                 <Cpu className="w-3 h-3" /> Local Queue
               </div>
             )}
-            {localWaves.map((wave) => (
-              <WaveCard
-                key={wave.id}
-                wave={wave}
-                isPromoting={promotingWave === wave.id}
-                onActivate={onWaveActivate}
-                onSendToDaemon={handleSendToDaemon}
-                isSending={sendingWaveId === wave.id || isLoading}
-                minimal={minimal}
-              />
-            ))}
+            {localWaves.map((wave) => {
+              // Encontrar resultado de delegação mais recente para esta wave
+              const waveResult = delegationResults.find(
+                (r) => r.prompt.includes(wave.title ?? `Wave #${wave.number}`)
+              ) ?? null;
+
+              return (
+                <WaveCard
+                  key={wave.id}
+                  wave={wave}
+                  isPromoting={promotingWave === wave.id}
+                  onActivate={onWaveActivate}
+                  onSendToDaemon={handleSendToDaemon}
+                  isSending={sendingWaveId === wave.id || isLoading}
+                  minimal={minimal}
+                  delegationResult={waveResult}
+                />
+              );
+            })}
 
             {totalWaves === 0 && !isDisconnected && (
               <motion.div
