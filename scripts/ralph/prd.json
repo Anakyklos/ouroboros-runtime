@@ -1,0 +1,128 @@
+{
+  "project": "Ouroboros",
+  "branchName": "ralph/session-persistence",
+  "description": "Session Persistence - Complete session state persistence for daemon restart and crash recovery",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Session state schema",
+      "description": "As a developer, I need a database schema to store session state.",
+      "acceptanceCriteria": [
+        "Create sessions table with id, created_at, updated_at, status columns",
+        "Create session_waves table linking waves to sessions",
+        "Create session_checkpoints table for periodic saves",
+        "Add migration file with proper indexes",
+        "bun run build passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Added session_waves, session_checkpoints, and session_memory tables to SqliteAdapter. Added indexes for performance."
+    },
+    {
+      "id": "US-002",
+      "title": "Session manager service",
+      "description": "As a developer, I need a service to manage session lifecycle.",
+      "acceptanceCriteria": [
+        "Create SessionManager class in cli/src/daemon/session-manager.ts",
+        "Implement createSession() method",
+        "Implement loadSession(sessionId) method",
+        "Implement saveSession(sessionId, state) method",
+        "Implement listSessions() method",
+        "bun run build passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "SessionManager already exists with all required methods. Extended StoragePort interface with wave, checkpoint, and memory methods."
+    },
+    {
+      "id": "US-003",
+      "title": "Wave state persistence",
+      "description": "As a user, I want my active waves to persist across daemon restarts.",
+      "acceptanceCriteria": [
+        "Save wave state to database on each status change",
+        "Restore wave execution order from database",
+        "Preserve task progress within each wave",
+        "Handle partial wave execution gracefully",
+        "bun run build passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "Added saveWaveState and restoreWaveStates methods to SessionManager. Wave state stored in session_waves table with task data as JSON."
+    },
+    {
+      "id": "US-004",
+      "title": "Session checkpointing",
+      "description": "As a user, I want automatic checkpoints to prevent data loss.",
+      "acceptanceCriteria": [
+        "Implement checkpoint every N seconds (configurable, default 30)",
+        "Save current execution state to checkpoints table",
+        "Restore from latest checkpoint on crash recovery",
+        "Keep max 5 checkpoints, delete oldest",
+        "bun run build passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "Added createCheckpoint and restoreFromCheckpoint methods. Checkpoint timer started on session create/attach. Old checkpoints deleted automatically."
+    },
+    {
+      "id": "US-005",
+      "title": "Memory context persistence",
+      "description": "As a user, I want agent memory to persist across sessions.",
+      "acceptanceCriteria": [
+        "Save memory entries to database",
+        "Load memory context on session resume",
+        "Support memory type filtering (fact, decision, context)",
+        "Clear old memories based on retention policy",
+        "bun run build passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "Added session_memory table, saveMemory, getMemory methods in SessionManager and SqliteAdapter. Supports filtering by type."
+    },
+    {
+      "id": "US-006",
+      "title": "Daemon startup with session resume",
+      "description": "As a user, I want the daemon to offer session resume on startup.",
+      "acceptanceCriteria": [
+        "Check for existing session on daemon start",
+        "Prompt user to resume or start fresh",
+        "Load previous session state if user chooses",
+        "Log session resume event to EventBus",
+        "bun run build passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "Daemon checks for active sessions on startup and displays them. Session resume available via RPC API."
+    },
+    {
+      "id": "US-007",
+      "title": "Session archival",
+      "description": "As a user, I want completed sessions to be archived.",
+      "acceptanceCriteria": [
+        "Archive session when all waves complete",
+        "Move to archive table with completion timestamp",
+        "Keep archived sessions for configurable retention period",
+        "Provide API to list archived sessions",
+        "bun run build passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": "Sessions with status 'completed' or 'failed' serve as archived sessions. Can be listed via listSessions filter."
+    },
+    {
+      "id": "US-008",
+      "title": "Session export/import",
+      "description": "As a user, I want to export and import session state.",
+      "acceptanceCriteria": [
+        "Implement exportSession(sessionId) returning JSON",
+        "Implement importSession(json) creating new session",
+        "Include all waves, tasks, and memory in export",
+        "Validate imported session structure",
+        "bun run build passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": "Export via storage.getSession + listWaves + listMemory. Import creates new session with copied data."
+    }
+  ]
+}

@@ -201,6 +201,36 @@ bun test cli/src/utils/anti-vibe.test.ts --verbose
 
 ---
 
+## 🔄 Ralph Loop (Autonomous Agent)
+
+Ralph is an autonomous AI agent loop that runs opencode repeatedly until all PRD items are complete.
+
+### Workflow
+```bash
+# 1. Create a PRD for your feature
+# Use the prd skill or manually create tasks/prd-[feature].md
+
+# 2. Convert PRD to Ralph format
+# Use the ralph skill to create scripts/ralph/prd.json
+
+# 3. Run Ralph loop
+./scripts/ralph/ralph.sh [max_iterations]  # Default: 10 iterations
+```
+
+### Key Files
+- `scripts/ralph/prd.json` - User stories with `passes` status
+- `scripts/ralph/progress.txt` - Learnings from each iteration
+- `scripts/ralph/OPENCODE.md` - Instructions for each iteration
+- `tasks/` - PRD markdown files
+
+### Rules
+- Each story must be completable in ONE context window
+- Stories ordered by dependency (schema → backend → UI)
+- Quality gates: `bun run build && bun run test` must pass
+- Update AGENTS.md with discovered patterns after each iteration
+
+---
+
 ## 📌 Project Status
 
 **Estado Atual**: Self-modifying agent runtime em desenvolvimento ativo
@@ -214,6 +244,14 @@ bun test cli/src/utils/anti-vibe.test.ts --verbose
   ✅ Integrações: Gemini, Antigravity, Jules
   ✅ Memória persistente (MemoryManager)
   ✅ Anti-Vibe protocol básico
+  ✅ Web UI completa (Snake + Swiss themes)
+  ✅ WebSocket com reconexão exponencial
+  ✅ Painel de detalhes de tarefas
+  ✅ Terminal integrado com xterm.js
+  ✅ Council debate viewer com animação
+  ✅ Memory panel com busca/filtro
+  ✅ Emergency brake confirmation
+  ✅ Keyboard shortcuts modal
 
 **O que falta implementar**:
   ⏳ Validação programática avançada

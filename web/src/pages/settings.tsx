@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { useSettingsStore, type Theme } from "@/stores/settings-store";
+import { useSettingsStore, type Theme, type UILayout } from "@/stores/settings-store";
 import { 
   Moon, 
   Sun, 
@@ -56,6 +56,11 @@ export function Settings() {
     { value: "system", label: "System", icon: <Monitor className="w-4 h-4" /> },
   ];
 
+  const uiLayoutOptions: { value: UILayout; label: string; description: string }[] = [
+    { value: "snake", label: "Snake (Cyberpunk)", description: "Colorful, animated interface with snake theme" },
+    { value: "swiss", label: "Swiss (Minimal)", description: "Clean, black & white interface inspired by Swiss design" },
+  ];
+
   return (
     <div className="min-h-screen bg-[var(--background)] text-[var(--foreground)] p-6">
       <div className="max-w-4xl mx-auto">
@@ -93,6 +98,28 @@ export function Settings() {
           {/* Appearance */}
           <SettingsSection title="Appearance" icon={<Sun className="w-5 h-5 text-gold" />}>
             <div className="space-y-4">
+              <div>
+                <label className="text-sm font-medium mb-2 block">UI Layout</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {uiLayoutOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      onClick={() => handleChange(settings.setUILayout, option.value)}
+                      className={`flex flex-col items-start gap-1 px-4 py-3 rounded-lg border transition-all text-left ${
+                        settings.uiLayout === option.value
+                          ? "border-emerald bg-emerald/10"
+                          : "border-[var(--border)] hover:border-emerald/50"
+                      }`}
+                    >
+                      <span className={`font-medium ${
+                        settings.uiLayout === option.value ? "text-emerald" : ""
+                      }`}>{option.label}</span>
+                      <span className="text-xs text-[var(--muted-foreground)]">{option.description}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div>
                 <label className="text-sm font-medium mb-2 block">Theme</label>
                 <div className="flex gap-2">
@@ -181,6 +208,61 @@ export function Settings() {
                     [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald"
                 />
               </div>
+            </div>
+          </SettingsSection>
+
+          {/* Daemon Configuration */}
+          <SettingsSection title="Daemon Connection" icon={<Terminal className="w-5 h-5 text-emerald" />}>
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm font-medium mb-2 block">WebSocket URL</label>
+                <input
+                  type="text"
+                  value={settings.daemonConfig.websocketUrl}
+                  onChange={(e) => handleChange(settings.setDaemonConfig, { websocketUrl: e.target.value })}
+                  placeholder="ws://localhost:7777"
+                  className="w-full px-3 py-2 rounded-lg bg-[var(--secondary)] border border-[var(--border)] 
+                    focus:border-emerald focus:outline-none font-mono text-sm"
+                />
+                <p className="text-xs text-[var(--muted-foreground)] mt-1">
+                  WebSocket endpoint for the Ouroboros daemon
+                </p>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium mb-2 block">API Key (optional)</label>
+                <input
+                  type="password"
+                  value={settings.daemonConfig.apiKey}
+                  onChange={(e) => handleChange(settings.setDaemonConfig, { apiKey: e.target.value })}
+                  placeholder="Enter API key if required"
+                  className="w-full px-3 py-2 rounded-lg bg-[var(--secondary)] border border-[var(--border)] 
+                    focus:border-emerald focus:outline-none font-mono text-sm"
+                />
+                <p className="text-xs text-[var(--muted-foreground)] mt-1">
+                  Authentication key for secured daemon instances
+                </p>
+              </div>
+
+              <button
+                onClick={async () => {
+                  try {
+                    const ws = new WebSocket(settings.daemonConfig.websocketUrl);
+                    ws.onopen = () => {
+                      ws.close();
+                      alert("Connection successful!");
+                    };
+                    ws.onerror = () => {
+                      alert("Connection failed. Check the WebSocket URL.");
+                    };
+                  } catch (e) {
+                    alert("Connection failed: " + String(e));
+                  }
+                }}
+                className="px-4 py-2 rounded-lg border border-emerald text-emerald hover:bg-emerald hover:text-black transition-colors"
+              >
+                Test Connection
+              </button>
             </div>
           </SettingsSection>
 

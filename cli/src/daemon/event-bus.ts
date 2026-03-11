@@ -21,7 +21,7 @@ export interface TaskEvent {
 }
 
 export interface DaemonEvent {
-    type: 'starting' | 'ready' | 'shutting_down' | 'stopped';
+    type: 'starting' | 'ready' | 'shutting_down' | 'stopped' | 'emergency_brake';
     port?: number;
 }
 

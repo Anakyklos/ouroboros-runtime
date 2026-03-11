@@ -48,6 +48,17 @@ async function main() {
     const storage = new SqliteAdapter(DB_PATH);
     await storage.initialize();
 
+    // Check for existing active sessions
+    const activeSessions = await storage.listSessions({ status: 'active' });
+    
+    if (activeSessions.length > 0) {
+        console.log(`\n📋 Found ${activeSessions.length} active session(s):`);
+        activeSessions.forEach((s, i) => {
+            console.log(`   ${i + 1}. ${s.id} (created: ${s.createdAt.toLocaleString()})`);
+        });
+        console.log('   Use the RPC API to resume or manage these sessions.\n');
+    }
+
     // Create and start server
     const server = new DaemonServer(storage, { port: PORT });
 

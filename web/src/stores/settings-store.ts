@@ -2,12 +2,22 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export type Theme = "dark" | "light" | "system";
+export type UILayout = "snake" | "swiss";
+
+interface DaemonConfig {
+  websocketUrl: string;
+  apiKey: string;
+}
 
 interface SettingsState {
   // Appearance
   theme: Theme;
+  uiLayout: UILayout;
   uiScale: number;
   reducedMotion: boolean;
+  
+  // Daemon
+  daemonConfig: DaemonConfig;
   
   // Behavior
   autoScrollLogs: boolean;
@@ -24,8 +34,10 @@ interface SettingsState {
   
   // Actions
   setTheme: (theme: Theme) => void;
+  setUILayout: (layout: UILayout) => void;
   setUIScale: (scale: number) => void;
   setReducedMotion: (enabled: boolean) => void;
+  setDaemonConfig: (config: Partial<DaemonConfig>) => void;
   setAutoScrollLogs: (enabled: boolean) => void;
   setMaxLogEntries: (max: number) => void;
   setConfirmEmergencyBrake: (enabled: boolean) => void;
@@ -39,8 +51,13 @@ export const useSettingsStore = create<SettingsState>()(
   persist(
     (set) => ({
       theme: "dark",
+      uiLayout: "snake",
       uiScale: 100,
       reducedMotion: false,
+      daemonConfig: {
+        websocketUrl: "ws://localhost:7777",
+        apiKey: "",
+      },
       autoScrollLogs: true,
       maxLogEntries: 500,
       confirmEmergencyBrake: true,
@@ -53,11 +70,18 @@ export const useSettingsStore = create<SettingsState>()(
         set({ theme });
         applyTheme(theme);
       },
+      setUILayout: (uiLayout) => {
+        set({ uiLayout });
+        applyUILayout(uiLayout);
+      },
       setUIScale: (uiScale) => {
         set({ uiScale });
         applyUIScale(uiScale);
       },
       setReducedMotion: (reducedMotion) => set({ reducedMotion }),
+      setDaemonConfig: (config) => set((state) => ({
+        daemonConfig: { ...state.daemonConfig, ...config }
+      })),
       setAutoScrollLogs: (autoScrollLogs) => set({ autoScrollLogs }),
       setMaxLogEntries: (maxLogEntries) => set({ maxLogEntries }),
       setConfirmEmergencyBrake: (confirmEmergencyBrake) => set({ confirmEmergencyBrake }),
@@ -81,6 +105,10 @@ function applyTheme(theme: Theme) {
   } else {
     root.setAttribute("data-theme", theme);
   }
+}
+
+function applyUILayout(layout: UILayout) {
+  window.dispatchEvent(new CustomEvent("ui:layout-change", { detail: layout }));
 }
 
 function applyUIScale(scale: number) {

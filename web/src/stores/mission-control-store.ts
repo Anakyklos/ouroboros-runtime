@@ -7,8 +7,11 @@ export type Quadrant = 1 | 2 | 3 | 4 | null;
 export interface Task {
   id: string;
   title: string;
+  description?: string;
   progress: number;
   phase: "planning" | "coding" | "testing" | "reviewing" | "complete" | "paused" | "stuck";
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface Wave {

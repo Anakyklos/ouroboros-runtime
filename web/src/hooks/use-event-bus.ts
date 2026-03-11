@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { useLogStore } from "@/stores/log-store";
 import { useMissionControlStore } from "@/stores/mission-control-store";
 
@@ -13,27 +13,49 @@ interface EventBusMessage {
 
 interface UseEventBusOptions {
   url?: string;
-  reconnectInterval?: number;
   maxReconnectAttempts?: number;
+}
+
+type ConnectionStatus = "connected" | "disconnected" | "reconnecting";
+
+const INITIAL_BACKOFF = 1000;
+const MAX_BACKOFF = 30000;
+
+function calculateBackoff(attempt: number): number {
+  const backoff = INITIAL_BACKOFF * Math.pow(2, attempt);
+  return Math.min(backoff, MAX_BACKOFF);
 }
 
 export function useEventBus(options: UseEventBusOptions = {}) {
   const {
-    url = "ws://localhost:3001/ws",
-    reconnectInterval = 3000,
+    url = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`,
     maxReconnectAttempts = 10,
   } = options;
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("disconnected");
 
   const addLogEntry = useLogStore((state) => state.addEntry);
   const setDaemonConnected = useMissionControlStore((state) => state.setDaemonConnected);
 
   const handleMessage = useCallback((event: MessageEvent) => {
     try {
-      const data: EventBusMessage = JSON.parse(event.data);
+      const rawData = JSON.parse(event.data);
+      
+      // Handle connection message
+      if (rawData.event === 'connected') {
+        setDaemonConnected(true);
+        return;
+      }
+      
+      // Extract event data - backend sends { event, data } format
+      const data: EventBusMessage = {
+        type: rawData.event || rawData.type,
+        ...rawData.data,
+        data: rawData.data,
+      };
 
       // Route events to appropriate stores
       switch (data.type) {
@@ -47,10 +69,14 @@ export function useEventBus(options: UseEventBusOptions = {}) {
           }
           break;
 
+        case "wave":
+        case "wave:created":
+        case "wave:updated":
         case "wave:progress":
         case "task:progress":
         case "council:vote":
         case "council:consensus":
+        case "daemon":
           // These will be handled by specific stores
           window.dispatchEvent(new CustomEvent("daemon:event", { detail: data }));
           break;
@@ -66,17 +92,19 @@ export function useEventBus(options: UseEventBusOptions = {}) {
     } catch (err) {
       console.error("[EventBus] Failed to parse message:", err);
     }
-  }, [addLogEntry]);
+  }, [addLogEntry, setDaemonConnected]);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
     try {
+      setConnectionStatus("reconnecting");
       wsRef.current = new WebSocket(url);
 
       wsRef.current.onopen = () => {
         console.log("[EventBus] Connected to daemon");
         setDaemonConnected(true);
+        setConnectionStatus("connected");
         reconnectAttemptsRef.current = 0;
       };
 
@@ -85,15 +113,19 @@ export function useEventBus(options: UseEventBusOptions = {}) {
       wsRef.current.onclose = () => {
         console.log("[EventBus] Disconnected from daemon");
         setDaemonConnected(false);
+        setConnectionStatus("disconnected");
 
-        // Attempt reconnection
         if (reconnectAttemptsRef.current < maxReconnectAttempts) {
+          const backoff = calculateBackoff(reconnectAttemptsRef.current);
           reconnectAttemptsRef.current++;
-          console.log(`[EventBus] Reconnecting (${reconnectAttemptsRef.current}/${maxReconnectAttempts})...`);
+          console.log(`[EventBus] Reconnecting in ${backoff}ms (${reconnectAttemptsRef.current}/${maxReconnectAttempts})...`);
+          setConnectionStatus("reconnecting");
           
           reconnectTimeoutRef.current = setTimeout(() => {
             connect();
-          }, reconnectInterval);
+          }, backoff);
+        } else {
+          console.error("[EventBus] Max reconnection attempts reached. Daemon offline.");
         }
       };
 
@@ -103,8 +135,9 @@ export function useEventBus(options: UseEventBusOptions = {}) {
     } catch (err) {
       console.error("[EventBus] Failed to connect:", err);
       setDaemonConnected(false);
+      setConnectionStatus("disconnected");
     }
-  }, [url, handleMessage, maxReconnectAttempts, reconnectInterval, setDaemonConnected]);
+  }, [url, handleMessage, maxReconnectAttempts, setDaemonConnected]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -135,5 +168,6 @@ export function useEventBus(options: UseEventBusOptions = {}) {
     connect,
     disconnect,
     isConnected: useMissionControlStore((state) => state.daemonConnected),
+    connectionStatus,
   };
 }

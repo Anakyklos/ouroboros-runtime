@@ -12,14 +12,21 @@ export default defineConfig({
   },
   server: {
     port: 3000,
+    host: true,
+    allowedHosts: ['hematoxylic-chiasmal-thea.ngrok-free.dev'],
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: 'http://localhost:7777',
         changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
       },
       '/ws': {
-        target: 'ws://localhost:3001',
+        target: 'ws://localhost:7777',
         ws: true,
+      },
+      '/rpc': {
+        target: 'http://localhost:7777',
+        changeOrigin: true,
       },
     },
   },

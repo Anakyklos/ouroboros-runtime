@@ -1,0 +1,55 @@
+# Ralph Progress Log
+Started: Sun Feb 22 2026
+---
+
+## Codebase Patterns
+- Use bun for all package management and running scripts
+- Always run `bun run build && bun run test` before committing
+- Follow patterns in AGENTS.md for code conventions
+- Web UI uses Zustand for state management with persist middleware
+- Use Framer Motion for animations
+- Use CSS variables from theme.ts for consistent colors
+- Radix UI for dialogs and modals
+- Session persistence uses SQLite with WAL mode
+- Checkpoint timer pattern for periodic state saves
+
+## [Sun Feb 22 2026 - COMPLETE] 
+
+### Feature 1: Web Interface (10/10 stories)
+✅ US-001: WebSocket reconnection with exponential backoff
+✅ US-002: Real-time wave progress visualization  
+✅ US-003: Task detail panel
+✅ US-004: Settings page - theme selector
+✅ US-005: Settings page - daemon configuration
+✅ US-006: Terminal integration with PTY
+✅ US-007: Council debate viewer
+✅ US-008: Memory/context panel
+✅ US-009: Emergency brake confirmation
+✅ US-010: Keyboard shortcuts help modal
+
+### Feature 2: Session Persistence (8/8 stories)
+✅ US-001: Session state schema
+✅ US-002: Session manager service
+✅ US-003: Wave state persistence
+✅ US-004: Session checkpointing
+✅ US-005: Memory context persistence
+✅ US-006: Daemon startup with session resume
+✅ US-007: Session archival
+✅ US-008: Session export/import
+
+---
+
+## Learnings
+
+### Session Persistence
+- Use prepared statements for performance
+- Checkpoint timer needs cleanup on session end
+- WAL mode essential for concurrent read/write
+- Memory filtering by type enables context-specific retrieval
+
+### Web UI
+- Radix UI provides accessible dialog components
+- Keyboard shortcuts should check for input focus
+- Memory panel uses slide-in from left for variety
+- Exponential backoff: 1s, 2s, 4s, 8s, max 30s
+---

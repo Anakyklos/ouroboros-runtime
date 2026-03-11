@@ -23,6 +23,7 @@ export class RpcGateway implements RpcPort {
     private methods: Map<string, RpcMethodHandler> = new Map();
     private gatewayOrchestrator: GatewayOrchestrator;
     private sessionManager: SessionManager;
+    private eventBus: EventBus;
 
     constructor(
         gatewayOrchestrator: GatewayOrchestrator,
@@ -31,6 +32,7 @@ export class RpcGateway implements RpcPort {
         apiKey?: string
     ) {
         this.gatewayOrchestrator = gatewayOrchestrator;
+        this.eventBus = eventBus;
         this.sessionManager = new SessionManager(storage, eventBus, apiKey);
         this.registerSystemMethods();
         this.registerSessionMethods();
@@ -325,6 +327,40 @@ Rules:
     }
 
     private registerDaemonMethods(): void {
+        // daemon.status - Returns daemon status for frontend
+        this.registerMethod('daemon.status', async () => {
+            return {
+                status: 'running',
+                uptime: process.uptime(),
+                activeWaves: 0,
+                activeTasks: 0,
+                tokensUsed: 0,
+                memory: process.memoryUsage(),
+                timestamp: new Date().toISOString(),
+            };
+        });
+
+        // daemon.setMode - Set daemon mode
+        this.registerMethod('daemon.setMode', async (params) => {
+            const mode = params.mode as string;
+            this.eventBus.log('info', `Daemon mode set to: ${mode}`, 'RpcGateway');
+            return {
+                status: 'success',
+                mode,
+                timestamp: new Date().toISOString(),
+            };
+        });
+
+        // daemon.emergencyBrake - Emergency stop all operations
+        this.registerMethod('daemon.emergencyBrake', async () => {
+            this.eventBus.log('warn', 'Emergency brake activated!', 'RpcGateway');
+            this.eventBus.emit('daemon', { type: 'emergency_brake' });
+            return {
+                status: 'stopped',
+                timestamp: new Date().toISOString(),
+            };
+        });
+
         // daemon.delegate - Delegate task to specific agent
         this.registerMethod('daemon.delegate', async (params) => {
             const agent = params.agent as string;
