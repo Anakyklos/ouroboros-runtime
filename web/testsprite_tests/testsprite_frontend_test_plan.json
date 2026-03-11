@@ -1,0 +1,1610 @@
+[
+  {
+    "id": "TC001",
+    "title": "Navigate from Dashboard to Waves using sidebar link",
+    "description": "Verifies the sidebar Waves link loads the Waves page and updates the URL.",
+    "category": "Sidebar Navigation",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"left sidebar\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Waves\" in the sidebar navigation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify URL contains \"/waves\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify page title contains \"Waves\""
+      }
+    ]
+  },
+  {
+    "id": "TC002",
+    "title": "Navigate from Dashboard to Agents using sidebar link",
+    "description": "Verifies the sidebar Agents link loads the Agents page and the daemon status indicator is visible in the sidebar footer.",
+    "category": "Sidebar Navigation",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Agents\" in the sidebar navigation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify URL contains \"/agents\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"daemon connection status\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"sidebar footer\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC003",
+    "title": "Navigate through remaining primary routes from the sidebar",
+    "description": "Verifies the sidebar links can navigate to Analysis, Logs, and Settings pages end-to-end.",
+    "category": "Sidebar Navigation",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Analysis\" in the sidebar navigation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify URL contains \"/analysis\""
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Logs\" in the sidebar navigation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify URL contains \"/logs\""
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Settings\" in the sidebar navigation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify URL contains \"/settings\""
+      }
+    ]
+  },
+  {
+    "id": "TC004",
+    "title": "Sidebar branding and persistent visibility across navigation",
+    "description": "Verifies the OUROBOROS logo/branding and sidebar remain visible when navigating between pages.",
+    "category": "Sidebar Navigation",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"OUROBOROS\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"left sidebar\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Waves\" in the sidebar navigation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"left sidebar\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Agents\" in the sidebar navigation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"OUROBOROS\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC005",
+    "title": "Stop All opens confirmation dialog from the sidebar",
+    "description": "Verifies clicking Stop All shows a confirmation dialog with confirm/cancel controls.",
+    "category": "Sidebar Navigation",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Stop All\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Stop All\" in the sidebar"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"confirmation dialog\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Confirm\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Cancel\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC006",
+    "title": "Cancel Stop All confirmation dialog",
+    "description": "Verifies cancelling the Stop All confirmation closes the dialog and returns to the prior state.",
+    "category": "Sidebar Navigation",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Stop All\" in the sidebar"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"confirmation dialog\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Cancel\" in the confirmation dialog"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"confirmation dialog\" is not visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"left sidebar\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC007",
+    "title": "Confirm Stop All and verify runtime/daemon reflects stopped state",
+    "description": "Verifies confirming Stop All closes the dialog and the UI reflects a stopped/disconnected state indicator without relying on backend-specific data.",
+    "category": "Sidebar Navigation",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Stop All\" in the sidebar"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"confirmation dialog\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Confirm\" in the confirmation dialog"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"confirmation dialog\" is not visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"daemon connection status\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC008",
+    "title": "Stop All behavior when daemon appears disconnected (disabled or still confirmable)",
+    "description": "Verifies Stop All does not proceed unexpectedly when the daemon is already disconnected by checking for either a disabled state or an explicit confirmation dialog.",
+    "category": "Sidebar Navigation",
+    "priority": "Low",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"daemon connection status\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Stop All\" in the sidebar"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Stop All\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"confirmation dialog\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC009",
+    "title": "Status bar is visible on the dashboard",
+    "description": "Verifies the status bar is displayed at the top of the dashboard and shows the expected high-level fields.",
+    "category": "Status Bar",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Status bar\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Connected\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Wave\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Tasks\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Tokens\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Mode\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC010",
+    "title": "Status bar shows numeric fields in monospace formatting",
+    "description": "Verifies the wave number, running tasks, and token usage values appear as monospace-styled numeric fields.",
+    "category": "Status Bar",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Wave value (monospace)\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Tasks value (monospace)\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Tokens value (monospace)\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Mode value\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC011",
+    "title": "Status bar persists when navigating from Dashboard to Waves",
+    "description": "Verifies the status bar remains visible and continues to display status when switching to the Waves page.",
+    "category": "Status Bar",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Status bar\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Waves\" in the primary navigation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify URL contains \"/waves\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Status bar\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Wave\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Tasks\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC012",
+    "title": "Status bar persists when navigating to Agents and Analysis",
+    "description": "Verifies the status bar remains visible across multiple route changes and still shows the core labels.",
+    "category": "Status Bar",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Status bar\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Agents\" in the primary navigation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify URL contains \"/agents\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Status bar\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Analysis\" in the primary navigation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify URL contains \"/analysis\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Status bar\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC013",
+    "title": "Rapid route switching does not remove or break the status bar",
+    "description": "Verifies that quickly navigating between pages keeps the status bar visible and stable.",
+    "category": "Status Bar",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Status bar\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Logs\" in the primary navigation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Status bar\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Settings\" in the primary navigation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Status bar\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Dashboard\" in the primary navigation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Status bar\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC014",
+    "title": "Operational mode is displayed and remains visible across navigation",
+    "description": "Verifies the mode label/value is visible and does not disappear after moving to another page.",
+    "category": "Status Bar",
+    "priority": "Low",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Mode\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Mode value\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Waves\" in the primary navigation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Mode\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Mode value\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC015",
+    "title": "Dashboard renders 2x2 grid with four quadrants",
+    "description": "Verifies the main dashboard loads and shows the four quadrant cards: Analysis, Wave Queue, Agent Review, and Execution.",
+    "category": "Dashboard Grid",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Analysis\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Wave Queue\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Agent Review\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Execution\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a quadrant card for Analysis\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a quadrant card for Wave Queue\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a quadrant card for Agent Review\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC016",
+    "title": "Disconnected daemon shows EmptyState messaging in all quadrants",
+    "description": "Verifies that when the daemon is not connected, each quadrant displays the empty state with the 'Daemon not connected' message.",
+    "category": "Dashboard Grid",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Daemon not connected\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a WifiOff icon in the Analysis quadrant empty state\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a WifiOff icon in the Wave Queue quadrant empty state\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a WifiOff icon in the Agent Review quadrant empty state\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a WifiOff icon in the Execution quadrant empty state\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Daemon not connected\" is visible in the Analysis quadrant"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Daemon not connected\" is visible in the Wave Queue quadrant"
+      }
+    ]
+  },
+  {
+    "id": "TC017",
+    "title": "Connected daemon populates Analysis quadrant with real data",
+    "description": "Verifies that with the daemon connected, the Analysis quadrant shows populated content instead of the empty state.",
+    "category": "Dashboard Grid",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Analysis\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Daemon not connected\" is not visible within the Analysis quadrant"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a populated content area in the Analysis quadrant\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"an analysis data list or summary within the Analysis quadrant\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a loading indicator in the Analysis quadrant\" is not visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Analysis quadrant card\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC018",
+    "title": "Connected daemon populates Wave Queue quadrant with queue items",
+    "description": "Verifies that with the daemon connected, the Wave Queue quadrant shows queue items rather than the empty state.",
+    "category": "Dashboard Grid",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Wave Queue\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Daemon not connected\" is not visible within the Wave Queue quadrant"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a populated list of wave queue items\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"at least one wave queue row/item\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Wave Queue quadrant card\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a WifiOff icon within the Wave Queue quadrant\" is not visible"
+      }
+    ]
+  },
+  {
+    "id": "TC019",
+    "title": "Connected daemon populates Agent Review quadrant with agent items",
+    "description": "Verifies that with the daemon connected, the Agent Review quadrant shows agent content rather than the empty state.",
+    "category": "Dashboard Grid",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Agent Review\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Daemon not connected\" is not visible within the Agent Review quadrant"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a populated list or panel of agents\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"at least one agent item/row\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Agent Review quadrant card\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a WifiOff icon within the Agent Review quadrant\" is not visible"
+      }
+    ]
+  },
+  {
+    "id": "TC020",
+    "title": "Connected daemon populates Execution quadrant with running executions",
+    "description": "Verifies that with the daemon connected, the Execution quadrant shows execution content rather than the empty state.",
+    "category": "Dashboard Grid",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Execution\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Daemon not connected\" is not visible within the Execution quadrant"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a populated execution panel or list\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"an execution item/row\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Execution quadrant card\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a WifiOff icon within the Execution quadrant\" is not visible"
+      }
+    ]
+  },
+  {
+    "id": "TC021",
+    "title": "Dashboard remains usable when some quadrants have data and others are empty",
+    "description": "Verifies the dashboard layout remains stable if certain quadrants show populated content while others show the empty state.",
+    "category": "Dashboard Grid",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Analysis quadrant card\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Wave Queue quadrant card\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Agent Review quadrant card\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Execution quadrant card\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a quadrant showing populated content\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a quadrant showing an empty state\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Daemon not connected\" is visible within at least one quadrant"
+      }
+    ]
+  },
+  {
+    "id": "TC022",
+    "title": "Open Settings and view theme options (Dark, Light, System)",
+    "description": "Verifies the Settings page loads and shows the three theme radio options.",
+    "category": "Settings Page",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify page title contains \"Settings\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Theme\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Dark\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Light\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"System\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC023",
+    "title": "Select Light theme and confirm selection is applied",
+    "description": "Verifies selecting the Light theme updates the visible selected state.",
+    "category": "Settings Page",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Light\" theme option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Light theme option selected\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Dark\" theme option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Dark theme option selected\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Light\" theme option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Light theme option selected\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC024",
+    "title": "Select Functional skin and confirm selection is applied",
+    "description": "Verifies switching the interface skin to Functional updates the visible selected state.",
+    "category": "Settings Page",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Skin\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Functional\" skin option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Functional skin option selected\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Snake\" skin option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Snake skin option selected\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Functional\" skin option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Functional skin option selected\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC025",
+    "title": "Adjust UI scale to 125% and confirm value updates",
+    "description": "Verifies the UI scale control can be adjusted and the displayed value reflects the change.",
+    "category": "Settings Page",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"UI scale\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on the UI scale slider handle"
+      },
+      {
+        "type": "action",
+        "description": "Press ArrowRight key"
+      },
+      {
+        "type": "action",
+        "description": "Press ArrowRight key"
+      },
+      {
+        "type": "action",
+        "description": "Press ArrowRight key"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"125%\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC026",
+    "title": "Update behavior and notification settings and verify they persist after refresh",
+    "description": "Verifies multiple toggles and the max log entries setting persist via localStorage across a page refresh.",
+    "category": "Settings Page",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Reduced Motion\" toggle"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Auto-scroll Logs\" toggle"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Confirm before emergency brake\" toggle"
+      },
+      {
+        "type": "action",
+        "description": "Click into the \"Max log entries\" field"
+      },
+      {
+        "type": "action",
+        "description": "Type \"500\" into the \"Max log entries\" field"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Notification sounds\" toggle"
+      },
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Reduced Motion toggle on\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Auto-scroll Logs toggle off\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Confirm before emergency brake toggle on\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"500\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Notification sounds toggle on\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC027",
+    "title": "Reset restores defaults and defaults persist after refresh",
+    "description": "Verifies the Reset button restores default settings and the default state is retained after refresh.",
+    "category": "Settings Page",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Light\" theme option"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Functional\" skin option"
+      },
+      {
+        "type": "action",
+        "description": "Click Reset to restore defaults"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"System theme option selected\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Snake skin option selected\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"System theme option selected\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC028",
+    "title": "Max log entries field input validation (non-numeric input)",
+    "description": "Verifies the Max log entries control rejects or prevents non-numeric input via visible UI behavior.",
+    "category": "Settings Page",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "action",
+        "description": "Click into the \"Max log entries\" field"
+      },
+      {
+        "type": "action",
+        "description": "Type \"abc\" into the \"Max log entries\" field"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"abc\" is not visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Max log entries\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC029",
+    "title": "Max log entries boundary value accepts large but reasonable number",
+    "description": "Verifies a higher numeric value for Max log entries can be entered and remains visible after refresh.",
+    "category": "Settings Page",
+    "priority": "Low",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "action",
+        "description": "Click into the \"Max log entries\" field"
+      },
+      {
+        "type": "action",
+        "description": "Type \"2000\" into the \"Max log entries\" field"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"2000\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"2000\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC030",
+    "title": "Open Logs page and view log entry structure",
+    "description": "Verifies the Logs page renders and shows log entries with level, timestamp, and message when entries exist.",
+    "category": "Logs Viewer",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /logs"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify page title contains \"Logs\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Logs\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"log entry\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"log level\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"log timestamp\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"log message\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC031",
+    "title": "Verify log level color-coding is present for entries",
+    "description": "Verifies that log entries visibly indicate their level using recognizable level indicators (info/warn/error) and corresponding colored presentation.",
+    "category": "Logs Viewer",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /logs"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"log entry\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"info\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"warn\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"error\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"info level indicator (blue)\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"warn level indicator (yellow)\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"error level indicator (red)\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC032",
+    "title": "Clear logs and see EmptyState with InboxIcon",
+    "description": "Verifies that clearing logs removes all entries and shows the EmptyState with InboxIcon.",
+    "category": "Logs Viewer",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /logs"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Clear\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Clear\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"log entry\" is not visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"EmptyState\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"InboxIcon\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"No logs\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC033",
+    "title": "Empty logs state displays by default when no entries exist",
+    "description": "Verifies the Logs page shows the EmptyState with InboxIcon when there are no log entries.",
+    "category": "Logs Viewer",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /logs"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"EmptyState\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"InboxIcon\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"log entry\" is not visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Clear\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Clear\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"EmptyState\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC034",
+    "title": "Filtering controls (if present) update the logs list",
+    "description": "Verifies that using visible filtering controls changes the list contents to match the selected filter.",
+    "category": "Logs Viewer",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /logs"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"filter controls\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Select \"Error\" from dropdown \"Level\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"error\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"warn\" is not visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"info\" is not visible"
+      },
+      {
+        "type": "action",
+        "description": "Select \"All\" from dropdown \"Level\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"log entry\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC035",
+    "title": "Clearing logs while a filter is applied still results in EmptyState",
+    "description": "Verifies that Clear removes logs regardless of current filter selection and the EmptyState is displayed.",
+    "category": "Logs Viewer",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /logs"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"filter controls\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Select \"Warn\" from dropdown \"Level\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"warn\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Clear\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"log entry\" is not visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"EmptyState\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"InboxIcon\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC036",
+    "title": "Logs page remains usable after repeated Clear actions",
+    "description": "Verifies the Clear action is stable and does not break the page when clicked multiple times with an already-empty log list.",
+    "category": "Logs Viewer",
+    "priority": "Low",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /logs"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"Clear\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Clear\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"EmptyState\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on \"Clear\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"EmptyState\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"InboxIcon\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC037",
+    "title": "Switch color scheme to Dark from Settings",
+    "description": "Verifies the user can change the color scheme to Dark and the UI reflects the change.",
+    "category": "Theme System",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify page title contains \"Settings\""
+      },
+      {
+        "type": "action",
+        "description": "Click on the \"Dark\" color scheme option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Dark\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Settings option indicating Dark is selected\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a page background area\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC038",
+    "title": "Switch color scheme to Light from Settings",
+    "description": "Verifies the user can change the color scheme to Light and the UI reflects the change.",
+    "category": "Theme System",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "action",
+        "description": "Click on the \"Light\" color scheme option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Light\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Settings option indicating Light is selected\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Scroll to the bottom of the Settings page"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Settings footer or bottom section\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC039",
+    "title": "Switch color scheme to System from Settings",
+    "description": "Verifies the user can switch the color scheme to System and the selection is shown in the UI.",
+    "category": "Theme System",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "action",
+        "description": "Click on the \"System\" color scheme option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"System\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Settings option indicating System is selected\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on the \"Dark\" color scheme option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Settings option indicating Dark is selected\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC040",
+    "title": "Switch skin to Functional from Settings",
+    "description": "Verifies the user can change the visual skin to Functional and the selection is shown in the UI.",
+    "category": "Theme System",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify page title contains \"Settings\""
+      },
+      {
+        "type": "action",
+        "description": "Click on the \"Functional\" skin option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Functional\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Settings option indicating Functional is selected\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"a primary button or accent element on the page\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC041",
+    "title": "Switch skin to Snake from Settings",
+    "description": "Verifies the user can switch the visual skin back to Snake and the selection is shown in the UI.",
+    "category": "Theme System",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "action",
+        "description": "Click on the \"Functional\" skin option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Settings option indicating Functional is selected\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on the \"Snake\" skin option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Snake\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Settings option indicating Snake is selected\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC042",
+    "title": "Switch skin to Swiss from Settings (selection only)",
+    "description": "Verifies the user can select the Swiss skin and the selection is shown, without asserting full visual correctness (known limitation).",
+    "category": "Theme System",
+    "priority": "Low",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "action",
+        "description": "Click on the \"Swiss\" skin option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify text \"Swiss\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Settings option indicating Swiss is selected\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Scroll to the top of the Settings page"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Settings header section\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC043",
+    "title": "Persist theme and skin after refresh",
+    "description": "Verifies that selected theme and skin persist after a page refresh and are reapplied on load.",
+    "category": "Theme System",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "action",
+        "description": "Click on the \"Dark\" color scheme option"
+      },
+      {
+        "type": "action",
+        "description": "Click on the \"Functional\" skin option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Settings option indicating Dark is selected\" is visible"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Settings option indicating Functional is selected\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Press \"Enter\" on the browser refresh control is not available; instead, reload the page using the browser reload action"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Settings option indicating Dark is selected\" is visible"
+      }
+    ]
+  },
+  {
+    "id": "TC044",
+    "title": "Theme and skin remain applied when navigating away and back via UI",
+    "description": "Verifies that after changing theme/skin, navigating to another page and returning keeps the selected settings applied.",
+    "category": "Theme System",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to /settings"
+      },
+      {
+        "type": "action",
+        "description": "Click on the \"Light\" color scheme option"
+      },
+      {
+        "type": "action",
+        "description": "Click on the \"Snake\" skin option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Settings option indicating Light is selected\" is visible"
+      },
+      {
+        "type": "action",
+        "description": "Click on the navigation link \"Dashboard\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify URL contains \"/\""
+      },
+      {
+        "type": "action",
+        "description": "Click on the navigation link \"Settings\""
+      },
+      {
+        "type": "assertion",
+        "description": "Verify element \"the Settings option indicating Light is selected\" is visible"
+      }
+    ]
+  }
+]

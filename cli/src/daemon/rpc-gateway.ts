@@ -433,15 +433,41 @@ Rules:
         });
 
         // daemon.list_agents - List available agents
+        // TIMEOUT: checkBridgeAvailability() spawns external CLI processes (agy, gemini-cli, jules).
+        // Without a timeout, this endpoint can freeze the server for 30-60s if a CLI is slow/missing.
+        // We race against an 8s timeout and return 'unknown' for all if it fires.
         this.registerMethod('daemon.list_agents', async () => {
-            const availability = await this.gatewayOrchestrator.checkBridgeAvailability();
+            const BRIDGE_TIMEOUT_MS = 8000;
 
-            // Check if GLM API key is available
+            const timeoutPromise = new Promise<null>((resolve) =>
+                setTimeout(() => resolve(null), BRIDGE_TIMEOUT_MS)
+            );
+
+            const availabilityPromise = this.gatewayOrchestrator.checkBridgeAvailability();
+
+            const availability = await Promise.race([availabilityPromise, timeoutPromise]);
+
+            // Check if GLM API key is available (fast sync check — no spawn)
             let glmStatus: 'available' | 'unavailable' = 'available';
             try {
                 this.loadZAIKey();
             } catch {
                 glmStatus = 'unavailable';
+            }
+
+            if (availability === null) {
+                // Timed out — return unknown for all bridge-dependent agents
+                return {
+                    agents: {
+                        gemini: 'unknown',
+                        antigravity: 'unknown',
+                        claude: 'unknown',
+                        jules: 'unknown',
+                        glm: glmStatus,
+                    },
+                    timedOut: true,
+                    timestamp: new Date().toISOString(),
+                };
             }
 
             return {
@@ -452,6 +478,7 @@ Rules:
                     jules: availability.jules ? 'available' : 'unavailable',
                     glm: glmStatus,
                 },
+                timedOut: false,
                 timestamp: new Date().toISOString(),
             };
         });

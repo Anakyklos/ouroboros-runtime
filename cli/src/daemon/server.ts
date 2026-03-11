@@ -10,6 +10,8 @@ import { EventBus, globalEventBus } from './event-bus.js';
 import { RpcGateway } from './rpc-gateway.js';
 import { GatewayOrchestrator } from '../orchestration/GatewayOrchestrator.js';
 import type { StoragePort } from '../ports/storage.port.js';
+import fastifyWebsocket from '@fastify/websocket';
+import type { SocketStream } from '@fastify/websocket';
 
 export interface DaemonConfig {
     port: number;
@@ -50,6 +52,7 @@ export class DaemonServer {
             logger: false,
         });
 
+        this.app.register(fastifyWebsocket);
         this.setupRoutes();
     }
     private setupRoutes(): void {
@@ -84,6 +87,24 @@ export class DaemonServer {
             });
 
             return response;
+        });
+
+        // WebSocket endpoint for real-time events
+        this.app.register(async (fastify) => {
+            fastify.get('/ws', { websocket: true }, (connection: SocketStream, req) => {
+                // Subscribe to all events and push to client
+                const onEvent = (payload: unknown) => {
+                    if (connection.socket.readyState === 1) { // WebSocket.OPEN
+                        connection.socket.send(JSON.stringify(payload));
+                    }
+                };
+                
+                const unsubscribe = this.eventBus.on('*' as any, onEvent as any);
+                
+                connection.socket.on('close', () => {
+                    unsubscribe();
+                });
+            });
         });
     }
 

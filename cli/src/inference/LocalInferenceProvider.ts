@@ -31,7 +31,6 @@ export class LocalInferenceProvider {
     private config: InferenceProviderConfig;
     private eventBus: EventBus;
     private metrics: Map<string, ModelMetrics> = new Map();
-    private requestCounter = 0;
 
     constructor(config?: Partial<InferenceProviderConfig>, eventBus?: EventBus) {
         const defaults = loadInferenceConfig();

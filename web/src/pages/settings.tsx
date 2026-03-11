@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { useSettingsStore, type Theme } from "@/stores/settings-store";
+import { useSettingsStore, type Theme, type Skin } from "@/stores/settings-store";
 import { 
   Moon, 
   Sun, 
@@ -13,7 +13,11 @@ import {
   Terminal,
   Keyboard,
   Save,
-  RotateCcw
+  RotateCcw,
+  Settings as SettingsIcon,
+  Orbit,
+  Zap,
+  Palette,
 } from "lucide-react";
 
 interface SettingsSectionProps {
@@ -24,7 +28,7 @@ interface SettingsSectionProps {
 
 function SettingsSection({ title, icon, children }: SettingsSectionProps) {
   return (
-    <Card className="p-6 bg-[var(--surface-primary)] border-[var(--border)]">
+    <Card className="p-6 bg-[var(--color-surface-primary)] border-[var(--color-border)]">
       <div className="flex items-center gap-2 mb-4">
         {icon}
         <h3 className="text-lg font-semibold">{title}</h3>
@@ -56,6 +60,12 @@ export function Settings() {
     { value: "system", label: "System", icon: <Monitor className="w-4 h-4" /> },
   ];
 
+  const skinOptions: { value: Skin; label: string; description: string; icon: React.ReactNode }[] = [
+    { value: "snake", label: "Snake", description: "Cyberpunk emerald theme", icon: <Orbit className="w-4 h-4" /> },
+    { value: "functional", label: "Functional", description: "Clean, no-frills dark UI", icon: <Zap className="w-4 h-4" /> },
+    { value: "swiss", label: "Swiss", description: "Minimalist light theme", icon: <Palette className="w-4 h-4" /> },
+  ];
+
   return (
     <div className="min-h-screen bg-[var(--background)] text-[var(--foreground)] p-6">
       <div className="max-w-4xl mx-auto">
@@ -63,7 +73,7 @@ export function Settings() {
         <div className="flex items-center justify-between mb-8">
           <div>
             <h1 className="text-3xl font-bold flex items-center gap-3">
-              <span className="text-3xl">⚙️</span>
+              <SettingsIcon className="w-7 h-7 text-[var(--color-gold)]" />
               Settings
             </h1>
             <p className="text-[var(--muted-foreground)] mt-1">
@@ -100,14 +110,35 @@ export function Settings() {
                     <button
                       key={option.value}
                       onClick={() => handleChange(settings.setTheme, option.value)}
-                      className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition-all ${
+                      className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition-all duration-200 cursor-pointer ${
                         settings.theme === option.value
                           ? "border-emerald bg-emerald/10 text-emerald"
-                          : "border-[var(--border)] hover:border-emerald/50"
+                          : "border-[var(--color-border)] hover:border-emerald/50"
                       }`}
                     >
                       {option.icon}
                       {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Skin Selector */}
+              <div>
+                <label className="text-sm font-medium mb-2 block">Interface Skin</label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {skinOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      onClick={() => handleChange(settings.setSkin, option.value)}
+                      className={`flex flex-col items-start p-3 rounded-lg border transition-all duration-200 text-left cursor-pointer ${
+                        settings.skin === option.value
+                          ? "border-emerald bg-emerald/10"
+                          : "border-[var(--color-border)] hover:border-emerald/50"
+                      }`}
+                    >
+                      <span className="font-semibold text-sm flex items-center gap-2">{option.icon} {option.label}</span>
+                      <span className="text-xs text-[var(--color-silver-muted)] mt-0.5">{option.description}</span>
                     </button>
                   ))}
                 </div>
@@ -124,7 +155,7 @@ export function Settings() {
                   step={5}
                   value={settings.uiScale}
                   onChange={(e) => handleChange(settings.setUIScale, Number(e.target.value))}
-                  className="w-full h-2 bg-[var(--secondary)] rounded-full appearance-none cursor-pointer
+                  className="w-full h-2 bg-[var(--color-surface-secondary)] rounded-full appearance-none cursor-pointer
                     [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 
                     [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald"
                 />
@@ -135,7 +166,7 @@ export function Settings() {
                   type="checkbox"
                   checked={settings.reducedMotion}
                   onChange={(e) => handleChange(settings.setReducedMotion, e.target.checked)}
-                  className="w-4 h-4 rounded border-[var(--border)] bg-[var(--secondary)] text-emerald focus:ring-emerald"
+                  className="w-4 h-4 rounded border-[var(--color-border)] bg-[var(--color-surface-secondary)] text-emerald focus:ring-emerald"
                 />
                 <span>Reduce motion (accessibility)</span>
               </label>
@@ -150,7 +181,7 @@ export function Settings() {
                   type="checkbox"
                   checked={settings.autoScrollLogs}
                   onChange={(e) => handleChange(settings.setAutoScrollLogs, e.target.checked)}
-                  className="w-4 h-4 rounded border-[var(--border)] bg-[var(--secondary)] text-emerald focus:ring-emerald"
+                  className="w-4 h-4 rounded border-[var(--color-border)] bg-[var(--color-surface-secondary)] text-emerald focus:ring-emerald"
                 />
                 <span>Auto-scroll logs to bottom</span>
               </label>
@@ -160,7 +191,7 @@ export function Settings() {
                   type="checkbox"
                   checked={settings.confirmEmergencyBrake}
                   onChange={(e) => handleChange(settings.setConfirmEmergencyBrake, e.target.checked)}
-                  className="w-4 h-4 rounded border-[var(--border)] bg-[var(--secondary)] text-emerald focus:ring-emerald"
+                  className="w-4 h-4 rounded border-[var(--color-border)] bg-[var(--color-surface-secondary)] text-emerald focus:ring-emerald"
                 />
                 <span>Confirm before emergency brake</span>
               </label>
@@ -176,7 +207,7 @@ export function Settings() {
                   step={100}
                   value={settings.maxLogEntries}
                   onChange={(e) => handleChange(settings.setMaxLogEntries, Number(e.target.value))}
-                  className="w-full h-2 bg-[var(--secondary)] rounded-full appearance-none cursor-pointer
+                  className="w-full h-2 bg-[var(--color-surface-secondary)] rounded-full appearance-none cursor-pointer
                     [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 
                     [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald"
                 />
@@ -192,7 +223,7 @@ export function Settings() {
                   type="checkbox"
                   checked={settings.soundEnabled}
                   onChange={(e) => handleChange(settings.setSoundEnabled, e.target.checked)}
-                  className="w-4 h-4 rounded border-[var(--border)] bg-[var(--secondary)] text-emerald focus:ring-emerald"
+                  className="w-4 h-4 rounded border-[var(--color-border)] bg-[var(--color-surface-secondary)] text-emerald focus:ring-emerald"
                 />
                 <Volume2 className="w-4 h-4" />
                 <span>Enable sound effects</span>
@@ -203,7 +234,7 @@ export function Settings() {
                   type="checkbox"
                   checked={settings.desktopNotifications}
                   onChange={(e) => handleChange(settings.setDesktopNotifications, e.target.checked)}
-                  className="w-4 h-4 rounded border-[var(--border)] bg-[var(--secondary)] text-emerald focus:ring-emerald"
+                  className="w-4 h-4 rounded border-[var(--color-border)] bg-[var(--color-surface-secondary)] text-emerald focus:ring-emerald"
                 />
                 <span>Desktop notifications</span>
               </label>
@@ -224,7 +255,7 @@ export function Settings() {
                   step={1}
                   value={settings.terminalFontSize}
                   onChange={(e) => handleChange(settings.setTerminalFontSize, Number(e.target.value))}
-                  className="w-full h-2 bg-[var(--secondary)] rounded-full appearance-none cursor-pointer
+                  className="w-full h-2 bg-[var(--color-surface-secondary)] rounded-full appearance-none cursor-pointer
                     [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 
                     [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald"
                 />
@@ -235,7 +266,7 @@ export function Settings() {
                 <select
                   value={settings.terminalFontFamily}
                   onChange={(e) => handleChange(settings.setTerminalFontFamily, e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg bg-[var(--secondary)] border border-[var(--border)] 
+                  className="w-full px-3 py-2 rounded-lg bg-[var(--color-surface-secondary)] border border-[var(--color-border)] 
                     focus:border-emerald focus:outline-none"
                 >
                   <option value="JetBrains Mono">JetBrains Mono</option>

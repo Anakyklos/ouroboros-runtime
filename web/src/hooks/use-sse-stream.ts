@@ -1,156 +1,72 @@
-import { useEffect, useRef, useCallback, useState } from "react";
+/**
+ * 📡 useSSEStream / useAgentStream — Honest No-Op (Phase 1)
+ *
+ * O daemon NÃO implementa SSE. Não existe endpoint `/api/stream/{id}`.
+ *
+ * Esta implementação é um no-op explícito:
+ * - Não tenta conectar a nenhum endpoint SSE
+ * - Retorna estado de erro claro: "streaming_not_available"
+ *
+ * Phase 2: implementar quando daemon tiver endpoint GET /api/stream/{sessionId}
+ * com EventSource server-side + bridge do EventBus interno.
+ */
 
-interface SSEStreamOptions {
+import { useState } from "react";
+
+export interface SSEStreamState {
+  isConnected: false;
+  lastEvent: null;
+  error: "streaming_not_available";
+}
+
+const NOT_AVAILABLE_STATE: SSEStreamState = {
+  isConnected: false,
+  lastEvent: null,
+  error: "streaming_not_available",
+};
+
+/**
+ * Hook para streaming SSE de respostas do daemon.
+ *
+ * Estado atual: no-op. SSE não implementado no daemon.
+ */
+export function useSSEStream(_options: {
   url: string;
   onMessage?: (data: unknown) => void;
   onError?: (error: Event) => void;
   onOpen?: () => void;
   reconnectOnError?: boolean;
   reconnectInterval?: number;
-}
-
-interface SSEStreamState {
-  isConnected: boolean;
-  lastEvent: unknown | null;
-  error: string | null;
-}
-
-/**
- * SSE hook for streaming responses from the daemon
- * Used for agent response streaming, log streaming, etc.
- */
-export function useSSEStream(options: SSEStreamOptions) {
-  const {
-    url,
-    onMessage,
-    onError,
-    onOpen,
-    reconnectOnError = true,
-    reconnectInterval = 5000,
-  } = options;
-
-  const eventSourceRef = useRef<EventSource | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  const [state, setState] = useState<SSEStreamState>({
-    isConnected: false,
-    lastEvent: null,
-    error: null,
-  });
-
-  const connect = useCallback(() => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-    }
-
-    try {
-      eventSourceRef.current = new EventSource(url);
-
-      eventSourceRef.current.onopen = () => {
-        setState((prev) => ({ ...prev, isConnected: true, error: null }));
-        onOpen?.();
-      };
-
-      eventSourceRef.current.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          setState((prev) => ({ ...prev, lastEvent: data }));
-          onMessage?.(data);
-        } catch {
-          // Handle non-JSON messages
-          setState((prev) => ({ ...prev, lastEvent: event.data }));
-          onMessage?.(event.data);
-        }
-      };
-
-      eventSourceRef.current.onerror = (error) => {
-        setState((prev) => ({ ...prev, isConnected: false, error: "Connection error" }));
-        onError?.(error);
-
-        if (reconnectOnError) {
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connect();
-          }, reconnectInterval);
-        }
-      };
-    } catch (err) {
-      setState((prev) => ({
-        ...prev,
-        isConnected: false,
-        error: err instanceof Error ? err.message : "Failed to connect",
-      }));
-    }
-  }, [url, onMessage, onError, onOpen, reconnectOnError, reconnectInterval]);
-
-  const disconnect = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-    }
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-    }
-    setState((prev) => ({ ...prev, isConnected: false }));
-  }, []);
-
-  useEffect(() => {
-    return () => disconnect();
-  }, [disconnect]);
-
+}) {
   return {
-    ...state,
-    connect,
-    disconnect,
+    ...NOT_AVAILABLE_STATE,
+    connect: () => {
+      console.warn("[SSEStream] Streaming não disponível — daemon não implementa SSE.");
+    },
+    disconnect: () => {},
   };
 }
 
 /**
- * Hook for streaming agent responses via SSE
+ * Hook para streaming de respostas de agentes via SSE.
+ *
+ * Estado atual: no-op. Endpoint `/api/stream/{sessionId}` não existe no daemon.
+ * Para obter respostas de agentes, use `agent.input` via RPC e aguarde o resultado.
  */
-export function useAgentStream(sessionId: string | null) {
-  const [chunks, setChunks] = useState<string[]>([]);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [fullResponse, setFullResponse] = useState("");
-
-  const { connect, disconnect, isConnected } = useSSEStream({
-    url: sessionId ? `/api/stream/${sessionId}` : "",
-    onMessage: (data) => {
-      if (typeof data === "object" && data !== null) {
-        const chunk = data as { type: string; content?: string; done?: boolean };
-        
-        if (chunk.type === "chunk" && chunk.content) {
-          setChunks((prev) => [...prev, chunk.content!]);
-          setFullResponse((prev) => prev + chunk.content);
-        }
-        
-        if (chunk.type === "done" || chunk.done) {
-          setIsStreaming(false);
-        }
-      }
-    },
-    onOpen: () => setIsStreaming(true),
-    onError: () => setIsStreaming(false),
-    reconnectOnError: false,
-  });
-
-  const startStream = useCallback(() => {
-    if (!sessionId) return;
-    setChunks([]);
-    setFullResponse("");
-    connect();
-  }, [sessionId, connect]);
-
-  const stopStream = useCallback(() => {
-    disconnect();
-    setIsStreaming(false);
-  }, [disconnect]);
+export function useAgentStream(_sessionId: string | null) {
+  const [chunks] = useState<string[]>([]);
+  const [fullResponse] = useState("");
 
   return {
     chunks,
     fullResponse,
-    isStreaming,
-    isConnected,
-    startStream,
-    stopStream,
+    isStreaming: false,
+    isConnected: false,
+    notAvailable: true,
+    error: "streaming_not_available" as const,
+    startStream: () => {
+      console.warn("[AgentStream] Streaming não disponível — daemon não implementa SSE. Use agent.input via RPC.");
+    },
+    stopStream: () => {},
   };
 }

@@ -64,6 +64,21 @@ export class CodeWorker {
         this.eventBus = eventBus ?? globalEventBus;
     }
 
+    // ========================================================================
+    // Input Sanitization
+    // ========================================================================
+
+    /**
+     * Delimita entrada de usuário para prevenir injeção de prompt.
+     * Trunca e envolve em delimitadores para separar de instruções do sistema.
+     */
+    private sanitizeForPrompt(input: string, maxLength: number = 8000): string {
+        const truncated = input.length > maxLength
+            ? input.slice(0, maxLength) + "... (truncated)"
+            : input;
+        return `<user_input>\n${truncated}\n</user_input>`;
+    }
+
     /**
      * Gera uma proposta de patch para um arquivo.
      * Nunca aplica — retorna PatchProposal validado.
@@ -91,8 +106,8 @@ export class CodeWorker {
                 role: "user",
                 content: `Generate a minimal code patch.
 
-File: ${filePath}
-Instruction: ${instruction}
+File: ${this.sanitizeForPrompt(filePath, 500)}
+Instruction: ${this.sanitizeForPrompt(instruction, 2000)}
 ${contextSection}
 
 Current file content:
@@ -102,7 +117,7 @@ ${truncatedContent}
 
 Respond with JSON:
 {
-  "filePath": "${filePath}",
+  "filePath": "the file path",
   "originalSnippet": "exact lines to replace",
   "patchedSnippet": "replacement lines",
   "explanation": "what changed and why",

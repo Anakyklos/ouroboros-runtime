@@ -1,139 +1,117 @@
-import { useEffect, useRef, useCallback } from "react";
+/**
+ * 📡 useEventBus — Real WebSocket implementation
+ *
+ * Conecta ao daemon via WebSocket para receber eventos em tempo real
+ * (logs, ondas, tarefas, status).
+ */
+
+import { useEffect, useState } from "react";
 import { useLogStore } from "@/stores/log-store";
 import { useMissionControlStore } from "@/stores/mission-control-store";
 
-interface EventBusMessage {
-  type: string;
-  level?: "debug" | "info" | "warn" | "error";
-  message?: string;
-  source?: string;
-  timestamp?: string;
-  data?: unknown;
-}
+export type EventBusStatus =
+  | "not_available"
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "error";
 
 interface UseEventBusOptions {
   url?: string;
-  reconnectInterval?: number;
-  maxReconnectAttempts?: number;
 }
 
-export function useEventBus(options: UseEventBusOptions = {}) {
-  const {
-    url = "ws://localhost:3001/ws",
-    reconnectInterval = 3000,
-    maxReconnectAttempts = 10,
-  } = options;
+interface UseEventBusResult {
+  isConnected: boolean;
+  status: EventBusStatus;
+  reason: string;
+}
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectAttemptsRef = useRef(0);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+// Module-level singletons to prevent multiple open WS connections across app
+let wsInstance: WebSocket | null = null;
+let currentStatus: EventBusStatus = "disconnected";
+let currentReason = "Não inicializado";
 
-  const addLogEntry = useLogStore((state) => state.addEntry);
-  const setDaemonConnected = useMissionControlStore((state) => state.setDaemonConnected);
+const listeners = new Set<(status: EventBusStatus, reason: string) => void>();
 
-  const handleMessage = useCallback((event: MessageEvent) => {
-    try {
-      const data: EventBusMessage = JSON.parse(event.data);
+function updateGlobalStatus(newStatus: EventBusStatus, reason: string) {
+  currentStatus = newStatus;
+  currentReason = reason;
+  listeners.forEach(fn => fn(newStatus, reason));
+}
 
-      // Route events to appropriate stores
-      switch (data.type) {
-        case "log":
-          if (data.level && data.message && data.source) {
-            addLogEntry({
-              level: data.level,
-              message: data.message,
-              source: data.source,
-            });
-          }
-          break;
-
-        case "wave:progress":
-        case "task:progress":
-        case "council:vote":
-        case "council:consensus":
-          // These will be handled by specific stores
-          window.dispatchEvent(new CustomEvent("daemon:event", { detail: data }));
-          break;
-
-        case "daemon:status":
-          // Update daemon status
-          break;
-
-        default:
-          // Dispatch generic event for other handlers
-          window.dispatchEvent(new CustomEvent("daemon:event", { detail: data }));
-      }
-    } catch (err) {
-      console.error("[EventBus] Failed to parse message:", err);
-    }
-  }, [addLogEntry]);
-
-  const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
-
-    try {
-      wsRef.current = new WebSocket(url);
-
-      wsRef.current.onopen = () => {
-        console.log("[EventBus] Connected to daemon");
-        setDaemonConnected(true);
-        reconnectAttemptsRef.current = 0;
-      };
-
-      wsRef.current.onmessage = handleMessage;
-
-      wsRef.current.onclose = () => {
-        console.log("[EventBus] Disconnected from daemon");
-        setDaemonConnected(false);
-
-        // Attempt reconnection
-        if (reconnectAttemptsRef.current < maxReconnectAttempts) {
-          reconnectAttemptsRef.current++;
-          console.log(`[EventBus] Reconnecting (${reconnectAttemptsRef.current}/${maxReconnectAttempts})...`);
-          
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connect();
-          }, reconnectInterval);
-        }
-      };
-
-      wsRef.current.onerror = (error) => {
-        console.error("[EventBus] WebSocket error:", error);
-      };
-    } catch (err) {
-      console.error("[EventBus] Failed to connect:", err);
-      setDaemonConnected(false);
-    }
-  }, [url, handleMessage, maxReconnectAttempts, reconnectInterval, setDaemonConnected]);
-
-  const disconnect = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-    }
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    setDaemonConnected(false);
-  }, [setDaemonConnected]);
-
-  const send = useCallback((data: unknown) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(data));
-    } else {
-      console.warn("[EventBus] Cannot send - not connected");
-    }
-  }, []);
+export function useEventBus(options: UseEventBusOptions = {}): UseEventBusResult {
+  const [status, setStatus] = useState<EventBusStatus>(currentStatus);
+  const [reason, setReason] = useState<string>(currentReason);
 
   useEffect(() => {
-    connect();
-    return () => disconnect();
-  }, [connect, disconnect]);
+    const handler = (s: EventBusStatus, r: string) => { setStatus(s); setReason(r); };
+    listeners.add(handler);
+
+    if (!wsInstance && options.url) {
+      updateGlobalStatus("connecting", "Tentando conectar ao WebSocket...");
+
+      try {
+        wsInstance = new WebSocket(options.url);
+
+        wsInstance.onopen = () => {
+          updateGlobalStatus("connected", "Conectado com sucesso");
+          useLogStore.getState().addEntry({
+            level: "info",
+            message: "Conectado ao canal WebSocket de Eventos",
+            source: "EventBus",
+          });
+          useMissionControlStore.getState().setConnectionStatus("connected");
+        };
+
+        wsInstance.onmessage = (msgEvent) => {
+          try {
+            const payload = JSON.parse(msgEvent.data);
+            if (!payload || !payload.event || !payload.data) return;
+
+            if (payload.event === "log") {
+              useLogStore.getState().addEntry({
+                level: payload.data.level || "info",
+                message: payload.data.message,
+                source: payload.data.source || "Daemon",
+              });
+            } else if (payload.event === "wave" && payload.data.type === "wave_started") {
+              // Simples sync quando a wave logar (já existe polling, mas aqui vem live)
+              console.log("[EventBus WS] Wave event received:", payload.data);
+            }
+          } catch (err) {
+            console.error("[EventBus WS] Parse erro:", err);
+          }
+        };
+
+        wsInstance.onerror = (err) => {
+          console.error("[EventBus WS] WebSocket erro:", err);
+          updateGlobalStatus("error", "Erro na conexão WebSocket");
+        };
+
+        wsInstance.onclose = () => {
+          wsInstance = null;
+          updateGlobalStatus("disconnected", "Conexão perdida (fechado)");
+          useMissionControlStore.getState().setConnectionStatus("disconnected");
+        };
+      } catch (err) {
+        updateGlobalStatus("error", "Falha na construção da conexão WS: " + String(err));
+      }
+    }
+
+    return () => {
+      listeners.delete(handler);
+      // Opcional: só fecha quando todos listeners sumirem
+      if (listeners.size === 0 && wsInstance) {
+        wsInstance.close();
+        wsInstance = null;
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [options.url]);
 
   return {
-    send,
-    connect,
-    disconnect,
-    isConnected: useMissionControlStore((state) => state.daemonConnected),
+    isConnected: status === "connected",
+    status,
+    reason,
   };
 }

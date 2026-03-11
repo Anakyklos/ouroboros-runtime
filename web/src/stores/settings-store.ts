@@ -2,10 +2,12 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export type Theme = "dark" | "light" | "system";
+export type Skin = "snake" | "functional" | "swiss";
 
 interface SettingsState {
   // Appearance
   theme: Theme;
+  skin: Skin;
   uiScale: number;
   reducedMotion: boolean;
   
@@ -24,6 +26,7 @@ interface SettingsState {
   
   // Actions
   setTheme: (theme: Theme) => void;
+  setSkin: (skin: Skin) => void;
   setUIScale: (scale: number) => void;
   setReducedMotion: (enabled: boolean) => void;
   setAutoScrollLogs: (enabled: boolean) => void;
@@ -39,6 +42,7 @@ export const useSettingsStore = create<SettingsState>()(
   persist(
     (set) => ({
       theme: "dark",
+      skin: "snake",
       uiScale: 100,
       reducedMotion: false,
       autoScrollLogs: true,
@@ -51,7 +55,13 @@ export const useSettingsStore = create<SettingsState>()(
       
       setTheme: (theme) => {
         set({ theme });
-        applyTheme(theme);
+        const skin = useSettingsStore.getState().skin;
+        applyTheme(theme, skin);
+      },
+      setSkin: (skin) => {
+        set({ skin });
+        const theme = useSettingsStore.getState().theme;
+        applyTheme(theme, skin);
       },
       setUIScale: (uiScale) => {
         set({ uiScale });
@@ -72,15 +82,19 @@ export const useSettingsStore = create<SettingsState>()(
   )
 );
 
-function applyTheme(theme: Theme) {
+function applyTheme(theme: Theme, skin: Skin = "snake") {
   const root = document.documentElement;
-  
+
+  // Apply color scheme (light/dark) — independent of skin
   if (theme === "system") {
     const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
     root.setAttribute("data-theme", prefersDark ? "dark" : "light");
   } else {
     root.setAttribute("data-theme", theme);
   }
+
+  // Apply skin (visual identity) — independent of color scheme
+  root.setAttribute("data-skin", skin);
 }
 
 function applyUIScale(scale: number) {
@@ -93,7 +107,7 @@ if (typeof window !== "undefined") {
   const stored = localStorage.getItem("ouroboros-settings");
   if (stored) {
     const settings = JSON.parse(stored);
-    applyTheme(settings.state.theme);
+    applyTheme(settings.state.theme, settings.state.skin);
     applyUIScale(settings.state.uiScale);
   }
 }

@@ -9,6 +9,8 @@
  */
 
 import { EventBus, globalEventBus } from "../daemon/event-bus.js";
+import * as path from "node:path";
+import { PatchProposalSchema } from "./schemas/inference-schemas.js";
 
 // ============================================================================
 // Blocked Patterns
@@ -126,18 +128,32 @@ export class InferenceGuardrails {
         filePath: string,
         allowedPaths: string[],
     ): { valid: boolean; reason: string } {
+        // Block path traversal attempts
+        if (filePath.includes("..")) {
+            return { valid: false, reason: "Path traversal detected: '..' not allowed" };
+        }
+
+        // Normalize the path to resolve any relative components
+        const resolvedPath = path.resolve(this.projectRoot, filePath);
+
         // Check protected files
         for (const pattern of PROTECTED_FILE_PATTERNS) {
-            if (filePath.toLowerCase().includes(pattern.toLowerCase())) {
+            if (resolvedPath.toLowerCase().includes(pattern.toLowerCase())) {
                 return { valid: false, reason: `Protected file pattern: ${pattern}` };
             }
         }
 
+        // Ensure resolved path is within project root
+        if (!resolvedPath.startsWith(this.projectRoot)) {
+            return { valid: false, reason: `Path resolves outside project root: ${this.projectRoot}` };
+        }
+
         // Check allowed paths (if specified)
         if (allowedPaths.length > 0) {
-            const isAllowed = allowedPaths.some(allowed =>
-                filePath.startsWith(allowed) || filePath.includes(allowed),
-            );
+            const isAllowed = allowedPaths.some(allowed => {
+                const resolvedAllowed = path.resolve(this.projectRoot, allowed);
+                return resolvedPath.startsWith(resolvedAllowed);
+            });
 
             if (!isAllowed) {
                 return {
@@ -145,11 +161,6 @@ export class InferenceGuardrails {
                     reason: `File "${filePath}" is outside allowed paths: ${allowedPaths.join(", ")}`,
                 };
             }
-        }
-
-        // Block absolute paths outside project root
-        if (filePath.startsWith("/") && !filePath.startsWith(this.projectRoot)) {
-            return { valid: false, reason: `Absolute path outside project root: ${this.projectRoot}` };
         }
 
         return { valid: true, reason: "Path is within scope" };
@@ -220,24 +231,18 @@ export class InferenceGuardrails {
             return { valid: false, errors };
         }
 
-        const patch = jsonResult.parsed as Record<string, unknown>;
-
-        // Validate required fields
-        if (!patch.filePath || typeof patch.filePath !== "string") {
-            errors.push("Missing or invalid filePath");
-        } else {
-            const scopeCheck = this.validatePatchScope(patch.filePath as string, allowedPaths);
-            if (!scopeCheck.valid) {
-                errors.push(scopeCheck.reason);
-            }
+        // Use PatchProposalSchema for structural validation
+        const schemaResult = PatchProposalSchema.safeParse(jsonResult.parsed);
+        if (!schemaResult.success) {
+            const zodErrors = schemaResult.error.issues.map(i => `${i.path.join(".")}: ${i.message}`);
+            errors.push(...zodErrors);
+            return { valid: false, errors };
         }
 
-        if (!patch.patchedSnippet || typeof patch.patchedSnippet !== "string") {
-            errors.push("Missing or invalid patchedSnippet");
-        }
-
-        if (!patch.explanation || typeof patch.explanation !== "string") {
-            errors.push("Missing explanation");
+        // Validate patch scope (path safety)
+        const scopeCheck = this.validatePatchScope(schemaResult.data.filePath, allowedPaths);
+        if (!scopeCheck.valid) {
+            errors.push(scopeCheck.reason);
         }
 
         return { valid: errors.length === 0, errors };

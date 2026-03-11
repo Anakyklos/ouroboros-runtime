@@ -1,91 +1,117 @@
-import { useEffect, useState, useCallback } from "react";
-import { useMissionControlStore, type Wave, type CouncilDebate } from "@/stores/mission-control-store";
+/**
+ * 🔄 useLiveMissionControl
+ *
+ * Hook que mantém o Mission Control store sincronizado com o daemon backend.
+ *
+ * Estratégia desta fase: polling HTTP via RPC (sem WebSocket).
+ * - O daemon não implementa WebSocket nesta fase.
+ * - Sessions do daemon são usadas como fonte de verdade para execuções ativas.
+ * - Waves locais (Zustand) representam planejamento local.
+ * - Sessions reais do daemon representam execuções reais.
+ *
+ * O hook NÃO usa window.dispatchEvent de eventos WS porque esses eventos
+ * nunca chegam (EventBus backend é in-process, sem canal externo).
+ */
+
+import { useEffect, useCallback, useState } from "react";
+import {
+  useMissionControlStore,
+  type DaemonSession,
+  type Wave,
+  type Task,
+} from "@/stores/mission-control-store";
 
 /**
- * Hook that connects to live daemon events via the EventBus
- * and updates the Mission Control store in real-time
+ * Converte uma DaemonSession em uma Wave do Zustand (execução real).
+ *
+ * Mapeamento:
+ * - session.status = "active" → wave.status = "active"
+ * - session.status = "completed" → wave.status = "done"
+ * - outros → wave.status = "pending"
  */
-export function useLiveMissionControl() {
-  const [waves, setWaves] = useState<Wave[]>([]);
-  const [currentDebate, setCurrentDebate] = useState<CouncilDebate | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
+function sessionToWave(session: DaemonSession, index: number): Wave {
+  const status = (() => {
+    if (session.status === "active") return "active" as const;
+    if (session.status === "completed") return "done" as const;
+    return "pending" as const;
+  })();
 
+  const tasks: Task[] = session.metadata?.tasks
+    ? (session.metadata.tasks as Array<{ id: string; title: string; progress: number; phase: string }>)
+        .map((t) => ({
+          id: t.id,
+          title: t.title,
+          progress: t.progress ?? 0,
+          phase: (t.phase ?? "planning") as Task["phase"],
+        }))
+    : [];
+
+  return {
+    id: `session-${session.id}`,
+    number: index + 1,
+    status,
+    tasks,
+    title: `Session ${session.id.slice(0, 8)}`,
+    isLocal: false,
+  };
+}
+
+export function useLiveMissionControl() {
   const store = useMissionControlStore();
 
-  const handleDaemonEvent = useCallback((event: CustomEvent) => {
-    const { type, data } = event.detail;
+  const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
 
-    switch (type) {
-      case "wave:created":
-        setWaves((prev) => [...prev, data as Wave]);
-        break;
+  /**
+   * Sincroniza sessions do daemon → waves reais no store.
+   *
+   * Estratégia de merge:
+   * - Waves com `isLocal: true` são preservadas (criadas localmente, ainda não enviadas ao daemon)
+   * - Waves com `isLocal: false` são substituídas pelas sessions reais
+   */
+  const syncSessionsToWaves = useCallback(() => {
+    const { daemonSessions, waves } = useMissionControlStore.getState();
 
-      case "wave:updated":
-        setWaves((prev) =>
-          prev.map((w) => (w.id === (data as Wave).id ? { ...w, ...data } : w))
-        );
-        break;
+    if (!daemonSessions || daemonSessions.length === 0) {
+      // Sem sessions do daemon — preservar apenas waves locais
+      return;
+    }
 
-      case "task:progress":
-        setWaves((prev) =>
-          prev.map((w) =>
-            w.id === data.waveId
-              ? {
-                  ...w,
-                  tasks: w.tasks.map((t) =>
-                    t.id === data.taskId ? { ...t, ...data.updates } : t
-                  ),
-                }
-              : w
-          )
-        );
-        break;
+    const localWaves = waves.filter((w) => w.isLocal !== false);
+    const realWaves = daemonSessions.map((s, i) => sessionToWave(s, i));
 
-      case "council:debate_started":
-        setCurrentDebate(data as CouncilDebate);
-        break;
+    // Combinar: waves locais primeiro, depois as reais do daemon
+    const merged = [...localWaves, ...realWaves];
 
-      case "council:vote":
-        setCurrentDebate((prev) => {
-          if (!prev) return null;
-          return {
-            ...prev,
-            agents: [...prev.agents, data.agent],
-          };
-        });
-        break;
+    // Só atualizar se houve mudança real (evitar re-render desnecessário)
+    const currentIds = waves.map((w) => w.id).join(",");
+    const newIds = merged.map((w) => w.id).join(",");
 
-      case "council:consensus":
-        setCurrentDebate((prev) => {
-          if (!prev) return null;
-          return {
-            ...prev,
-            consensus: data.consensus,
-          };
-        });
-        break;
-
-      case "daemon:connected":
-        setIsConnected(true);
-        break;
-
-      case "daemon:disconnected":
-        setIsConnected(false);
-        break;
+    if (currentIds !== newIds) {
+      // Atualizar o store com as waves combinadas
+      useMissionControlStore.setState({ waves: merged });
+      setLastSyncAt(new Date());
     }
   }, []);
 
+  // Reagir a mudanças nas sessions do daemon
   useEffect(() => {
-    window.addEventListener("daemon:event", handleDaemonEvent as EventListener);
-    return () => {
-      window.removeEventListener("daemon:event", handleDaemonEvent as EventListener);
-    };
-  }, [handleDaemonEvent]);
+    return useMissionControlStore.subscribe(
+      (state, prevState) => {
+        if (state.daemonSessions !== prevState.daemonSessions) {
+          syncSessionsToWaves();
+        }
+      }
+    );
+  }, [syncSessionsToWaves]);
 
   return {
-    waves,
-    currentDebate,
-    isConnected,
+    waves: store.waves,
+    connectionStatus: store.connectionStatus,
+    lastSuccessfulPoll: store.lastSuccessfulPoll,
+    lastSyncAt,
+    daemonSessions: store.daemonSessions,
+    agentBridgeStatus: store.agentBridgeStatus,
+    agentsStatusTimedOut: store.agentsStatusTimedOut,
     stats: {
       waveNumber: store.waveNumber,
       activeTasks: store.activeTasks,

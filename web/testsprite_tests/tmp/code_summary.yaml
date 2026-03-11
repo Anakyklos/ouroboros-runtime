@@ -1,0 +1,136 @@
+version: "2"
+type: frontend
+tech_stack:
+  - TypeScript
+  - React 19
+  - Vite 6
+  - Tailwind CSS 4
+  - Zustand 5
+  - Framer Motion
+  - React Router DOM 7
+  - Radix UI
+  - Lucide React
+routes:
+  - path: /
+    file: src/pages/dashboard.tsx
+    auth_required: false
+    description: Dashboard main view with 4 quadrant grid (Analysis, Wave Queue, Agent Review, Execution)
+  - path: /waves
+    file: src/pages/waves.tsx
+    auth_required: false
+    description: Full-page wave queue management
+  - path: /agents
+    file: src/pages/agents.tsx
+    auth_required: false
+    description: Full-page agent review panel
+  - path: /analysis
+    file: src/pages/analysis.tsx
+    auth_required: false
+    description: Full-page code analysis view
+  - path: /logs
+    file: src/pages/logs.tsx
+    auth_required: false
+    description: Full-page log viewer with filtering
+  - path: /settings
+    file: src/pages/settings.tsx
+    auth_required: false
+    description: Settings page with theme, skin, behavior and notification options
+features:
+  - name: Dashboard Grid
+    description: 2x2 grid displaying 4 quadrants - Analysis, Wave Queue, Agent Review, Execution
+    files:
+      - src/pages/dashboard.tsx
+      - src/components/quadrants/the-eye.tsx
+      - src/components/quadrants/the-coil.tsx
+      - src/components/quadrants/the-council.tsx
+      - src/components/quadrants/the-strike.tsx
+    entry_route: /
+    user_interactions:
+      - View dashboard with 4 quadrant cards
+      - See empty state when daemon is disconnected
+      - Cards show real data when daemon is connected
+    api_calls:
+      - method: POST
+        endpoint: /api/rpc
+    auth_required: false
+  - name: Sidebar Navigation
+    description: Persistent left sidebar with NavLink navigation to all routes
+    files:
+      - src/components/layout/sidebar.tsx
+    entry_route: /
+    user_interactions:
+      - Click navigation links to switch routes
+      - View daemon connection status indicator
+      - Click Stop All button to halt all operations
+    api_calls: []
+    auth_required: false
+  - name: Status Bar
+    description: Top bar showing daemon status, wave count, task count, token usage and mode
+    files:
+      - src/components/layout/status-bar.tsx
+    entry_route: /
+    user_interactions:
+      - View real-time daemon connection status
+      - View current wave number
+      - View running tasks count
+      - View token usage
+      - View current mode
+    api_calls:
+      - method: POST
+        endpoint: /api/rpc
+    auth_required: false
+  - name: Settings Page
+    description: Configuration page with theme selection, skin selection, UI scale, behavior toggles and notification settings
+    files:
+      - src/pages/settings.tsx
+      - src/stores/settings-store.ts
+    entry_route: /settings
+    user_interactions:
+      - Select theme (Dark, Light, System)
+      - Select interface skin (Snake, Functional, Swiss)
+      - Adjust UI scale slider
+      - Toggle reduced motion
+      - Toggle auto-scroll logs
+      - Toggle confirm before emergency brake
+      - Adjust max log entries
+      - Toggle notification sounds
+      - Click Reset to restore defaults
+    api_calls: []
+    auth_required: false
+  - name: Logs Viewer
+    description: Full-page log viewer showing daemon and agent log entries
+    files:
+      - src/pages/logs.tsx
+      - src/stores/log-store.ts
+    entry_route: /logs
+    user_interactions:
+      - View log entries with level, timestamp and message
+      - Clear all log entries
+      - See empty state when no logs exist
+    api_calls: []
+    auth_required: false
+  - name: Theme System
+    description: Dual-axis theming - color scheme (dark/light/system) and visual skin (snake/functional/swiss)
+    files:
+      - src/stores/settings-store.ts
+      - src/styles/globals.css
+    entry_route: /settings
+    user_interactions:
+      - Switch between snake, functional and swiss skins
+      - Switch between dark, light and system themes
+      - Settings persisted in localStorage
+    api_calls: []
+    auth_required: false
+known_limitations:
+  - issue: Dashboard quadrants show "Daemon not connected" when backend daemon is not running on port 3001
+    location: src/components/quadrants/
+    impact: All 4 quadrants display empty state - no data visible without daemon
+  - issue: Vite proxy errors flood console when daemon is not running
+    location: vite.config.ts
+    impact: Repeated ECONNREFUSED errors every 5 seconds to /api/rpc
+  - issue: Swiss skin only applies data-theme="swiss" without full light mode support for all components
+    location: src/stores/settings-store.ts
+    impact: Some components may not render correctly in swiss theme
+  - issue: Functional skin CSS overrides are limited to accent color and glow removal
+    location: src/styles/globals.css
+    impact: Some snake-themed elements may still show through in functional skin

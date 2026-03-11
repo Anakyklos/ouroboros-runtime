@@ -111,45 +111,50 @@
   color-scheme: dark;
 }
 
-[data-theme="swiss"] {
-  /* Swiss Minimal Theme (The Coil) */
-  --theme-background: #F5F5F5; /* light gray bg */
-  --theme-foreground: #000000; /* black text */
+[data-skin="swiss"] {
+  /* Swiss Minimal Skin — clean, professional, no-frills */
+  --theme-background: #F5F5F5;
+  --theme-foreground: #000000;
 
-  --theme-surface-primary: #FFFFFF; /* white surface */
-  --theme-surface-secondary: #000000; /* black surface (Phase 1) */
-  --theme-surface-tertiary: #E5E5E5; /* light gray surface */
+  --theme-surface-primary: #FFFFFF;
+  --theme-surface-secondary: #F0F0F0;
+  --theme-surface-tertiary: #E5E5E5;
 
-  --theme-border: #E5E5E5; /* light gray border */
-  --theme-ring: #000000; /* black focus ring */
+  --theme-border: #D4D4D4;
+  --theme-ring: #000000;
 
-  --theme-status-healthy: #000000; /* black */
-  --theme-status-debating: #FF4F00; /* orange */
-  --theme-status-error: #FF0000; /* red (abort) */
+  --theme-status-healthy: #16A34A;
+  --theme-status-debating: #EA580C;
+  --theme-status-error: #DC2626;
 
-  --theme-accent-primary: #000000; /* black accent */
-  --theme-accent-secondary: #FF4F00; /* orange accent */
+  --theme-accent-primary: #111111;
+  --theme-accent-secondary: #EA580C;
 
-  /* Color Mapping */
-  --theme-color-emerald: #000000; /* map emerald (success) to black */
-  --theme-color-gold: #FF4F00; /* map gold (warning) to orange */
-  --theme-color-ruby: #FF0000; /* map ruby (error) to red */
-  --theme-color-obsidian: #FFFFFF; /* map obsidian (bg) to white */
-  --theme-color-slate: #F5F5F5; /* map slate (secondary bg) to light gray */
-  --theme-color-slate-light: #E5E5E5; /* map slate-light (border) to light gray */
-  --theme-color-silver: #666666; /* map silver to dark gray */
-  --theme-color-silver-muted: #888888; /* map silver-muted to medium gray */
-  --theme-color-pearl: #000000; /* map pearl (text) to black */
+  --theme-color-emerald: #16A34A;
+  --theme-color-gold: #EA580C;
+  --theme-color-ruby: #DC2626;
+  --theme-color-obsidian: #FFFFFF;
+  --theme-color-slate: #F5F5F5;
+  --theme-color-slate-light: #E5E5E5;
+  --theme-color-silver: #525252;
+  --theme-color-silver-muted: #737373;
+  --theme-color-pearl: #000000;
 
-  --theme-font-sans: "Inter Tight", "Helvetica Neue", "Arial", sans-serif;
+  --theme-font-sans: "Inter", "Helvetica Neue", "Arial", sans-serif;
   --theme-font-mono: "JetBrains Mono", "Courier New", monospace;
-  --theme-font-display: "Inter Tight", "Helvetica Neue", "Arial Black", sans-serif;
+  --theme-font-display: "Inter", "Helvetica Neue", sans-serif;
 
-  --theme-radius-sm: 0;
-  --theme-radius-md: 0;
-  --theme-radius-lg: 0;
-  --theme-radius-xl: 0;
-  --theme-radius-2xl: 0;
+  --theme-radius-sm: 0.25rem;
+  --theme-radius-md: 0.375rem;
+  --theme-radius-lg: 0.5rem;
+  --theme-radius-xl: 0.625rem;
+  --theme-radius-2xl: 0.75rem;
+
+  /* Remove ornamental effects */
+  --shadow-glow-emerald: none;
+  --shadow-glow-gold: none;
+  --animate-pulse-snake: none;
+  --animate-glow: none;
 
   color-scheme: light;
 }
@@ -220,7 +225,7 @@ body {
   background-clip: text;
 }
 
-[data-theme="swiss"] .text-gradient {
+[data-skin="swiss"] .text-gradient {
   background: none;
   -webkit-text-fill-color: initial;
   color: var(--color-foreground);
@@ -232,7 +237,7 @@ body {
   border: 1px solid rgba(51, 65, 85, 0.5);
 }
 
-[data-theme="swiss"] .surface-glass {
+[data-skin="swiss"] .surface-glass {
   background: var(--color-surface-primary);
   backdrop-filter: none;
   border: 1px solid var(--color-border);
@@ -243,3 +248,33 @@ body {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-xl);
 }
+
+/* ============================================================================
+   Functional Skin — Clean dark UI, no ornamental branding
+   ============================================================================ */
+
+[data-skin="functional"] {
+  /* Override accent from emerald to a neutral blue */
+  --theme-accent-primary: #3B82F6;
+  --theme-ring: #3B82F6;
+  --theme-status-healthy: #22C55E;
+  --theme-color-emerald: #3B82F6;
+
+  /* Reduce visual noise */
+  --shadow-glow-emerald: none;
+  --shadow-glow-gold: none;
+  --animate-pulse-snake: none;
+  --animate-glow: none;
+}
+
+[data-skin="functional"] .text-gradient {
+  background: none;
+  -webkit-text-fill-color: initial;
+  color: var(--color-foreground);
+}
+
+[data-skin="functional"] .surface-glass {
+  background: var(--color-surface-secondary);
+  backdrop-filter: none;
+}
+

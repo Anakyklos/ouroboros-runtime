@@ -1,46 +1,41 @@
-import { useState, useEffect } from "react";
-import { MissionControl } from "@/pages/mission-control";
-import { Settings } from "@/pages/settings";
+import { Routes, Route } from "react-router-dom";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { LoadingState } from "@/components/loading-states";
+import { Sidebar } from "@/components/layout/sidebar";
+import { StatusBar } from "@/components/layout/status-bar";
+import { Dashboard } from "@/pages/dashboard";
+import { WavesPage } from "@/pages/waves";
+import { AgentsPage } from "@/pages/agents";
+import { AnalysisPage } from "@/pages/analysis";
+import { LogsPage } from "@/pages/logs";
+import { Settings } from "@/pages/settings";
+import { useEventBus } from "@/hooks/use-event-bus";
 import "@/styles/globals.css";
 
-type Page = "mission-control" | "settings";
-
 export function App() {
-  const [currentPage, setCurrentPage] = useState<Page>("mission-control");
-  const [isLoading, setIsLoading] = useState(true);
-
-  useEffect(() => {
-    // Simulate initial load
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-    }, 1000);
-
-    return () => clearTimeout(timer);
-  }, []);
-
-  // Handle navigation from keyboard or events
-  useEffect(() => {
-    const handleNavigate = (event: CustomEvent<Page>) => {
-      setCurrentPage(event.detail);
-    };
-
-    window.addEventListener("navigate" as any, handleNavigate);
-    return () => window.removeEventListener("navigate" as any, handleNavigate);
-  }, []);
-
-  if (isLoading) {
-    return <LoadingState />;
-  }
+  // Initialize daemon WebSocket connection
+  useEventBus({ url: "ws://localhost:7777/ws" });
 
   return (
     <ErrorBoundary>
-      {currentPage === "mission-control" ? (
-        <MissionControl onSettingsClick={() => setCurrentPage("settings")} />
-      ) : (
-        <Settings />
-      )}
+      <div className="h-screen w-screen bg-[var(--color-background)] text-[var(--color-foreground)] flex flex-col overflow-hidden">
+        {/* Top Status Bar */}
+        <StatusBar />
+
+        {/* Main Layout: Sidebar + Content */}
+        <div className="flex-1 flex overflow-hidden">
+          <Sidebar />
+          <main className="flex-1 overflow-y-auto p-6">
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/waves" element={<WavesPage />} />
+              <Route path="/agents" element={<AgentsPage />} />
+              <Route path="/analysis" element={<AnalysisPage />} />
+              <Route path="/logs" element={<LogsPage />} />
+              <Route path="/settings" element={<Settings />} />
+            </Routes>
+          </main>
+        </div>
+      </div>
     </ErrorBoundary>
   );
 }

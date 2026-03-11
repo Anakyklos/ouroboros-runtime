@@ -43,6 +43,21 @@ export class PolicyEngine {
         this.eventBus = eventBus ?? globalEventBus;
     }
 
+    // ========================================================================
+    // Input Sanitization
+    // ========================================================================
+
+    /**
+     * Delimita entrada de usuário para prevenir injeção de prompt.
+     * Trunca e envolve em delimitadores para separar de instruções do sistema.
+     */
+    private sanitizeForPrompt(input: string, maxLength: number = 4000): string {
+        const truncated = input.length > maxLength
+            ? input.slice(0, maxLength) + "... (truncated)"
+            : input;
+        return `<user_input>\n${truncated}\n</user_input>`;
+    }
+
     /**
      * Decide a próxima ação com base no contexto atual.
      * Retorna ActionDecision validado por Zod.
@@ -62,7 +77,7 @@ export class PolicyEngine {
                 content: `Decide the next action for this context.
 
 Context:
-${context}
+${this.sanitizeForPrompt(context)}
 ${toolList}
 
 Respond with a JSON object: { "action": "...", "reasoning": "...", "confidence": 0.0-1.0, "requiresRetrieval": bool, "requiresCodeModel": bool }

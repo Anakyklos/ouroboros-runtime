@@ -1,0 +1,22 @@
+{
+  "status": "init",
+  "scope": "codebase",
+  "type": "frontend",
+  "localEndpoint": "http://localhost:3000/",
+  "serverPort": 42047,
+  "executionArgs": {
+    "projectName": "web",
+    "projectPath": "/home/pedro/Projetos de I.A./ouroboros-runtime/web",
+    "testIds": [
+      "TC005",
+      "TC007",
+      "TC013"
+    ],
+    "additionalInstruction": "Focus on the 3 test cases that previously failed due to UI bugs. TC005 tests Stop All button opening confirmation dialog - it should now open a proper Radix Dialog with data-testid attributes. TC007 tests confirming Stop All - should now work with the DOM dialog. TC013 tests rapid route switching - the race condition has been fixed. The daemon backend is NOT running.",
+    "serverMode": "development",
+    "envs": {
+      "API_KEY": "sk-user-8fLFNkGrLsIwNPi84iTHlENT7PR04FGn1LHMQFDGXOnr_0emEYpJEmeRpB_GpAm1WWhceVQy1mrD0NK1Gysc50plRMqsRJv10QJMub2mYd6E3XXyK1wwPOwYXflDM_-MjJM"
+    }
+  },
+  "proxy": "http://68a93b6d-86e7-4ac4-b01d-e9d1f98a60da:I78g8iBlZUzpdVAh2VgI07pi00TFA8GI@tun.testsprite.com:8080"
+}

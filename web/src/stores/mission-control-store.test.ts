@@ -1,6 +1,33 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach } from "bun:test";
 import { useMissionControlStore } from "./mission-control-store";
 import type { Wave } from "./mission-control-store";
+
+// Reseta o store antes de cada teste para evitar contaminação de estado
+// O Zustand store é um singleton — sem reset, waves/tasks acumulam entre testes.
+beforeEach(() => {
+  useMissionControlStore.setState({
+    mode: "running",
+    confidence: 80,
+    waveNumber: 0,
+    activeTasks: 0,
+    tasksDone: 0,
+    waves: [],
+    currentDebate: null,
+    activeDebate: null,
+    scanningFiles: [],
+    ideas: [],
+    connectionStatus: "unknown",
+    daemonConnected: false,
+    lastSuccessfulPoll: null,
+    daemonSessions: [],
+    agentBridgeStatus: {},
+    agentsStatusTimedOut: false,
+    activeQuadrant: null,
+    viewMode: "grid",
+    uptime: "0h 0m",
+    tokens: 0,
+  });
+});
 
 describe("MissionControlStore", () => {
   it("should update mode", () => {
@@ -78,5 +105,39 @@ describe("MissionControlStore", () => {
     const wave = state.waves.find((w: Wave) => w.id === "wave-1");
     expect(wave?.tasks[0].phase).toBe("paused");
     expect(wave?.tasks[1].phase).toBe("complete"); // Already complete
+  });
+
+  it("should sync connectionStatus with daemonConnected (deprecated bool)", () => {
+    const store = useMissionControlStore.getState();
+
+    store.setConnectionStatus("polling");
+    expect(useMissionControlStore.getState().daemonConnected).toBe(true);
+    expect(useMissionControlStore.getState().connectionStatus).toBe("polling");
+
+    store.setConnectionStatus("disconnected");
+    expect(useMissionControlStore.getState().daemonConnected).toBe(false);
+    expect(useMissionControlStore.getState().connectionStatus).toBe("disconnected");
+  });
+
+  it("should store daemon sessions", () => {
+    const store = useMissionControlStore.getState();
+
+    store.setDaemonSessions([
+      { id: "sess-1", status: "active", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    ]);
+
+    expect(useMissionControlStore.getState().daemonSessions).toHaveLength(1);
+    expect(useMissionControlStore.getState().daemonSessions[0].id).toBe("sess-1");
+  });
+
+  it("should update agent bridge status with timedOut flag", () => {
+    const store = useMissionControlStore.getState();
+
+    store.setAgentBridgeStatus({ gemini: "available", antigravity: "unavailable" }, true);
+
+    const state = useMissionControlStore.getState();
+    expect(state.agentBridgeStatus.gemini).toBe("available");
+    expect(state.agentBridgeStatus.antigravity).toBe("unavailable");
+    expect(state.agentsStatusTimedOut).toBe(true);
   });
 });
