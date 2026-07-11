@@ -75,8 +75,20 @@ export class SessionManager {
         this.apiKey = apiKey;
         this.maxCleanupIterations = config?.maxCleanupIterations ?? DEFAULT_SESSION_MANAGER_CONFIG.maxCleanupIterations!;
         this.cleanupTimeoutMs = config?.cleanupTimeoutMs ?? DEFAULT_SESSION_MANAGER_CONFIG.cleanupTimeoutMs!;
-        this.checkpointIntervalMs = config?.checkpointIntervalMs ?? DEFAULT_SESSION_MANAGER_CONFIG.checkpointIntervalMs!;
-        this.maxCheckpoints = config?.maxCheckpoints ?? DEFAULT_SESSION_MANAGER_CONFIG.maxCheckpoints!;
+        // Reject non-positive / non-finite intervals — setInterval(0) burns CPU and hammers SQLite.
+        this.checkpointIntervalMs =
+            config?.checkpointIntervalMs !== undefined &&
+            Number.isFinite(config.checkpointIntervalMs) &&
+            config.checkpointIntervalMs > 0
+                ? config.checkpointIntervalMs
+                : DEFAULT_SESSION_MANAGER_CONFIG.checkpointIntervalMs!;
+        // maxCheckpoints must keep at least one checkpoint when retention is enabled.
+        this.maxCheckpoints =
+            config?.maxCheckpoints !== undefined &&
+            Number.isFinite(config.maxCheckpoints) &&
+            config.maxCheckpoints >= 1
+                ? Math.floor(config.maxCheckpoints)
+                : DEFAULT_SESSION_MANAGER_CONFIG.maxCheckpoints!;
     }
 
     /**

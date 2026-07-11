@@ -1,6 +1,7 @@
 {
-  "$schema_comment": "Tests excluded from mandatory baseline (issue #35). Names stay discoverable; they are not counted as passing.",
+  "$schema_comment": "Tests excluded from mandatory baseline (issue #35). Names stay discoverable; they are not counted as passing. Recovery debt is tracked by tracking_issue (not #35, which closes with the baseline).",
   "issue": 35,
+  "tracking_issue": 41,
   "files": [
     {
       "path": "cli/src/runtime/SandboxE2E.test.ts",

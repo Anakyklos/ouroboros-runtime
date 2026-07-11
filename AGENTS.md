@@ -29,7 +29,7 @@ bun run check:tests     # mandatory unit tests (prints quarantine list)
 
 CI: `.github/workflows/ci.yml` runs the same gate on `pull_request` and `push` to `main` (no API keys).
 
-Quarantined suites (not executed by `check:tests`, **not** counted as green): see `scripts/quarantine-manifest.json`.
+Quarantined suites (not executed by `check:tests`, **not** counted as green): see `scripts/quarantine-manifest.json`. Recovery debt: issue **#41** (`tracking_issue`).
 
 ### Development & Building
 ```bash
@@ -342,7 +342,8 @@ test-glm-integration.test.ts: 1 pass, 0 fail ✅
 
 ### Conhecidos não corrigidos / quarentena (baseline #35)
 
-Authoritative list: `scripts/quarantine-manifest.json` and `docs/BASELINE.md`.
+Authoritative list: `scripts/quarantine-manifest.json` and `docs/BASELINE.md`.  
+Recovery tracking: **#41** (not #35 after baseline closes).
 
 - `SandboxE2E.test.ts` — TDZ em `existsSync` + venv Python ausente no temp dir (environment + test bug)
 - `SandboxRunner.test.ts`, `SandboxEscapeTests.test.ts`, `SandboxResourceLimits.test.ts`, `SandboxSecurity.test.ts` — dependem de `.ouroboros/venv`; incompatíveis com CI limpa sem setup hermético

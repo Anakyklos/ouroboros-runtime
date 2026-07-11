@@ -194,4 +194,36 @@ describe('SessionManager', () => {
         const timeoutCall = calls.find((c: any[]) => c[0] === 'warn' && c[1].includes('timed out'));
         expect(timeoutCall).toBeDefined();
     });
+
+    it('rejects non-positive checkpointIntervalMs and falls back to default', () => {
+        const zero = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+            checkpointIntervalMs: 0,
+        });
+        const negative = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+            checkpointIntervalMs: -100,
+        });
+        const valid = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+            checkpointIntervalMs: 15_000,
+        });
+
+        expect((zero as any).checkpointIntervalMs).toBe(30_000);
+        expect((negative as any).checkpointIntervalMs).toBe(30_000);
+        expect((valid as any).checkpointIntervalMs).toBe(15_000);
+    });
+
+    it('rejects maxCheckpoints < 1 and falls back to default', () => {
+        const zero = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+            maxCheckpoints: 0,
+        });
+        const negative = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+            maxCheckpoints: -2,
+        });
+        const valid = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+            maxCheckpoints: 3,
+        });
+
+        expect((zero as any).maxCheckpoints).toBe(5);
+        expect((negative as any).maxCheckpoints).toBe(5);
+        expect((valid as any).maxCheckpoints).toBe(3);
+    });
 });

@@ -16,14 +16,42 @@ function run(cmd: string, args: string[], cwd: string): number {
         encoding: "utf-8",
         stdio: "inherit",
     });
+    if (result.error) {
+        console.error(`✖ Failed to spawn ${cmd}: ${result.error.message}`);
+        return 1;
+    }
+    if (result.signal) {
+        console.error(`✖ ${cmd} terminated by signal ${result.signal}`);
+        return 1;
+    }
     return result.status ?? 1;
 }
 
+/**
+ * Run `git status --porcelain` and fail hard if git is missing, not a repo,
+ * or the command returns non-zero. Never silently treat failure as "clean".
+ */
 function gitStatusPorcelain(): string {
     const result = spawnSync("git", ["status", "--porcelain"], {
         cwd: ROOT,
         encoding: "utf-8",
     });
+
+    if (result.error) {
+        console.error("✖ git status failed: git is not installed or not in PATH.");
+        console.error(`  ${result.error.message}`);
+        process.exit(1);
+    }
+
+    if (result.status !== 0) {
+        const stderr = (result.stderr ?? "").trim();
+        console.error(`✖ git status failed with exit code ${result.status}`);
+        if (stderr) console.error(stderr);
+        if (result.signal) console.error(`  signal: ${result.signal}`);
+        console.error("  Ensure this is a git repository and git works from the project root.");
+        process.exit(1);
+    }
+
     return (result.stdout ?? "").trim();
 }
 

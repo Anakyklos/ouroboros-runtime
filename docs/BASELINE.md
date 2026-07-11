@@ -39,6 +39,8 @@ Or via the check helper (also asserts the working tree is unchanged by install):
 bun run check:install
 ```
 
+`check:install` fails hard if `git status` cannot run (git missing, not a repo, non-zero exit). It never treats a failed git command as a clean tree.
+
 If `--frozen-lockfile` fails, refresh and commit lockfiles:
 
 ```bash
@@ -105,7 +107,14 @@ Properties:
 
 Authoritative list: [`scripts/quarantine-manifest.json`](../scripts/quarantine-manifest.json).
 
-Printed at the start of every `bun run check:tests` run.
+**Recovery debt tracker:** [issue #41](https://github.com/RenyEnnos/ouroboros-runtime/issues/41)  
+(field `tracking_issue` in the manifest). Issue **#35** only establishes the baseline gate; it must not be the sole tracker after close.
+
+Printed at the start of every `bun run check:tests` run. The runner **fails** if:
+
+- a quarantine path is missing or renamed (silent disappearance is not allowed);
+- the manifest has duplicate paths;
+- required fields (`path`, `classification`, `reason`, `reactivate_when`) are empty.
 
 Rules for quarantine:
 
@@ -113,7 +122,7 @@ Rules for quarantine:
 - Suites are **not** executed in the mandatory gate  
 - Failures are **not** counted as pass  
 - Files are **not** deleted or renamed to hide them  
-- Re-enable when the `reactivate_when` condition in the manifest is met  
+- Re-enable when the `reactivate_when` condition in the manifest is met; track progress on **#41**
 
 Current quarantined files (summary):
 
