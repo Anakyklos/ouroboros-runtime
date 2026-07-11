@@ -36,11 +36,19 @@ export interface SessionManagerConfig {
      * but long enough for a typical cleanup task to complete.
      */
     cleanupTimeoutMs?: number;
+
+    /** Interval between automatic session checkpoints (ms). */
+    checkpointIntervalMs?: number;
+
+    /** Maximum number of checkpoints retained per session. */
+    maxCheckpoints?: number;
 }
 
 export const DEFAULT_SESSION_MANAGER_CONFIG: SessionManagerConfig = {
     maxCleanupIterations: 3,
     cleanupTimeoutMs: 5000,
+    checkpointIntervalMs: 30000,
+    maxCheckpoints: 5,
 };
 
 const TIMEOUT_SYMBOL = Symbol('TIMEOUT');
@@ -48,32 +56,17 @@ const TIMEOUT_SYMBOL = Symbol('TIMEOUT');
 export class SessionManager {
     private readonly maxCleanupIterations: number;
     private readonly cleanupTimeoutMs: number;
+    private readonly checkpointIntervalMs: number;
+    private readonly maxCheckpoints: number;
 
     private storage: StoragePort;
     private eventBus: EventBus;
     private activeOrchestrators: Map<string, Orchestrator> = new Map();
-    private activeTasks: Map<string, Promise<void>> = new Map();
+    /** sessionId → (taskId → promise) */
+    private activeTasks: Map<string, Map<string, Promise<void>>> = new Map();
     private sessionWaves: Map<string, WaveState[]> = new Map();
     private checkpointIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
     
-    private apiKey?: string;
-    private checkpointIntervalMs: number;
-    private maxCheckpoints: number;
-
-    constructor(
-        storage: StoragePort, 
-        eventBus: EventBus, 
-        apiKey?: string,
-        options?: { checkpointIntervalMs?: number; maxCheckpoints?: number }
-    ) {
-        this.storage = storage;
-        this.eventBus = eventBus;
-        this.apiKey = apiKey;
-        this.checkpointIntervalMs = options?.checkpointIntervalMs ?? 30000;
-        this.maxCheckpoints = options?.maxCheckpoints ?? 5;
-    // Map<sessionId, Map<taskId, Promise<void>>>
-    private activeTasks: Map<string, Map<string, Promise<void>>> = new Map();
-
     private apiKey?: string;
 
     constructor(storage: StoragePort, eventBus: EventBus, apiKey?: string, config?: SessionManagerConfig) {
@@ -82,9 +75,11 @@ export class SessionManager {
         this.apiKey = apiKey;
         this.maxCleanupIterations = config?.maxCleanupIterations ?? DEFAULT_SESSION_MANAGER_CONFIG.maxCleanupIterations!;
         this.cleanupTimeoutMs = config?.cleanupTimeoutMs ?? DEFAULT_SESSION_MANAGER_CONFIG.cleanupTimeoutMs!;
+        this.checkpointIntervalMs = config?.checkpointIntervalMs ?? DEFAULT_SESSION_MANAGER_CONFIG.checkpointIntervalMs!;
+        this.maxCheckpoints = config?.maxCheckpoints ?? DEFAULT_SESSION_MANAGER_CONFIG.maxCheckpoints!;
     }
 
-        /**
+    /**
      * Add a task for testing purposes or internal use.
      */
     protected addTask(sessionId: string, taskId: string, promise: Promise<void>): void {
@@ -358,17 +353,17 @@ export class SessionManager {
 
     async getMemory(sessionId: string, filter?: { type?: SessionMemory['type'] }): Promise<SessionMemory[]> {
         return this.storage.listMemory(sessionId, filter);
-    /**
-     * Cleanup resources for a session
-     */
+    }
 
+    /**
+     * Get or create the per-session map of active task promises.
+     */
     private getOrCreateSessionTasksMap(sessionId: string): Map<string, Promise<void>> {
         if (!this.activeTasks.has(sessionId)) {
             this.activeTasks.set(sessionId, new Map());
         }
         return this.activeTasks.get(sessionId)!;
     }
-
 
     /**
      * Check if a session has active tasks (for testing/diagnostics)
@@ -377,6 +372,9 @@ export class SessionManager {
         return (this.activeTasks.get(sessionId)?.size ?? 0) > 0;
     }
 
+    /**
+     * Cleanup resources for a session
+     */
     async cleanupSession(sessionId: string): Promise<void> {
         const timer = this.checkpointIntervals.get(sessionId);
         if (timer) {
@@ -387,10 +385,6 @@ export class SessionManager {
         this.activeOrchestrators.delete(sessionId);
         this.sessionWaves.delete(sessionId);
 
-        for (const [taskId, promise] of this.activeTasks) {
-            if (taskId.includes(sessionId)) {
-                await promise.catch(() => { /* ignore errors */ });
-                this.activeTasks.delete(taskId);
         let iterations = 0;
 
         while (iterations < this.maxCleanupIterations) {
@@ -415,7 +409,6 @@ export class SessionManager {
             const cleanupPromise = Promise.all(promisesToAwait);
 
             let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
 
             const timeoutPromise = new Promise<typeof TIMEOUT_SYMBOL>((resolve) => {
                 timeoutId = setTimeout(() => resolve(TIMEOUT_SYMBOL), this.cleanupTimeoutMs);
