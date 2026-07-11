@@ -54,7 +54,7 @@ export interface MultiModelReviewConfig {
 }
 
 export const DEFAULT_REVIEW_CONFIG: MultiModelReviewConfig = {
-    reviewModel: 'gemini-2.0-flash',
+    reviewModel: 'glm-4-flash',
     timeoutMs: 60_000,
     minSeverityToFail: 'error',
     allowHeuristicFallback: false,

@@ -2,25 +2,46 @@
  * 🔍 MultiModelReviewStrategy Tests
  */
 
-import { describe, it, expect, beforeEach, afterEach, spyOn, jest } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { MultiModelReviewStrategy, createMultiModelReviewStrategy } from './MultiModelReviewStrategy.js';
 import type { ValidationContext } from '../types.js';
 
 describe('MultiModelReviewStrategy', () => {
     let strategy: MultiModelReviewStrategy;
-    let originalFetch: any;
+    let originalFetch: typeof globalThis.fetch;
+
+    const snapshotEnv = () => {
+        return {
+            ZAI_API_KEY: process.env.ZAI_API_KEY,
+            ZHIPU_API_KEY: process.env.ZHIPU_API_KEY,
+        };
+    };
+
+    const restoreEnv = (snapshot: Record<string, string | undefined>) => {
+        for (const [key, value] of Object.entries(snapshot)) {
+            if (value === undefined) {
+                delete process.env[key];
+            } else {
+                process.env[key] = value;
+            }
+        }
+    };
+
+    let envSnapshot: Record<string, string | undefined>;
 
     beforeEach(() => {
         strategy = createMultiModelReviewStrategy({
-            reviewModel: 'gemini-2.0-flash',
+            reviewModel: 'glm-4-flash',
             minSeverityToFail: 'error',
             allowHeuristicFallback: false,
         });
         originalFetch = global.fetch;
+        envSnapshot = snapshotEnv();
     });
 
     afterEach(() => {
         global.fetch = originalFetch;
+        restoreEnv(envSnapshot);
     });
 
     const createContext = (output: string): ValidationContext => ({
@@ -30,20 +51,27 @@ describe('MultiModelReviewStrategy', () => {
     });
 
     const mockFetchSuccess = (json: any) => {
-        global.fetch = async () => ({
+        global.fetch = (async () => ({
             ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+                choices: [{ message: { content: JSON.stringify(json) } }],
+                usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 }
+            }),
             json: async () => ({
                 choices: [{ message: { content: JSON.stringify(json) } }],
                 usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 }
             }),
-        } as any);
+        } as any)) as typeof globalThis.fetch;
     };
 
     const mockFetchError = (status: number) => {
-        global.fetch = async () => ({
+        global.fetch = (async () => ({
             ok: false,
             status,
-        } as any);
+            statusText: 'Error',
+            text: async () => 'Error body',
+        } as any)) as typeof globalThis.fetch;
     };
 
     // ============================================================
@@ -91,10 +119,6 @@ describe('MultiModelReviewStrategy', () => {
             process.env.ZAI_API_KEY = 'test-key';
         });
 
-        afterEach(() => {
-            delete process.env.ZAI_API_KEY;
-        });
-
         it('approves code when LLM approves', async () => {
             mockFetchSuccess({
                 verdict: 'approved',
@@ -137,48 +161,36 @@ describe('MultiModelReviewStrategy', () => {
 
     describe('fail-closed behavior', () => {
         it('fails when no API key is provided and fallback is disabled', async () => {
-            // Ensure no API keys in env
-            const oldZai = process.env.ZAI_API_KEY;
-            const oldZhipu = process.env.ZHIPU_API_KEY;
             delete process.env.ZAI_API_KEY;
             delete process.env.ZHIPU_API_KEY;
 
-            try {
-                const report = await strategy.performReview(createContext('some code'));
-                expect(report.verdict).toBe('changes_requested');
-                expect(report.findings[0].category).toBe('infrastructure');
-                expect(report.findings[0].message).toContain('API key not configured');
-            } finally {
-                process.env.ZAI_API_KEY = oldZai;
-                process.env.ZHIPU_API_KEY = oldZhipu;
-            }
+            const report = await strategy.performReview(createContext('some code'));
+            expect(report.verdict).toBe('changes_requested');
+            expect(report.findings[0].category).toBe('infrastructure');
+            expect(report.findings[0].message).toContain('API key not configured');
         });
 
-        it('fails when API returns error and fallback is disabled', async () => {
+        it('fails validation when API returns error', async () => {
             process.env.ZAI_API_KEY = 'test-key';
             mockFetchError(500);
 
-            const report = await strategy.performReview(createContext('some code'));
-            expect(report.verdict).toBe('changes_requested');
-            expect(report.findings[0].message).toContain('Review API error: 500');
-
-            delete process.env.ZAI_API_KEY;
+            const result = await strategy.validate(createContext('some code'));
+            expect(result.isValid).toBe(false);
+            expect(result.message).toContain('Review API error: 500');
         });
 
         it('fails when response JSON is invalid', async () => {
             process.env.ZAI_API_KEY = 'test-key';
-            global.fetch = async () => ({
+            global.fetch = (async () => ({
                 ok: true,
-                json: async () => ({
-                    choices: [{ message: { content: 'not a json' } }]
-                }),
-            } as any);
+                status: 200,
+                text: async () => 'not a json',
+                json: async () => { throw new Error('parse error'); }
+            } as any)) as typeof globalThis.fetch;
 
-            const report = await strategy.performReview(createContext('some code'));
-            expect(report.verdict).toBe('changes_requested');
-            expect(report.findings[0].category).toBe('parsing');
-
-            delete process.env.ZAI_API_KEY;
+            const result = await strategy.validate(createContext('some code'));
+            expect(result.isValid).toBe(false);
+            expect(result.details?.findings[0].category).toBe('parsing');
         });
 
         it('fails when response format is invalid (missing fields)', async () => {
@@ -188,11 +200,34 @@ describe('MultiModelReviewStrategy', () => {
                 // summary and findings missing
             });
 
-            const report = await strategy.performReview(createContext('some code'));
-            expect(report.verdict).toBe('changes_requested');
-            expect(report.findings[0].category).toBe('validation');
+            const result = await strategy.validate(createContext('some code'));
+            expect(result.isValid).toBe(false);
+            expect(result.details?.findings[0].category).toBe('validation');
+        });
 
-            delete process.env.ZAI_API_KEY;
+        it('handles timeout correctly', async () => {
+            process.env.ZAI_API_KEY = 'test-key';
+            global.fetch = (async (url: any, options: any) => {
+                const signal = options?.signal;
+                return new Promise((_, reject) => {
+                    if (signal) {
+                        signal.addEventListener('abort', () => {
+                            const err = new Error('The operation was aborted');
+                            err.name = 'AbortError';
+                            reject(err);
+                        });
+                    }
+                    // Never resolves otherwise
+                });
+            }) as any;
+
+            const timeoutStrategy = createMultiModelReviewStrategy({
+                timeoutMs: 10,
+            });
+
+            const result = await timeoutStrategy.validate(createContext('some code'));
+            expect(result.isValid).toBe(false);
+            expect(result.message).toContain('aborted');
         });
     });
 
@@ -204,22 +239,21 @@ describe('MultiModelReviewStrategy', () => {
         it('sanitizes triple backticks to prevent prompt injection', async () => {
             process.env.ZAI_API_KEY = 'test-key';
             let capturedPrompt = '';
-            global.fetch = async (url, options: any) => {
+            global.fetch = (async (url: any, options: any) => {
                 capturedPrompt = JSON.parse(options.body).messages[1].content;
                 return {
                     ok: true,
+                    status: 200,
                     json: async () => ({
                         choices: [{ message: { content: JSON.stringify({ verdict: 'approved', summary: 'ok', findings: [] }) } }]
                     }),
                 } as any;
-            };
+            }) as typeof globalThis.fetch;
 
             await strategy.performReview(createContext('Code with ``` injection'));
 
             expect(capturedPrompt).not.toContain('``` injection');
             expect(capturedPrompt).toContain('\u0060\u200B\u0060\u200B\u0060 injection');
-
-            delete process.env.ZAI_API_KEY;
         });
     });
 
