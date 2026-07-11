@@ -185,8 +185,11 @@ const CoilNav = ({ activeTab, onTabChange }: { activeTab: string, onTabChange: (
 
 export function CoilDashboard() {
   const [activeTab, setActiveTab] = useState("coil");
-  const { status, emergencyBrake } = useDaemonAPI();
-  const activeWaves = status?.activeWaves || 0;
+  const { status, emergencyBrake, capabilities, isLoading } = useDaemonAPI();
+  const activeWaves =
+    status?.activeWaves?.available && typeof status.activeWaves.value === "number"
+      ? status.activeWaves.value
+      : 0;
 
   return (
     <div className="min-h-screen bg-gray-50 font-sans text-black selection:bg-black selection:text-white" data-theme="swiss">
@@ -227,7 +230,14 @@ export function CoilDashboard() {
         </PhaseItem>
       </main>
 
-      <AbortButton onAbort={() => emergencyBrake()} />
+      <AbortButton
+        onAbort={() => {
+          if (!capabilities.emergencyBrake || isLoading) return;
+          void emergencyBrake().catch(() => {
+            /* error stored in mission-control store lastControlError */
+          });
+        }}
+      />
       <CoilNav activeTab={activeTab} onTabChange={setActiveTab} />
     </div>
   );

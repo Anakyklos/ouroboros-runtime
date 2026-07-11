@@ -161,3 +161,50 @@ A correct CI / local check **must fail** when:
 - Lockfile out of sync → frozen install non-zero  
 
 Do not use `|| true` or optional steps to hide these failures.
+
+## Daemon operational controls (issue #37)
+
+**Control plane:** `cli/src/daemon/execution-control.ts` (`DaemonExecutionController`).
+
+### Guarantees (exact)
+
+- The daemon **confirms admission closed** after brake/pause.
+- For local abortable work it **requests abort** and **waits a bounded settlement** (`DEFAULT_BRAKE_SETTLEMENT_TIMEOUT_MS`).
+- **`cancelled_confirmed` requires execution settlement** (provider/loop/tool terminal) — not merely `AbortController.abort()`.
+- `Orchestrator.loopUntilSuccess` **awaits** `executeWithTimeout` fully after cancel; it does **not** `Promise.race` away the inner provider/tool.
+- `cancel()` before start is **not** cleared by `loopUntilSuccess` — only `resume()` clears `cancelled` (avoids provider start after brake during `appendLog`).
+- Wave checks `shouldAbort` before each task/chunk so dependent work never starts after brake.
+- Tools already in-flight may not be abortable; if they do not settle in time → `abort_requested_unconfirmed` / **partial**.
+- External delegates (Gemini/Antigravity/Jules) may continue remotely → **partial**.
+- **Partial ≠ gate failure**: admission is closed; some executions lacked confirmed settlement.
+- `setMode(running)` resumes Orchestrators **only after** durable admission reopen succeeds.
+- Exact-once resume of cancelled tasks is **not** claimed (`brakeRecoverable: false` / #50).
+
+### State machine
+`running` → `paused` | `braking` → `braked` | `degraded`. Admission open **only** in `running`.
+
+`braked` stores `completeness` + `unresolvedWorkCount`. A second brake returns `already_stopped` and **preserves** `complete: false` when the first was partial or work remains unresolved.
+
+### Stop progress
+`abort_not_requested` → `abort_requested` → `abort_acknowledged` → `execution_settled`  
+(or `detached_remote` / `unsupported`)
+
+### Stop capability by WorkKind (honest)
+| Kind | Stop | Brake action |
+|------|------|----------------|
+| `session_task`, `delegate_glm`, `delegate_glm_wave` | abortable **with settlement** | `cancelled_confirmed` only after settle; else `abort_requested_unconfirmed` |
+| `delegate_gemini`, `delegate_antigravity` | request only | `abort_requested_unconfirmed` → aggregate **partial** |
+| `delegate_jules` | detached remote | `detached_remote` → **partial**; remote may continue |
+
+GLM Wave: **per-task Orchestrator isolation** (no shared `runAbort` / cancel handles across parallel tasks).
+
+### Brake durability (two phases)
+1. Close admission in memory  
+2. **Persist `braking` intent** (fail → partial/degraded; no durable claim)  
+3. Apply per-kind stop + bounded settlement wait  
+4. Persist final `braked complete|partial`  
+
+`clearBrakeAndRun` / resume: persist `running` **before** unpausing leases.
+
+### pause ≠ cancel
+Pause is cooperative where wired to the executor; cancel/brake is terminal for local work after settlement. No secrets/prompts in persisted ops state.

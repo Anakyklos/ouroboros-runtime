@@ -19,6 +19,7 @@ describe('RpcGateway', () => {
     let mockOrchestrator: GatewayOrchestrator;
 
     beforeEach(() => {
+        process.env.OUROBOROS_OPS_PATH = `/tmp/ouroboros-rpc-ops-${Date.now()}-${Math.random()}.json`;
         mockEventBus = new EventBus();
 
         mockStorage = {
@@ -66,7 +67,20 @@ describe('RpcGateway', () => {
             getLogs: mock(async () => []),
             initialize: mock(async () => {}),
             close: mock(async () => {}),
-        };
+            createCheckpoint: mock(async (sessionId: string) => ({
+                id: 'cp-1',
+                sessionId,
+                checkpointNumber: 1,
+                state: {},
+                createdAt: new Date(),
+            })),
+            deleteOldCheckpoints: mock(async () => {}),
+            getLatestCheckpoint: mock(async () => null),
+            listWaves: mock(async () => []),
+            saveWave: mock(async () => ({})),
+            saveMemory: mock(async () => ({})),
+            listMemory: mock(async () => []),
+        } as unknown as StoragePort;
 
         mockOrchestrator = {
             delegateToGemini: mock(async () => ({ output: 'gemini response' })),
@@ -395,6 +409,97 @@ describe('RpcGateway', () => {
             expect(response.error).toBeDefined();
             expect(response.error?.message).toContain('unknown_agent');
         });
+
+        it('daemon.status returns real metrics and unavailable tokens', async () => {
+            const response = await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'daemon.status',
+            });
+            expect(response.error).toBeUndefined();
+            const result = response.result as Record<string, any>;
+            expect(result.processStatus).toBe('alive');
+            expect(result.mode).toBe('running');
+            expect(result.activeTasks.available).toBe(true);
+            expect(result.activeTasks.value).toBe(0);
+            expect(result.tokensUsed.available).toBe(false);
+            expect(result.capabilities.tokenMetrics).toBe(false);
+            expect(result.capabilities.emergencyBrake).toBe(true);
+            // Must not ship scenic tokensUsed: 0 at top level
+            expect(result.tokensUsed).not.toBe(0);
+        });
+
+        it('daemon.setMode rejects unknown mode without claiming success', async () => {
+            const response = await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'daemon.setMode',
+                params: { mode: 'turbo' },
+            });
+            expect(response.error).toBeDefined();
+            expect(response.error?.message).toMatch(/Unknown mode|rejected/i);
+            expect(response.result).toBeUndefined();
+
+            const status = await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 2,
+                method: 'daemon.status',
+            });
+            expect((status.result as any).mode).toBe('running');
+        });
+
+        it('daemon.setMode applies valid mode and reflects in status', async () => {
+            const response = await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'daemon.setMode',
+                params: { mode: 'pause' },
+            });
+            expect(response.error).toBeUndefined();
+            const result = response.result as Record<string, any>;
+            expect(result.operation).toBe('applied');
+            expect(result.previousMode).toBe('running');
+            expect(result.resultingMode).toBe('pause');
+
+            const status = await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 2,
+                method: 'daemon.status',
+            });
+            expect((status.result as any).mode).toBe('pause');
+        });
+
+        it('daemon.emergencyBrake with idle daemon is no_active_work not fake stopped', async () => {
+            const response = await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'daemon.emergencyBrake',
+            });
+            expect(response.error).toBeUndefined();
+            const result = response.result as Record<string, any>;
+            expect(result.outcome).toBe('no_active_work');
+            expect(result.complete).toBe(true);
+            expect(result.interruptedCount).toBe(0);
+            expect(result.mode).toBe('pause');
+            // Must not return legacy scenic { status: 'stopped' } alone
+            expect(result.status).toBeUndefined();
+        });
+
+        it('daemon.emergencyBrake second call is idempotent', async () => {
+            await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'daemon.emergencyBrake',
+            });
+            const second = await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 2,
+                method: 'daemon.emergencyBrake',
+            });
+            const result = second.result as Record<string, any>;
+            expect(result.outcome).toBe('already_stopped');
+            expect(result.complete).toBe(true);
+        });
     });
 
     describe('registerMethod', () => {
@@ -513,6 +618,25 @@ describe('RpcGateway', () => {
         it('should reject null task', () => {
             const validate = getValidator(gateway);
             expect(() => validate(null)).toThrow(/expected object/);
+        });
+    });
+
+    describe('admission gate (issue #37 control plane)', () => {
+        it('daemon.delegate is denied after emergencyBrake', async () => {
+            await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'daemon.emergencyBrake',
+            });
+            const response = await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 2,
+                method: 'daemon.delegate',
+                params: { agent: 'gemini', prompt: 'should not run' },
+            });
+            expect(response.error).toBeDefined();
+            expect(response.error?.message).toMatch(/Admission denied|closed/i);
+            expect(mockOrchestrator.delegateToGemini).not.toHaveBeenCalled();
         });
     });
 });

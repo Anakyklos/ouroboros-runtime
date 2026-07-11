@@ -26,7 +26,7 @@ interface MissionControlProps {
 }
 
 export function MissionControl({ onSettingsClick }: MissionControlProps) {
-  const [mode, setMode] = useState<"pause" | "running" | "frenzy">("running");
+  const [mode, setMode] = useState<"pause" | "running">("running");
   const [confidence, setConfidence] = useState(80);
   const [showLogs, setShowLogs] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
@@ -50,15 +50,33 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
 
   // Initialize daemon connections
   useEventBus({ url: "ws://localhost:3001/ws" });
-  const { status, emergencyBrake } = useDaemonAPI();
+  const {
+    status,
+    emergencyBrake,
+    setMode: setDaemonMode,
+    capabilities,
+    isLoading: daemonLoading,
+  } = useDaemonAPI();
   const { promotingWave, activateWave } = useWaveManager();
   const liveData = useLiveMissionControl();
 
-  // Keyboard shortcuts
+  const requestMode = async (next: "pause" | "running") => {
+    if (!capabilities.modeSwitching) return;
+    try {
+      await setDaemonMode(next);
+      setMode(next);
+    } catch {
+      /* lastControlError set by hook */
+    }
+  };
+
+  // Keyboard shortcuts — modes only when backend capability allows
   useKeyboardShortcuts({
-    onPause: () => setMode("pause"),
-    onResume: () => setMode("running"),
-    onEmergencyBrake: () => setShowEmergencyDialog(true),
+    onPause: () => void requestMode("pause"),
+    onResume: () => void requestMode("running"),
+    onEmergencyBrake: () => {
+      if (capabilities.emergencyBrake) setShowEmergencyDialog(true);
+    },
     onToggleLogs: () => setShowLogs((prev) => !prev),
     onFocusTerminal: () => setShowTerminal(true),
     onQuadrantSwitch: (quadrant: 1 | 2 | 3 | 4) => {
@@ -85,14 +103,12 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  // Sync mode with daemon status
+  // Sync mode from backend status only (never invent mode from UI alone)
   useEffect(() => {
-    if (status?.status === "paused") {
-      setMode("pause");
-    } else if (status?.status === "running") {
-      setMode("running");
+    if (status?.mode) {
+      setMode(status.mode);
     }
-  }, [status]);
+  }, [status?.mode]);
 
   // Listen for task click events
   useEffect(() => {
@@ -104,15 +120,24 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
     return () => window.removeEventListener("task:click" as any, handleTaskClick);
   }, []);
 
-  const handleEmergencyBrake = () => {
-    emergencyBrake();
-    setMode("pause");
-    setShowEmergencyDialog(false);
+  const handleEmergencyBrake = async () => {
+    if (!capabilities.emergencyBrake || daemonLoading) return;
+    try {
+      await emergencyBrake();
+      setMode("pause");
+    } catch {
+      /* partial/fail surfaced via lastControlError */
+    } finally {
+      setShowEmergencyDialog(false);
+    }
+  };
+
+  const handleModeChange = (next: "pause" | "running") => {
+    void requestMode(next);
   };
 
   const getSnakeStatus = () => {
     if (mode === "pause") return "debating" as const;
-    if (mode === "frenzy") return "healthy" as const;
     return "healthy" as const;
   };
 
@@ -326,13 +351,28 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
 
       <HUDBar
         mode={mode}
-        onModeChange={setMode}
+        onModeChange={capabilities.modeSwitching ? handleModeChange : undefined}
         confidence={confidence}
         onConfidenceChange={setConfidence}
-        waveNumber={liveData.stats.waveNumber || status?.activeWaves || 0}
-        tasksDone={liveData.stats.tasksDone || 0}
-        tokens={liveData.stats.tokens || status?.tokensUsed || 0}
-        onEmergencyBrake={handleEmergencyBrake}
+        waveNumber={
+          liveData.stats.waveNumber > 0 ? liveData.stats.waveNumber : null
+        }
+        activeWaveCount={
+          status?.activeWaves?.available ? status.activeWaves.value ?? 0 : null
+        }
+        tasksDone={
+          typeof liveData.stats.tasksDone === "number"
+            ? liveData.stats.tasksDone
+            : null
+        }
+        tokens={
+          capabilities.tokenMetrics && status?.tokensUsed?.available
+            ? status.tokensUsed.value ?? null
+            : null
+        }
+        onEmergencyBrake={
+          capabilities.emergencyBrake ? handleEmergencyBrake : undefined
+        }
       />
 
       <TaskDetailPanel

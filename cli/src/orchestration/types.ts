@@ -31,6 +31,8 @@ export enum TaskStatus {
     FAILURE = "FAILURE",
     PENDING = "PENDING",
     NEEDS_HUMAN = "NEEDS_HUMAN",
+    /** Cooperative cancel (emergency brake / abort). */
+    CANCELLED = "CANCELLED",
 }
 
 // --- INTERFACES ---

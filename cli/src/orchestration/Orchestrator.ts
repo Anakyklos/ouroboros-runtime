@@ -36,6 +36,14 @@ import { SpecValidator, createDefaultSpecValidator } from "./validators/SpecVali
 /**
  * Orchestrator - Coordena execução de subagentes com auto-correção.
  */
+/** Thrown when emergency brake / cancel aborts an in-flight attempt. */
+export class OrchestratorCancelledError extends Error {
+    constructor(message = "Orchestrator cancelled") {
+        super(message);
+        this.name = "OrchestratorCancelledError";
+    }
+}
+
 export class Orchestrator {
     private agentLoop: AgentLoop | null = null;
     private config: OrchestratorConfig;
@@ -43,6 +51,15 @@ export class Orchestrator {
     private eventBus: EventBus;
     private isPaused = false;
     private resumeResolver: (() => void) | null = null;
+    /** Cooperative cancel — aborts waitIfPaused and provider fetch via AbortSignal. */
+    private cancelled = false;
+    /** Per-run abort controller (new for each loopUntilSuccess). */
+    private runAbort: AbortController | null = null;
+    /**
+     * In-flight executeWithTimeout promise for the current attempt.
+     * Cancel must wait for this to settle — never race-away and claim CANCELLED early.
+     */
+    private inFlightExecute: Promise<unknown> | null = null;
     private memoryRetriever: MemoryRetriever;
     private qualityGateRegistry: QualityGateRegistry;
     private enableQualityGates: boolean;
@@ -103,7 +120,7 @@ export class Orchestrator {
     }
 
     /**
-     * Pause execution loop.
+     * Pause execution loop (between iterations only, unless cancel is used).
      */
     pause(): void {
         this.isPaused = true;
@@ -111,9 +128,10 @@ export class Orchestrator {
     }
 
     /**
-     * Resume execution loop.
+     * Resume execution loop. Clears cooperative cancel so a new task can run.
      */
     resume(): void {
+        this.cancelled = false;
         this.isPaused = false;
         if (this.resumeResolver) {
             this.resumeResolver();
@@ -123,13 +141,68 @@ export class Orchestrator {
     }
 
     /**
-     * Wait until resumed (if paused).
+     * Cooperative cancel: signals AbortSignal and unblocks pause waits.
+     * Does **not** abandon executeWithTimeout — loopUntilSuccess only returns
+     * CANCELLED after the in-flight provider/tool promise settles (or errors).
+     */
+    cancel(reason = "Emergency brake"): void {
+        this.cancelled = true;
+        this.isPaused = true;
+        try {
+            this.runAbort?.abort(reason);
+        } catch {
+            /* ignore double-abort */
+        }
+        if (this.resumeResolver) {
+            this.resumeResolver();
+            this.resumeResolver = null;
+        }
+        this.log('warn', `🛑 Cancelled: ${reason}`);
+    }
+
+    /** Active abort signal for the current run (tests / diagnostics). */
+    get currentRunSignal(): AbortSignal | null {
+        return this.runAbort?.signal ?? null;
+    }
+
+    /** True while executeWithTimeout has not settled (tool/provider still running). */
+    hasInFlightExecute(): boolean {
+        return this.inFlightExecute !== null;
+    }
+
+    isCancelled(): boolean {
+        return this.cancelled;
+    }
+
+    /**
+     * Wait until resumed (if paused). Cancel resolves the wait so the loop can exit.
      */
     private async waitIfPaused(): Promise<void> {
+        if (this.cancelled) {
+            throw new OrchestratorCancelledError();
+        }
         if (!this.isPaused) return;
-        await new Promise<void>((resolve) => {
-            this.resumeResolver = resolve;
+        await new Promise<void>((resolve, reject) => {
+            this.resumeResolver = () => {
+                if (this.cancelled) {
+                    reject(new OrchestratorCancelledError());
+                } else {
+                    resolve();
+                }
+            };
         });
+    }
+
+    private cancelledResult(task: OrchestratorTask, startTime: number, contextHistory: ContextEntry[]): TaskResult {
+        return {
+            status: TaskStatus.CANCELLED,
+            output: "",
+            error: "Cancelled by emergency brake",
+            retryCount: 0,
+            persona: task.persona,
+            durationMs: Date.now() - startTime,
+            contextHistory,
+        };
     }
 
     /**
@@ -142,6 +215,18 @@ export class Orchestrator {
         let lastError: string | undefined;
         const startTime = Date.now();
         const contextHistory: ContextEntry[] = [];
+        // Fresh abort controller per run. Do NOT clear `cancelled` here —
+        // only resume() clears a prior cancel (brake during appendLog / before start).
+        this.runAbort = new AbortController();
+        if (this.cancelled) {
+            try {
+                this.runAbort.abort("pre-cancelled");
+            } catch {
+                /* ignore */
+            }
+            this.log('warn', `🛑 Task ${task.id} not started: orchestrator already cancelled`);
+            return this.cancelledResult(task, startTime, contextHistory);
+        }
 
         this.log('info', `🎯 Starting task: ${task.id}`);
         this.log('info', `   Persona: ${task.persona}`);
@@ -170,8 +255,18 @@ export class Orchestrator {
         }
 
         while (retryCount < this.config.maxRetries) {
+            if (this.cancelled) {
+                return this.cancelledResult(task, startTime, contextHistory);
+            }
             // Check pause state before each iteration
-            await this.waitIfPaused();
+            try {
+                await this.waitIfPaused();
+            } catch (e) {
+                if (e instanceof OrchestratorCancelledError) {
+                    return this.cancelledResult(task, startTime, contextHistory);
+                }
+                throw e;
+            }
             try {
                 // 1. Build prompt com Anti-Vibe protocol
                 const phase = PERSONA_PHASE_MAP[task.persona];
@@ -183,9 +278,26 @@ export class Orchestrator {
                     await this.validatePhase(phase, task.workDir);
                 }
 
-                // 3. Execute via AgentLoop
+                // 3. Execute via AgentLoop — await full settlement (provider/tool).
+                // AbortSignal is propagated; we never Promise.race away the inner work.
                 this.log('info', `\n🔄 Attempt ${retryCount + 1}/${this.config.maxRetries}`);
-                const result = await this.executeWithTimeout(prompt);
+                let result;
+                const executePromise = this.executeWithTimeout(prompt);
+                this.inFlightExecute = executePromise;
+                try {
+                    result = await executePromise;
+                } catch (e) {
+                    if (e instanceof OrchestratorCancelledError || this.cancelled) {
+                        return this.cancelledResult(task, startTime, contextHistory);
+                    }
+                    throw e;
+                } finally {
+                    this.inFlightExecute = null;
+                }
+                // Provider returned after cancel was requested (ignored abort or late finish).
+                if (this.cancelled) {
+                    return this.cancelledResult(task, startTime, contextHistory);
+                }
 
                 // 4. Add to context history (evita loop de amnésia)
                 contextHistory.push({
@@ -492,13 +604,38 @@ IMPORTANT: Analyze the error carefully before proceeding.
     }
 
     /**
-     * Execute prompt via AgentLoop.
+     * Execute prompt via AgentLoop with the current run's AbortSignal.
      */
     private async executeWithTimeout(prompt: string): Promise<AgentResult> {
         if (!this.agentLoop) {
             throw new Error('Orchestrator not initialized. Call initialize(apiKey) first.');
         }
-        return this.agentLoop.run(prompt);
+        try {
+            return await this.agentLoop.run(prompt, undefined, {
+                abortSignal: this.runAbort?.signal,
+                waitUntilRunnable: async () => {
+                    // Map orchestrator pause onto cooperative wait (pause ≠ abort).
+                    await this.waitIfPaused();
+                },
+                throwIfAborted: () => {
+                    if (this.cancelled || this.runAbort?.signal.aborted) {
+                        throw new OrchestratorCancelledError("Execution aborted");
+                    }
+                },
+            });
+        } catch (e) {
+            const name = e instanceof Error ? e.name : "";
+            const msg = e instanceof Error ? e.message : String(e);
+            if (
+                e instanceof OrchestratorCancelledError ||
+                name === "AbortError" ||
+                /abort/i.test(msg) ||
+                this.cancelled
+            ) {
+                throw new OrchestratorCancelledError(msg || "Provider aborted");
+            }
+            throw e;
+        }
     }
 
     /**

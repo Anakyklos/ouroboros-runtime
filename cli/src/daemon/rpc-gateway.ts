@@ -18,6 +18,10 @@ import { join } from 'path';
 import { Orchestrator } from '../orchestration/Orchestrator.js';
 import { WaveExecutor } from '../orchestration/WaveExecutor.js';
 import type { WaveTask, WaveExecutionResult } from '../orchestration/wave-types.js';
+import {
+    AdmissionDeniedError,
+    type WorkKind,
+} from './execution-control.js';
 
 export class RpcGateway implements RpcPort {
     private methods: Map<string, RpcMethodHandler> = new Map();
@@ -162,7 +166,15 @@ export class RpcGateway implements RpcPort {
         });
     }
 
-    private async parseWaveTasks(prompt: string): Promise<WaveTask[]> {
+    private async parseWaveTasks(
+        prompt: string,
+        control?: {
+            abortSignal?: AbortSignal;
+            waitUntilRunnable?: () => Promise<void>;
+            throwIfAborted?: () => void;
+        }
+    ): Promise<WaveTask[]> {
+        control?.throwIfAborted?.();
         const apiKey = this.loadZAIKey();
 
         const parser = createAgent({
@@ -194,7 +206,7 @@ Rules:
 - If no tasks needed, return empty array: []
 `;
 
-        const parseResult = await parser.run(parsePrompt);
+        const parseResult = await parser.run(parsePrompt, undefined, control);
 
         if (!parseResult.success || !parseResult.content) {
             throw new Error(`Failed to parse wave tasks: ${parseResult.content ?? 'No response from parser'}`);
@@ -327,51 +339,71 @@ Rules:
     }
 
     private registerDaemonMethods(): void {
-        // daemon.status - Returns daemon status for frontend
+        /**
+         * daemon.status — real process + SessionManager activity (issue #37).
+         * tokensUsed is never a scenic zero; it is marked unavailable.
+         */
         this.registerMethod('daemon.status', async () => {
-            return {
-                status: 'running',
-                uptime: process.uptime(),
-                activeWaves: 0,
-                activeTasks: 0,
-                tokensUsed: 0,
-                memory: process.memoryUsage(),
-                timestamp: new Date().toISOString(),
-            };
+            return this.sessionManager.getStatusSnapshot();
         });
 
-        // daemon.setMode - Set daemon mode
+        /**
+         * daemon.setMode — validates enum, transitions, and applies backend mode.
+         * Does not report success when the mode is rejected.
+         */
         this.registerMethod('daemon.setMode', async (params) => {
-            const mode = params.mode as string;
-            this.eventBus.log('info', `Daemon mode set to: ${mode}`, 'RpcGateway');
-            return {
-                status: 'success',
-                mode,
-                timestamp: new Date().toISOString(),
-            };
+            const result = await this.sessionManager.setMode(params?.mode);
+            if (
+                result.operation === 'rejected_invalid_mode' ||
+                result.operation === 'rejected_invalid_transition'
+            ) {
+                // Surface as RPC error so clients cannot treat rejections as success.
+                throw new Error(result.reason ?? `setMode rejected: ${result.operation}`);
+            }
+            return result;
         });
 
-        // daemon.emergencyBrake - Emergency stop all operations
+        /**
+         * daemon.emergencyBrake — interrupts live sessions/orchestrators/timers.
+         * Outcomes: no_active_work | already_stopped | all_stopped | partial.
+         * Partial failures set complete=false (not a fake full success).
+         */
         this.registerMethod('daemon.emergencyBrake', async () => {
-            this.eventBus.log('warn', 'Emergency brake activated!', 'RpcGateway');
-            this.eventBus.emit('daemon', { type: 'emergency_brake' });
-            return {
-                status: 'stopped',
-                timestamp: new Date().toISOString(),
-            };
+            return this.sessionManager.emergencyBrake();
         });
 
-        // daemon.delegate - Delegate task to specific agent
+        // daemon.delegate - Delegate task to specific agent (admission-gated)
         this.registerMethod('daemon.delegate', async (params) => {
             const agent = params.agent as string;
             const prompt = params.prompt as string;
             const context = params.context as string | object | undefined;
 
+            const kind = this.delegateWorkKind(agent, prompt);
+            const controller = this.sessionManager.getController();
+            let lease;
+            try {
+                lease = await controller.acquire({ kind, label: `delegate:${agent}` });
+            } catch (e) {
+                if (e instanceof AdmissionDeniedError) {
+                    throw new Error(`Admission denied for daemon.delegate(${agent}): ${e.message}`);
+                }
+                throw e;
+            }
+
             try {
                 let result: unknown;
 
+                // Abort signal for local HTTP-bound paths (GLM AgentLoop).
+                const control = {
+                    abortSignal: lease.signal.abortSignal,
+                    waitUntilRunnable: () => lease.signal.waitUntilRunnable(),
+                    throwIfAborted: () => lease.signal.throwIfAborted(),
+                };
+
                 switch (agent) {
                     case 'gemini':
+                        // External bridge: not proven abortable — lease still blocks admission.
+                        lease.markSafePoint({ note: 'delegate_gemini_not_abortable' });
                         result = await this.gatewayOrchestrator.delegateToGemini(
                             prompt,
                             params.model as GeminiModel ?? 'flash'
@@ -379,24 +411,26 @@ Rules:
                         break;
                     case 'claude':
                     case 'antigravity':
+                        lease.markSafePoint({ note: 'delegate_antigravity_not_abortable' });
                         result = await this.gatewayOrchestrator.delegateToAntigravity(
                             prompt,
                             context as string | undefined
                         );
                         break;
                     case 'jules':
+                        // Remote work may continue after disconnect — do not claim hard stop.
+                        lease.markSafePoint({ note: 'delegate_jules_detached_remote' });
                         result = await this.gatewayOrchestrator.delegateToJules(
                             prompt,
                             context as string | undefined
                         );
                         break;
                     case 'glm': {
-                        // Wave Mode: Check if prompt starts with "WAVE:"
                         if (prompt.trim().toUpperCase().startsWith('WAVE:')) {
                             const wavePrompt = prompt.trim().substring(5).trim();
+                            const tasks = await this.parseWaveTasks(wavePrompt, control);
 
-                            const tasks = await this.parseWaveTasks(wavePrompt);
-
+                            lease.signal.throwIfAborted();
                             if (tasks.length === 0) {
                                 result = {
                                     mode: 'wave',
@@ -404,13 +438,52 @@ Rules:
                                     message: 'No tasks to execute',
                                 };
                             } else {
+                                lease.signal.throwIfAborted();
                                 const apiKey = this.loadZAIKey();
-                                const orchestrator = new Orchestrator();
-                                orchestrator.initialize(apiKey);
-                                const waveExecutor = new WaveExecutor(orchestrator);
-
+                                // Isolate Orchestrator per wave task so cancel handles are not shared
+                                // across parallel tasks (runAbort / cancelReject / resumeResolver).
+                                const activeOrchs = new Set<InstanceType<typeof Orchestrator>>();
+                                const wireOrchestrator = (orchestrator: InstanceType<typeof Orchestrator>) => {
+                                    activeOrchs.add(orchestrator);
+                                    if (lease.signal.aborted) {
+                                        orchestrator.cancel('lease aborted');
+                                    } else {
+                                        const onAbort = () => {
+                                            try {
+                                                orchestrator.cancel('lease aborted');
+                                            } catch {
+                                                /* ignore */
+                                            }
+                                        };
+                                        lease.signal.abortSignal.addEventListener('abort', onAbort, {
+                                            once: true,
+                                        });
+                                    }
+                                    if (lease.signal.paused) {
+                                        orchestrator.pause();
+                                    }
+                                    const unsub = lease.signal.onPausedChange((paused) => {
+                                        if (paused) orchestrator.pause();
+                                        else if (!orchestrator.isCancelled()) orchestrator.resume();
+                                    });
+                                    // Best-effort: unsub when task ends is not critical for brake
+                                    void unsub;
+                                    return orchestrator;
+                                };
+                                const waveExecutor = new WaveExecutor(null, { verbose: true }, {
+                                    createOrchestrator: () => {
+                                        const orchestrator = new Orchestrator();
+                                        orchestrator.initialize(apiKey);
+                                        return wireOrchestrator(orchestrator);
+                                    },
+                                    // Do not start new wave tasks/chunks after brake.
+                                    shouldAbort: () => lease.signal.aborted,
+                                });
+                                lease.signal.throwIfAborted();
                                 const waveResult: WaveExecutionResult = await waveExecutor.execute(tasks);
-
+                                if (lease.signal.aborted) {
+                                    lease.acknowledgeAbort();
+                                }
                                 result = {
                                     mode: 'wave',
                                     waveExecution: {
@@ -428,19 +501,19 @@ Rules:
                                         dependsOn: t.dependsOn,
                                     })),
                                 };
+                                void activeOrchs;
                             }
                         } else {
-                            // Standard Mode: Use AgentLoop
                             const apiKey = this.loadZAIKey();
-
                             const leviathan = createAgent({
                                 apiKey,
                                 workingDirectory: process.cwd(),
                                 verbose: true,
                             });
-
-                            const agentResult = await leviathan.run(prompt);
-
+                            const agentResult = await leviathan.run(prompt, undefined, control);
+                            if (lease.signal.aborted) {
+                                lease.acknowledgeAbort();
+                            }
                             result = {
                                 success: agentResult.success,
                                 content: agentResult.content,
@@ -455,24 +528,31 @@ Rules:
                         throw new Error(`Unknown agent: ${agent}`);
                 }
 
+                lease.complete(result);
                 return {
                     status: 'success',
                     agent,
                     result,
+                    workId: lease.workId,
                     timestamp: new Date().toISOString(),
                 };
             } catch (error) {
+                if (lease.signal.aborted) {
+                    lease.acknowledgeAbort();
+                }
+                lease.fail(error);
                 throw new Error(
                     `Delegation to ${agent} failed: ${error instanceof Error ? error.message : String(error)}`
                 );
+            } finally {
+                lease.release();
             }
         });
 
-        // daemon.list_agents - List available agents
+        // daemon.list_agents - List available agents (read-only; not admission-gated)
         this.registerMethod('daemon.list_agents', async () => {
             const availability = await this.gatewayOrchestrator.checkBridgeAvailability();
 
-            // Check if GLM API key is available
             let glmStatus: 'available' | 'unavailable' = 'available';
             try {
                 this.loadZAIKey();
@@ -491,5 +571,23 @@ Rules:
                 timestamp: new Date().toISOString(),
             };
         });
+    }
+
+    private delegateWorkKind(agent: string, prompt: string): WorkKind {
+        switch (agent) {
+            case 'gemini':
+                return 'delegate_gemini';
+            case 'claude':
+            case 'antigravity':
+                return 'delegate_antigravity';
+            case 'jules':
+                return 'delegate_jules';
+            case 'glm':
+                return prompt.trim().toUpperCase().startsWith('WAVE:')
+                    ? 'delegate_glm_wave'
+                    : 'delegate_glm';
+            default:
+                return 'delegate_glm';
+        }
     }
 }

@@ -72,13 +72,6 @@
       "reason": "File is merge-corrupted (nested describe mid-block, Unexpected end of file). Cannot load under bun test.",
       "reactivate_when": "File is reconstructed into valid suites and all cases pass against ToolExecutor.",
       "tracking_issue": 41
-    },
-    {
-      "path": "web/src/stores/mission-control-store.test.ts",
-      "classification": "product-bug or stale test",
-      "reason": "2 of 5 fail: task update within waves and emergency brake (wave/tasks shape mismatch).",
-      "reactivate_when": "Store API and tests agree on wave/task updates and emergency-brake behavior.",
-      "tracking_issue": 41
     }
   ]
 }

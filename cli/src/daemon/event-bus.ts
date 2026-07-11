@@ -21,8 +21,20 @@ export interface TaskEvent {
 }
 
 export interface DaemonEvent {
-    type: 'starting' | 'ready' | 'shutting_down' | 'stopped' | 'emergency_brake';
+    type:
+        | 'starting'
+        | 'ready'
+        | 'shutting_down'
+        | 'stopped'
+        | 'emergency_brake'
+        | 'mode_changed';
     port?: number;
+    /** Optional payload for mode / brake diagnostics (issue #37). */
+    mode?: string;
+    previousMode?: string;
+    outcome?: string;
+    interruptedCount?: number;
+    failedCount?: number;
 }
 
 export interface ThoughtEvent {

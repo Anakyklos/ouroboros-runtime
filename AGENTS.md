@@ -340,6 +340,16 @@ test-glm-integration.test.ts: 1 pass, 0 fail ✅
 
 - `cli/src/ports/ITool.ts` — interface `ITool<TInput, TOutput>` usada pelo `SandboxTool`
 
+### Daemon controls (issue #37) — fail-honest
+
+| RPC | Comportamento real |
+| --- | --- |
+| `daemon.status` | Métricas de processo + contagens in-memory do `SessionManager`; `tokensUsed` **unavailable** (não inventar zero) |
+| `daemon.setMode` | Enum `running` \| `pause` \| `frenzy`; rejeita desconhecido; estado no backend |
+| `daemon.emergencyBrake` | Interrompe orchestrators/sessões; outcomes: `no_active_work`, `all_stopped`, `already_stopped`, `partial` |
+
+Contratos: `cli/src/daemon/daemon-controls.ts`. UI só habilita controles quando `capabilities` do status diz que estão disponíveis.
+
 ### Conhecidos não corrigidos / quarentena (baseline #35)
 
 Authoritative list: `scripts/quarantine-manifest.json` and `docs/BASELINE.md`.  
@@ -350,6 +360,7 @@ Recovery tracking: **#41** (not #35 after baseline closes).
 - `AntiVibeWorkflow.test.ts`, `PromotionManager.test.ts`, `QualityGateRegistry.test.ts` — falhas parciais de produto/contrato de status (não removidos; fora do gate obrigatório)
 - `SkillLoader.test.ts` — path externo fora do repositório (`engenharia reversa /AionUi/...`)
 - `tool-executor.test.ts` — arquivo com corrupção de merge (sintaxe inválida)
-- `web/.../mission-control-store.test.ts` — 2 asserções desalinhadas com o store atual
+
+**Removido da quarentena (#37):** `web/src/stores/mission-control-store.test.ts` — corrigido com contrato real de capabilities/brake.
 
 **Não** use `bun run test` sozinho como prova de integridade do repositório: use `bun run check`.

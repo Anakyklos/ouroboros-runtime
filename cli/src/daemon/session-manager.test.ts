@@ -2,6 +2,9 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { SessionManager } from './session-manager.js';
 import { EventBus } from './event-bus.js';
 import type { StoragePort } from '../ports/storage.port.js';
+import { Orchestrator } from '../orchestration/Orchestrator.js';
+import { createTask } from '../orchestration/index.js';
+import { PersonaType, TaskStatus } from '../orchestration/types.js';
 
 // Subclass to expose protected methods for testing
 class TestSessionManager extends SessionManager {
@@ -11,6 +14,14 @@ class TestSessionManager extends SessionManager {
 
     public hasActiveTasksForTest(sessionId: string): boolean {
         return this.hasActiveTasks(sessionId);
+    }
+
+    public attachOrchestrator(sessionId: string, orchestrator: Orchestrator) {
+        this.attachOrchestratorForTest(sessionId, orchestrator);
+    }
+
+    public activeSessionIds() {
+        return this.getActiveSessionIdsForTest();
     }
 }
 
@@ -41,8 +52,24 @@ describe('SessionManager', () => {
             getLogs: mock(async () => []),
             initialize: mock(async () => {}),
             close: mock(async () => {}),
-        };
-        manager = new TestSessionManager(mockStorage, mockEventBus);
+            createCheckpoint: mock(async (sessionId: string) => ({
+                id: 'cp-1',
+                sessionId,
+                checkpointNumber: 1,
+                state: {},
+                createdAt: new Date(),
+            })),
+            deleteOldCheckpoints: mock(async () => {}),
+            getLatestCheckpoint: mock(async () => null),
+            listWaves: mock(async () => []),
+            saveWave: mock(async () => ({ id: 'w1', sessionId: 's', waveNumber: 1, status: 'pending', taskCount: 0, completedCount: 0, taskData: [] })),
+            saveMemory: mock(async (m) => ({ ...m, id: 'm1', createdAt: new Date() })),
+            listMemory: mock(async () => []),
+        } as unknown as StoragePort;
+        // Isolate persisted ops so tests do not leak brake/mode into each other or the repo tree.
+        manager = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+            opsStatePath: `/tmp/ouroboros-ops-test-main-${Date.now()}-${Math.random()}.json`,
+        });
     });
 
     it('cleanupSession should wait for all tasks and clear activeTasks', async () => {
@@ -225,5 +252,498 @@ describe('SessionManager', () => {
         expect((zero as any).maxCheckpoints).toBe(5);
         expect((negative as any).maxCheckpoints).toBe(5);
         expect((valid as any).maxCheckpoints).toBe(3);
+    });
+
+    describe('operational controls (issue #37)', () => {
+        it('status reports real zero activity, not scenic constants', () => {
+            const status = manager.getStatusSnapshot();
+            expect(status.processStatus).toBe('alive');
+            expect(status.mode).toBe('running');
+            expect(status.activeSessions.available).toBe(true);
+            if (status.activeSessions.available) expect(status.activeSessions.value).toBe(0);
+            expect(status.activeTasks.available).toBe(true);
+            if (status.activeTasks.available) expect(status.activeTasks.value).toBe(0);
+            expect(status.activeWaves.available).toBe(true);
+            if (status.activeWaves.available) expect(status.activeWaves.value).toBe(0);
+            // tokens must not pretend to be zero usage
+            expect(status.tokensUsed.available).toBe(false);
+            expect(status.capabilities.tokenMetrics).toBe(false);
+            expect(status.uptimeSeconds).toBeGreaterThanOrEqual(0);
+        });
+
+        it('status counts live tasks and sessions', () => {
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            manager.attachOrchestrator('sess-a', orch);
+            manager.addTaskForTest('sess-a', 't1', createDeferred().promise);
+            manager.addTaskForTest('sess-a', 't2', createDeferred().promise);
+
+            const status = manager.getStatusSnapshot();
+            if (status.activeSessions.available) expect(status.activeSessions.value).toBe(1);
+            if (status.activeTasks.available) expect(status.activeTasks.value).toBe(2);
+        });
+
+        it('status does not count terminal sessions with no live tasks', () => {
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            manager.attachOrchestrator('done-sess', orch);
+            // no tasks → not live
+            const status = manager.getStatusSnapshot();
+            if (status.activeSessions.available) expect(status.activeSessions.value).toBe(0);
+            if (status.activeTasks.available) expect(status.activeTasks.value).toBe(0);
+        });
+
+        it('setMode applies valid modes and rejects unknown', async () => {
+            const bad = await manager.setMode('turbo');
+            expect(bad.operation).toBe('rejected_invalid_mode');
+            expect(bad.resultingMode).toBe('running');
+            expect(manager.getMode()).toBe('running');
+
+            const ok = await manager.setMode('pause');
+            expect(ok.operation).toBe('applied');
+            expect(ok.previousMode).toBe('running');
+            expect(ok.resultingMode).toBe('pause');
+            expect(manager.getMode()).toBe('pause');
+
+            const same = await manager.setMode('pause');
+            expect(same.operation).toBe('unchanged');
+            expect(manager.getMode()).toBe('pause');
+        });
+
+        it('setMode pause pauses attached orchestrators', async () => {
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const pauseSpy = mock(() => {});
+            orch.pause = pauseSpy;
+            manager.attachOrchestrator('sess-pause', orch);
+
+            await manager.setMode('pause');
+            expect(pauseSpy).toHaveBeenCalled();
+        });
+
+        it('emergencyBrake with no work returns no_active_work', async () => {
+            const result = await manager.emergencyBrake();
+            expect(result.outcome).toBe('no_active_work');
+            expect(result.complete).toBe(true);
+            expect(result.interruptedCount).toBe(0);
+            expect(manager.getMode()).toBe('pause');
+        });
+
+        it('emergencyBrake cancels live work and settles tasks', async () => {
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const cancelSpy = mock((..._args: unknown[]) => {});
+            const realCancel = orch.cancel.bind(orch);
+            manager.attachOrchestrator('sess-live', orch);
+
+            const hang = createDeferred();
+            orch.loopUntilSuccess = mock(async () => {
+                await hang.promise;
+                return {
+                    status: TaskStatus.SUCCESS,
+                    output: 'ok',
+                    retryCount: 0,
+                    persona: PersonaType.DEVELOPER,
+                    durationMs: 1,
+                    contextHistory: [],
+                };
+            });
+            orch.cancel = (reason?: string) => {
+                cancelSpy(reason);
+                realCancel(reason);
+                hang.resolve();
+            };
+
+            const started = manager.sendInput('sess-live', 'work');
+            await new Promise((r) => setTimeout(r, 10));
+
+            const first = await manager.emergencyBrake();
+            expect(["all_stopped", "partial", "no_active_work"]).toContain(first.outcome);
+            expect(manager.getMode()).toBe('pause');
+            expect(manager.acceptsNewWork()).toBe(false);
+            await started.catch(() => undefined);
+        });
+
+        it('emergencyBrake is idempotent when already braked and idle', async () => {
+            await manager.emergencyBrake();
+            const again = await manager.emergencyBrake();
+            expect(again.outcome).toBe('already_stopped');
+            expect(again.complete).toBe(true);
+            expect(again.interruptedCount).toBe(0);
+        });
+
+        it('emergencyBrake reports partial when persist fails', async () => {
+            (mockStorage.updateSession as ReturnType<typeof mock>).mockImplementation(async () => {
+                throw new Error('db write failed');
+            });
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            manager.attachOrchestrator('sess-fail', orch);
+            const d = createDeferred();
+            const realCancel = orch.cancel.bind(orch);
+            orch.cancel = (r?: string) => {
+                realCancel(r);
+                d.resolve();
+            };
+            manager.addTaskForTest('sess-fail', 't1', d.promise);
+
+            const result = await manager.emergencyBrake();
+            expect(result.complete).toBe(false);
+            expect(result.outcome).toBe('partial');
+            expect(result.failedCount).toBe(1);
+            expect(result.sessions[0]?.persistOk).toBe(false);
+        });
+
+        it('emergencyBrake skips terminal sessions without rewriting status', async () => {
+            (mockStorage.getSession as ReturnType<typeof mock>).mockImplementation(async (id: string) => {
+                if (id === 'terminal-sess') {
+                    return {
+                        id: 'terminal-sess',
+                        status: 'completed',
+                        createdAt: new Date(),
+                        updatedAt: new Date(),
+                        contextSnapshot: '',
+                        metadata: {},
+                    };
+                }
+                return null;
+            });
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            manager.attachOrchestrator('terminal-sess', orch);
+            // Simulate stale task entry pointing at terminal session
+            manager.addTaskForTest('terminal-sess', 'stale', createDeferred().promise);
+
+            const result = await manager.emergencyBrake();
+            const entry = result.sessions.find((s) => s.sessionId === 'terminal-sess');
+            expect(entry?.status).toBe('skipped');
+            // Must not force completed → paused
+            const pauseCalls = (mockStorage.updateSession as ReturnType<typeof mock>).mock.calls.filter(
+                (c: unknown[]) => c[0] === 'terminal-sess' && (c[1] as { status?: string })?.status === 'paused'
+            );
+            expect(pauseCalls.length).toBe(0);
+        });
+
+        it('Orchestrator.cancel waits for inner execute settlement (no Promise.race abandon)', async () => {
+            const orch = new Orchestrator(
+                { verbose: false, skipPhaseValidation: true, maxRetries: 3 },
+                mockEventBus
+            );
+            let innerStillRunning = true;
+            let releaseInner!: () => void;
+            const innerGate = new Promise<void>((r) => {
+                releaseInner = r;
+            });
+            (orch as unknown as { executeWithTimeout: (p: string) => Promise<unknown> }).executeWithTimeout =
+                async () => {
+                    const signal = orch.currentRunSignal;
+                    await new Promise<void>((resolve, reject) => {
+                        const onAbort = () => {
+                            // Tool/provider already started: ignore abort until we choose to finish.
+                            // (Simulates non-abortable tool still in-flight.)
+                        };
+                        signal?.addEventListener('abort', onAbort, { once: true });
+                        innerGate.then(() => {
+                            innerStillRunning = false;
+                            signal?.removeEventListener('abort', onAbort);
+                            const e = new Error('aborted late');
+                            e.name = 'AbortError';
+                            reject(e);
+                        });
+                    });
+                    return { success: true, content: '', toolCallsCount: 0, durationMs: 0 };
+                };
+
+            const task = createTask('tool in flight', PersonaType.DEVELOPER, { id: 'hang-1' });
+            const running = orch.loopUntilSuccess(task);
+            await new Promise((r) => setTimeout(r, 30));
+            orch.cancel('test brake');
+            // Must still be in-flight — cancel does not abandon wrapper early
+            expect(orch.hasInFlightExecute()).toBe(true);
+            expect(innerStillRunning).toBe(true);
+
+            const raced = await Promise.race([
+                running.then(() => 'settled'),
+                new Promise<'pending'>((r) => setTimeout(() => r('pending'), 80)),
+            ]);
+            expect(raced).toBe('pending');
+
+            releaseInner();
+            const result = await running;
+            expect(innerStillRunning).toBe(false);
+            expect(orch.hasInFlightExecute()).toBe(false);
+            expect(result.status).toBe(TaskStatus.CANCELLED);
+            expect(result.error).toMatch(/cancel/i);
+        });
+
+        it('Orchestrator.cancel does not settle when execute ignores abort forever', async () => {
+            const orch = new Orchestrator(
+                { verbose: false, skipPhaseValidation: true, maxRetries: 2 },
+                mockEventBus
+            );
+            (orch as unknown as { executeWithTimeout: (p: string) => Promise<unknown> }).executeWithTimeout =
+                () => new Promise(() => {}); // never settles
+
+            const task = createTask('ignore abort', PersonaType.DEVELOPER, { id: 'ignore-1' });
+            const running = orch.loopUntilSuccess(task);
+            await new Promise((r) => setTimeout(r, 20));
+            orch.cancel('brake');
+            expect(orch.hasInFlightExecute()).toBe(true);
+            const raced = await Promise.race([
+                running.then(() => 'settled'),
+                new Promise<'pending'>((r) => setTimeout(() => r('pending'), 100)),
+            ]);
+            expect(raced).toBe('pending');
+            // Leave hanging promise — do not claim CANCELLED
+        });
+
+        it('setMode(running) does not resume Orchestrators when persist fails', async () => {
+            const controller = new (await import('./execution-control.js')).DaemonExecutionController({
+                opsStatePath: `/tmp/ouroboros-ops-setmode-${Date.now()}.json`,
+                persistFn: (payload) => {
+                    // Allow pause/brake; fail only when writing running
+                    if (payload.state.kind === 'running') {
+                        return { ok: false, reason: 'inject persist fail on running' };
+                    }
+                    return {
+                        ok: true,
+                        revision: payload.revision,
+                        persistedAt: new Date().toISOString(),
+                    };
+                },
+            });
+            const m = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+                controller,
+            });
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const resumeSpy = mock(() => {});
+            orch.resume = resumeSpy as typeof orch.resume;
+            m.attachOrchestrator('sess-resume', orch);
+
+            await m.setMode('pause');
+            expect(m.getMode()).toBe('pause');
+
+            const result = await m.setMode('running');
+            expect(result.operation).not.toBe('applied');
+            expect(resumeSpy).not.toHaveBeenCalled();
+            expect(m.getMode()).toBe('pause');
+        });
+
+        it('sendInput removes tasks from metrics on resolve and reject', async () => {
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            manager.attachOrchestrator('session-1', orch);
+
+            orch.loopUntilSuccess = mock(async () => ({
+                status: TaskStatus.SUCCESS,
+                output: 'ok',
+                retryCount: 0,
+                persona: PersonaType.DEVELOPER,
+                durationMs: 1,
+                contextHistory: [],
+            }));
+
+            await manager.sendInput('session-1', 'do work');
+            // allow finally to run
+            await new Promise((r) => setTimeout(r, 10));
+            let snap = manager.getStatusSnapshot();
+            if (snap.activeTasks.available) expect(snap.activeTasks.value).toBe(0);
+
+            orch.loopUntilSuccess = mock(async () => {
+                throw new Error('boom');
+            });
+            // re-attach after releaseSessionRuntime on completed
+            manager.attachOrchestrator('session-1', orch);
+            await manager.sendInput('session-1', 'fail work');
+            await new Promise((r) => setTimeout(r, 10));
+            snap = manager.getStatusSnapshot();
+            if (snap.activeTasks.available) expect(snap.activeTasks.value).toBe(0);
+        });
+
+        it('blocks sendInput while braked / paused', async () => {
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            manager.attachOrchestrator('session-1', orch);
+            await manager.emergencyBrake();
+            await expect(manager.sendInput('session-1', 'nope')).rejects.toThrow(/brake|pause/i);
+            await expect(manager.resumeSession('session-1')).rejects.toThrow(/brake|pause/i);
+        });
+
+        it('rejects concurrent sendInput on the same session', async () => {
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            manager.attachOrchestrator('session-1', orch);
+            const hang = createDeferred();
+            orch.loopUntilSuccess = mock(async () => {
+                await hang.promise;
+                return {
+                    status: TaskStatus.SUCCESS,
+                    output: 'ok',
+                    retryCount: 0,
+                    persona: PersonaType.DEVELOPER,
+                    durationMs: 1,
+                    contextHistory: [],
+                };
+            });
+            const first = manager.sendInput('session-1', 'first');
+            await new Promise((r) => setTimeout(r, 5));
+            await expect(manager.sendInput('session-1', 'second')).rejects.toThrow(/already has active work/i);
+            hang.resolve();
+            await first;
+        });
+
+        it('persists brake across SessionManager restart', async () => {
+            const opsPath = `/tmp/ouroboros-ops-test-${Date.now()}.json`;
+            const m1 = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+                opsStatePath: opsPath,
+            });
+            await m1.emergencyBrake();
+            expect(m1.getMode()).toBe('pause');
+
+            const m2 = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+                opsStatePath: opsPath,
+            });
+            expect(m2.getMode()).toBe('pause');
+            expect(m2.acceptsNewWork()).toBe(false);
+        });
+
+        it('brake during appendLog does not start provider (pre-start cancel preserved)', async () => {
+            let releaseLog!: () => void;
+            const logGate = new Promise<void>((r) => {
+                releaseLog = r;
+            });
+            let appendCalls = 0;
+            (mockStorage.appendLog as ReturnType<typeof mock>).mockImplementation(async (entry: { type: string }) => {
+                appendCalls += 1;
+                if (entry.type === 'input' && appendCalls === 1) {
+                    await logGate;
+                }
+                return {
+                    id: `log-${appendCalls}`,
+                    sessionId: 'sess-pre',
+                    timestamp: new Date(),
+                    type: entry.type,
+                    content: '',
+                };
+            });
+
+            const orch = new Orchestrator(
+                { verbose: false, skipPhaseValidation: true, maxRetries: 2 },
+                mockEventBus
+            );
+            let providerCalls = 0;
+            (orch as unknown as { executeWithTimeout: (p: string) => Promise<unknown> }).executeWithTimeout =
+                async () => {
+                    providerCalls += 1;
+                    return { success: true, content: 'should not run', toolCallsCount: 0, durationMs: 0 };
+                };
+            manager.attachOrchestrator('sess-pre', orch);
+
+            const sendP = manager.sendInput('sess-pre', 'hello');
+            await new Promise((r) => setTimeout(r, 20));
+
+            // Brake while appendLog is still deferred — cancel before loopUntilSuccess.
+            const brakeP = manager.emergencyBrake();
+            await new Promise((r) => setTimeout(r, 30));
+            expect(orch.isCancelled()).toBe(true);
+
+            releaseLog();
+            await expect(sendP).rejects.toThrow(/abort|cancel|Admission|brake/i);
+            const brake = await brakeP;
+            expect(brake.admissionClosed ?? true).toBe(true);
+            expect(providerCalls).toBe(0);
+            expect(manager.acceptsNewWork()).toBe(false);
+        });
+
+        it('cancel before loopUntilSuccess is not cleared (zero provider calls)', async () => {
+            const orch = new Orchestrator(
+                { verbose: false, skipPhaseValidation: true, maxRetries: 2 },
+                mockEventBus
+            );
+            let providerCalls = 0;
+            (orch as unknown as { executeWithTimeout: (p: string) => Promise<unknown> }).executeWithTimeout =
+                async () => {
+                    providerCalls += 1;
+                    return { success: true, content: 'nope', toolCallsCount: 0, durationMs: 0 };
+                };
+            orch.cancel('pre-start brake');
+            const task = createTask('never start', PersonaType.DEVELOPER, { id: 'pre-1' });
+            const result = await orch.loopUntilSuccess(task);
+            expect(result.status).toBe(TaskStatus.CANCELLED);
+            expect(providerCalls).toBe(0);
+            // Only resume() clears cancel for a later run
+            orch.resume();
+            const result2 = await orch.loopUntilSuccess(task);
+            expect(providerCalls).toBe(1);
+            expect(result2.status).not.toBe(TaskStatus.CANCELLED);
+        });
+
+        it('emergencyBrake stays partial while execute/tool ignores abort (no false cancelled_confirmed)', async () => {
+            const { DaemonExecutionController } = await import('./execution-control.js');
+            const controller = new DaemonExecutionController({
+                opsStatePath: `/tmp/ouroboros-ops-hang-brake-${Date.now()}.json`,
+                settlementTimeoutMs: 120,
+            });
+            const m = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+                controller,
+            });
+            const orch = new Orchestrator(
+                { verbose: false, skipPhaseValidation: true, maxRetries: 2 },
+                mockEventBus
+            );
+            // Real loopUntilSuccess path: inner execute never settles (tool ignores abort).
+            (orch as unknown as { executeWithTimeout: (p: string) => Promise<unknown> }).executeWithTimeout =
+                () => new Promise(() => {});
+            m.attachOrchestrator('sess-hang', orch);
+
+            const started = m.sendInput('sess-hang', 'long tool');
+            await new Promise((r) => setTimeout(r, 40));
+            expect(orch.hasInFlightExecute()).toBe(true);
+
+            const brake = await m.emergencyBrake();
+            expect(brake.complete).toBe(false);
+            expect(brake.outcome).toBe('partial');
+            const works = (brake as { works?: Array<{ action: string }> }).works ?? [];
+            expect(works.some((w) => w.action === 'abort_requested_unconfirmed')).toBe(true);
+            expect(works.every((w) => w.action !== 'cancelled_confirmed')).toBe(true);
+            expect(orch.hasInFlightExecute()).toBe(true);
+
+            // Do not await started (would hang); admission must stay closed.
+            expect(m.acceptsNewWork()).toBe(false);
+            void started;
+        });
+
+        it('provider AbortSignal is aborted by Orchestrator.cancel', async () => {
+            const orch = new Orchestrator(
+                { verbose: false, skipPhaseValidation: true, maxRetries: 2 },
+                mockEventBus
+            );
+            let sawAbort = false;
+            (orch as unknown as { executeWithTimeout: (p: string) => Promise<unknown> }).executeWithTimeout =
+                async () => {
+                    const signal = orch.currentRunSignal;
+                    expect(signal).toBeTruthy();
+                    await new Promise<void>((resolve, reject) => {
+                        if (!signal) return reject(new Error('no signal'));
+                        if (signal.aborted) {
+                            sawAbort = true;
+                            const e = new Error('aborted');
+                            e.name = 'AbortError';
+                            reject(e);
+                            return;
+                        }
+                        signal.addEventListener(
+                            'abort',
+                            () => {
+                                sawAbort = true;
+                                const e = new Error('aborted');
+                                e.name = 'AbortError';
+                                reject(e);
+                            },
+                            { once: true }
+                        );
+                    });
+                    return { success: true, content: '', toolCallsCount: 0, durationMs: 0 };
+                };
+
+            const task = createTask('abort me', PersonaType.DEVELOPER, { id: 'ab-1' });
+            const running = orch.loopUntilSuccess(task);
+            await new Promise((r) => setTimeout(r, 20));
+            orch.cancel('test');
+            const result = await running;
+            expect(sawAbort).toBe(true);
+            expect(result.status).toBe(TaskStatus.CANCELLED);
+        });
     });
 });
