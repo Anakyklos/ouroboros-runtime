@@ -12,6 +12,7 @@
 
 import type { ValidationStrategy, ValidationContext, ValidationResult } from '../types.js';
 import type { BudgetPort } from '../../ports/budget.port.js';
+import { z } from 'zod';
 
 // ============================================================
 // Types
@@ -30,12 +31,15 @@ export interface MultiModelReviewConfig {
     minSeverityToFail: 'error' | 'warning' | 'info';
     /** Se usa BudgetTracker para registrar custo do review */
     budgetTracker?: BudgetPort;
+    /** Se permite fallback para review heurístico em caso de falha do LLM */
+    allowHeuristicFallback: boolean;
 }
 
 export const DEFAULT_REVIEW_CONFIG: MultiModelReviewConfig = {
-    reviewModel: 'gemini-2.5-flash',
+    reviewModel: 'gemini-2.0-flash',
     timeoutMs: 60_000,
     minSeverityToFail: 'error',
+    allowHeuristicFallback: false,
 };
 
 export interface ReviewFinding {
@@ -134,9 +138,21 @@ export class MultiModelReviewStrategy implements ValidationStrategy {
         const reviewPrompt = this.buildReviewPrompt(context);
 
         // Try to call the review model
-        // If no API key is configured, fall back to heuristic review
+        // If no API key is configured, check if heuristic fallback is allowed
         if (!this.config.apiKey && !process.env.ZAI_API_KEY && !process.env.ZHIPU_API_KEY) {
-            return this.heuristicReview(context);
+            if (this.config.allowHeuristicFallback) {
+                return this.heuristicReview(context);
+            }
+            return {
+                verdict: 'changes_requested',
+                findings: [{
+                    severity: 'error',
+                    category: 'infrastructure',
+                    message: 'Review model API key not configured and heuristic fallback disabled',
+                }],
+                summary: 'Review failed: Missing configuration',
+                reviewModel: this.config.reviewModel,
+            };
         }
 
         try {
@@ -193,8 +209,20 @@ export class MultiModelReviewStrategy implements ValidationStrategy {
                 clearTimeout(timeout);
             }
         } catch (err) {
-            // Fall back to heuristic review on API failure
-            return this.heuristicReview(context);
+            // Fall back to heuristic review on API failure if allowed
+            if (this.config.allowHeuristicFallback) {
+                return this.heuristicReview(context);
+            }
+            return {
+                verdict: 'changes_requested',
+                findings: [{
+                    severity: 'error',
+                    category: 'infrastructure',
+                    message: `Review API call failed: ${err instanceof Error ? err.message : String(err)}`,
+                }],
+                summary: `Review failed: ${err instanceof Error ? err.message : String(err)}`,
+                reviewModel: this.config.reviewModel,
+            };
         }
     }
 
@@ -204,9 +232,10 @@ export class MultiModelReviewStrategy implements ValidationStrategy {
 
     private buildReviewPrompt(context: ValidationContext): string {
         // Sanitize output to prevent prompt injection via triple backticks
+        // Using zero-width space to break triple backticks safely
         const sanitizedOutput = context.output
             .substring(0, 8000)
-            .replace(/```/g, '\u0060\u0060\u0060');
+            .replace(/```/g, '\u0060\u200B\u0060\u200B\u0060');
 
         return `## Task ID: ${context.taskId}
 
@@ -221,33 +250,60 @@ Please review the code above and provide your assessment.`;
     }
 
     private parseReviewResponse(content: string): ReviewReport {
+        // Define Zod schema for strict validation
+        const findingSchema = z.object({
+            severity: z.enum(['error', 'warning', 'info']),
+            category: z.string(),
+            message: z.string(),
+            suggestion: z.string().optional(),
+            location: z.string().optional(),
+        });
+
+        const reportSchema = z.object({
+            verdict: z.enum(['approved', 'changes_requested', 'rejected']),
+            summary: z.string(),
+            findings: z.array(findingSchema),
+        });
+
         try {
             // Try to extract JSON from response (may be wrapped in markdown code block)
             const jsonMatch = content.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
-                const parsed = JSON.parse(jsonMatch[0]) as Partial<ReviewReport>;
-                return {
-                    verdict: parsed.verdict ?? 'approved',
-                    findings: (parsed.findings ?? []).map(f => ({
-                        severity: f.severity ?? 'info',
-                        category: f.category ?? 'general',
-                        message: f.message ?? '',
-                        suggestion: f.suggestion,
-                        location: f.location,
-                    })),
-                    summary: parsed.summary ?? content.substring(0, 200),
-                    reviewModel: this.config.reviewModel,
-                };
+                const parsedJSON = JSON.parse(jsonMatch[0]);
+                const result = reportSchema.safeParse(parsedJSON);
+
+                if (result.success) {
+                    return {
+                        ...result.data,
+                        reviewModel: this.config.reviewModel,
+                    };
+                } else {
+                    // Validation failed
+                    return {
+                        verdict: 'changes_requested',
+                        findings: [{
+                            severity: 'error',
+                            category: 'validation',
+                            message: `Invalid review response format: ${result.error.message}`,
+                        }],
+                        summary: 'Review failed: Invalid response format',
+                        reviewModel: this.config.reviewModel,
+                    };
+                }
             }
-        } catch {
+        } catch (err) {
             // Failed to parse JSON
         }
 
-        // Fallback: treat the entire response as a summary
+        // Fallback: strictly fail-closed
         return {
-            verdict: 'approved',
-            findings: [],
-            summary: content.substring(0, 500),
+            verdict: 'changes_requested',
+            findings: [{
+                severity: 'error',
+                category: 'parsing',
+                message: 'Could not extract valid JSON from review response',
+            }],
+            summary: 'Review failed: JSON parsing error',
             reviewModel: this.config.reviewModel,
         };
     }
