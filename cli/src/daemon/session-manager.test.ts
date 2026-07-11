@@ -598,6 +598,77 @@ describe('SessionManager', () => {
             expect(m2.acceptsNewWork()).toBe(false);
         });
 
+        it('brake during appendLog does not start provider (pre-start cancel preserved)', async () => {
+            let releaseLog!: () => void;
+            const logGate = new Promise<void>((r) => {
+                releaseLog = r;
+            });
+            let appendCalls = 0;
+            (mockStorage.appendLog as ReturnType<typeof mock>).mockImplementation(async (entry: { type: string }) => {
+                appendCalls += 1;
+                if (entry.type === 'input' && appendCalls === 1) {
+                    await logGate;
+                }
+                return {
+                    id: `log-${appendCalls}`,
+                    sessionId: 'sess-pre',
+                    timestamp: new Date(),
+                    type: entry.type,
+                    content: '',
+                };
+            });
+
+            const orch = new Orchestrator(
+                { verbose: false, skipPhaseValidation: true, maxRetries: 2 },
+                mockEventBus
+            );
+            let providerCalls = 0;
+            (orch as unknown as { executeWithTimeout: (p: string) => Promise<unknown> }).executeWithTimeout =
+                async () => {
+                    providerCalls += 1;
+                    return { success: true, content: 'should not run', toolCallsCount: 0, durationMs: 0 };
+                };
+            manager.attachOrchestrator('sess-pre', orch);
+
+            const sendP = manager.sendInput('sess-pre', 'hello');
+            await new Promise((r) => setTimeout(r, 20));
+
+            // Brake while appendLog is still deferred — cancel before loopUntilSuccess.
+            const brakeP = manager.emergencyBrake();
+            await new Promise((r) => setTimeout(r, 30));
+            expect(orch.isCancelled()).toBe(true);
+
+            releaseLog();
+            await expect(sendP).rejects.toThrow(/abort|cancel|Admission|brake/i);
+            const brake = await brakeP;
+            expect(brake.admissionClosed ?? true).toBe(true);
+            expect(providerCalls).toBe(0);
+            expect(manager.acceptsNewWork()).toBe(false);
+        });
+
+        it('cancel before loopUntilSuccess is not cleared (zero provider calls)', async () => {
+            const orch = new Orchestrator(
+                { verbose: false, skipPhaseValidation: true, maxRetries: 2 },
+                mockEventBus
+            );
+            let providerCalls = 0;
+            (orch as unknown as { executeWithTimeout: (p: string) => Promise<unknown> }).executeWithTimeout =
+                async () => {
+                    providerCalls += 1;
+                    return { success: true, content: 'nope', toolCallsCount: 0, durationMs: 0 };
+                };
+            orch.cancel('pre-start brake');
+            const task = createTask('never start', PersonaType.DEVELOPER, { id: 'pre-1' });
+            const result = await orch.loopUntilSuccess(task);
+            expect(result.status).toBe(TaskStatus.CANCELLED);
+            expect(providerCalls).toBe(0);
+            // Only resume() clears cancel for a later run
+            orch.resume();
+            const result2 = await orch.loopUntilSuccess(task);
+            expect(providerCalls).toBe(1);
+            expect(result2.status).not.toBe(TaskStatus.CANCELLED);
+        });
+
         it('emergencyBrake stays partial while execute/tool ignores abort (no false cancelled_confirmed)', async () => {
             const { DaemonExecutionController } = await import('./execution-control.js');
             const controller = new DaemonExecutionController({

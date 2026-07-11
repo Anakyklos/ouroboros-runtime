@@ -476,7 +476,10 @@ Rules:
                                         orchestrator.initialize(apiKey);
                                         return wireOrchestrator(orchestrator);
                                     },
+                                    // Do not start new wave tasks/chunks after brake.
+                                    shouldAbort: () => lease.signal.aborted,
                                 });
+                                lease.signal.throwIfAborted();
                                 const waveResult: WaveExecutionResult = await waveExecutor.execute(tasks);
                                 if (lease.signal.aborted) {
                                     lease.acknowledgeAbort();

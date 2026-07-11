@@ -285,4 +285,68 @@ describe("WaveExecutor", () => {
         expect(result.skippedTasks.sort()).toEqual(["w1", "w2"]);
         expect(result.successfulTasks).toEqual([]);
     });
+
+    it("dependent wave task not started after shouldAbort (zero provider/factory calls)", async () => {
+        let aborted = false;
+        let factoryCalls = 0;
+        let providerCalls = 0;
+        let releaseA!: () => void;
+        const gateA = new Promise<void>((r) => {
+            releaseA = r;
+        });
+
+        const executor = new WaveExecutor(null, { verbose: false, maxConcurrent: 1 }, {
+            shouldAbort: () => aborted,
+            createOrchestrator: () => {
+                factoryCalls += 1;
+                return {
+                    loopUntilSuccess: async (task: { id: string }) => {
+                        providerCalls += 1;
+                        if (task.id === "A") {
+                            await gateA;
+                            // Brake fires after A started; B must not start.
+                            aborted = true;
+                            return {
+                                status: "SUCCESS",
+                                output: "a-done",
+                                retryCount: 0,
+                                persona: "developer",
+                                durationMs: 1,
+                                contextHistory: [],
+                            };
+                        }
+                        // B must never reach provider
+                        return {
+                            status: "SUCCESS",
+                            output: "b-should-not-run",
+                            retryCount: 0,
+                            persona: "developer",
+                            durationMs: 1,
+                            contextHistory: [],
+                        };
+                    },
+                } as unknown as Orchestrator;
+            },
+        });
+
+        const execP = executor.execute([
+            { id: "A", instruction: "first" },
+            { id: "B", instruction: "depends", dependsOn: ["A"] },
+        ] as WaveTask[]);
+
+        for (let i = 0; i < 40 && factoryCalls < 1; i++) {
+            await new Promise((r) => setTimeout(r, 5));
+        }
+        expect(factoryCalls).toBe(1);
+        expect(providerCalls).toBe(1);
+
+        releaseA();
+        const result = await execP;
+
+        // A ran; B cancelled/skipped without factory or provider
+        expect(result.successfulTasks).toEqual(["A"]);
+        expect(result.skippedTasks).toContain("B");
+        expect(factoryCalls).toBe(1);
+        expect(providerCalls).toBe(1);
+    });
 });

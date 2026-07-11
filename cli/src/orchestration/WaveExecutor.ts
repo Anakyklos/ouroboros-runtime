@@ -34,12 +34,18 @@ export interface WaveExecutorOptions {
      * Preferred for daemon-controlled GLM Wave (issue #37).
      */
     createOrchestrator?: () => Orchestrator;
+    /**
+     * When true, new tasks/chunks must not start (lease aborted / brake).
+     * Checked before each task and before each chunk.
+     */
+    shouldAbort?: () => boolean;
 }
 
 export class WaveExecutor {
     private orchestrator: Orchestrator | null;
     private config: WaveConfig;
     private readonly createOrchestrator?: () => Orchestrator;
+    private readonly shouldAbort?: () => boolean;
 
     constructor(
         orchestrator: Orchestrator | null,
@@ -49,9 +55,26 @@ export class WaveExecutor {
         this.orchestrator = orchestrator;
         this.config = { ...DEFAULT_WAVE_CONFIG, ...config };
         this.createOrchestrator = options.createOrchestrator;
+        this.shouldAbort = options.shouldAbort;
         if (!this.orchestrator && !this.createOrchestrator) {
             throw new Error("WaveExecutor requires an Orchestrator or createOrchestrator factory");
         }
+    }
+
+    private aborted(): boolean {
+        return this.shouldAbort?.() === true;
+    }
+
+    private cancelledTaskResult(startMs: number): TaskResult {
+        return {
+            status: TaskStatus.CANCELLED,
+            output: "",
+            error: "Cancelled by emergency brake before start",
+            retryCount: 0,
+            persona: PersonaType.DEVELOPER,
+            durationMs: Date.now() - startMs,
+            contextHistory: [],
+        };
     }
 
     /** Resolve orchestrator for a single task (isolated when factory is set). */
@@ -82,6 +105,27 @@ export class WaveExecutor {
             const wave = waves[waveIndex];
             this.log(`\n━━━ Wave ${waveIndex + 1}/${waves.length} ━━━`);
             this.log(`   Tasks: ${wave.map(t => t.id).join(", ")}`);
+
+            // Brake already closed admission: do not start remaining waves/chunks.
+            if (this.aborted()) {
+                const cancelledWave: WaveTaskResult[] = [];
+                for (const t of wave) {
+                    if (
+                        !successfulTasks.includes(t.id) &&
+                        !failedTasks.includes(t.id) &&
+                        !skippedTasks.includes(t.id)
+                    ) {
+                        skippedTasks.push(t.id);
+                        cancelledWave.push({
+                            taskId: t.id,
+                            result: this.cancelledTaskResult(Date.now()),
+                            waveIndex,
+                        });
+                    }
+                }
+                if (cancelledWave.length > 0) results.push(cancelledWave);
+                continue;
+            }
 
             // Emit wave started
             globalEventBus.emit('wave', {
@@ -306,8 +350,29 @@ export class WaveExecutor {
         const chunks = this.chunkArray(tasks, this.config.maxConcurrent);
 
         for (const chunk of chunks) {
+            if (this.aborted()) {
+                // Do not start this chunk or later chunks.
+                for (const task of chunk) {
+                    results.push({
+                        taskId: task.id,
+                        result: this.cancelledTaskResult(Date.now()),
+                        waveIndex,
+                    });
+                }
+                continue;
+            }
             const chunkResults = await Promise.all(
                 chunk.map(async (task): Promise<WaveTaskResult> => {
+                    const startMs = Date.now();
+                    // Gate every task start (covers tasks scheduled after brake).
+                    if (this.aborted()) {
+                        return {
+                            taskId: task.id,
+                            result: this.cancelledTaskResult(startMs),
+                            waveIndex,
+                        };
+                    }
+
                     this.log(`   ▶️ Starting: ${task.id}`);
                     
                     // Emit task started
@@ -321,7 +386,6 @@ export class WaveExecutor {
 
                     let taskResult: TaskResult;
 
-                    const startMs = Date.now();
                     try {
                         // Se task tem execute() customizado, usar ele
                         if (task.execute) {
@@ -335,9 +399,15 @@ export class WaveExecutor {
                                 contextHistory: [],
                             };
                         } else if (task.instruction) {
-                            // Per-task orchestrator when factory provided — avoids shared runAbort handles.
-                            const orch = this.orchestratorForTask();
-                            taskResult = await orch.loopUntilSuccess(task as OrchestratorTask);
+                            // Re-check after factory would start provider work.
+                            if (this.aborted()) {
+                                taskResult = this.cancelledTaskResult(startMs);
+                            } else {
+                                // Per-task orchestrator when factory provided — avoids shared runAbort handles.
+                                const orch = this.orchestratorForTask();
+                                // If lease already aborted, factory wires cancel; loop must not clear it.
+                                taskResult = await orch.loopUntilSuccess(task as OrchestratorTask);
+                            }
                         } else {
                             throw new Error('WaveTask must have either execute() or instruction');
                         }

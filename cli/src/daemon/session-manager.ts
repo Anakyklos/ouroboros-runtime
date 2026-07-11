@@ -761,8 +761,18 @@ export class SessionManager {
                 type: "input",
                 content: prompt,
             });
+            // Brake during appendLog must not start the provider afterwards.
+            lease.signal.throwIfAborted();
+            if (orchestrator.isCancelled()) {
+                const err = new Error("Execution aborted");
+                err.name = "AbortError";
+                throw err;
+            }
         } catch (e) {
             unsubPause();
+            if (lease.signal.aborted || orchestrator.isCancelled()) {
+                lease.acknowledgeAbort();
+            }
             lease.fail(e);
             throw e;
         }
@@ -770,6 +780,16 @@ export class SessionManager {
         const task = createTask(prompt, PersonaType.DEVELOPER, {
             id: `task_${sessionId}_${Date.now()}`,
         });
+
+        // Final gate immediately before any provider/tool work.
+        try {
+            lease.signal.throwIfAborted();
+        } catch (e) {
+            unsubPause();
+            lease.acknowledgeAbort();
+            lease.fail(e);
+            throw e;
+        }
 
         const execution = orchestrator
             .loopUntilSuccess(task)

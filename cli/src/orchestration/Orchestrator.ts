@@ -215,10 +215,18 @@ export class Orchestrator {
         let lastError: string | undefined;
         const startTime = Date.now();
         const contextHistory: ContextEntry[] = [];
-        // Fresh abort controller per run so concurrent runs are not silently supported —
-        // SessionManager must serialize; this still replaces any previous run's controller.
+        // Fresh abort controller per run. Do NOT clear `cancelled` here —
+        // only resume() clears a prior cancel (brake during appendLog / before start).
         this.runAbort = new AbortController();
-        this.cancelled = false;
+        if (this.cancelled) {
+            try {
+                this.runAbort.abort("pre-cancelled");
+            } catch {
+                /* ignore */
+            }
+            this.log('warn', `🛑 Task ${task.id} not started: orchestrator already cancelled`);
+            return this.cancelledResult(task, startTime, contextHistory);
+        }
 
         this.log('info', `🎯 Starting task: ${task.id}`);
         this.log('info', `   Persona: ${task.persona}`);

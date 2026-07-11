@@ -172,6 +172,8 @@ Do not use `|| true` or optional steps to hide these failures.
 - For local abortable work it **requests abort** and **waits a bounded settlement** (`DEFAULT_BRAKE_SETTLEMENT_TIMEOUT_MS`).
 - **`cancelled_confirmed` requires execution settlement** (provider/loop/tool terminal) — not merely `AbortController.abort()`.
 - `Orchestrator.loopUntilSuccess` **awaits** `executeWithTimeout` fully after cancel; it does **not** `Promise.race` away the inner provider/tool.
+- `cancel()` before start is **not** cleared by `loopUntilSuccess` — only `resume()` clears `cancelled` (avoids provider start after brake during `appendLog`).
+- Wave checks `shouldAbort` before each task/chunk so dependent work never starts after brake.
 - Tools already in-flight may not be abortable; if they do not settle in time → `abort_requested_unconfirmed` / **partial**.
 - External delegates (Gemini/Antigravity/Jules) may continue remotely → **partial**.
 - **Partial ≠ gate failure**: admission is closed; some executions lacked confirmed settlement.
