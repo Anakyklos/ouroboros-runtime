@@ -187,8 +187,59 @@ export class SessionManager {
     }
 
     /**
+     * Terminal session statuses — excluded from activity metrics and brake targets.
+     */
+    private static readonly TERMINAL_STATUSES = new Set(["completed", "failed"]);
+
+    /** Sessions with live work: in-flight tasks and/or non-terminal attached orchestrators. */
+    private collectLiveSessionIds(): Set<string> {
+        const ids = new Set<string>();
+        for (const [sessionId, taskMap] of this.activeTasks) {
+            if (taskMap.size > 0) ids.add(sessionId);
+        }
+        for (const sessionId of this.activeOrchestrators.keys()) {
+            if ((this.activeTasks.get(sessionId)?.size ?? 0) > 0) {
+                ids.add(sessionId);
+            }
+        }
+        for (const sessionId of this.checkpointIntervals.keys()) {
+            // Checkpoint timer alone does not mean work is active; only with tasks.
+            if ((this.activeTasks.get(sessionId)?.size ?? 0) > 0) {
+                ids.add(sessionId);
+            }
+        }
+        return ids;
+    }
+
+    /**
+     * Drop runtime handles for a session that reached a terminal storage status.
+     * Does not delete persistent data.
+     */
+    private releaseSessionRuntime(sessionId: string): void {
+        const timer = this.checkpointIntervals.get(sessionId);
+        if (timer) {
+            clearInterval(timer);
+            this.checkpointIntervals.delete(sessionId);
+        }
+        this.activeOrchestrators.delete(sessionId);
+        const tasks = this.activeTasks.get(sessionId);
+        if (tasks && tasks.size === 0) {
+            this.activeTasks.delete(sessionId);
+        }
+    }
+
+    private removeTaskPromise(sessionId: string, taskId: string): void {
+        const map = this.activeTasks.get(sessionId);
+        if (!map) return;
+        map.delete(taskId);
+        if (map.size === 0) {
+            this.activeTasks.delete(sessionId);
+        }
+    }
+
+    /**
      * Real activity snapshot for `daemon.status`.
-     * Counts come from in-process SessionManager maps (not scenic constants).
+     * Counts only live work — not terminal sessions left attached by accident.
      */
     getStatusSnapshot(): DaemonStatusResult {
         let activeTaskCount = 0;
@@ -203,13 +254,14 @@ export class SessionManager {
             }
         }
 
+        const liveSessions = this.collectLiveSessionIds();
         const mem = process.memoryUsage();
 
         return {
             processStatus: "alive",
             mode: this.mode,
             uptimeSeconds: process.uptime(),
-            activeSessions: buildMetric(this.activeOrchestrators.size, "count"),
+            activeSessions: buildMetric(liveSessions.size, "count"),
             activeWaves: buildMetric(activeWaveCount, "count"),
             activeTasks: buildMetric(activeTaskCount, "count"),
             tokensUsed: unavailableMetric(
@@ -226,23 +278,25 @@ export class SessionManager {
     }
 
     /**
-     * Emergency brake: pause every live orchestrator, mark sessions paused,
-     * checkpoint, clear checkpoint timers. Does not delete persistent data.
-     *
-     * Outcomes:
-     * - no_active_work: nothing to interrupt
-     * - already_stopped: previously braked and still idle
-     * - all_stopped: every target interrupted
-     * - partial: at least one failure
+     * Emergency brake: cooperative cancel of live work only.
+     * Required steps: orchestrator.cancel(), persist paused, settle task promises (budget).
+     * Checkpoint is best-effort and reported via checkpointDegradedCount.
      */
     async emergencyBrake(): Promise<EmergencyBrakeResult> {
         const timestamp = new Date().toISOString();
         const wasBraked = this.braked;
-        const sessionIds = new Set<string>([
-            ...this.activeOrchestrators.keys(),
-            ...this.activeTasks.keys(),
-            ...this.checkpointIntervals.keys(),
-        ]);
+        const TASK_SETTLE_MS = 3_000;
+
+        // Only target live work; never rewrite completed/failed sessions as paused.
+        const sessionIds = this.collectLiveSessionIds();
+
+        // Also clear orphan checkpoint timers with no tasks (not "work", but stop noise).
+        for (const [sessionId, timer] of [...this.checkpointIntervals.entries()]) {
+            if ((this.activeTasks.get(sessionId)?.size ?? 0) === 0) {
+                clearInterval(timer);
+                this.checkpointIntervals.delete(sessionId);
+            }
+        }
 
         if (sessionIds.size === 0) {
             const outcome = wasBraked ? "already_stopped" : "no_active_work";
@@ -261,6 +315,7 @@ export class SessionManager {
                 interruptedCount: 0,
                 failedCount: 0,
                 checkpointTimersCleared: 0,
+                checkpointDegradedCount: 0,
                 mode: this.mode,
                 timestamp,
                 message:
@@ -274,45 +329,66 @@ export class SessionManager {
         let interruptedCount = 0;
         let failedCount = 0;
         let checkpointTimersCleared = 0;
+        let checkpointDegradedCount = 0;
 
         for (const sessionId of sessionIds) {
+            const entry: EmergencyBrakeSessionResult = {
+                sessionId,
+                status: "failed",
+                cancelApplied: false,
+                persistOk: false,
+                checkpointOk: "skipped",
+                tasksSettled: false,
+            };
+
             try {
+                // Skip if storage already terminal (do not corrupt history).
+                const stored = await this.storage.getSession(sessionId).catch(() => null);
+                if (stored && SessionManager.TERMINAL_STATUSES.has(stored.status)) {
+                    this.releaseSessionRuntime(sessionId);
+                    entry.status = "skipped";
+                    entry.error = `Session already ${stored.status}`;
+                    sessions.push(entry);
+                    continue;
+                }
+
                 const orchestrator = this.activeOrchestrators.get(sessionId);
                 if (orchestrator) {
-                    orchestrator.pause();
+                    orchestrator.cancel("Emergency brake");
+                    entry.cancelApplied = true;
+                } else {
+                    // No orchestrator but tasks present — still try to settle tasks.
+                    entry.cancelApplied = true;
                 }
 
-                // Persist pause when storage has the session; ignore missing rows.
                 try {
                     await this.storage.updateSession(sessionId, { status: "paused" });
-                } catch {
-                    // Session may be in-memory only; continue interrupt path.
+                    entry.persistOk = true;
+                } catch (err) {
+                    entry.persistOk = false;
+                    entry.error = err instanceof Error ? err.message : String(err);
                 }
 
                 try {
-                    if (this.sessionWaves.has(sessionId) || this.activeOrchestrators.has(sessionId)) {
-                        await this.createCheckpoint(sessionId);
-                    }
+                    await this.createCheckpoint(sessionId);
+                    entry.checkpointOk = true;
                 } catch (err) {
+                    entry.checkpointOk = false;
+                    checkpointDegradedCount += 1;
                     const message = err instanceof Error ? err.message : String(err);
                     this.eventBus.log(
                         "warn",
-                        `Emergency brake checkpoint failed for ${sessionId}: ${message}`,
+                        `Emergency brake checkpoint failed (best-effort) for ${sessionId}: ${message}`,
                         "SessionManager"
                     );
                 }
 
-                // Mark in-memory waves/tasks as paused (UI snapshot); keep ids for recovery.
                 const waves = this.sessionWaves.get(sessionId);
                 if (waves) {
                     for (const wave of waves) {
-                        if (wave.status === "active") {
-                            wave.status = "pending";
-                        }
+                        if (wave.status === "active") wave.status = "pending";
                         for (const task of wave.tasks) {
-                            if (task.phase !== "complete") {
-                                task.phase = "paused";
-                            }
+                            if (task.phase !== "complete") task.phase = "paused";
                         }
                     }
                 }
@@ -324,18 +400,55 @@ export class SessionManager {
                     checkpointTimersCleared += 1;
                 }
 
+                // Wait for cooperative cancel to settle tracked promises.
+                const taskMap = this.activeTasks.get(sessionId);
+                if (taskMap && taskMap.size > 0) {
+                    const pending = Array.from(taskMap.values()).map((p) =>
+                        p.catch(() => undefined)
+                    );
+                    const settled = await Promise.race([
+                        Promise.all(pending).then(() => true),
+                        new Promise<false>((resolve) =>
+                            setTimeout(() => resolve(false), TASK_SETTLE_MS)
+                        ),
+                    ]);
+                    entry.tasksSettled = settled;
+                } else {
+                    entry.tasksSettled = true;
+                }
+
                 this.eventBus.emit("task", {
                     type: "progress",
                     sessionId,
                     data: { action: "emergency_brake" },
                 });
 
-                sessions.push({ sessionId, status: "interrupted" });
-                interruptedCount += 1;
+                const requiredOk =
+                    entry.cancelApplied === true &&
+                    entry.persistOk === true &&
+                    entry.tasksSettled === true;
+
+                if (requiredOk) {
+                    entry.status = "interrupted";
+                    interruptedCount += 1;
+                } else {
+                    entry.status = "failed";
+                    failedCount += 1;
+                    if (!entry.error) {
+                        entry.error = !entry.persistOk
+                            ? "Failed to persist paused status"
+                            : !entry.tasksSettled
+                              ? "In-flight tasks did not settle after cancel"
+                              : "Cancel not applied";
+                    }
+                }
+                sessions.push(entry);
             } catch (err) {
                 const message = err instanceof Error ? err.message : String(err);
-                sessions.push({ sessionId, status: "failed", error: message });
+                entry.status = "failed";
+                entry.error = message;
                 failedCount += 1;
+                sessions.push(entry);
                 this.eventBus.log(
                     "error",
                     `Emergency brake failed for ${sessionId}: ${message}`,
@@ -351,7 +464,6 @@ export class SessionManager {
         if (failedCount > 0) {
             outcome = "partial";
         } else if (wasBraked) {
-            // Re-applying brake is safe; do not claim a fresh stop.
             outcome = "already_stopped";
         } else {
             outcome = "all_stopped";
@@ -361,7 +473,7 @@ export class SessionManager {
 
         this.eventBus.log(
             complete ? "warn" : "error",
-            `Emergency brake outcome=${outcome} interrupted=${interruptedCount} failed=${failedCount}`,
+            `Emergency brake outcome=${outcome} interrupted=${interruptedCount} failed=${failedCount} checkpointDegraded=${checkpointDegradedCount}`,
             "SessionManager"
         );
         this.eventBus.emit("daemon", {
@@ -378,10 +490,15 @@ export class SessionManager {
             interruptedCount,
             failedCount,
             checkpointTimersCleared,
+            checkpointDegradedCount,
             mode: this.mode,
             timestamp,
             message: complete
-                ? `Interrupted ${interruptedCount} session(s); mode is pause.`
+                ? `Interrupted ${interruptedCount} session(s); mode is pause.${
+                      checkpointDegradedCount > 0
+                          ? ` (${checkpointDegradedCount} checkpoint(s) degraded, best-effort)`
+                          : ""
+                  }`
                 : `Partial emergency brake: ${interruptedCount} interrupted, ${failedCount} failed.`,
         };
     }
@@ -396,6 +513,10 @@ export class SessionManager {
 
     protected getActiveSessionIdsForTest(): string[] {
         return [...this.activeOrchestrators.keys()];
+    }
+
+    protected releaseSessionRuntimeForTest(sessionId: string): void {
+        this.releaseSessionRuntime(sessionId);
     }
 
     /**
@@ -602,20 +723,44 @@ export class SessionManager {
             id: `task_${sessionId}_${Date.now()}`,
         });
 
-        const execution = orchestrator.loopUntilSuccess(task).then(async (result) => {
-            await this.storage.appendLog({
-                sessionId,
-                type: result.status === 'SUCCESS' ? 'output' : 'error',
-                content: result.output || result.error || 'No output',
-            });
+        const execution = orchestrator
+            .loopUntilSuccess(task)
+            .then(async (result) => {
+                const isCancelled = result.status === 'CANCELLED';
+                await this.storage.appendLog({
+                    sessionId,
+                    type: result.status === 'SUCCESS' ? 'output' : 'error',
+                    content: result.output || result.error || 'No output',
+                });
 
-            await this.updateSession(sessionId, {
-                status: result.status === 'SUCCESS' ? 'completed' :
-                    result.status === 'NEEDS_HUMAN' ? 'paused' : 'failed',
-            });
+                const nextStatus =
+                    result.status === 'SUCCESS'
+                        ? 'completed'
+                        : result.status === 'NEEDS_HUMAN' || isCancelled
+                          ? 'paused'
+                          : 'failed';
 
-            this.eventBus.log('info', `Task ${task.id} finished: ${result.status}`, 'SessionManager');
-        });
+                await this.updateSession(sessionId, { status: nextStatus });
+
+                if (nextStatus === 'completed' || nextStatus === 'failed') {
+                    this.releaseSessionRuntime(sessionId);
+                }
+
+                this.eventBus.log('info', `Task ${task.id} finished: ${result.status}`, 'SessionManager');
+            })
+            .catch(async (err) => {
+                const message = err instanceof Error ? err.message : String(err);
+                this.eventBus.log('error', `Task ${task.id} crashed: ${message}`, 'SessionManager');
+                try {
+                    await this.updateSession(sessionId, { status: 'failed' });
+                } catch {
+                    /* storage may be unavailable */
+                }
+                this.releaseSessionRuntime(sessionId);
+            })
+            .finally(() => {
+                this.removeTaskPromise(sessionId, task.id);
+            });
 
         this.getOrCreateSessionTasksMap(sessionId).set(task.id, execution);
 

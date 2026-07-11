@@ -179,9 +179,11 @@ export const useMissionControlStore = create<MissionControlState>((set) => ({
 
   addWave: (wave) =>
     set((state) => {
-      // Replace existing wave with same id to keep updateTask tests deterministic
-      const without = state.waves.filter((w) => w.id !== wave.id);
-      return { waves: [...without, wave] };
+      const exists = state.waves.some((w) => w.id === wave.id);
+      const waves = exists
+        ? state.waves.map((w) => (w.id === wave.id ? wave : w))
+        : [...state.waves, wave];
+      return { waves };
     }),
 
   setActiveQuadrant: (quadrant) => set({ activeQuadrant: quadrant }),

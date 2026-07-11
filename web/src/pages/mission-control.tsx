@@ -356,14 +356,20 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
         confidence={confidence}
         onConfidenceChange={setConfidence}
         waveNumber={
-          liveData.stats.waveNumber ||
-          (status?.activeWaves?.available ? status.activeWaves.value ?? 0 : 0)
+          liveData.stats.waveNumber > 0 ? liveData.stats.waveNumber : null
         }
-        tasksDone={liveData.stats.tasksDone || 0}
+        activeWaveCount={
+          status?.activeWaves?.available ? status.activeWaves.value ?? 0 : null
+        }
+        tasksDone={
+          typeof liveData.stats.tasksDone === "number"
+            ? liveData.stats.tasksDone
+            : null
+        }
         tokens={
           capabilities.tokenMetrics && status?.tokensUsed?.available
-            ? status.tokensUsed.value ?? 0
-            : liveData.stats.tokens || 0
+            ? status.tokensUsed.value ?? null
+            : null
         }
         onEmergencyBrake={
           capabilities.emergencyBrake ? handleEmergencyBrake : undefined

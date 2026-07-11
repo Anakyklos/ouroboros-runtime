@@ -7,11 +7,15 @@ interface HUDBarProps {
   onModeChange?: (mode: "pause" | "running" | "frenzy") => void;
   confidence: number;
   onConfidenceChange: (value: number) => void;
-  waveNumber?: number;
-  activeTasks?: number;
-  tasksDone?: number;
-  uptime?: string;
-  tokens?: number;
+  /** Display label for current wave number (not active-wave count). */
+  waveNumber?: number | null;
+  /** Concurrent active waves (optional separate metric). */
+  activeWaveCount?: number | null;
+  activeTasks?: number | null;
+  tasksDone?: number | null;
+  uptime?: string | null;
+  /** null = token metrics unavailable (show n/a, never scenic 0). */
+  tokens?: number | null;
   onEmergencyBrake?: () => void;
 }
 
@@ -36,14 +40,21 @@ const modeConfig = {
   },
 };
 
+function formatTokens(tokens: number | null | undefined): string {
+  if (tokens === null || tokens === undefined) return "n/a";
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`;
+  return String(tokens);
+}
+
 export function HUDBar({
   mode,
   onModeChange,
   confidence,
   onConfidenceChange,
-  waveNumber = 42,
-  tasksDone = 47,
-  tokens = 142000,
+  waveNumber = null,
+  activeWaveCount = null,
+  tasksDone = null,
+  tokens = null,
   onEmergencyBrake,
 }: HUDBarProps) {
   return (
@@ -81,30 +92,36 @@ export function HUDBar({
       </div>
 
       <div className="flex items-center gap-4 sm:gap-8 min-w-max pl-4">
-        {/* Stats - Hidden on very small screens, scrollable on mobile */}
-        <div className="flex items-center gap-4 text-xs sm:text-sm overflow-x-auto no-scrollbar max-w-[200px] sm:max-w-none">
+        <div className="flex items-center gap-4 text-xs sm:text-sm overflow-x-auto no-scrollbar max-w-[240px] sm:max-w-none">
           <div className="flex items-center gap-2 whitespace-nowrap">
             <span className="text-[var(--color-silver-muted)]">Wave</span>
-            <span className="font-mono font-semibold text-[var(--color-emerald)]">#{waveNumber}</span>
-            <span className="w-2 h-2 rounded-full bg-[var(--color-emerald)] animate-pulse" />
+            <span className="font-mono font-semibold text-[var(--color-emerald)]">
+              {waveNumber === null || waveNumber === undefined ? "—" : `#${waveNumber}`}
+            </span>
+            {activeWaveCount !== null && activeWaveCount !== undefined && (
+              <span className="text-[var(--color-silver-muted)] font-mono text-xs">
+                ({activeWaveCount} active)
+              </span>
+            )}
           </div>
-          
+
           <span className="text-[var(--color-border)] hidden sm:inline">│</span>
-          
+
           <div className="hidden sm:flex items-center gap-1 whitespace-nowrap">
-            <span className="text-[var(--color-silver-muted)]">Tasks</span>
-            <span className="font-mono">{tasksDone}</span>
+            <span className="text-[var(--color-silver-muted)]">Tasks done</span>
+            <span className="font-mono">
+              {tasksDone === null || tasksDone === undefined ? "—" : tasksDone}
+            </span>
           </div>
-          
+
           <span className="text-[var(--color-border)] hidden sm:inline">│</span>
-          
+
           <div className="hidden sm:flex items-center gap-1 whitespace-nowrap">
             <span className="text-[var(--color-silver-muted)]">Tokens</span>
-            <span className="font-mono">{(tokens / 1000).toFixed(1)}k</span>
+            <span className="font-mono">{formatTokens(tokens)}</span>
           </div>
         </div>
 
-        {/* Confidence Slider */}
         <div className="flex items-center gap-2 sm:gap-3">
           <span className="text-xs text-[var(--color-silver-muted)] hidden sm:inline">Confidence:</span>
           <input
@@ -123,7 +140,6 @@ export function HUDBar({
           <span className="font-mono font-semibold text-[var(--color-emerald)] w-8 sm:w-12 text-right">{confidence}%</span>
         </div>
 
-        {/* Emergency Brake — hidden when capability off */}
         {onEmergencyBrake && (
           <motion.button
             type="button"

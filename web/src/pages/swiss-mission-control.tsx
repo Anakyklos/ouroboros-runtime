@@ -22,18 +22,15 @@ export function SwissMissionControl() {
   };
 
   const memoryData = status?.memory;
-  const systemHealth = {
-    cpu: memoryData
-      ? Math.round((memoryData.heapUsedBytes / Math.max(memoryData.heapTotalBytes, 1)) * 100)
-      : 0,
-    mem: memoryData ? Math.round(memoryData.rssBytes / 1024 / 1024) : 0,
-    net: 0,
-    disk: 0,
-    io: 0,
-    tmp: 0,
-    vlt: 0,
-    fan: 0,
-  };
+  /** Real heap usage % — not CPU (CPU is not available from daemon.status). */
+  const heapUsagePct = memoryData
+    ? Math.round(
+        (memoryData.heapUsedBytes / Math.max(memoryData.heapTotalBytes, 1)) * 100
+      )
+    : null;
+  const rssMb = memoryData
+    ? Math.round(memoryData.rssBytes / 1024 / 1024)
+    : null;
 
   const pendingWaves = waves.filter(w => w.status === "pending").length;
   const doneWaves = waves.filter(w => w.status === "done").length;
@@ -84,24 +81,26 @@ export function SwissMissionControl() {
         {/* Left Column */}
         <div className="flex flex-col gap-6 md:gap-8 lg:col-span-1">
           
-          {/* System Health */}
+          {/* Process metrics from daemon.status (honest labels only) */}
           <section className="border border-white/30 p-6 flex flex-col h-full bg-black relative group hover:border-white/100 transition-colors duration-500">
             <div className="absolute top-0 right-0 w-3 h-3 border-t border-r border-white opacity-0 group-hover:opacity-100 transition-opacity"></div>
-            <h2 className="text-xl font-bold uppercase mb-6 tracking-tight">System Health</h2>
-            <div className="flex-grow flex items-end justify-between gap-2 h-40 mb-6 font-mono text-xs">
-              {Object.entries(systemHealth).map(([key, value]) => (
-                <div key={key} className="flex flex-col items-center justify-end h-full w-full gap-2">
-                  <div 
-                    className="w-full bg-white relative" 
-                    style={{ height: `${value}%`, opacity: value / 100 + 0.1 }}
-                  >
-                    {value > 85 && (
-                      <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 w-1.5 h-1.5 bg-red-600 rounded-full"></div>
-                    )}
-                  </div>
-                  <span className="text-gray-500">{key.toUpperCase()}</span>
-                </div>
-              ))}
+            <h2 className="text-xl font-bold uppercase mb-6 tracking-tight">Process Memory</h2>
+            <div className="flex-grow flex flex-col justify-center gap-6 mb-6 font-mono text-sm">
+              <div className="flex justify-between items-end border-b border-white/10 pb-2">
+                <span className="text-gray-500 uppercase text-xs">Heap usage</span>
+                <span className="text-white text-2xl font-bold">
+                  {heapUsagePct === null ? "n/a" : `${heapUsagePct}%`}
+                </span>
+              </div>
+              <div className="flex justify-between items-end border-b border-white/10 pb-2">
+                <span className="text-gray-500 uppercase text-xs">RSS</span>
+                <span className="text-white text-2xl font-bold">
+                  {rssMb === null ? "n/a" : `${rssMb} MB`}
+                </span>
+              </div>
+              <p className="text-xs text-gray-600">
+                CPU is not reported by daemon.status; heap is not a CPU proxy.
+              </p>
             </div>
             <div className="border-t border-white/20 pt-4 flex justify-between items-center">
               <span className="text-sm font-light uppercase text-gray-400">Overall Status</span>

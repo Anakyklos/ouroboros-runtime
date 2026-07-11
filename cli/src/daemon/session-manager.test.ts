@@ -3,6 +3,8 @@ import { SessionManager } from './session-manager.js';
 import { EventBus } from './event-bus.js';
 import type { StoragePort } from '../ports/storage.port.js';
 import { Orchestrator } from '../orchestration/Orchestrator.js';
+import { createTask } from '../orchestration/index.js';
+import { PersonaType, TaskStatus } from '../orchestration/types.js';
 
 // Subclass to expose protected methods for testing
 class TestSessionManager extends SessionManager {
@@ -277,6 +279,15 @@ describe('SessionManager', () => {
             if (status.activeTasks.available) expect(status.activeTasks.value).toBe(2);
         });
 
+        it('status does not count terminal sessions with no live tasks', () => {
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            manager.attachOrchestrator('done-sess', orch);
+            // no tasks → not live
+            const status = manager.getStatusSnapshot();
+            if (status.activeSessions.available) expect(status.activeSessions.value).toBe(0);
+            if (status.activeTasks.available) expect(status.activeTasks.value).toBe(0);
+        });
+
         it('setMode applies valid modes and rejects unknown', async () => {
             const bad = await manager.setMode('turbo');
             expect(bad.operation).toBe('rejected_invalid_mode');
@@ -312,34 +323,140 @@ describe('SessionManager', () => {
             expect(manager.getMode()).toBe('pause');
         });
 
-        it('emergencyBrake interrupts live orchestrators and is idempotent', async () => {
+        it('emergencyBrake cancels live work and settles tasks', async () => {
             const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
-            const pauseSpy = mock(() => {});
-            orch.pause = pauseSpy;
+            const cancelSpy = mock((..._args: unknown[]) => {
+                // real cancel still runs
+            });
+            const realCancel = orch.cancel.bind(orch);
+            orch.cancel = (reason?: string) => {
+                cancelSpy(reason);
+                realCancel(reason);
+            };
+
             manager.attachOrchestrator('sess-live', orch);
-            manager.addTaskForTest('sess-live', 'task-1', createDeferred().promise);
+            const deferred = createDeferred();
+            // When cancel fires, settle the tracked promise (simulates cooperative cancel)
+            orch.cancel = (reason?: string) => {
+                cancelSpy(reason);
+                realCancel(reason);
+                deferred.resolve();
+            };
+            manager.addTaskForTest('sess-live', 'task-1', deferred.promise);
 
             const first = await manager.emergencyBrake();
             expect(first.outcome).toBe('all_stopped');
             expect(first.complete).toBe(true);
             expect(first.interruptedCount).toBe(1);
-            expect(pauseSpy).toHaveBeenCalled();
+            expect(cancelSpy).toHaveBeenCalled();
             expect(manager.getMode()).toBe('pause');
             expect(mockStorage.updateSession).toHaveBeenCalled();
-
-            // Clear orchestrator map to simulate idle after brake (interrupt keeps map for recovery).
-            // Second call with still-attached orchestrators should still report interruption.
-            const second = await manager.emergencyBrake();
-            expect(['all_stopped', 'already_stopped', 'no_active_work']).toContain(second.outcome);
-            expect(second.complete).toBe(true);
         });
 
-        it('second emergencyBrake after idle reports already_stopped', async () => {
-            await manager.emergencyBrake(); // no work → no_active_work + braked
+        it('emergencyBrake is idempotent when already braked and idle', async () => {
+            await manager.emergencyBrake();
             const again = await manager.emergencyBrake();
             expect(again.outcome).toBe('already_stopped');
             expect(again.complete).toBe(true);
             expect(again.interruptedCount).toBe(0);
+        });
+
+        it('emergencyBrake reports partial when persist fails', async () => {
+            (mockStorage.updateSession as ReturnType<typeof mock>).mockImplementation(async () => {
+                throw new Error('db write failed');
+            });
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            manager.attachOrchestrator('sess-fail', orch);
+            const d = createDeferred();
+            const realCancel = orch.cancel.bind(orch);
+            orch.cancel = (r?: string) => {
+                realCancel(r);
+                d.resolve();
+            };
+            manager.addTaskForTest('sess-fail', 't1', d.promise);
+
+            const result = await manager.emergencyBrake();
+            expect(result.complete).toBe(false);
+            expect(result.outcome).toBe('partial');
+            expect(result.failedCount).toBe(1);
+            expect(result.sessions[0]?.persistOk).toBe(false);
+        });
+
+        it('emergencyBrake skips terminal sessions without rewriting status', async () => {
+            (mockStorage.getSession as ReturnType<typeof mock>).mockImplementation(async (id: string) => {
+                if (id === 'terminal-sess') {
+                    return {
+                        id: 'terminal-sess',
+                        status: 'completed',
+                        createdAt: new Date(),
+                        updatedAt: new Date(),
+                        contextSnapshot: '',
+                        metadata: {},
+                    };
+                }
+                return null;
+            });
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            manager.attachOrchestrator('terminal-sess', orch);
+            // Simulate stale task entry pointing at terminal session
+            manager.addTaskForTest('terminal-sess', 'stale', createDeferred().promise);
+
+            const result = await manager.emergencyBrake();
+            const entry = result.sessions.find((s) => s.sessionId === 'terminal-sess');
+            expect(entry?.status).toBe('skipped');
+            // Must not force completed → paused
+            const pauseCalls = (mockStorage.updateSession as ReturnType<typeof mock>).mock.calls.filter(
+                (c: unknown[]) => c[0] === 'terminal-sess' && (c[1] as { status?: string })?.status === 'paused'
+            );
+            expect(pauseCalls.length).toBe(0);
+        });
+
+        it('Orchestrator.cancel settles in-flight loopUntilSuccess as CANCELLED', async () => {
+            const orch = new Orchestrator(
+                { verbose: false, skipPhaseValidation: true, maxRetries: 3 },
+                mockEventBus
+            );
+            // Hang execute forever until cancel races it out
+            (orch as unknown as { executeWithTimeout: (p: string) => Promise<unknown> }).executeWithTimeout =
+                () => new Promise(() => {});
+
+            const task = createTask('hang forever', PersonaType.DEVELOPER, { id: 'hang-1' });
+            const running = orch.loopUntilSuccess(task);
+            await new Promise((r) => setTimeout(r, 30));
+            orch.cancel('test brake');
+            const result = await running;
+            expect(result.status).toBe(TaskStatus.CANCELLED);
+            expect(result.error).toMatch(/cancel/i);
+        });
+
+        it('sendInput removes tasks from metrics on resolve and reject', async () => {
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            manager.attachOrchestrator('session-1', orch);
+
+            orch.loopUntilSuccess = mock(async () => ({
+                status: TaskStatus.SUCCESS,
+                output: 'ok',
+                retryCount: 0,
+                persona: PersonaType.DEVELOPER,
+                durationMs: 1,
+                contextHistory: [],
+            }));
+
+            await manager.sendInput('session-1', 'do work');
+            // allow finally to run
+            await new Promise((r) => setTimeout(r, 10));
+            let snap = manager.getStatusSnapshot();
+            if (snap.activeTasks.available) expect(snap.activeTasks.value).toBe(0);
+
+            orch.loopUntilSuccess = mock(async () => {
+                throw new Error('boom');
+            });
+            // re-attach after releaseSessionRuntime on completed
+            manager.attachOrchestrator('session-1', orch);
+            await manager.sendInput('session-1', 'fail work');
+            await new Promise((r) => setTimeout(r, 10));
+            snap = manager.getStatusSnapshot();
+            if (snap.activeTasks.available) expect(snap.activeTasks.value).toBe(0);
         });
     });
 });

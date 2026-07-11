@@ -36,6 +36,14 @@ import { SpecValidator, createDefaultSpecValidator } from "./validators/SpecVali
 /**
  * Orchestrator - Coordena execução de subagentes com auto-correção.
  */
+/** Thrown when emergency brake / cancel aborts an in-flight attempt. */
+export class OrchestratorCancelledError extends Error {
+    constructor(message = "Orchestrator cancelled") {
+        super(message);
+        this.name = "OrchestratorCancelledError";
+    }
+}
+
 export class Orchestrator {
     private agentLoop: AgentLoop | null = null;
     private config: OrchestratorConfig;
@@ -43,6 +51,9 @@ export class Orchestrator {
     private eventBus: EventBus;
     private isPaused = false;
     private resumeResolver: (() => void) | null = null;
+    /** Cooperative cancel — aborts waitIfPaused and races in-flight execute. */
+    private cancelled = false;
+    private cancelReject: ((err: OrchestratorCancelledError) => void) | null = null;
     private memoryRetriever: MemoryRetriever;
     private qualityGateRegistry: QualityGateRegistry;
     private enableQualityGates: boolean;
@@ -103,7 +114,7 @@ export class Orchestrator {
     }
 
     /**
-     * Pause execution loop.
+     * Pause execution loop (between iterations only, unless cancel is used).
      */
     pause(): void {
         this.isPaused = true;
@@ -111,9 +122,10 @@ export class Orchestrator {
     }
 
     /**
-     * Resume execution loop.
+     * Resume execution loop. Clears cooperative cancel so a new task can run.
      */
     resume(): void {
+        this.cancelled = false;
         this.isPaused = false;
         if (this.resumeResolver) {
             this.resumeResolver();
@@ -123,13 +135,56 @@ export class Orchestrator {
     }
 
     /**
-     * Wait until resumed (if paused).
+     * Cooperative cancel: unblocks pause waits and races in-flight execute
+     * so loopUntilSuccess can settle as CANCELLED without waiting for the provider.
+     */
+    cancel(reason = "Emergency brake"): void {
+        this.cancelled = true;
+        this.isPaused = true;
+        if (this.resumeResolver) {
+            this.resumeResolver();
+            this.resumeResolver = null;
+        }
+        if (this.cancelReject) {
+            this.cancelReject(new OrchestratorCancelledError(reason));
+            this.cancelReject = null;
+        }
+        this.log('warn', `🛑 Cancelled: ${reason}`);
+    }
+
+    isCancelled(): boolean {
+        return this.cancelled;
+    }
+
+    /**
+     * Wait until resumed (if paused). Cancel resolves the wait so the loop can exit.
      */
     private async waitIfPaused(): Promise<void> {
+        if (this.cancelled) {
+            throw new OrchestratorCancelledError();
+        }
         if (!this.isPaused) return;
-        await new Promise<void>((resolve) => {
-            this.resumeResolver = resolve;
+        await new Promise<void>((resolve, reject) => {
+            this.resumeResolver = () => {
+                if (this.cancelled) {
+                    reject(new OrchestratorCancelledError());
+                } else {
+                    resolve();
+                }
+            };
         });
+    }
+
+    private cancelledResult(task: OrchestratorTask, startTime: number, contextHistory: ContextEntry[]): TaskResult {
+        return {
+            status: TaskStatus.CANCELLED,
+            output: "",
+            error: "Cancelled by emergency brake",
+            retryCount: 0,
+            persona: task.persona,
+            durationMs: Date.now() - startTime,
+            contextHistory,
+        };
     }
 
     /**
@@ -170,8 +225,18 @@ export class Orchestrator {
         }
 
         while (retryCount < this.config.maxRetries) {
+            if (this.cancelled) {
+                return this.cancelledResult(task, startTime, contextHistory);
+            }
             // Check pause state before each iteration
-            await this.waitIfPaused();
+            try {
+                await this.waitIfPaused();
+            } catch (e) {
+                if (e instanceof OrchestratorCancelledError) {
+                    return this.cancelledResult(task, startTime, contextHistory);
+                }
+                throw e;
+            }
             try {
                 // 1. Build prompt com Anti-Vibe protocol
                 const phase = PERSONA_PHASE_MAP[task.persona];
@@ -183,9 +248,33 @@ export class Orchestrator {
                     await this.validatePhase(phase, task.workDir);
                 }
 
-                // 3. Execute via AgentLoop
+                // 3. Execute via AgentLoop — race cancel so brake can settle without waiting for provider
                 this.log('info', `\n🔄 Attempt ${retryCount + 1}/${this.config.maxRetries}`);
-                const result = await this.executeWithTimeout(prompt);
+                const cancelRace = new Promise<never>((_, reject) => {
+                    if (this.cancelled) {
+                        reject(new OrchestratorCancelledError());
+                        return;
+                    }
+                    this.cancelReject = reject;
+                });
+                let result;
+                try {
+                    result = await Promise.race([
+                        this.executeWithTimeout(prompt),
+                        cancelRace,
+                    ]);
+                } catch (e) {
+                    this.cancelReject = null;
+                    if (e instanceof OrchestratorCancelledError || this.cancelled) {
+                        return this.cancelledResult(task, startTime, contextHistory);
+                    }
+                    throw e;
+                } finally {
+                    this.cancelReject = null;
+                }
+                if (this.cancelled) {
+                    return this.cancelledResult(task, startTime, contextHistory);
+                }
 
                 // 4. Add to context history (evita loop de amnésia)
                 contextHistory.push({

@@ -168,8 +168,8 @@ Authoritative behavior is implemented in `cli/src/daemon/session-manager.ts` and
 
 | Method | Behavior |
 |--------|----------|
-| `daemon.status` | Real mode, uptime, active sessions/waves/tasks; `tokensUsed` is **unavailable** (not scenic zero) |
+| `daemon.status` | Real mode, uptime, **live** sessions/waves/tasks only; `tokensUsed` is **unavailable** (not scenic zero) |
 | `daemon.setMode` | Enum `running` \| `pause` \| `frenzy`; rejects unknown; applies backend mode |
-| `daemon.emergencyBrake` | Interrupts live orchestrators/sessions; outcomes: `no_active_work`, `all_stopped`, `already_stopped`, `partial` |
+| `daemon.emergencyBrake` | Cooperative `Orchestrator.cancel()` races in-flight execute; required: cancel + persist + task settle; checkpoint best-effort (`checkpointDegradedCount`); outcomes: `no_active_work`, `all_stopped`, `already_stopped`, `partial` (`complete: false` if required step fails). Terminal sessions are skipped (not rewritten to paused). |
 
-Capabilities are returned on every `daemon.status` (`capabilities` object). The web UI disables controls when the corresponding capability is false or until the first status response.
+Capabilities are returned on every `daemon.status` (`capabilities` object). The web UI disables controls when the corresponding capability is false or until the first status response. Tokens show `n/a` when unavailable.

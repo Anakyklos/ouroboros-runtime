@@ -109,16 +109,26 @@ export interface EmergencyBrakeSessionResult {
     sessionId: string;
     status: "interrupted" | "failed" | "skipped";
     error?: string;
+    /** Required step: orchestrator.cancel() / pause applied. */
+    cancelApplied?: boolean;
+    /** Required step: storage status → paused. */
+    persistOk?: boolean;
+    /** Best-effort checkpoint; failure degrades but does not alone force partial if exposed. */
+    checkpointOk?: boolean | "skipped";
+    /** In-flight task promises settled after cancel within wait budget. */
+    tasksSettled?: boolean;
 }
 
 export interface EmergencyBrakeResult {
     outcome: EmergencyBrakeOutcome;
-    /** True only when every attempted interruption succeeded (or there was nothing to do). */
+    /** True only when every required step succeeded (or there was nothing to do). */
     complete: boolean;
     sessions: EmergencyBrakeSessionResult[];
     interruptedCount: number;
     failedCount: number;
     checkpointTimersCleared: number;
+    /** Checkpoints that failed but were documented as best-effort. */
+    checkpointDegradedCount: number;
     mode: DaemonMode;
     timestamp: string;
     message: string;
