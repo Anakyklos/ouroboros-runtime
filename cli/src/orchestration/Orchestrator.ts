@@ -604,11 +604,27 @@ IMPORTANT: Analyze the error carefully before proceeding.
             throw new Error('Orchestrator not initialized. Call initialize(apiKey) first.');
         }
         try {
-            return await this.agentLoop.run(prompt, undefined, this.runAbort?.signal);
+            return await this.agentLoop.run(prompt, undefined, {
+                abortSignal: this.runAbort?.signal,
+                waitUntilRunnable: async () => {
+                    // Map orchestrator pause onto cooperative wait (pause ≠ abort).
+                    await this.waitIfPaused();
+                },
+                throwIfAborted: () => {
+                    if (this.cancelled || this.runAbort?.signal.aborted) {
+                        throw new OrchestratorCancelledError("Execution aborted");
+                    }
+                },
+            });
         } catch (e) {
             const name = e instanceof Error ? e.name : "";
             const msg = e instanceof Error ? e.message : String(e);
-            if (name === "AbortError" || /abort/i.test(msg) || this.cancelled) {
+            if (
+                e instanceof OrchestratorCancelledError ||
+                name === "AbortError" ||
+                /abort/i.test(msg) ||
+                this.cancelled
+            ) {
                 throw new OrchestratorCancelledError(msg || "Provider aborted");
             }
             throw e;

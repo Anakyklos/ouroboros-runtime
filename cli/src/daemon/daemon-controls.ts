@@ -75,15 +75,15 @@ export type MetricValue =
 export interface DaemonStatusResult {
     /** Process liveness of this daemon process. */
     processStatus: "alive";
-    /** Operational mode stored in SessionManager. */
+    /** Operational mode derived from control plane. */
     mode: DaemonMode;
     /** Wall-clock seconds since process start (real). */
     uptimeSeconds: number;
-    /** In-memory sessions with an attached orchestrator. */
+    /** Sessions with live work. */
     activeSessions: MetricValue;
-    /** In-memory waves with status "active". */
+    /** In-memory waves with status "active" for live sessions only. */
     activeWaves: MetricValue;
-    /** In-flight task promises tracked by SessionManager. */
+    /** In-flight task work (leases + session maps). */
     activeTasks: MetricValue;
     /**
      * Token usage is not available from a trusted aggregate source.
@@ -97,6 +97,10 @@ export interface DaemonStatusResult {
     };
     capabilities: DaemonCapabilities;
     timestamp: string;
+    /** Optional control-plane diagnostics. */
+    admissionOpen?: boolean;
+    operationalState?: unknown;
+    controlPlane?: unknown;
 }
 
 export type SetModeOperationStatus =

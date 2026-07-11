@@ -107,21 +107,29 @@ export class AgentLoop {
 
     /**
      * Run the agent with a prompt until completion or max iterations.
-     * When `signal` aborts, in-flight provider chat is aborted and no new tools start.
+     * `control` provides cooperative pause + terminal AbortSignal for provider fetch/tools.
      */
-    async run(prompt: string, sessionId?: string, signal?: AbortSignal): Promise<AgentResult> {
+    async run(
+        prompt: string,
+        sessionId?: string,
+        control?: { abortSignal?: AbortSignal; waitUntilRunnable?: () => Promise<void>; throwIfAborted?: () => void }
+    ): Promise<AgentResult> {
         const startTime = Date.now();
         let totalToolCalls = 0;
         let totalTokens = 0;
         let totalCostUsd = 0;
 
-        const throwIfAborted = () => {
-            if (signal?.aborted) {
-                const err = new Error("AgentLoop aborted");
-                err.name = "AbortError";
-                throw err;
-            }
-        };
+        const signal = control?.abortSignal;
+        const waitUntilRunnable = control?.waitUntilRunnable ?? (async () => {});
+        const throwIfAborted =
+            control?.throwIfAborted ??
+            (() => {
+                if (signal?.aborted) {
+                    const err = new Error("AgentLoop aborted");
+                    err.name = "AbortError";
+                    throw err;
+                }
+            });
 
         // Initialize message history
         const messages: Message[] = [
@@ -135,6 +143,8 @@ export class AgentLoop {
         this.emitThought('reasoning', `Processing task: ${prompt.substring(0, 100)}...`);
 
         for (let iteration = 0; iteration < this.config.maxIterations; iteration++) {
+            throwIfAborted();
+            await waitUntilRunnable();
             throwIfAborted();
             this.log('debug', `Iteration ${iteration + 1}/${this.config.maxIterations}`);
 
@@ -186,8 +196,10 @@ export class AgentLoop {
 
                 this.log('info', `Executing ${toolCalls.length} tool call(s)`);
 
-                // Execute each tool call — no new tools after abort
+                // Execute each tool call — no new tools after abort/pause
                 for (const call of toolCalls) {
+                    throwIfAborted();
+                    await waitUntilRunnable();
                     throwIfAborted();
                     this.log('debug', `Tool: ${call.function.name}`);
                     this.emitThought('tool_call', `Calling ${call.function.name}`, {

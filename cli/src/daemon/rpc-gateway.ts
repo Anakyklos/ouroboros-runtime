@@ -18,6 +18,10 @@ import { join } from 'path';
 import { Orchestrator } from '../orchestration/Orchestrator.js';
 import { WaveExecutor } from '../orchestration/WaveExecutor.js';
 import type { WaveTask, WaveExecutionResult } from '../orchestration/wave-types.js';
+import {
+    AdmissionDeniedError,
+    type WorkKind,
+} from './execution-control.js';
 
 export class RpcGateway implements RpcPort {
     private methods: Map<string, RpcMethodHandler> = new Map();
@@ -360,17 +364,38 @@ Rules:
             return this.sessionManager.emergencyBrake();
         });
 
-        // daemon.delegate - Delegate task to specific agent
+        // daemon.delegate - Delegate task to specific agent (admission-gated)
         this.registerMethod('daemon.delegate', async (params) => {
             const agent = params.agent as string;
             const prompt = params.prompt as string;
             const context = params.context as string | object | undefined;
 
+            const kind = this.delegateWorkKind(agent, prompt);
+            const controller = this.sessionManager.getController();
+            let lease;
+            try {
+                lease = await controller.acquire({ kind, label: `delegate:${agent}` });
+            } catch (e) {
+                if (e instanceof AdmissionDeniedError) {
+                    throw new Error(`Admission denied for daemon.delegate(${agent}): ${e.message}`);
+                }
+                throw e;
+            }
+
             try {
                 let result: unknown;
 
+                // Abort signal for local HTTP-bound paths (GLM AgentLoop).
+                const control = {
+                    abortSignal: lease.signal.abortSignal,
+                    waitUntilRunnable: () => lease.signal.waitUntilRunnable(),
+                    throwIfAborted: () => lease.signal.throwIfAborted(),
+                };
+
                 switch (agent) {
                     case 'gemini':
+                        // External bridge: not proven abortable — lease still blocks admission.
+                        lease.markSafePoint({ note: 'delegate_gemini_not_abortable' });
                         result = await this.gatewayOrchestrator.delegateToGemini(
                             prompt,
                             params.model as GeminiModel ?? 'flash'
@@ -378,22 +403,23 @@ Rules:
                         break;
                     case 'claude':
                     case 'antigravity':
+                        lease.markSafePoint({ note: 'delegate_antigravity_not_abortable' });
                         result = await this.gatewayOrchestrator.delegateToAntigravity(
                             prompt,
                             context as string | undefined
                         );
                         break;
                     case 'jules':
+                        // Remote work may continue after disconnect — do not claim hard stop.
+                        lease.markSafePoint({ note: 'delegate_jules_detached_remote' });
                         result = await this.gatewayOrchestrator.delegateToJules(
                             prompt,
                             context as string | undefined
                         );
                         break;
                     case 'glm': {
-                        // Wave Mode: Check if prompt starts with "WAVE:"
                         if (prompt.trim().toUpperCase().startsWith('WAVE:')) {
                             const wavePrompt = prompt.trim().substring(5).trim();
-
                             const tasks = await this.parseWaveTasks(wavePrompt);
 
                             if (tasks.length === 0) {
@@ -403,13 +429,14 @@ Rules:
                                     message: 'No tasks to execute',
                                 };
                             } else {
+                                lease.signal.throwIfAborted();
                                 const apiKey = this.loadZAIKey();
                                 const orchestrator = new Orchestrator();
                                 orchestrator.initialize(apiKey);
+                                const onAbort = () => orchestrator.cancel('lease aborted');
+                                lease.signal.abortSignal.addEventListener('abort', onAbort, { once: true });
                                 const waveExecutor = new WaveExecutor(orchestrator);
-
                                 const waveResult: WaveExecutionResult = await waveExecutor.execute(tasks);
-
                                 result = {
                                     mode: 'wave',
                                     waveExecution: {
@@ -429,17 +456,13 @@ Rules:
                                 };
                             }
                         } else {
-                            // Standard Mode: Use AgentLoop
                             const apiKey = this.loadZAIKey();
-
                             const leviathan = createAgent({
                                 apiKey,
                                 workingDirectory: process.cwd(),
                                 verbose: true,
                             });
-
-                            const agentResult = await leviathan.run(prompt);
-
+                            const agentResult = await leviathan.run(prompt, undefined, control);
                             result = {
                                 success: agentResult.success,
                                 content: agentResult.content,
@@ -454,24 +477,28 @@ Rules:
                         throw new Error(`Unknown agent: ${agent}`);
                 }
 
+                lease.complete(result);
                 return {
                     status: 'success',
                     agent,
                     result,
+                    workId: lease.workId,
                     timestamp: new Date().toISOString(),
                 };
             } catch (error) {
+                lease.fail(error);
                 throw new Error(
                     `Delegation to ${agent} failed: ${error instanceof Error ? error.message : String(error)}`
                 );
+            } finally {
+                lease.release();
             }
         });
 
-        // daemon.list_agents - List available agents
+        // daemon.list_agents - List available agents (read-only; not admission-gated)
         this.registerMethod('daemon.list_agents', async () => {
             const availability = await this.gatewayOrchestrator.checkBridgeAvailability();
 
-            // Check if GLM API key is available
             let glmStatus: 'available' | 'unavailable' = 'available';
             try {
                 this.loadZAIKey();
@@ -490,5 +517,23 @@ Rules:
                 timestamp: new Date().toISOString(),
             };
         });
+    }
+
+    private delegateWorkKind(agent: string, prompt: string): WorkKind {
+        switch (agent) {
+            case 'gemini':
+                return 'delegate_gemini';
+            case 'claude':
+            case 'antigravity':
+                return 'delegate_antigravity';
+            case 'jules':
+                return 'delegate_jules';
+            case 'glm':
+                return prompt.trim().toUpperCase().startsWith('WAVE:')
+                    ? 'delegate_glm_wave'
+                    : 'delegate_glm';
+            default:
+                return 'delegate_glm';
+        }
     }
 }

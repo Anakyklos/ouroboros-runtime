@@ -5,8 +5,6 @@
  * Cada sessão representa uma execução de agente que pode ser pausada/resumida.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import type { StoragePort, Session, SessionSummary, SessionMemory, SessionCheckpoint } from '../ports/storage.port.js';
 import type { EventBus } from './event-bus.js';
 import { Orchestrator, createTask } from '../orchestration/index.js';
@@ -19,16 +17,14 @@ import {
     type EmergencyBrakeSessionResult,
     isDaemonMode,
     canTransitionMode,
-    DAEMON_CAPABILITIES,
     buildMetric,
     unavailableMetric,
 } from './daemon-controls.js';
-
-interface PersistedDaemonOps {
-    mode: DaemonMode;
-    braked: boolean;
-    updatedAt: string;
-}
+import {
+    DaemonExecutionController,
+    AdmissionDeniedError,
+    type DaemonExecutionControllerOptions,
+} from './execution-control.js';
 
 interface WaveState {
     id: string;
@@ -89,28 +85,25 @@ export class SessionManager {
     
     private apiKey?: string;
 
-    /** Operational mode — backend source of truth (issue #37). */
-    private mode: DaemonMode = "running";
-
-    /** True after an emergency brake; blocks new work until mode returns to running. */
-    private braked = false;
-
-    /** Path for durable mode/brake flags (survives process restart). */
-    private readonly opsStatePath: string;
+    /** Central admission gate + lease registry (issue #37 control plane). */
+    private readonly controller: DaemonExecutionController;
 
     constructor(
         storage: StoragePort,
         eventBus: EventBus,
         apiKey?: string,
-        config?: SessionManagerConfig & { opsStatePath?: string }
+        config?: SessionManagerConfig & DaemonExecutionControllerOptions & {
+            controller?: DaemonExecutionController;
+        }
     ) {
         this.storage = storage;
         this.eventBus = eventBus;
         this.apiKey = apiKey;
-        this.opsStatePath =
-            config?.opsStatePath ??
-            process.env.OUROBOROS_OPS_PATH ??
-            join(process.cwd(), ".ouroboros", "daemon-ops.json");
+        this.controller =
+            config?.controller ??
+            new DaemonExecutionController({
+                opsStatePath: config?.opsStatePath,
+            });
         this.maxCleanupIterations = config?.maxCleanupIterations ?? DEFAULT_SESSION_MANAGER_CONFIG.maxCleanupIterations!;
         this.cleanupTimeoutMs = config?.cleanupTimeoutMs ?? DEFAULT_SESSION_MANAGER_CONFIG.cleanupTimeoutMs!;
         // Reject non-positive / non-finite intervals — setInterval(0) burns CPU and hammers SQLite.
@@ -127,67 +120,41 @@ export class SessionManager {
             config.maxCheckpoints >= 1
                 ? Math.floor(config.maxCheckpoints)
                 : DEFAULT_SESSION_MANAGER_CONFIG.maxCheckpoints!;
-
-        this.loadOpsState();
     }
 
-    private loadOpsState(): void {
-        try {
-            if (!existsSync(this.opsStatePath)) return;
-            const raw = JSON.parse(readFileSync(this.opsStatePath, "utf-8")) as PersistedDaemonOps;
-            if (isDaemonMode(raw.mode)) this.mode = raw.mode;
-            this.braked = Boolean(raw.braked);
-            if (this.braked) this.mode = "pause";
-        } catch {
-            // corrupt file → keep defaults
-        }
-    }
-
-    private persistOpsState(): void {
-        try {
-            const dir = dirname(this.opsStatePath);
-            if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-            const payload: PersistedDaemonOps = {
-                mode: this.mode,
-                braked: this.braked,
-                updatedAt: new Date().toISOString(),
-            };
-            writeFileSync(this.opsStatePath, JSON.stringify(payload, null, 2), "utf-8");
-        } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            this.eventBus.log("warn", `Failed to persist daemon ops state: ${message}`, "SessionManager");
-        }
+    /** Shared control plane for RPC gateway and session paths. */
+    getController(): DaemonExecutionController {
+        return this.controller;
     }
 
     /**
-     * Whether the daemon accepts new work (send/resume). Pause/brake reject entry points.
+     * Whether the daemon accepts new work (send/resume/delegate).
      */
     acceptsNewWork(): boolean {
-        return this.mode === "running" && !this.braked;
+        return this.controller.admissionOpen();
     }
 
     private assertAcceptsNewWork(action: string): void {
-        if (this.braked) {
+        if (!this.controller.admissionOpen()) {
+            const kind = this.controller.operationalState.kind;
             throw new Error(
-                `Daemon emergency brake is engaged; cannot ${action} until setMode('running'). Cancelled work is not auto-resumed (brakeRecoverable=false).`
+                `Daemon admission closed (state=${kind}); cannot ${action}. Cancelled work is not auto-resumed.`
             );
-        }
-        if (this.mode === "pause") {
-            throw new Error(`Daemon mode is pause; cannot ${action}. Call setMode('running') first.`);
         }
     }
 
-    /** Current operational mode stored in this process. */
+    /** Current operational mode derived from control-plane state. */
     getMode(): DaemonMode {
-        return this.mode;
+        const k = this.controller.operationalState.kind;
+        return k === "running" ? "running" : "pause";
     }
 
     /**
-     * Apply a mode change with validation. Observable: `getMode()` reflects the result.
-     * pause → pauses all live orchestrators; running/frenzy from pause → resumes them.
+     * Apply a mode change via the atomic control plane.
+     * Fail-honest: if persistence fails, operation is not fully applied.
      */
     async setMode(requested: unknown): Promise<SetModeResult> {
-        const previousMode = this.mode;
+        const previousMode = this.getMode();
         const timestamp = new Date().toISOString();
 
         if (!isDaemonMode(requested)) {
@@ -212,7 +179,7 @@ export class SessionManager {
             };
         }
 
-        if (previousMode === requested) {
+        if (previousMode === requested && this.controller.operationalState.kind !== "braked") {
             return {
                 operation: "unchanged",
                 previousMode,
@@ -223,34 +190,55 @@ export class SessionManager {
             };
         }
 
-        this.mode = requested;
-
         if (requested === "pause") {
+            const result = await this.controller.pause("setMode(pause)");
             for (const orchestrator of this.activeOrchestrators.values()) {
                 orchestrator.pause();
             }
-        } else if (previousMode === "pause" && requested === "running") {
+            if (!result.persistence.ok) {
+                return {
+                    operation: "rejected_invalid_transition",
+                    previousMode,
+                    requestedMode: requested,
+                    resultingMode: this.getMode(),
+                    reason: `Pause not fully applied: persist failed (${result.persistence.reason})`,
+                    timestamp,
+                };
+            }
+        } else {
+            // running — clear brake if needed, then resume admission
+            const st = this.controller.operationalState;
+            const result =
+                st.kind === "braked" || st.kind === "degraded"
+                    ? await this.controller.clearBrakeAndRun("setMode(running)")
+                    : await this.controller.resume("setMode(running)");
             for (const orchestrator of this.activeOrchestrators.values()) {
                 orchestrator.resume();
             }
-            // Clearing brake only when explicitly returning to running.
-            this.braked = false;
+            if (!result.persistence.ok || result.resulting.kind !== "running") {
+                return {
+                    operation: "rejected_invalid_transition",
+                    previousMode,
+                    requestedMode: requested,
+                    resultingMode: this.getMode(),
+                    reason: result.message,
+                    timestamp,
+                };
+            }
         }
 
-        this.persistOpsState();
-
-        this.eventBus.log("info", `Daemon mode ${previousMode} → ${requested}`, "SessionManager");
+        this.eventBus.log("info", `Daemon mode ${previousMode} → ${this.getMode()}`, "SessionManager");
         this.eventBus.emit("daemon", {
             type: "mode_changed",
             previousMode,
-            mode: requested,
+            mode: this.getMode(),
         });
 
         return {
             operation: "applied",
             previousMode,
             requestedMode: requested,
-            resultingMode: this.mode,
+            resultingMode: this.getMode(),
             timestamp,
         };
     }
@@ -311,28 +299,37 @@ export class SessionManager {
      * Counts only live work — not terminal sessions left attached by accident.
      */
     getStatusSnapshot(): DaemonStatusResult {
-        let activeTaskCount = 0;
-        for (const taskMap of this.activeTasks.values()) {
-            activeTaskCount += taskMap.size;
-        }
-
+        const snap = this.controller.snapshot();
+        // Prefer control-plane lease counts (single source of truth for admitted work).
+        const activeTaskCount = snap.byKind.session_task;
+        const liveSessions = this.collectLiveSessionIds();
+        // Waves: only count active waves that still have live session work.
         let activeWaveCount = 0;
-        for (const waves of this.sessionWaves.values()) {
+        for (const [sessionId, waves] of this.sessionWaves) {
+            if (!liveSessions.has(sessionId) && (this.activeTasks.get(sessionId)?.size ?? 0) === 0) {
+                continue;
+            }
             for (const wave of waves) {
                 if (wave.status === "active") activeWaveCount += 1;
             }
         }
 
-        const liveSessions = this.collectLiveSessionIds();
         const mem = process.memoryUsage();
+        const caps = snap.capabilities;
 
         return {
             processStatus: "alive",
-            mode: this.mode,
-            uptimeSeconds: process.uptime(),
-            activeSessions: buildMetric(liveSessions.size, "count"),
+            mode: this.getMode(),
+            uptimeSeconds: snap.uptimeSeconds,
+            activeSessions: buildMetric(
+                Math.max(liveSessions.size, snap.activeWork > 0 ? liveSessions.size : 0),
+                "count"
+            ),
             activeWaves: buildMetric(activeWaveCount, "count"),
-            activeTasks: buildMetric(activeTaskCount, "count"),
+            activeTasks: buildMetric(
+                Math.max(activeTaskCount, [...this.activeTasks.values()].reduce((n, m) => n + m.size, 0)),
+                "count"
+            ),
             tokensUsed: unavailableMetric(
                 "No daemon-wide token ledger is wired; field is not simulated as zero."
             ),
@@ -341,63 +338,42 @@ export class SessionManager {
                 heapUsedBytes: mem.heapUsed,
                 heapTotalBytes: mem.heapTotal,
             },
-            capabilities: DAEMON_CAPABILITIES,
-            timestamp: new Date().toISOString(),
-        };
+            capabilities: {
+                statusMetrics: true,
+                modeSwitching: true,
+                supportedModes: caps.supportedModes,
+                emergencyBrake: true,
+                brakeRecoverable: false,
+                modePersistence: caps.modePersistence,
+                tokenMetrics: false,
+            },
+            timestamp: snap.timestamp,
+            operationalState: snap.state,
+            admissionOpen: snap.admissionOpen,
+            controlPlane: {
+                activeWork: snap.activeWork,
+                byKind: snap.byKind,
+                persistence: snap.persistence,
+            },
+        } as DaemonStatusResult;
     }
 
     /**
-     * Emergency brake: cooperative cancel of live work only.
-     * Required steps: orchestrator.cancel(), persist paused, settle task promises (budget).
-     * Checkpoint is best-effort and reported via checkpointDegradedCount.
+     * Emergency brake via atomic control plane (closes admission first),
+     * then cancels session orchestrators and settles tasks.
+     * Cancel is terminal for the execution (brakeRecoverable=false).
      */
     async emergencyBrake(): Promise<EmergencyBrakeResult> {
-        const timestamp = new Date().toISOString();
-        const wasBraked = this.braked;
         const TASK_SETTLE_MS = 3_000;
 
-        // Only target live work; never rewrite completed/failed sessions as paused.
+        // Atomic: close admission + abort all leases under exclusive lock.
+        const plane = await this.controller.emergencyBrake("emergency brake");
+
+        // Session-level cleanup for any remaining live maps (orchestrators/tasks).
         const sessionIds = this.collectLiveSessionIds();
-
-        // Also clear orphan checkpoint timers with no tasks (not "work", but stop noise).
-        for (const [sessionId, timer] of [...this.checkpointIntervals.entries()]) {
-            if ((this.activeTasks.get(sessionId)?.size ?? 0) === 0) {
-                clearInterval(timer);
-                this.checkpointIntervals.delete(sessionId);
-            }
-        }
-
-        if (sessionIds.size === 0) {
-            const outcome = wasBraked ? "already_stopped" : "no_active_work";
-            this.mode = "pause";
-            this.braked = true;
-            this.persistOpsState();
-            this.eventBus.emit("daemon", {
-                type: "emergency_brake",
-                outcome,
-                interruptedCount: 0,
-                failedCount: 0,
-            });
-            return {
-                outcome,
-                complete: true,
-                sessions: [],
-                interruptedCount: 0,
-                failedCount: 0,
-                checkpointTimersCleared: 0,
-                checkpointDegradedCount: 0,
-                mode: this.mode,
-                timestamp,
-                message:
-                    outcome === "already_stopped"
-                        ? "Emergency brake already engaged; no live work remains. New work is blocked until setMode('running')."
-                        : "No active work. Mode is pause and new work is blocked until setMode('running'). Cancel is not recoverable (brakeRecoverable=false).",
-            };
-        }
-
         const sessions: EmergencyBrakeSessionResult[] = [];
-        let interruptedCount = 0;
-        let failedCount = 0;
+        let interruptedCount = plane.works.filter((w) => w.action === "cancelled").length;
+        let failedCount = plane.works.filter((w) => w.action === "failed").length;
         let checkpointTimersCleared = 0;
         let checkpointDegradedCount = 0;
 
@@ -410,9 +386,7 @@ export class SessionManager {
                 checkpointOk: "skipped",
                 tasksSettled: false,
             };
-
             try {
-                // Skip if storage already terminal (do not corrupt history).
                 const stored = await this.storage.getSession(sessionId).catch(() => null);
                 if (stored && SessionManager.TERMINAL_STATUSES.has(stored.status)) {
                     this.releaseSessionRuntime(sessionId);
@@ -422,14 +396,8 @@ export class SessionManager {
                     continue;
                 }
 
-                const orchestrator = this.activeOrchestrators.get(sessionId);
-                if (orchestrator) {
-                    orchestrator.cancel("Emergency brake");
-                    entry.cancelApplied = true;
-                } else {
-                    // No orchestrator but tasks present — still try to settle tasks.
-                    entry.cancelApplied = true;
-                }
+                this.activeOrchestrators.get(sessionId)?.cancel("Emergency brake");
+                entry.cancelApplied = true;
 
                 try {
                     await this.storage.updateSession(sessionId, { status: "paused" });
@@ -439,7 +407,6 @@ export class SessionManager {
                     entry.error = err instanceof Error ? err.message : String(err);
                 }
 
-                // Mutate in-memory snapshot BEFORE checkpoint so durable state is post-brake.
                 const waves = this.sessionWaves.get(sessionId);
                 if (waves) {
                     for (const wave of waves) {
@@ -453,15 +420,9 @@ export class SessionManager {
                 try {
                     await this.createCheckpoint(sessionId);
                     entry.checkpointOk = true;
-                } catch (err) {
+                } catch {
                     entry.checkpointOk = false;
                     checkpointDegradedCount += 1;
-                    const message = err instanceof Error ? err.message : String(err);
-                    this.eventBus.log(
-                        "warn",
-                        `Emergency brake checkpoint failed (best-effort) for ${sessionId}: ${message}`,
-                        "SessionManager"
-                    );
                 }
 
                 const timer = this.checkpointIntervals.get(sessionId);
@@ -471,83 +432,39 @@ export class SessionManager {
                     checkpointTimersCleared += 1;
                 }
 
-                // Wait for cooperative cancel to settle tracked promises.
                 const taskMap = this.activeTasks.get(sessionId);
                 if (taskMap && taskMap.size > 0) {
-                    const pending = Array.from(taskMap.values()).map((p) =>
-                        p.catch(() => undefined)
-                    );
-                    const settled = await Promise.race([
+                    const pending = Array.from(taskMap.values()).map((p) => p.catch(() => undefined));
+                    entry.tasksSettled = await Promise.race([
                         Promise.all(pending).then(() => true),
-                        new Promise<false>((resolve) =>
-                            setTimeout(() => resolve(false), TASK_SETTLE_MS)
-                        ),
+                        new Promise<false>((r) => setTimeout(() => r(false), TASK_SETTLE_MS)),
                     ]);
-                    entry.tasksSettled = settled;
                 } else {
                     entry.tasksSettled = true;
                 }
 
-                this.eventBus.emit("task", {
-                    type: "progress",
-                    sessionId,
-                    data: { action: "emergency_brake" },
-                });
-
-                const requiredOk =
-                    entry.cancelApplied === true &&
-                    entry.persistOk === true &&
-                    entry.tasksSettled === true;
-
-                if (requiredOk) {
+                if (entry.cancelApplied && entry.persistOk && entry.tasksSettled) {
                     entry.status = "interrupted";
                     interruptedCount += 1;
                 } else {
                     entry.status = "failed";
                     failedCount += 1;
-                    if (!entry.error) {
-                        entry.error = !entry.persistOk
-                            ? "Failed to persist paused status"
-                            : !entry.tasksSettled
-                              ? "In-flight tasks did not settle after cancel"
-                              : "Cancel not applied";
-                    }
                 }
                 sessions.push(entry);
             } catch (err) {
-                const message = err instanceof Error ? err.message : String(err);
                 entry.status = "failed";
-                entry.error = message;
+                entry.error = err instanceof Error ? err.message : String(err);
                 failedCount += 1;
                 sessions.push(entry);
-                this.eventBus.log(
-                    "error",
-                    `Emergency brake failed for ${sessionId}: ${message}`,
-                    "SessionManager"
-                );
             }
         }
 
-        this.mode = "pause";
-        this.braked = true;
-        this.persistOpsState();
+        // Map control-plane outcome; degrade complete if session cleanup failed or persist failed.
+        let outcome = plane.outcome;
+        if (failedCount > 0 && outcome === "all_stopped") outcome = "partial";
+        if (failedCount > 0 && outcome === "no_active_work") outcome = "partial";
+        const complete = plane.complete && failedCount === 0;
 
-        let outcome: EmergencyBrakeResult["outcome"];
-        if (failedCount > 0) {
-            outcome = "partial";
-        } else if (wasBraked) {
-            outcome = "already_stopped";
-        } else {
-            outcome = "all_stopped";
-        }
-
-        const complete = failedCount === 0;
-
-        this.eventBus.log(
-            complete ? "warn" : "error",
-            `Emergency brake outcome=${outcome} interrupted=${interruptedCount} failed=${failedCount} checkpointDegraded=${checkpointDegradedCount}`,
-            "SessionManager"
-        );
         this.eventBus.emit("daemon", {
             type: "emergency_brake",
             outcome,
@@ -563,16 +480,15 @@ export class SessionManager {
             failedCount,
             checkpointTimersCleared,
             checkpointDegradedCount,
-            mode: this.mode,
-            timestamp,
-            message: complete
-                ? `Cancelled in-flight work on ${interruptedCount} session(s); mode is pause; new work blocked until setMode('running'). Cancelled executions are not auto-resumed (brakeRecoverable=false).${
-                      checkpointDegradedCount > 0
-                          ? ` (${checkpointDegradedCount} checkpoint(s) degraded, best-effort)`
-                          : ""
-                  }`
-                : `Partial emergency brake: ${interruptedCount} interrupted, ${failedCount} failed. UI must not treat failed sessions as paused.`,
-        };
+            mode: "pause",
+            timestamp: plane.timestamp,
+            message: plane.message,
+            works: plane.works,
+            operationId: plane.operationId,
+            persistence: plane.persistence,
+            admissionClosed: true,
+            brakeRecoverable: false,
+        } as EmergencyBrakeResult;
     }
 
     /**
@@ -793,26 +709,45 @@ export class SessionManager {
     }
 
     async sendInput(sessionId: string, prompt: string): Promise<{ taskId: string }> {
-        this.assertAcceptsNewWork("sendInput");
+        // Atomic admission: lease is registered before any I/O or provider side effects.
+        let lease;
+        try {
+            lease = await this.controller.acquire({
+                kind: "session_task",
+                sessionId,
+                label: "sendInput",
+            });
+        } catch (e) {
+            if (e instanceof AdmissionDeniedError) throw e;
+            throw e;
+        }
 
         const orchestrator = this.activeOrchestrators.get(sessionId);
-
         if (!orchestrator) {
+            lease.fail(new Error("no orchestrator"));
             throw new Error(`No active orchestrator for session: ${sessionId}`);
         }
 
-        // Strict serialization: one active execution per session (single cancel handle).
-        if ((this.activeTasks.get(sessionId)?.size ?? 0) > 0) {
-            throw new Error(
-                `Session ${sessionId} already has an active task; concurrent sendInput is rejected.`
-            );
-        }
+        // Wire lease abort → orchestrator cancel (provider AbortSignal + loop exit).
+        const onLeaseAbort = () => {
+            try {
+                orchestrator.cancel("lease aborted");
+            } catch {
+                /* ignore */
+            }
+        };
+        lease.signal.abortSignal.addEventListener("abort", onLeaseAbort, { once: true });
 
-        await this.storage.appendLog({
-            sessionId,
-            type: 'input',
-            content: prompt,
-        });
+        try {
+            await this.storage.appendLog({
+                sessionId,
+                type: "input",
+                content: prompt,
+            });
+        } catch (e) {
+            lease.fail(e);
+            throw e;
+        }
 
         const task = createTask(prompt, PersonaType.DEVELOPER, {
             id: `task_${sessionId}_${Date.now()}`,
@@ -821,48 +756,54 @@ export class SessionManager {
         const execution = orchestrator
             .loopUntilSuccess(task)
             .then(async (result) => {
-                const isCancelled = result.status === 'CANCELLED';
+                const isCancelled = result.status === "CANCELLED";
                 await this.storage.appendLog({
                     sessionId,
-                    type: result.status === 'SUCCESS' ? 'output' : 'error',
-                    content: result.output || result.error || 'No output',
+                    type: result.status === "SUCCESS" ? "output" : "error",
+                    content: result.output || result.error || "No output",
                 });
 
-                // Cancelled work is terminal for that execution (not auto-resumable).
                 const nextStatus =
-                    result.status === 'SUCCESS'
-                        ? 'completed'
-                        : result.status === 'NEEDS_HUMAN'
-                          ? 'paused'
+                    result.status === "SUCCESS"
+                        ? "completed"
+                        : result.status === "NEEDS_HUMAN"
+                          ? "paused"
                           : isCancelled
-                            ? 'paused'
-                            : 'failed';
+                            ? "paused"
+                            : "failed";
 
                 await this.updateSession(sessionId, { status: nextStatus });
 
-                if (nextStatus === 'completed' || nextStatus === 'failed') {
+                if (nextStatus === "completed" || nextStatus === "failed") {
                     this.releaseSessionRuntime(sessionId);
                 }
 
-                this.eventBus.log('info', `Task ${task.id} finished: ${result.status}`, 'SessionManager');
+                if (isCancelled) lease.fail(new Error("cancelled"));
+                else if (result.status === "SUCCESS") lease.complete(result);
+                else lease.fail(result.error ?? result.status);
+
+                this.eventBus.log("info", `Task ${task.id} finished: ${result.status}`, "SessionManager");
             })
             .catch(async (err) => {
                 const message = err instanceof Error ? err.message : String(err);
-                this.eventBus.log('error', `Task ${task.id} crashed: ${message}`, 'SessionManager');
+                this.eventBus.log("error", `Task ${task.id} crashed: ${message}`, "SessionManager");
                 try {
-                    await this.updateSession(sessionId, { status: 'failed' });
+                    await this.updateSession(sessionId, { status: "failed" });
                 } catch {
                     /* storage may be unavailable */
                 }
                 this.releaseSessionRuntime(sessionId);
+                lease.fail(err);
             })
             .finally(() => {
                 this.removeTaskPromise(sessionId, task.id);
+                lease.release();
             });
 
+        // Register promise only after lease exists (brake always sees admitted work).
         this.getOrCreateSessionTasksMap(sessionId).set(task.id, execution);
 
-        this.eventBus.log('info', `Task started for session ${sessionId}: ${task.id}`, 'SessionManager');
+        this.eventBus.log("info", `Task started for session ${sessionId}: ${task.id}`, "SessionManager");
 
         return { taskId: task.id };
     }

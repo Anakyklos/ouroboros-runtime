@@ -620,4 +620,23 @@ describe('RpcGateway', () => {
             expect(() => validate(null)).toThrow(/expected object/);
         });
     });
+
+    describe('admission gate (issue #37 control plane)', () => {
+        it('daemon.delegate is denied after emergencyBrake', async () => {
+            await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'daemon.emergencyBrake',
+            });
+            const response = await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 2,
+                method: 'daemon.delegate',
+                params: { agent: 'gemini', prompt: 'should not run' },
+            });
+            expect(response.error).toBeDefined();
+            expect(response.error?.message).toMatch(/Admission denied|closed/i);
+            expect(mockOrchestrator.delegateToGemini).not.toHaveBeenCalled();
+        });
+    });
 });

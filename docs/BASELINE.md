@@ -164,12 +164,24 @@ Do not use `|| true` or optional steps to hide these failures.
 
 ## Daemon operational controls (issue #37)
 
-Authoritative behavior is implemented in `cli/src/daemon/session-manager.ts` and exposed via RPC:
+**Control plane:** `cli/src/daemon/execution-control.ts` (`DaemonExecutionController`).
+
+Atomic admission leases close the TOCTOU window between “check mode” and “start work”. All executable entry points acquire a lease:
+
+| Entry | Kind | Blocked when admission closed |
+|-------|------|-------------------------------|
+| `agent.input` / `sendInput` | `session_task` | yes |
+| `agent.resume` | — | yes (assert) |
+| `daemon.delegate:gemini\|antigravity\|jules\|glm\|wave` | `delegate_*` | yes |
+| `session.create` / `attach` | config only | create allowed paused; cannot send until running |
+| `daemon.list_agents` / `session.list` | read-only | no |
 
 | Method | Behavior |
 |--------|----------|
-| `daemon.status` | Real mode, uptime, **live** sessions/waves/tasks only; `tokensUsed` is **unavailable** (not scenic zero) |
-| `daemon.setMode` | Enum **`running` \| `pause` only** (no scenic `frenzy`); rejects unknown; applies backend mode; persists to `.ouroboros/daemon-ops.json` |
-| `daemon.emergencyBrake` | `Orchestrator.cancel()` aborts provider via `AbortSignal`; serializes one task/session; blocks new work while braked; checkpoint **after** pause snapshot; **not** recoverable for the cancelled execution (`brakeRecoverable: false`). Outcomes: `no_active_work`, `all_stopped`, `already_stopped`, `partial`. |
+| `daemon.status` | Live work metrics + control-plane snapshot; `tokensUsed` unavailable |
+| `daemon.setMode` | `running` \| `pause` only; maps to controller pause / clearBrakeAndRun; fail-honest if persist fails |
+| `daemon.emergencyBrake` | Exclusive lock closes admission → abort all leases → session cleanup; **not** recoverable (`brakeRecoverable: false` / `recoverablePause.*: false`) |
 
-Capabilities on every `daemon.status`. UI disables controls until capabilities arrive. Tokens show `n/a` when unavailable. Partial brake does **not** globally paint all waves as paused.
+**pause ≠ cancel:** pause sets cooperative pause on leases; cancel/brake aborts. Cancelled executions are terminal. Delegates without proven remote abort are still admission-blocked but may report detached remote work.
+
+Persist path: atomic write+rename to `.ouroboros/daemon-ops.json` (`modePersistence` reflects last health).
