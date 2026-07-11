@@ -119,4 +119,87 @@ describe("WaveExecutor", () => {
         // We will assert < 500ms as requested.
         expect(end - start).toBeLessThan(500);
     });
+
+    it("isolates Orchestrator per parallel task via factory (no shared runAbort)", async () => {
+        const created: Orchestrator[] = [];
+        const started: string[] = [];
+        let release1!: () => void;
+        let release2!: () => void;
+        const gate1 = new Promise<void>((r) => {
+            release1 = r;
+        });
+        const gate2 = new Promise<void>((r) => {
+            release2 = r;
+        });
+
+        const isolated = new WaveExecutor(null, { verbose: false, maxConcurrent: 2 }, {
+            createOrchestrator: () => {
+                const o = {
+                    loopUntilSuccess: async () => {
+                        throw new Error("instruction path should not run");
+                    },
+                } as unknown as Orchestrator;
+                created.push(o);
+                return o;
+            },
+        });
+
+        const tasks: WaveTask[] = [
+            {
+                id: "t1",
+                execute: async () => {
+                    started.push("t1");
+                    await gate1;
+                    return { success: true, output: "1" };
+                },
+            },
+            {
+                id: "t2",
+                execute: async () => {
+                    started.push("t2");
+                    await gate2;
+                    return { success: true, output: "2" };
+                },
+            },
+        ];
+
+        const execP = isolated.execute(tasks);
+        for (let i = 0; i < 40 && started.length < 2; i++) {
+            await new Promise((r) => setTimeout(r, 5));
+        }
+        expect(started.sort()).toEqual(["t1", "t2"]);
+        // execute() path does not need orchestrator; factory unused — prove factory works on instruction path separately
+        release1();
+        release2();
+        const result = await execP;
+        expect(result.successfulTasks.sort()).toEqual(["t1", "t2"]);
+
+        // Instruction path: two parallel tasks → two orchestrators
+        let n = 0;
+        const withFactory = new WaveExecutor(null, { verbose: false, maxConcurrent: 2 }, {
+            createOrchestrator: () => {
+                n += 1;
+                const id = n;
+                return {
+                    loopUntilSuccess: async () => {
+                        await new Promise((r) => setTimeout(r, 30));
+                        return {
+                            status: "SUCCESS",
+                            output: `ok-${id}`,
+                            retryCount: 0,
+                            persona: "developer",
+                            durationMs: 30,
+                            contextHistory: [],
+                        };
+                    },
+                } as unknown as Orchestrator;
+            },
+        });
+        const inst = await withFactory.execute([
+            { id: "a", instruction: "do a" },
+            { id: "b", instruction: "do b" },
+        ] as WaveTask[]);
+        expect(n).toBe(2);
+        expect(inst.successfulTasks.sort()).toEqual(["a", "b"]);
+    });
 });

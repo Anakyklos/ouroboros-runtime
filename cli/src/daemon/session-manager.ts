@@ -496,6 +496,8 @@ export class SessionManager {
             persistence: plane.persistence,
             admissionClosed: true,
             brakeRecoverable: false,
+            unresolvedWorkCount: plane.unresolvedWorkCount,
+            pendingCategories: plane.pendingCategories,
         } as EmergencyBrakeResult;
     }
 
@@ -745,6 +747,12 @@ export class SessionManager {
             }
         };
         lease.signal.abortSignal.addEventListener("abort", onLeaseAbort, { once: true });
+        // Cooperative pause: only claim execution_paused when orchestrator observes it.
+        const unsubPause = lease.signal.onPausedChange((paused) => {
+            if (paused) orchestrator.pause();
+            else if (!orchestrator.isCancelled()) orchestrator.resume();
+        });
+        if (lease.signal.paused) orchestrator.pause();
 
         try {
             await this.storage.appendLog({
@@ -753,6 +761,7 @@ export class SessionManager {
                 content: prompt,
             });
         } catch (e) {
+            unsubPause();
             lease.fail(e);
             throw e;
         }
@@ -786,9 +795,14 @@ export class SessionManager {
                     this.releaseSessionRuntime(sessionId);
                 }
 
-                if (isCancelled) lease.fail(new Error("cancelled"));
-                else if (result.status === "SUCCESS") lease.complete(result);
-                else lease.fail(result.error ?? result.status);
+                if (isCancelled || lease.signal.aborted) {
+                    lease.acknowledgeAbort();
+                    lease.fail(new Error("cancelled"));
+                } else if (result.status === "SUCCESS") {
+                    lease.complete(result);
+                } else {
+                    lease.fail(result.error ?? result.status);
+                }
 
                 this.eventBus.log("info", `Task ${task.id} finished: ${result.status}`, "SessionManager");
             })
@@ -801,9 +815,11 @@ export class SessionManager {
                     /* storage may be unavailable */
                 }
                 this.releaseSessionRuntime(sessionId);
+                if (lease.signal.aborted) lease.acknowledgeAbort();
                 lease.fail(err);
             })
             .finally(() => {
+                unsubPause();
                 this.removeTaskPromise(sessionId, task.id);
                 lease.release();
             });

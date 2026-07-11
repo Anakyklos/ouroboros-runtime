@@ -27,13 +27,39 @@ import { globalEventBus } from "../daemon/event-bus.js";
 export type { WaveConfig } from "./wave-types.js";
 export { DEFAULT_WAVE_CONFIG };
 
-export class WaveExecutor {
-    private orchestrator: Orchestrator;
-    private config: WaveConfig;
+export interface WaveExecutorOptions {
+    /**
+     * When set, each parallel task gets its own Orchestrator so cancel/pause
+     * handles (runAbort, cancelReject, resumeResolver) are never shared.
+     * Preferred for daemon-controlled GLM Wave (issue #37).
+     */
+    createOrchestrator?: () => Orchestrator;
+}
 
-    constructor(orchestrator: Orchestrator, config: Partial<WaveConfig> = {}) {
+export class WaveExecutor {
+    private orchestrator: Orchestrator | null;
+    private config: WaveConfig;
+    private readonly createOrchestrator?: () => Orchestrator;
+
+    constructor(
+        orchestrator: Orchestrator | null,
+        config: Partial<WaveConfig> = {},
+        options: WaveExecutorOptions = {}
+    ) {
         this.orchestrator = orchestrator;
         this.config = { ...DEFAULT_WAVE_CONFIG, ...config };
+        this.createOrchestrator = options.createOrchestrator;
+        if (!this.orchestrator && !this.createOrchestrator) {
+            throw new Error("WaveExecutor requires an Orchestrator or createOrchestrator factory");
+        }
+    }
+
+    /** Resolve orchestrator for a single task (isolated when factory is set). */
+    private orchestratorForTask(): Orchestrator {
+        if (this.createOrchestrator) {
+            return this.createOrchestrator();
+        }
+        return this.orchestrator!;
     }
 
     /**
@@ -309,8 +335,9 @@ export class WaveExecutor {
                                 contextHistory: [],
                             };
                         } else if (task.instruction) {
-                            // Fallback para orchestrator (se tiver instruction)
-                            taskResult = await this.orchestrator.loopUntilSuccess(task as OrchestratorTask);
+                            // Per-task orchestrator when factory provided — avoids shared runAbort handles.
+                            const orch = this.orchestratorForTask();
+                            taskResult = await orch.loopUntilSuccess(task as OrchestratorTask);
                         } else {
                             throw new Error('WaveTask must have either execute() or instruction');
                         }
@@ -374,7 +401,8 @@ export class WaveExecutor {
  */
 export function createWaveExecutor(
     orchestrator: Orchestrator,
-    config?: Partial<WaveConfig>
+    config?: Partial<WaveConfig>,
+    options?: WaveExecutorOptions
 ): WaveExecutor {
-    return new WaveExecutor(orchestrator, config);
+    return new WaveExecutor(orchestrator, config, options);
 }

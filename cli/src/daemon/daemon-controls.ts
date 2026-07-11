@@ -155,6 +155,9 @@ export interface EmergencyBrakeResult {
     mode: DaemonMode;
     timestamp: string;
     message: string;
+    /** Work still cancelling / detached / unknown after brake (control plane). */
+    unresolvedWorkCount?: number;
+    pendingCategories?: string[];
 }
 
 export function buildMetric(value: number, unit: string): MetricValue {

@@ -440,12 +440,47 @@ Rules:
                             } else {
                                 lease.signal.throwIfAborted();
                                 const apiKey = this.loadZAIKey();
-                                const orchestrator = new Orchestrator();
-                                orchestrator.initialize(apiKey);
-                                const onAbort = () => orchestrator.cancel('lease aborted');
-                                lease.signal.abortSignal.addEventListener('abort', onAbort, { once: true });
-                                const waveExecutor = new WaveExecutor(orchestrator);
+                                // Isolate Orchestrator per wave task so cancel handles are not shared
+                                // across parallel tasks (runAbort / cancelReject / resumeResolver).
+                                const activeOrchs = new Set<InstanceType<typeof Orchestrator>>();
+                                const wireOrchestrator = (orchestrator: InstanceType<typeof Orchestrator>) => {
+                                    activeOrchs.add(orchestrator);
+                                    if (lease.signal.aborted) {
+                                        orchestrator.cancel('lease aborted');
+                                    } else {
+                                        const onAbort = () => {
+                                            try {
+                                                orchestrator.cancel('lease aborted');
+                                            } catch {
+                                                /* ignore */
+                                            }
+                                        };
+                                        lease.signal.abortSignal.addEventListener('abort', onAbort, {
+                                            once: true,
+                                        });
+                                    }
+                                    if (lease.signal.paused) {
+                                        orchestrator.pause();
+                                    }
+                                    const unsub = lease.signal.onPausedChange((paused) => {
+                                        if (paused) orchestrator.pause();
+                                        else if (!orchestrator.isCancelled()) orchestrator.resume();
+                                    });
+                                    // Best-effort: unsub when task ends is not critical for brake
+                                    void unsub;
+                                    return orchestrator;
+                                };
+                                const waveExecutor = new WaveExecutor(null, { verbose: true }, {
+                                    createOrchestrator: () => {
+                                        const orchestrator = new Orchestrator();
+                                        orchestrator.initialize(apiKey);
+                                        return wireOrchestrator(orchestrator);
+                                    },
+                                });
                                 const waveResult: WaveExecutionResult = await waveExecutor.execute(tasks);
+                                if (lease.signal.aborted) {
+                                    lease.acknowledgeAbort();
+                                }
                                 result = {
                                     mode: 'wave',
                                     waveExecution: {
@@ -463,6 +498,7 @@ Rules:
                                         dependsOn: t.dependsOn,
                                     })),
                                 };
+                                void activeOrchs;
                             }
                         } else {
                             const apiKey = this.loadZAIKey();
@@ -472,6 +508,9 @@ Rules:
                                 verbose: true,
                             });
                             const agentResult = await leviathan.run(prompt, undefined, control);
+                            if (lease.signal.aborted) {
+                                lease.acknowledgeAbort();
+                            }
                             result = {
                                 success: agentResult.success,
                                 content: agentResult.content,
@@ -495,6 +534,9 @@ Rules:
                     timestamp: new Date().toISOString(),
                 };
             } catch (error) {
+                if (lease.signal.aborted) {
+                    lease.acknowledgeAbort();
+                }
                 lease.fail(error);
                 throw new Error(
                     `Delegation to ${agent} failed: ${error instanceof Error ? error.message : String(error)}`

@@ -3,6 +3,9 @@
  *
  * Atomic admission + lease registry so pause/brake cannot race with new work.
  * Fail-honest: never claim success without an observable effect.
+ *
+ * Settlement rule: AbortSignal alone is never cancelled_confirmed. Local abortable
+ * work must reach a terminal settlement (or time out as unconfirmed).
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -30,9 +33,21 @@ export type WorkState =
     /** Remote/unconfirmed work after brake — may still be running outside the daemon. */
     | "detached";
 
+/**
+ * Progress of a stop attempt. Firing AbortSignal is only `abort_requested`.
+ * `execution_settled` is required for cancelled_confirmed on local work.
+ */
+export type StopProgress =
+    | "abort_not_requested"
+    | "abort_requested"
+    | "abort_acknowledged"
+    | "execution_settled"
+    | "detached_remote"
+    | "unsupported";
+
 /** How stop/brake can interact with a given work kind. */
 export type StopCapability =
-    | { kind: "abortable"; acknowledgement: "local_provider" }
+    | { kind: "abortable"; acknowledgement: "requires_settlement" }
     | { kind: "request_only"; acknowledgement: "unconfirmed" }
     | { kind: "detached_remote"; remoteMayContinue: true }
     | { kind: "unsupported" };
@@ -42,7 +57,8 @@ export function stopCapabilityFor(kind: WorkKind): StopCapability {
         case "session_task":
         case "delegate_glm":
         case "delegate_glm_wave":
-            return { kind: "abortable", acknowledgement: "local_provider" };
+            // Abortable only after real settlement (provider/loop/tool terminal).
+            return { kind: "abortable", acknowledgement: "requires_settlement" };
         case "delegate_gemini":
         case "delegate_antigravity":
             return { kind: "request_only", acknowledgement: "unconfirmed" };
@@ -64,6 +80,7 @@ export function pauseCapabilityFor(kind: WorkKind): PauseCapability {
         case "session_task":
         case "delegate_glm":
         case "delegate_glm_wave":
+            // Cooperative only when the executor observes lease pause (wired at call sites).
             return { kind: "cooperative_local" };
         case "delegate_gemini":
         case "delegate_antigravity":
@@ -89,7 +106,15 @@ export interface ExecutionControlSignal {
     readonly abortSignal: AbortSignal;
     waitUntilRunnable(): Promise<void>;
     throwIfAborted(): void;
+    /** Subscribe to pause flag changes (for wiring Orchestrator.pause/resume). */
+    onPausedChange(listener: (paused: boolean) => void): () => void;
 }
+
+export type SettlementStatus = "completed" | "failed" | "cancelled";
+
+export type SettlementWaitResult =
+    | { status: SettlementStatus }
+    | { status: "timeout" };
 
 export interface ExecutionLease {
     readonly workId: string;
@@ -98,8 +123,19 @@ export interface ExecutionLease {
     readonly signal: ExecutionControlSignal;
     /** Mark that provider/tool side effects have not started for this step (safe point). */
     markSafePoint(meta?: Record<string, unknown>): void;
+    /**
+     * Controlled component saw the abort (provider rejected AbortError, loop exited on cancel, etc.).
+     * Required for requestAbort.acknowledged = true.
+     */
+    acknowledgeAbort(): void;
     complete(result?: unknown): void;
     fail(error: unknown): void;
+    /**
+     * Wait until this lease reaches a terminal settlement, or timeout.
+     * Timeout does NOT force cancel — caller reports unconfirmed.
+     */
+    waitForSettlement(options?: { timeoutMs?: number }): Promise<SettlementWaitResult>;
+    /** Idempotent release: settles as completed if still non-terminal. */
     release(): void;
 }
 
@@ -107,8 +143,16 @@ export type DaemonOperationalState =
     | { kind: "running" }
     | { kind: "paused"; reason?: string }
     | { kind: "braking"; operationId: string; reason: string }
-    | { kind: "braked"; operationId: string; completeness: "complete" | "partial"; reason: string }
-    | { kind: "degraded"; reason: string };
+    | {
+          kind: "braked";
+          operationId: string;
+          completeness: "complete" | "partial";
+          reason: string;
+          unresolvedWorkCount: number;
+          /** Non-sensitive categories only (e.g. detached_remote, abort_unconfirmed). */
+          pendingCategories?: string[];
+      }
+    | { kind: "degraded"; reason: string; fromBrake?: boolean; completeness?: "partial" };
 
 export type PersistenceResult =
     | { ok: true; revision: number; persistedAt: string }
@@ -142,7 +186,8 @@ export interface WorkControlResult {
     action: WorkControlAction;
     recoverable: boolean;
     stopCapability: StopCapability;
-    requestAbort: { attempted: boolean; acknowledged: boolean };
+    stopProgress: StopProgress;
+    requestAbort: { attempted: boolean; acknowledged: boolean; settled: boolean };
     error?: { code: string; message: string };
 }
 
@@ -156,6 +201,8 @@ export interface EmergencyBrakeResultV2 {
     mode: "pause";
     /** Global recoverable pause is not supported for all work kinds. */
     brakeRecoverable: false;
+    unresolvedWorkCount: number;
+    pendingCategories?: string[];
     timestamp: string;
     message: string;
 }
@@ -205,12 +252,16 @@ export const WORK_KINDS: WorkKind[] = [
     "delegate_glm_wave",
 ];
 
+/** Default max wait for local work to settle after abort during brake. */
+export const DEFAULT_BRAKE_SETTLEMENT_TIMEOUT_MS = 2_000;
+
 // ── Control signal implementation ─────────────────────────────────────────
 
 class ControlSignalImpl implements ExecutionControlSignal {
     private _paused = false;
     private readonly abort = new AbortController();
     private pauseWaiters: Array<() => void> = [];
+    private pauseListeners: Array<(paused: boolean) => void> = [];
 
     get aborted(): boolean {
         return this.abort.signal.aborted;
@@ -225,12 +276,27 @@ class ControlSignalImpl implements ExecutionControlSignal {
     }
 
     setPaused(paused: boolean): void {
+        if (this._paused === paused) return;
         this._paused = paused;
         if (!paused) {
             const waiters = this.pauseWaiters;
             this.pauseWaiters = [];
             for (const w of waiters) w();
         }
+        for (const l of this.pauseListeners) {
+            try {
+                l(paused);
+            } catch {
+                /* ignore listener errors */
+            }
+        }
+    }
+
+    onPausedChange(listener: (paused: boolean) => void): () => void {
+        this.pauseListeners.push(listener);
+        return () => {
+            this.pauseListeners = this.pauseListeners.filter((l) => l !== listener);
+        };
     }
 
     abortNow(reason?: string): void {
@@ -281,12 +347,16 @@ interface InternalLease {
     control: ControlSignalImpl;
     safePoint?: Record<string, unknown>;
     createdAt: string;
+    abortAcknowledged: boolean;
+    stopProgress: StopProgress;
+    settlement?: { status: SettlementStatus };
+    settlementWaiters: Array<(result: SettlementWaitResult) => void>;
 }
 
 class LeaseHandle implements ExecutionLease {
     constructor(
         private readonly record: InternalLease,
-        private readonly onTerminal: (id: string, state: WorkState) => void
+        private readonly onSettled: (id: string, status: SettlementStatus) => void
     ) {}
 
     get workId(): string {
@@ -306,30 +376,77 @@ class LeaseHandle implements ExecutionLease {
         this.record.safePoint = { ...(meta ?? {}), at: new Date().toISOString() };
     }
 
+    acknowledgeAbort(): void {
+        this.record.abortAcknowledged = true;
+        if (
+            this.record.stopProgress === "abort_requested" ||
+            this.record.stopProgress === "abort_not_requested"
+        ) {
+            this.record.stopProgress = "abort_acknowledged";
+        }
+    }
+
     complete(_result?: unknown): void {
-        if (this.isTerminal()) return;
-        this.record.state = "completed";
-        this.onTerminal(this.record.workId, "completed");
+        this.settle(this.record.control.aborted ? "cancelled" : "completed");
     }
 
     fail(_error: unknown): void {
-        if (this.isTerminal()) return;
-        this.record.state = "failed";
-        this.onTerminal(this.record.workId, "failed");
+        // AbortError / cancel path still settles the execution.
+        if (this.record.control.aborted || this.record.state === "cancelling") {
+            this.settle("cancelled");
+        } else {
+            this.settle("failed");
+        }
+    }
+
+    waitForSettlement(options?: { timeoutMs?: number }): Promise<SettlementWaitResult> {
+        if (this.record.settlement) {
+            return Promise.resolve({ status: this.record.settlement.status });
+        }
+        const timeoutMs = options?.timeoutMs ?? DEFAULT_BRAKE_SETTLEMENT_TIMEOUT_MS;
+        return new Promise((resolve) => {
+            let done = false;
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const finish = (result: SettlementWaitResult) => {
+                if (done) return;
+                done = true;
+                if (timer !== undefined) clearTimeout(timer);
+                this.record.settlementWaiters = this.record.settlementWaiters.filter(
+                    (w) => w !== finish
+                );
+                resolve(result);
+            };
+            this.record.settlementWaiters.push(finish);
+            if (timeoutMs > 0) {
+                timer = setTimeout(() => finish({ status: "timeout" }), timeoutMs);
+            }
+        });
     }
 
     release(): void {
-        if (!this.isTerminal()) {
-            this.record.state = "completed";
-            this.onTerminal(this.record.workId, "completed");
-        }
+        if (this.isTerminal()) return;
+        // Idempotent: mark completed if still open (normal path after success).
+        this.settle(this.record.control.aborted ? "cancelled" : "completed");
+    }
+
+    private settle(status: SettlementStatus): void {
+        if (this.isTerminal()) return;
+        this.record.settlement = { status };
+        this.record.state =
+            status === "cancelled" ? "cancelled" : status === "failed" ? "failed" : "completed";
+        this.record.stopProgress = "execution_settled";
+        const waiters = this.record.settlementWaiters;
+        this.record.settlementWaiters = [];
+        for (const w of waiters) w({ status });
+        this.onSettled(this.record.workId, status);
     }
 
     private isTerminal(): boolean {
         return (
             this.record.state === "completed" ||
             this.record.state === "failed" ||
-            this.record.state === "cancelled"
+            this.record.state === "cancelled" ||
+            this.record.settlement !== undefined
         );
     }
 }
@@ -343,17 +460,34 @@ export class AdmissionDeniedError extends Error {
     }
 }
 
-export interface DaemonExecutionControllerOptions {
-    opsStatePath?: string;
-    /** Injected for tests. */
-    now?: () => Date;
-}
-
-interface PersistedOpsV1 {
+export interface PersistedOpsV1 {
     schemaVersion: 1;
     revision: number;
     state: DaemonOperationalState;
     updatedAt: string;
+    /** Non-sensitive summary of last brake (no prompts/secrets). */
+    lastBrake?: {
+        operationId: string;
+        completeness: "complete" | "partial";
+        unresolvedWorkCount: number;
+        pendingCategories?: string[];
+        worksSummary?: Array<{ kind: WorkKind; action: WorkControlAction }>;
+    };
+}
+
+export interface DaemonExecutionControllerOptions {
+    opsStatePath?: string;
+    /** Injected for tests. */
+    now?: () => Date;
+    /** Override persistence (tests: inject failures). */
+    persistFn?: (payload: PersistedOpsV1) => PersistenceResult;
+    /** Max wait for abortable work to settle during brake. */
+    settlementTimeoutMs?: number;
+    /**
+     * Test hook: runs inside exclusive acquire after admission check,
+     * before the lease is registered — enables real acquire×brake races.
+     */
+    beforeRegisterLease?: () => Promise<void> | void;
 }
 
 export class DaemonExecutionController {
@@ -367,6 +501,11 @@ export class DaemonExecutionController {
     private readonly opsStatePath: string;
     private readonly now: () => Date;
     private readonly startedAt = Date.now();
+    private readonly settlementTimeoutMs: number;
+    private readonly persistFn?: (payload: PersistedOpsV1) => PersistenceResult;
+    private readonly beforeRegisterLease?: () => Promise<void> | void;
+    /** Last brake summary for already_stopped responses (no sensitive data). */
+    private lastBrakeSummary?: PersistedOpsV1["lastBrake"];
 
     constructor(options: DaemonExecutionControllerOptions = {}) {
         this.opsStatePath =
@@ -374,6 +513,9 @@ export class DaemonExecutionController {
             process.env.OUROBOROS_OPS_PATH ??
             join(process.cwd(), ".ouroboros", "daemon-ops.json");
         this.now = options.now ?? (() => new Date());
+        this.settlementTimeoutMs = options.settlementTimeoutMs ?? DEFAULT_BRAKE_SETTLEMENT_TIMEOUT_MS;
+        this.persistFn = options.persistFn;
+        this.beforeRegisterLease = options.beforeRegisterLease;
         this.load();
     }
 
@@ -423,13 +565,13 @@ export class DaemonExecutionController {
         let detached = 0;
         for (const lease of this.leases.values()) {
             byKind[lease.kind] += 1;
-            if (lease.state === "detached") {
+            if (lease.state === "detached" || lease.state === "cancelling") {
+                // cancelling past timeout = unknown; count as detached/unknown for honesty
                 detached += 1;
             } else if (
                 lease.state === "admitted" ||
                 lease.state === "running" ||
-                lease.state === "paused" ||
-                lease.state === "cancelling"
+                lease.state === "paused"
             ) {
                 active += 1;
             }
@@ -451,17 +593,66 @@ export class DaemonExecutionController {
         };
     }
 
+    private countUnresolved(): number {
+        let n = 0;
+        for (const lease of this.leases.values()) {
+            if (
+                lease.state === "detached" ||
+                lease.state === "cancelling" ||
+                lease.state === "running" ||
+                lease.state === "admitted" ||
+                lease.state === "paused"
+            ) {
+                n += 1;
+            }
+        }
+        return n;
+    }
+
+    private pendingCategoriesFromLeases(): string[] {
+        const cats = new Set<string>();
+        for (const lease of this.leases.values()) {
+            if (lease.state === "detached") {
+                const cap = stopCapabilityFor(lease.kind);
+                if (cap.kind === "detached_remote") cats.add("detached_remote");
+                else cats.add("abort_unconfirmed");
+            } else if (lease.state === "cancelling") {
+                cats.add("abort_unconfirmed");
+            } else if (
+                lease.state === "running" ||
+                lease.state === "admitted" ||
+                lease.state === "paused"
+            ) {
+                cats.add("still_active");
+            }
+        }
+        return [...cats];
+    }
+
     /**
      * Atomic admission: under exclusive lock, reject if closed, else register lease
      * before returning so brake can always see it.
      */
     acquire(request: WorkAdmissionRequest): Promise<ExecutionLease> {
-        return this.exclusive(() => {
+        return this.exclusive(async () => {
             if (!this.admissionOpen()) {
                 throw new AdmissionDeniedError(
                     `Admission closed (state=${this.state.kind}); cannot start ${request.kind}`
                 );
             }
+
+            // Test hook: yield after admission check so brake can queue and close.
+            if (this.beforeRegisterLease) {
+                await this.beforeRegisterLease();
+            }
+
+            // Re-check after yield (real race).
+            if (!this.admissionOpen()) {
+                throw new AdmissionDeniedError(
+                    `Admission closed (state=${this.state.kind}); cannot start ${request.kind}`
+                );
+            }
+
             // Serialize one session_task per session.
             if (request.kind === "session_task" && request.sessionId) {
                 for (const l of this.leases.values()) {
@@ -490,20 +681,26 @@ export class DaemonExecutionController {
                 state: "admitted",
                 control,
                 createdAt: this.now().toISOString(),
+                abortAcknowledged: false,
+                stopProgress: "abort_not_requested",
+                settlementWaiters: [],
             };
             this.leases.set(workId, record);
             record.state = "running";
 
-            return new LeaseHandle(record, (id, state) => {
+            return new LeaseHandle(record, (id, _status) => {
                 const rec = this.leases.get(id);
-                if (rec) {
-                    rec.state = state;
-                    // Keep cancelled/failed/completed briefly for metrics; drop completed/failed after release path.
-                    if (state === "completed" || state === "failed" || state === "cancelled") {
-                        // deferred delete — release() already set state; remove from active map
-                        this.leases.delete(id);
-                    }
+                if (!rec) return;
+                // Drop terminal leases from registry (including detached that finally settled).
+                if (
+                    rec.state === "completed" ||
+                    rec.state === "failed" ||
+                    rec.state === "cancelled"
+                ) {
+                    this.leases.delete(id);
                 }
+                // Live unresolved may drop after detached remote returns — snapshot reflects it.
+                // Do not rewrite historical lastBrake.completeness.
             });
         });
     }
@@ -517,7 +714,11 @@ export class DaemonExecutionController {
                     operationId,
                     previous,
                     resulting: previous,
-                    persistence: { ok: true, revision: this.revision, persistedAt: this.now().toISOString() },
+                    persistence: {
+                        ok: true,
+                        revision: this.revision,
+                        persistedAt: this.now().toISOString(),
+                    },
                     timestamp: this.now().toISOString(),
                     message: "Already paused.",
                 };
@@ -527,7 +728,11 @@ export class DaemonExecutionController {
                     operationId,
                     previous,
                     resulting: previous,
-                    persistence: { ok: true, revision: this.revision, persistedAt: this.now().toISOString() },
+                    persistence: {
+                        ok: true,
+                        revision: this.revision,
+                        persistedAt: this.now().toISOString(),
+                    },
                     timestamp: this.now().toISOString(),
                     message: "Daemon is braked; pause is already implied.",
                 };
@@ -582,7 +787,11 @@ export class DaemonExecutionController {
                     operationId,
                     previous,
                     resulting: previous,
-                    persistence: { ok: true, revision: this.revision, persistedAt: this.now().toISOString() },
+                    persistence: {
+                        ok: true,
+                        revision: this.revision,
+                        persistedAt: this.now().toISOString(),
+                    },
                     timestamp: this.now().toISOString(),
                     message: "Already running.",
                 };
@@ -592,7 +801,10 @@ export class DaemonExecutionController {
             this.state = { kind: "running" };
             const persistence = this.persist();
             if (!persistence.ok) {
-                this.state = { kind: "paused", reason: `persist failed on resume: ${persistence.reason}` };
+                this.state = {
+                    kind: "paused",
+                    reason: `persist failed on resume: ${persistence.reason}`,
+                };
                 return {
                     operationId,
                     previous,
@@ -635,6 +847,12 @@ export class DaemonExecutionController {
             const persistence = this.persist();
             if (!persistence.ok) {
                 this.state = previousState;
+                // Ensure any paused leases remain paused.
+                for (const lease of this.leases.values()) {
+                    if (lease.state === "paused") {
+                        lease.control.setPaused(true);
+                    }
+                }
                 return {
                     operationId,
                     previous,
@@ -654,6 +872,8 @@ export class DaemonExecutionController {
                 }
             }
 
+            this.lastBrakeSummary = undefined;
+
             return {
                 operationId,
                 previous,
@@ -670,20 +890,81 @@ export class DaemonExecutionController {
             const operationId = randomUUID();
             const timestamp = this.now().toISOString();
 
+            // Already braked / degraded-from-brake: preserve completeness, never invent success.
             if (this.state.kind === "braked") {
-                const persistence = this.persist();
+                const unresolved = this.countUnresolved();
+                const categories =
+                    this.state.pendingCategories ?? this.pendingCategoriesFromLeases();
+                // complete only if original brake was complete AND nothing still unresolved.
+                const complete =
+                    this.state.completeness === "complete" &&
+                    unresolved === 0 &&
+                    this.lastPersistOk;
+                const works = (this.lastBrakeSummary?.worksSummary ?? []).map((w, i) => ({
+                    workId: `prior-${i}`,
+                    kind: w.kind,
+                    previousState: "detached" as WorkState,
+                    resultingState: "detached" as WorkState,
+                    action: w.action,
+                    recoverable: false,
+                    stopCapability: stopCapabilityFor(w.kind),
+                    stopProgress:
+                        w.action === "detached_remote"
+                            ? ("detached_remote" as StopProgress)
+                            : w.action === "cancelled_confirmed"
+                              ? ("execution_settled" as StopProgress)
+                              : ("abort_requested" as StopProgress),
+                    requestAbort: {
+                        attempted: w.action !== "detached_remote",
+                        acknowledged: w.action === "cancelled_confirmed",
+                        settled: w.action === "cancelled_confirmed",
+                    },
+                }));
+                const persistence: PersistenceResult = this.lastPersistOk
+                    ? { ok: true, revision: this.revision, persistedAt: timestamp }
+                    : {
+                          ok: false,
+                          reason: this.lastPersistError ?? "previous persist failed",
+                      };
+                return {
+                    operationId: this.state.operationId,
+                    outcome: "already_stopped",
+                    complete,
+                    works,
+                    admissionClosed: true,
+                    persistence,
+                    mode: "pause",
+                    brakeRecoverable: false,
+                    unresolvedWorkCount: unresolved,
+                    pendingCategories: categories,
+                    timestamp,
+                    message: complete
+                        ? "Already braked; admission remains closed. No unresolved work."
+                        : `Already braked with unresolved/detached work (count=${unresolved}${
+                              categories.length ? `; ${categories.join(",")}` : ""
+                          }). Admission remains closed. Partial does not mean the gate failed — only that not every execution settled.`,
+                };
+            }
+
+            if (this.state.kind === "degraded" && this.state.fromBrake) {
+                const unresolved = this.countUnresolved();
+                const persistence: PersistenceResult = {
+                    ok: false,
+                    reason: this.state.reason,
+                };
                 return {
                     operationId,
                     outcome: "already_stopped",
-                    complete: true,
+                    complete: false,
                     works: [],
                     admissionClosed: true,
                     persistence,
                     mode: "pause",
                     brakeRecoverable: false,
+                    unresolvedWorkCount: unresolved,
+                    pendingCategories: this.pendingCategoriesFromLeases(),
                     timestamp,
-                    message:
-                        "Already braked; admission remains closed. New work requires clearBrakeAndRun / setMode(running).",
+                    message: `Already closed after degraded brake (${this.state.reason}). Not claiming complete success.`,
                 };
             }
 
@@ -691,12 +972,12 @@ export class DaemonExecutionController {
             this.state = { kind: "braking", operationId, reason };
             const intentPersist = this.persist();
             if (!intentPersist.ok) {
-                // Admission stays closed in-memory (braking) but durable safety not guaranteed.
                 this.state = {
                     kind: "degraded",
                     reason: `braking intent not persisted: ${intentPersist.reason}`,
+                    fromBrake: true,
+                    completeness: "partial",
                 };
-                // Keep admission closed: degraded is not "running"
                 return {
                     operationId,
                     outcome: "partial",
@@ -706,6 +987,7 @@ export class DaemonExecutionController {
                     persistence: intentPersist,
                     mode: "pause",
                     brakeRecoverable: false,
+                    unresolvedWorkCount: this.countUnresolved(),
                     timestamp,
                     message: `Admission closed in-memory but braking intent not durable (${intentPersist.reason}). Restart safety not guaranteed. No external aborts applied.`,
                 };
@@ -720,12 +1002,24 @@ export class DaemonExecutionController {
                     operationId,
                     completeness: "complete",
                     reason,
+                    unresolvedWorkCount: 0,
                 };
                 const finalPersist = this.persist();
                 const complete = finalPersist.ok;
                 if (!finalPersist.ok) {
-                    this.state = { kind: "degraded", reason: finalPersist.reason };
+                    this.state = {
+                        kind: "degraded",
+                        reason: finalPersist.reason,
+                        fromBrake: true,
+                        completeness: "partial",
+                    };
                 }
+                this.lastBrakeSummary = {
+                    operationId,
+                    completeness: complete ? "complete" : "partial",
+                    unresolvedWorkCount: 0,
+                    worksSummary: [],
+                };
                 return {
                     operationId,
                     outcome: "no_active_work",
@@ -735,6 +1029,7 @@ export class DaemonExecutionController {
                     persistence: finalPersist,
                     mode: "pause",
                     brakeRecoverable: false,
+                    unresolvedWorkCount: 0,
                     timestamp,
                     message: complete
                         ? "No active work. Admission closed until setMode(running). Cancel is terminal (not recoverable)."
@@ -742,33 +1037,45 @@ export class DaemonExecutionController {
                 };
             }
 
-            // Phase 2: apply stop policy per WorkKind (honest actions).
+            // Phase 2: apply stop policy per WorkKind (honest actions + settlement wait).
             let unconfirmed = 0;
             let failed = 0;
+
+            // Fire aborts first for all abortable, then wait for settlements in parallel.
+            type PendingAbortable = {
+                lease: InternalLease;
+                previousState: WorkState;
+                cap: StopCapability;
+                handle: LeaseHandle;
+            };
+            const pendingAbortable: PendingAbortable[] = [];
+
             for (const lease of snapshot) {
                 const previousState = lease.state;
                 const cap = stopCapabilityFor(lease.kind);
                 try {
                     if (cap.kind === "abortable") {
                         lease.state = "cancelling";
+                        lease.stopProgress = "abort_requested";
                         lease.control.abortNow(reason);
-                        lease.state = "cancelled";
-                        works.push({
-                            workId: lease.workId,
-                            kind: lease.kind,
-                            sessionId: lease.sessionId,
-                            previousState,
-                            resultingState: "cancelled",
-                            action: "cancelled_confirmed",
-                            recoverable: false,
-                            stopCapability: cap,
-                            requestAbort: { attempted: true, acknowledged: true },
+                        // Synthetic handle for waitForSettlement on internal record
+                        const handle = new LeaseHandle(lease, (id, status) => {
+                            const rec = this.leases.get(id);
+                            if (!rec) return;
+                            if (
+                                rec.state === "completed" ||
+                                rec.state === "failed" ||
+                                rec.state === "cancelled"
+                            ) {
+                                this.leases.delete(id);
+                            }
+                            void status;
                         });
-                        this.leases.delete(lease.workId);
+                        pendingAbortable.push({ lease, previousState, cap, handle });
                     } else if (cap.kind === "request_only") {
-                        // Signal may help local waiters; remote/bridge work is unconfirmed.
                         lease.control.abortNow(reason);
                         lease.state = "detached";
+                        lease.stopProgress = "abort_requested";
                         unconfirmed += 1;
                         works.push({
                             workId: lease.workId,
@@ -779,12 +1086,17 @@ export class DaemonExecutionController {
                             action: "abort_requested_unconfirmed",
                             recoverable: false,
                             stopCapability: cap,
-                            requestAbort: { attempted: true, acknowledged: false },
+                            stopProgress: "abort_requested",
+                            requestAbort: {
+                                attempted: true,
+                                acknowledged: false,
+                                settled: false,
+                            },
                         });
-                        // Keep lease for detached/unknown metrics — do not delete.
+                        // Keep lease for detached/unknown metrics.
                     } else if (cap.kind === "detached_remote") {
-                        // Do not claim cancelled; remote may continue.
                         lease.state = "detached";
+                        lease.stopProgress = "detached_remote";
                         unconfirmed += 1;
                         works.push({
                             workId: lease.workId,
@@ -795,10 +1107,16 @@ export class DaemonExecutionController {
                             action: "detached_remote",
                             recoverable: false,
                             stopCapability: cap,
-                            requestAbort: { attempted: false, acknowledged: false },
+                            stopProgress: "detached_remote",
+                            requestAbort: {
+                                attempted: false,
+                                acknowledged: false,
+                                settled: false,
+                            },
                         });
                     } else {
                         unconfirmed += 1;
+                        lease.stopProgress = "unsupported";
                         works.push({
                             workId: lease.workId,
                             kind: lease.kind,
@@ -808,7 +1126,12 @@ export class DaemonExecutionController {
                             action: "unsupported",
                             recoverable: false,
                             stopCapability: cap,
-                            requestAbort: { attempted: false, acknowledged: false },
+                            stopProgress: "unsupported",
+                            requestAbort: {
+                                attempted: false,
+                                acknowledged: false,
+                                settled: false,
+                            },
                         });
                     }
                 } catch (e) {
@@ -823,31 +1146,148 @@ export class DaemonExecutionController {
                         action: "failed",
                         recoverable: false,
                         stopCapability: cap,
-                        requestAbort: { attempted: true, acknowledged: false },
+                        stopProgress: lease.stopProgress,
+                        requestAbort: {
+                            attempted: true,
+                            acknowledged: false,
+                            settled: false,
+                        },
                         error: { code: "cancel_failed", message },
                     });
                 }
             }
 
+            // Wait for abortable settlements (bounded). Timeout ≠ auto-cancel.
+            await Promise.all(
+                pendingAbortable.map(async ({ lease, previousState, cap, handle }) => {
+                    const wait = await handle.waitForSettlement({
+                        timeoutMs: this.settlementTimeoutMs,
+                    });
+                    if (wait.status === "timeout") {
+                        // Leave as cancelling — not removed, not confirmed.
+                        unconfirmed += 1;
+                        works.push({
+                            workId: lease.workId,
+                            kind: lease.kind,
+                            sessionId: lease.sessionId,
+                            previousState,
+                            resultingState: "cancelling",
+                            action: "abort_requested_unconfirmed",
+                            recoverable: false,
+                            stopCapability: cap,
+                            stopProgress: lease.abortAcknowledged
+                                ? "abort_acknowledged"
+                                : "abort_requested",
+                            requestAbort: {
+                                attempted: true,
+                                acknowledged: lease.abortAcknowledged,
+                                settled: false,
+                            },
+                        });
+                        return;
+                    }
+
+                    // Terminal settlement after abort request.
+                    const settledConfirmed =
+                        lease.abortAcknowledged ||
+                        wait.status === "cancelled" ||
+                        lease.settlement !== undefined;
+
+                    if (settledConfirmed) {
+                        // Ensure state is cancelled if worker used complete/fail after abort.
+                        if (!lease.settlement) {
+                            lease.settlement = { status: wait.status };
+                            lease.state =
+                                wait.status === "failed"
+                                    ? "failed"
+                                    : wait.status === "completed"
+                                      ? "completed"
+                                      : "cancelled";
+                            lease.stopProgress = "execution_settled";
+                        }
+                        // Remove confirmed work from registry.
+                        this.leases.delete(lease.workId);
+                        works.push({
+                            workId: lease.workId,
+                            kind: lease.kind,
+                            sessionId: lease.sessionId,
+                            previousState,
+                            resultingState: "cancelled",
+                            action: "cancelled_confirmed",
+                            recoverable: false,
+                            stopCapability: cap,
+                            stopProgress: "execution_settled",
+                            requestAbort: {
+                                attempted: true,
+                                acknowledged: lease.abortAcknowledged || wait.status === "cancelled",
+                                settled: true,
+                            },
+                        });
+                    } else {
+                        unconfirmed += 1;
+                        works.push({
+                            workId: lease.workId,
+                            kind: lease.kind,
+                            sessionId: lease.sessionId,
+                            previousState,
+                            resultingState: lease.state,
+                            action: "abort_requested_unconfirmed",
+                            recoverable: false,
+                            stopCapability: cap,
+                            stopProgress: "abort_requested",
+                            requestAbort: {
+                                attempted: true,
+                                acknowledged: false,
+                                settled: false,
+                            },
+                        });
+                    }
+                })
+            );
+
+            const unresolvedWorkCount = this.countUnresolved();
+            const pendingCategories = this.pendingCategoriesFromLeases();
             const completeness =
-                failed === 0 && unconfirmed === 0 ? "complete" : "partial";
+                failed === 0 && unconfirmed === 0 && unresolvedWorkCount === 0
+                    ? "complete"
+                    : "partial";
+
             this.state = {
                 kind: "braked",
                 operationId,
                 completeness,
                 reason,
+                unresolvedWorkCount,
+                pendingCategories,
             };
             const finalPersist = this.persist();
             if (!finalPersist.ok) {
-                this.state = { kind: "degraded", reason: finalPersist.reason };
+                this.state = {
+                    kind: "degraded",
+                    reason: finalPersist.reason,
+                    fromBrake: true,
+                    completeness: "partial",
+                };
             }
 
+            this.lastBrakeSummary = {
+                operationId,
+                completeness,
+                unresolvedWorkCount,
+                pendingCategories,
+                worksSummary: works.map((w) => ({ kind: w.kind, action: w.action })),
+            };
+
             const outcome: EmergencyBrakeResultV2["outcome"] =
-                failed > 0 || unconfirmed > 0
+                failed > 0 || unconfirmed > 0 || unresolvedWorkCount > 0
                     ? "partial"
                     : "all_stopped";
-            // complete only when every work was confirmed cancelled AND durable braked.
-            const complete = failed === 0 && unconfirmed === 0 && finalPersist.ok;
+            // complete only when every work settled confirmed AND durable braked.
+            const complete =
+                failed === 0 &&
+                unconfirmed === 0 &&
+                unresolvedWorkCount === 0 &&
+                finalPersist.ok;
 
             return {
                 operationId,
@@ -858,26 +1298,49 @@ export class DaemonExecutionController {
                 persistence: finalPersist,
                 mode: "pause",
                 brakeRecoverable: false,
+                unresolvedWorkCount,
+                pendingCategories,
                 timestamp,
                 message: complete
-                    ? `Confirmed cancel of ${works.length} local work item(s); admission closed.`
-                    : `Brake partial: confirmed cancels may exist, but unconfirmed/detached=${unconfirmed}, failed=${failed}, persistOk=${finalPersist.ok}. Admission closed; remote work may continue.`,
+                    ? `Confirmed settlement of ${works.length} local work item(s); admission closed.`
+                    : `Brake partial: admission closed. Settled cancels may exist, but unconfirmed/detached=${unconfirmed}, failed=${failed}, unresolved=${unresolvedWorkCount}, persistOk=${finalPersist.ok}. Partial ≠ gate failure — remote/tools may still run.`,
             };
         });
     }
 
     private persist(): PersistenceResult {
         const persistedAt = this.now().toISOString();
+        this.revision += 1;
+        const payload: PersistedOpsV1 = {
+            schemaVersion: 1,
+            revision: this.revision,
+            state: this.state,
+            updatedAt: persistedAt,
+            lastBrake: this.lastBrakeSummary,
+        };
+
+        if (this.persistFn) {
+            try {
+                const result = this.persistFn(payload);
+                this.lastPersistOk = result.ok;
+                this.lastPersistError = result.ok ? undefined : result.reason;
+                if (!result.ok) {
+                    // roll back revision bump on failure for stable numbers
+                    this.revision -= 1;
+                }
+                return result;
+            } catch (e) {
+                this.revision -= 1;
+                const reason = e instanceof Error ? e.message : String(e);
+                this.lastPersistOk = false;
+                this.lastPersistError = reason;
+                return { ok: false, reason };
+            }
+        }
+
         try {
             const dir = dirname(this.opsStatePath);
             if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-            this.revision += 1;
-            const payload: PersistedOpsV1 = {
-                schemaVersion: 1,
-                revision: this.revision,
-                state: this.state,
-                updatedAt: persistedAt,
-            };
             const tmp = `${this.opsStatePath}.${process.pid}.${Date.now()}.tmp`;
             writeFileSync(tmp, JSON.stringify(payload, null, 2), "utf-8");
             renameSync(tmp, this.opsStatePath);
@@ -885,6 +1348,7 @@ export class DaemonExecutionController {
             this.lastPersistError = undefined;
             return { ok: true, revision: this.revision, persistedAt };
         } catch (e) {
+            this.revision -= 1;
             const reason = e instanceof Error ? e.message : String(e);
             this.lastPersistOk = false;
             this.lastPersistError = reason;
@@ -911,8 +1375,20 @@ export class DaemonExecutionController {
                         operationId: this.state.operationId,
                         completeness: "partial",
                         reason: "recovered from crash during braking",
+                        unresolvedWorkCount: 0,
+                        pendingCategories: ["recovered_mid_brake"],
                     };
                 }
+                // Normalize older braked payloads without unresolvedWorkCount.
+                if (this.state.kind === "braked" && typeof this.state.unresolvedWorkCount !== "number") {
+                    this.state = {
+                        ...this.state,
+                        unresolvedWorkCount: this.state.completeness === "partial" ? 1 : 0,
+                    };
+                }
+            }
+            if (raw.lastBrake) {
+                this.lastBrakeSummary = raw.lastBrake;
             }
             this.revision = typeof raw.revision === "number" ? raw.revision : 0;
             this.lastPersistOk = true;
