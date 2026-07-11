@@ -327,38 +327,37 @@ Rules:
     }
 
     private registerDaemonMethods(): void {
-        // daemon.status - Returns daemon status for frontend
+        /**
+         * daemon.status — real process + SessionManager activity (issue #37).
+         * tokensUsed is never a scenic zero; it is marked unavailable.
+         */
         this.registerMethod('daemon.status', async () => {
-            return {
-                status: 'running',
-                uptime: process.uptime(),
-                activeWaves: 0,
-                activeTasks: 0,
-                tokensUsed: 0,
-                memory: process.memoryUsage(),
-                timestamp: new Date().toISOString(),
-            };
+            return this.sessionManager.getStatusSnapshot();
         });
 
-        // daemon.setMode - Set daemon mode
+        /**
+         * daemon.setMode — validates enum, transitions, and applies backend mode.
+         * Does not report success when the mode is rejected.
+         */
         this.registerMethod('daemon.setMode', async (params) => {
-            const mode = params.mode as string;
-            this.eventBus.log('info', `Daemon mode set to: ${mode}`, 'RpcGateway');
-            return {
-                status: 'success',
-                mode,
-                timestamp: new Date().toISOString(),
-            };
+            const result = await this.sessionManager.setMode(params?.mode);
+            if (
+                result.operation === 'rejected_invalid_mode' ||
+                result.operation === 'rejected_invalid_transition'
+            ) {
+                // Surface as RPC error so clients cannot treat rejections as success.
+                throw new Error(result.reason ?? `setMode rejected: ${result.operation}`);
+            }
+            return result;
         });
 
-        // daemon.emergencyBrake - Emergency stop all operations
+        /**
+         * daemon.emergencyBrake — interrupts live sessions/orchestrators/timers.
+         * Outcomes: no_active_work | already_stopped | all_stopped | partial.
+         * Partial failures set complete=false (not a fake full success).
+         */
         this.registerMethod('daemon.emergencyBrake', async () => {
-            this.eventBus.log('warn', 'Emergency brake activated!', 'RpcGateway');
-            this.eventBus.emit('daemon', { type: 'emergency_brake' });
-            return {
-                status: 'stopped',
-                timestamp: new Date().toISOString(),
-            };
+            return this.sessionManager.emergencyBrake();
         });
 
         // daemon.delegate - Delegate task to specific agent

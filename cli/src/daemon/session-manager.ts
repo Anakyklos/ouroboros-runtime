@@ -9,6 +9,18 @@ import type { StoragePort, Session, SessionSummary, SessionMemory, SessionCheckp
 import type { EventBus } from './event-bus.js';
 import { Orchestrator, createTask } from '../orchestration/index.js';
 import { PersonaType } from '../orchestration/types.js';
+import {
+    type DaemonMode,
+    type DaemonStatusResult,
+    type SetModeResult,
+    type EmergencyBrakeResult,
+    type EmergencyBrakeSessionResult,
+    isDaemonMode,
+    canTransitionMode,
+    DAEMON_CAPABILITIES,
+    buildMetric,
+    unavailableMetric,
+} from './daemon-controls.js';
 
 interface WaveState {
     id: string;
@@ -69,6 +81,12 @@ export class SessionManager {
     
     private apiKey?: string;
 
+    /** Operational mode — backend source of truth (issue #37). */
+    private mode: DaemonMode = "running";
+
+    /** True after an emergency brake that left work interrupted; cleared when mode returns to running. */
+    private braked = false;
+
     constructor(storage: StoragePort, eventBus: EventBus, apiKey?: string, config?: SessionManagerConfig) {
         this.storage = storage;
         this.eventBus = eventBus;
@@ -89,6 +107,295 @@ export class SessionManager {
             config.maxCheckpoints >= 1
                 ? Math.floor(config.maxCheckpoints)
                 : DEFAULT_SESSION_MANAGER_CONFIG.maxCheckpoints!;
+    }
+
+    /** Current operational mode stored in this process. */
+    getMode(): DaemonMode {
+        return this.mode;
+    }
+
+    /**
+     * Apply a mode change with validation. Observable: `getMode()` reflects the result.
+     * pause → pauses all live orchestrators; running/frenzy from pause → resumes them.
+     */
+    async setMode(requested: unknown): Promise<SetModeResult> {
+        const previousMode = this.mode;
+        const timestamp = new Date().toISOString();
+
+        if (!isDaemonMode(requested)) {
+            return {
+                operation: "rejected_invalid_mode",
+                previousMode,
+                requestedMode: requested === undefined || requested === null ? null : String(requested),
+                resultingMode: previousMode,
+                reason: `Unknown mode. Valid modes: running, pause, frenzy.`,
+                timestamp,
+            };
+        }
+
+        if (!canTransitionMode(previousMode, requested)) {
+            return {
+                operation: "rejected_invalid_transition",
+                previousMode,
+                requestedMode: requested,
+                resultingMode: previousMode,
+                reason: `Transition ${previousMode} → ${requested} is not allowed.`,
+                timestamp,
+            };
+        }
+
+        if (previousMode === requested) {
+            return {
+                operation: "unchanged",
+                previousMode,
+                requestedMode: requested,
+                resultingMode: previousMode,
+                reason: "Mode already set to the requested value.",
+                timestamp,
+            };
+        }
+
+        this.mode = requested;
+
+        if (requested === "pause") {
+            for (const orchestrator of this.activeOrchestrators.values()) {
+                orchestrator.pause();
+            }
+        } else if (previousMode === "pause" && (requested === "running" || requested === "frenzy")) {
+            for (const orchestrator of this.activeOrchestrators.values()) {
+                orchestrator.resume();
+            }
+            this.braked = false;
+        } else if (requested === "running" || requested === "frenzy") {
+            this.braked = false;
+        }
+
+        this.eventBus.log("info", `Daemon mode ${previousMode} → ${requested}`, "SessionManager");
+        this.eventBus.emit("daemon", {
+            type: "mode_changed",
+            previousMode,
+            mode: requested,
+        });
+
+        return {
+            operation: "applied",
+            previousMode,
+            requestedMode: requested,
+            resultingMode: this.mode,
+            timestamp,
+        };
+    }
+
+    /**
+     * Real activity snapshot for `daemon.status`.
+     * Counts come from in-process SessionManager maps (not scenic constants).
+     */
+    getStatusSnapshot(): DaemonStatusResult {
+        let activeTaskCount = 0;
+        for (const taskMap of this.activeTasks.values()) {
+            activeTaskCount += taskMap.size;
+        }
+
+        let activeWaveCount = 0;
+        for (const waves of this.sessionWaves.values()) {
+            for (const wave of waves) {
+                if (wave.status === "active") activeWaveCount += 1;
+            }
+        }
+
+        const mem = process.memoryUsage();
+
+        return {
+            processStatus: "alive",
+            mode: this.mode,
+            uptimeSeconds: process.uptime(),
+            activeSessions: buildMetric(this.activeOrchestrators.size, "count"),
+            activeWaves: buildMetric(activeWaveCount, "count"),
+            activeTasks: buildMetric(activeTaskCount, "count"),
+            tokensUsed: unavailableMetric(
+                "No daemon-wide token ledger is wired; field is not simulated as zero."
+            ),
+            memory: {
+                rssBytes: mem.rss,
+                heapUsedBytes: mem.heapUsed,
+                heapTotalBytes: mem.heapTotal,
+            },
+            capabilities: DAEMON_CAPABILITIES,
+            timestamp: new Date().toISOString(),
+        };
+    }
+
+    /**
+     * Emergency brake: pause every live orchestrator, mark sessions paused,
+     * checkpoint, clear checkpoint timers. Does not delete persistent data.
+     *
+     * Outcomes:
+     * - no_active_work: nothing to interrupt
+     * - already_stopped: previously braked and still idle
+     * - all_stopped: every target interrupted
+     * - partial: at least one failure
+     */
+    async emergencyBrake(): Promise<EmergencyBrakeResult> {
+        const timestamp = new Date().toISOString();
+        const wasBraked = this.braked;
+        const sessionIds = new Set<string>([
+            ...this.activeOrchestrators.keys(),
+            ...this.activeTasks.keys(),
+            ...this.checkpointIntervals.keys(),
+        ]);
+
+        if (sessionIds.size === 0) {
+            const outcome = wasBraked ? "already_stopped" : "no_active_work";
+            this.mode = "pause";
+            this.braked = true;
+            this.eventBus.emit("daemon", {
+                type: "emergency_brake",
+                outcome,
+                interruptedCount: 0,
+                failedCount: 0,
+            });
+            return {
+                outcome,
+                complete: true,
+                sessions: [],
+                interruptedCount: 0,
+                failedCount: 0,
+                checkpointTimersCleared: 0,
+                mode: this.mode,
+                timestamp,
+                message:
+                    outcome === "already_stopped"
+                        ? "Emergency brake already engaged; no live work remains."
+                        : "No active sessions, tasks, or checkpoint timers to interrupt.",
+            };
+        }
+
+        const sessions: EmergencyBrakeSessionResult[] = [];
+        let interruptedCount = 0;
+        let failedCount = 0;
+        let checkpointTimersCleared = 0;
+
+        for (const sessionId of sessionIds) {
+            try {
+                const orchestrator = this.activeOrchestrators.get(sessionId);
+                if (orchestrator) {
+                    orchestrator.pause();
+                }
+
+                // Persist pause when storage has the session; ignore missing rows.
+                try {
+                    await this.storage.updateSession(sessionId, { status: "paused" });
+                } catch {
+                    // Session may be in-memory only; continue interrupt path.
+                }
+
+                try {
+                    if (this.sessionWaves.has(sessionId) || this.activeOrchestrators.has(sessionId)) {
+                        await this.createCheckpoint(sessionId);
+                    }
+                } catch (err) {
+                    const message = err instanceof Error ? err.message : String(err);
+                    this.eventBus.log(
+                        "warn",
+                        `Emergency brake checkpoint failed for ${sessionId}: ${message}`,
+                        "SessionManager"
+                    );
+                }
+
+                // Mark in-memory waves/tasks as paused (UI snapshot); keep ids for recovery.
+                const waves = this.sessionWaves.get(sessionId);
+                if (waves) {
+                    for (const wave of waves) {
+                        if (wave.status === "active") {
+                            wave.status = "pending";
+                        }
+                        for (const task of wave.tasks) {
+                            if (task.phase !== "complete") {
+                                task.phase = "paused";
+                            }
+                        }
+                    }
+                }
+
+                const timer = this.checkpointIntervals.get(sessionId);
+                if (timer) {
+                    clearInterval(timer);
+                    this.checkpointIntervals.delete(sessionId);
+                    checkpointTimersCleared += 1;
+                }
+
+                this.eventBus.emit("task", {
+                    type: "progress",
+                    sessionId,
+                    data: { action: "emergency_brake" },
+                });
+
+                sessions.push({ sessionId, status: "interrupted" });
+                interruptedCount += 1;
+            } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                sessions.push({ sessionId, status: "failed", error: message });
+                failedCount += 1;
+                this.eventBus.log(
+                    "error",
+                    `Emergency brake failed for ${sessionId}: ${message}`,
+                    "SessionManager"
+                );
+            }
+        }
+
+        this.mode = "pause";
+        this.braked = true;
+
+        let outcome: EmergencyBrakeResult["outcome"];
+        if (failedCount > 0) {
+            outcome = "partial";
+        } else if (wasBraked) {
+            // Re-applying brake is safe; do not claim a fresh stop.
+            outcome = "already_stopped";
+        } else {
+            outcome = "all_stopped";
+        }
+
+        const complete = failedCount === 0;
+
+        this.eventBus.log(
+            complete ? "warn" : "error",
+            `Emergency brake outcome=${outcome} interrupted=${interruptedCount} failed=${failedCount}`,
+            "SessionManager"
+        );
+        this.eventBus.emit("daemon", {
+            type: "emergency_brake",
+            outcome,
+            interruptedCount,
+            failedCount,
+        });
+
+        return {
+            outcome,
+            complete,
+            sessions,
+            interruptedCount,
+            failedCount,
+            checkpointTimersCleared,
+            mode: this.mode,
+            timestamp,
+            message: complete
+                ? `Interrupted ${interruptedCount} session(s); mode is pause.`
+                : `Partial emergency brake: ${interruptedCount} interrupted, ${failedCount} failed.`,
+        };
+    }
+
+    /**
+     * Register an in-memory orchestrator for tests / emergency-brake targets
+     * without going through full session create.
+     */
+    protected attachOrchestratorForTest(sessionId: string, orchestrator: Orchestrator): void {
+        this.activeOrchestrators.set(sessionId, orchestrator);
+    }
+
+    protected getActiveSessionIdsForTest(): string[] {
+        return [...this.activeOrchestrators.keys()];
     }
 
     /**

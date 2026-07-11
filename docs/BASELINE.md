@@ -161,3 +161,15 @@ A correct CI / local check **must fail** when:
 - Lockfile out of sync → frozen install non-zero  
 
 Do not use `|| true` or optional steps to hide these failures.
+
+## Daemon operational controls (issue #37)
+
+Authoritative behavior is implemented in `cli/src/daemon/session-manager.ts` and exposed via RPC:
+
+| Method | Behavior |
+|--------|----------|
+| `daemon.status` | Real mode, uptime, active sessions/waves/tasks; `tokensUsed` is **unavailable** (not scenic zero) |
+| `daemon.setMode` | Enum `running` \| `pause` \| `frenzy`; rejects unknown; applies backend mode |
+| `daemon.emergencyBrake` | Interrupts live orchestrators/sessions; outcomes: `no_active_work`, `all_stopped`, `already_stopped`, `partial` |
+
+Capabilities are returned on every `daemon.status` (`capabilities` object). The web UI disables controls when the corresponding capability is false or until the first status response.

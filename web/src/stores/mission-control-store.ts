@@ -35,6 +35,21 @@ export interface CouncilDebate {
   autoMergeIn?: number;
 }
 
+/** Mirrors backend DaemonCapabilities (issue #37). */
+export interface DaemonCapabilities {
+  statusMetrics: boolean;
+  modeSwitching: boolean;
+  emergencyBrake: boolean;
+  tokenMetrics: boolean;
+}
+
+export const DEFAULT_CAPABILITIES: DaemonCapabilities = {
+  statusMetrics: false,
+  modeSwitching: false,
+  emergencyBrake: false,
+  tokenMetrics: false,
+};
+
 interface MissionControlState {
   mode: DaemonMode;
   confidence: number;
@@ -43,12 +58,16 @@ interface MissionControlState {
   activeTasks: number;
   tasksDone: number;
   uptime: string;
-  tokens: number;
+  /** Only set when backend tokenMetrics is available; never invent scenic usage. */
+  tokens: number | null;
 
   waves: Wave[];
   currentDebate: CouncilDebate | null;
 
   daemonConnected: boolean;
+  capabilities: DaemonCapabilities;
+  lastControlError: string | null;
+  lastBrakeOutcome: string | null;
 
   activeQuadrant: Quadrant;
   viewMode: ViewMode;
@@ -62,6 +81,16 @@ interface MissionControlState {
   setCurrentDebate: (debate: CouncilDebate | null) => void;
 
   setDaemonConnected: (connected: boolean) => void;
+  setCapabilities: (capabilities: DaemonCapabilities) => void;
+  setLastControlError: (error: string | null) => void;
+  setLastBrakeOutcome: (outcome: string | null) => void;
+  applyDaemonMetrics: (metrics: {
+    mode?: DaemonMode;
+    activeTasks?: number;
+    activeWaves?: number;
+    uptimeSeconds?: number;
+    tokens?: number | null;
+  }) => void;
 
   setWaveNumber: (number: number) => void;
   addWave: (wave: Wave) => void;
@@ -69,23 +98,36 @@ interface MissionControlState {
   setActiveQuadrant: (quadrant: Quadrant) => void;
   setViewMode: (mode: ViewMode) => void;
 
-  emergencyBrake: () => void;
+  /**
+   * Local UI projection after a confirmed emergency brake.
+   * Does not call the daemon — only updates wave task phases for display.
+   */
+  applyEmergencyBrakeLocally: () => void;
+}
+
+function formatUptime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${h}h ${m}m`;
 }
 
 export const useMissionControlStore = create<MissionControlState>((set) => ({
   mode: "running",
   confidence: 80,
 
-  waveNumber: 42,
-  activeTasks: 3,
-  tasksDone: 47,
+  waveNumber: 0,
+  activeTasks: 0,
+  tasksDone: 0,
   uptime: "0h 0m",
-  tokens: 0,
+  tokens: null,
 
   waves: [],
   currentDebate: null,
 
   daemonConnected: false,
+  capabilities: { ...DEFAULT_CAPABILITIES },
+  lastControlError: null,
+  lastBrakeOutcome: null,
 
   activeQuadrant: null,
   viewMode: "grid",
@@ -117,19 +159,40 @@ export const useMissionControlStore = create<MissionControlState>((set) => ({
   setCurrentDebate: (debate) => set({ currentDebate: debate }),
 
   setDaemonConnected: (connected) => set({ daemonConnected: connected }),
+  setCapabilities: (capabilities) => set({ capabilities }),
+  setLastControlError: (error) => set({ lastControlError: error }),
+  setLastBrakeOutcome: (outcome) => set({ lastBrakeOutcome: outcome }),
+
+  applyDaemonMetrics: (metrics) =>
+    set((state) => ({
+      mode: metrics.mode ?? state.mode,
+      activeTasks: metrics.activeTasks ?? state.activeTasks,
+      waveNumber: metrics.activeWaves ?? state.waveNumber,
+      uptime:
+        metrics.uptimeSeconds !== undefined
+          ? formatUptime(metrics.uptimeSeconds)
+          : state.uptime,
+      tokens: metrics.tokens !== undefined ? metrics.tokens : state.tokens,
+    })),
 
   setWaveNumber: (waveNumber) => set({ waveNumber }),
 
-  addWave: (wave) => set((state) => ({ waves: [...state.waves, wave] })),
+  addWave: (wave) =>
+    set((state) => {
+      // Replace existing wave with same id to keep updateTask tests deterministic
+      const without = state.waves.filter((w) => w.id !== wave.id);
+      return { waves: [...without, wave] };
+    }),
 
   setActiveQuadrant: (quadrant) => set({ activeQuadrant: quadrant }),
   setViewMode: (mode) => set({ viewMode: mode }),
 
-  emergencyBrake: () =>
+  applyEmergencyBrakeLocally: () =>
     set((state) => ({
       mode: "pause",
       waves: state.waves.map((w) => ({
         ...w,
+        status: w.status === "active" ? "pending" : w.status,
         tasks: w.tasks.map((t) => ({
           ...t,
           phase: t.phase === "complete" ? "complete" : "paused",

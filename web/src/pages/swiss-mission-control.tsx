@@ -6,7 +6,7 @@ import { useLogStore } from "@/stores/log-store";
 
 export function SwissMissionControl() {
   const [currentTime, setCurrentTime] = useState(new Date());
-  const { status, emergencyBrake, setMode } = useDaemonAPI();
+  const { status, emergencyBrake, setMode, capabilities } = useDaemonAPI();
   const waves = useMissionControlStore((state) => state.waves);
   const logs = useLogStore((state) => state.entries);
 
@@ -21,31 +21,48 @@ export function SwissMissionControl() {
     return date.toUTCString().split(" ")[4];
   };
 
-  const memoryData = (status as { memory?: { heapUsed: number; heapTotal: number; rss: number } })?.memory;
+  const memoryData = status?.memory;
   const systemHealth = {
-    cpu: memoryData ? Math.round((memoryData.heapUsed / memoryData.heapTotal) * 100) : 45,
-    mem: memoryData ? Math.round(memoryData.rss / 1024 / 1024 / 100) : 80,
-    net: 45,
-    disk: 10,
-    io: 20,
-    tmp: 70,
-    vlt: 90,
-    fan: 35,
+    cpu: memoryData
+      ? Math.round((memoryData.heapUsedBytes / Math.max(memoryData.heapTotalBytes, 1)) * 100)
+      : 0,
+    mem: memoryData ? Math.round(memoryData.rssBytes / 1024 / 1024) : 0,
+    net: 0,
+    disk: 0,
+    io: 0,
+    tmp: 0,
+    vlt: 0,
+    fan: 0,
   };
 
   const pendingWaves = waves.filter(w => w.status === "pending").length;
   const doneWaves = waves.filter(w => w.status === "done").length;
 
   const handleEmergencyStop = async () => {
-    await emergencyBrake();
+    if (!capabilities.emergencyBrake) return;
+    try {
+      await emergencyBrake();
+    } catch {
+      /* lastControlError in store */
+    }
   };
 
   const handlePause = async () => {
-    await setMode("pause");
+    if (!capabilities.modeSwitching) return;
+    try {
+      await setMode("pause");
+    } catch {
+      /* lastControlError in store */
+    }
   };
 
   const handleRestart = async () => {
-    await setMode("running");
+    if (!capabilities.modeSwitching) return;
+    try {
+      await setMode("running");
+    } catch {
+      /* lastControlError in store */
+    }
   };
 
   return (
@@ -223,7 +240,11 @@ export function SwissMissionControl() {
               <div>
                 <div className="flex justify-between text-xs font-light uppercase text-gray-400 mb-2">
                   <span>Tokens/sec</span>
-                  <span className="text-white font-mono">{status?.tokensUsed || 0}</span>
+                  <span className="text-white font-mono">
+                    {status?.tokensUsed?.available
+                      ? status.tokensUsed.value ?? 0
+                      : "n/a"}
+                  </span>
                 </div>
                 <div className="h-10 w-full flex items-end gap-[2px]">
                   {[20, 30, 25, 40, 50, 45, 60, 55, 70, 65, 80, 75].map((h, i) => (
@@ -236,7 +257,9 @@ export function SwissMissionControl() {
               <div>
                 <div className="flex justify-between text-xs font-light uppercase text-gray-400 mb-2">
                   <span>Uptime</span>
-                  <span className="text-white font-mono">{Math.floor((status?.uptime || 0) / 60)}m</span>
+                  <span className="text-white font-mono">
+                    {Math.floor((status?.uptimeSeconds ?? 0) / 60)}m
+                  </span>
                 </div>
                 <div className="h-10 w-full relative">
                   <svg className="w-full h-full overflow-visible" preserveAspectRatio="none">
@@ -256,7 +279,7 @@ export function SwissMissionControl() {
                 <div className="flex justify-between text-xs font-light uppercase text-gray-400 mb-2">
                   <span>Memory</span>
                   <span className="text-white font-mono">
-                    {memoryData ? Math.round(memoryData.heapUsed / 1024 / 1024) : 0}MB
+                    {memoryData ? Math.round(memoryData.heapUsedBytes / 1024 / 1024) : 0}MB
                   </span>
                 </div>
                 <div className="h-10 w-full relative">

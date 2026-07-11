@@ -2,6 +2,7 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { SessionManager } from './session-manager.js';
 import { EventBus } from './event-bus.js';
 import type { StoragePort } from '../ports/storage.port.js';
+import { Orchestrator } from '../orchestration/Orchestrator.js';
 
 // Subclass to expose protected methods for testing
 class TestSessionManager extends SessionManager {
@@ -11,6 +12,14 @@ class TestSessionManager extends SessionManager {
 
     public hasActiveTasksForTest(sessionId: string): boolean {
         return this.hasActiveTasks(sessionId);
+    }
+
+    public attachOrchestrator(sessionId: string, orchestrator: Orchestrator) {
+        this.attachOrchestratorForTest(sessionId, orchestrator);
+    }
+
+    public activeSessionIds() {
+        return this.getActiveSessionIdsForTest();
     }
 }
 
@@ -41,7 +50,20 @@ describe('SessionManager', () => {
             getLogs: mock(async () => []),
             initialize: mock(async () => {}),
             close: mock(async () => {}),
-        };
+            createCheckpoint: mock(async (sessionId: string) => ({
+                id: 'cp-1',
+                sessionId,
+                checkpointNumber: 1,
+                state: {},
+                createdAt: new Date(),
+            })),
+            deleteOldCheckpoints: mock(async () => {}),
+            getLatestCheckpoint: mock(async () => null),
+            listWaves: mock(async () => []),
+            saveWave: mock(async () => ({ id: 'w1', sessionId: 's', waveNumber: 1, status: 'pending', taskCount: 0, completedCount: 0, taskData: [] })),
+            saveMemory: mock(async (m) => ({ ...m, id: 'm1', createdAt: new Date() })),
+            listMemory: mock(async () => []),
+        } as unknown as StoragePort;
         manager = new TestSessionManager(mockStorage, mockEventBus);
     });
 
@@ -225,5 +247,99 @@ describe('SessionManager', () => {
         expect((zero as any).maxCheckpoints).toBe(5);
         expect((negative as any).maxCheckpoints).toBe(5);
         expect((valid as any).maxCheckpoints).toBe(3);
+    });
+
+    describe('operational controls (issue #37)', () => {
+        it('status reports real zero activity, not scenic constants', () => {
+            const status = manager.getStatusSnapshot();
+            expect(status.processStatus).toBe('alive');
+            expect(status.mode).toBe('running');
+            expect(status.activeSessions.available).toBe(true);
+            if (status.activeSessions.available) expect(status.activeSessions.value).toBe(0);
+            expect(status.activeTasks.available).toBe(true);
+            if (status.activeTasks.available) expect(status.activeTasks.value).toBe(0);
+            expect(status.activeWaves.available).toBe(true);
+            if (status.activeWaves.available) expect(status.activeWaves.value).toBe(0);
+            // tokens must not pretend to be zero usage
+            expect(status.tokensUsed.available).toBe(false);
+            expect(status.capabilities.tokenMetrics).toBe(false);
+            expect(status.uptimeSeconds).toBeGreaterThanOrEqual(0);
+        });
+
+        it('status counts live tasks and sessions', () => {
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            manager.attachOrchestrator('sess-a', orch);
+            manager.addTaskForTest('sess-a', 't1', createDeferred().promise);
+            manager.addTaskForTest('sess-a', 't2', createDeferred().promise);
+
+            const status = manager.getStatusSnapshot();
+            if (status.activeSessions.available) expect(status.activeSessions.value).toBe(1);
+            if (status.activeTasks.available) expect(status.activeTasks.value).toBe(2);
+        });
+
+        it('setMode applies valid modes and rejects unknown', async () => {
+            const bad = await manager.setMode('turbo');
+            expect(bad.operation).toBe('rejected_invalid_mode');
+            expect(bad.resultingMode).toBe('running');
+            expect(manager.getMode()).toBe('running');
+
+            const ok = await manager.setMode('pause');
+            expect(ok.operation).toBe('applied');
+            expect(ok.previousMode).toBe('running');
+            expect(ok.resultingMode).toBe('pause');
+            expect(manager.getMode()).toBe('pause');
+
+            const same = await manager.setMode('pause');
+            expect(same.operation).toBe('unchanged');
+            expect(manager.getMode()).toBe('pause');
+        });
+
+        it('setMode pause pauses attached orchestrators', async () => {
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const pauseSpy = mock(() => {});
+            orch.pause = pauseSpy;
+            manager.attachOrchestrator('sess-pause', orch);
+
+            await manager.setMode('pause');
+            expect(pauseSpy).toHaveBeenCalled();
+        });
+
+        it('emergencyBrake with no work returns no_active_work', async () => {
+            const result = await manager.emergencyBrake();
+            expect(result.outcome).toBe('no_active_work');
+            expect(result.complete).toBe(true);
+            expect(result.interruptedCount).toBe(0);
+            expect(manager.getMode()).toBe('pause');
+        });
+
+        it('emergencyBrake interrupts live orchestrators and is idempotent', async () => {
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const pauseSpy = mock(() => {});
+            orch.pause = pauseSpy;
+            manager.attachOrchestrator('sess-live', orch);
+            manager.addTaskForTest('sess-live', 'task-1', createDeferred().promise);
+
+            const first = await manager.emergencyBrake();
+            expect(first.outcome).toBe('all_stopped');
+            expect(first.complete).toBe(true);
+            expect(first.interruptedCount).toBe(1);
+            expect(pauseSpy).toHaveBeenCalled();
+            expect(manager.getMode()).toBe('pause');
+            expect(mockStorage.updateSession).toHaveBeenCalled();
+
+            // Clear orchestrator map to simulate idle after brake (interrupt keeps map for recovery).
+            // Second call with still-attached orchestrators should still report interruption.
+            const second = await manager.emergencyBrake();
+            expect(['all_stopped', 'already_stopped', 'no_active_work']).toContain(second.outcome);
+            expect(second.complete).toBe(true);
+        });
+
+        it('second emergencyBrake after idle reports already_stopped', async () => {
+            await manager.emergencyBrake(); // no work → no_active_work + braked
+            const again = await manager.emergencyBrake();
+            expect(again.outcome).toBe('already_stopped');
+            expect(again.complete).toBe(true);
+            expect(again.interruptedCount).toBe(0);
+        });
     });
 });

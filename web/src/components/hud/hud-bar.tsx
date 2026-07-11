@@ -3,7 +3,8 @@ import { cn } from "@/lib/utils";
 
 interface HUDBarProps {
   mode: "pause" | "running" | "frenzy";
-  onModeChange: (mode: "pause" | "running" | "frenzy") => void;
+  /** When omitted, mode controls are disabled (capability off). */
+  onModeChange?: (mode: "pause" | "running" | "frenzy") => void;
   confidence: number;
   onConfidenceChange: (value: number) => void;
   waveNumber?: number;
@@ -59,15 +60,19 @@ export function HUDBar({
           {(["pause", "running", "frenzy"] as const).map((m) => (
             <motion.button
               key={m}
-              onClick={() => onModeChange(m)}
+              type="button"
+              disabled={!onModeChange}
+              title={!onModeChange ? "Mode switching unavailable" : undefined}
+              onClick={() => onModeChange?.(m)}
               className={cn(
                 "px-3 py-1.5 rounded-md font-semibold text-xs sm:text-sm transition-all duration-200 uppercase tracking-wider",
+                !onModeChange && "opacity-40 cursor-not-allowed",
                 m === mode
                   ? `${modeConfig[m].color} ${modeConfig[m].textColor} ${modeConfig[m].glow}`
                   : "bg-[var(--color-surface-secondary)] text-[var(--color-silver-muted)] hover:text-[var(--color-foreground)] border border-[var(--color-border)]"
               )}
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
+              whileHover={onModeChange ? { scale: 1.02 } : undefined}
+              whileTap={onModeChange ? { scale: 0.98 } : undefined}
             >
               {modeConfig[m].label}
             </motion.button>
@@ -118,17 +123,20 @@ export function HUDBar({
           <span className="font-mono font-semibold text-[var(--color-emerald)] w-8 sm:w-12 text-right">{confidence}%</span>
         </div>
 
-        {/* Emergency Brake */}
-        <motion.button
-          onClick={onEmergencyBrake}
-          className="px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg bg-[var(--color-ruby)]/10 text-[var(--color-ruby)] font-semibold text-xs sm:text-sm border border-[var(--color-ruby)]/30
-            hover:bg-[var(--color-ruby)] hover:text-[var(--color-pearl)] transition-all duration-200 flex items-center gap-2 whitespace-nowrap"
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.98 }}
-        >
-          <span>🛑</span>
-          <span className="hidden sm:inline">EMERGENCY BRAKE</span>
-        </motion.button>
+        {/* Emergency Brake — hidden when capability off */}
+        {onEmergencyBrake && (
+          <motion.button
+            type="button"
+            onClick={onEmergencyBrake}
+            className="px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg bg-[var(--color-ruby)]/10 text-[var(--color-ruby)] font-semibold text-xs sm:text-sm border border-[var(--color-ruby)]/30
+              hover:bg-[var(--color-ruby)] hover:text-[var(--color-pearl)] transition-all duration-200 flex items-center gap-2 whitespace-nowrap"
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+          >
+            <span>🛑</span>
+            <span className="hidden sm:inline">EMERGENCY BRAKE</span>
+          </motion.button>
+        )}
       </div>
     </footer>
   );

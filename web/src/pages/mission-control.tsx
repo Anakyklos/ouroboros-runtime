@@ -50,15 +50,33 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
 
   // Initialize daemon connections
   useEventBus({ url: "ws://localhost:3001/ws" });
-  const { status, emergencyBrake } = useDaemonAPI();
+  const {
+    status,
+    emergencyBrake,
+    setMode: setDaemonMode,
+    capabilities,
+    isLoading: daemonLoading,
+  } = useDaemonAPI();
   const { promotingWave, activateWave } = useWaveManager();
   const liveData = useLiveMissionControl();
 
-  // Keyboard shortcuts
+  const requestMode = async (next: "pause" | "running" | "frenzy") => {
+    if (!capabilities.modeSwitching) return;
+    try {
+      await setDaemonMode(next);
+      setMode(next);
+    } catch {
+      /* lastControlError set by hook */
+    }
+  };
+
+  // Keyboard shortcuts — modes only when backend capability allows
   useKeyboardShortcuts({
-    onPause: () => setMode("pause"),
-    onResume: () => setMode("running"),
-    onEmergencyBrake: () => setShowEmergencyDialog(true),
+    onPause: () => void requestMode("pause"),
+    onResume: () => void requestMode("running"),
+    onEmergencyBrake: () => {
+      if (capabilities.emergencyBrake) setShowEmergencyDialog(true);
+    },
     onToggleLogs: () => setShowLogs((prev) => !prev),
     onFocusTerminal: () => setShowTerminal(true),
     onQuadrantSwitch: (quadrant: 1 | 2 | 3 | 4) => {
@@ -85,14 +103,12 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  // Sync mode with daemon status
+  // Sync mode from backend status only (never invent mode from UI alone)
   useEffect(() => {
-    if (status?.status === "paused") {
-      setMode("pause");
-    } else if (status?.status === "running") {
-      setMode("running");
+    if (status?.mode) {
+      setMode(status.mode);
     }
-  }, [status]);
+  }, [status?.mode]);
 
   // Listen for task click events
   useEffect(() => {
@@ -104,10 +120,20 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
     return () => window.removeEventListener("task:click" as any, handleTaskClick);
   }, []);
 
-  const handleEmergencyBrake = () => {
-    emergencyBrake();
-    setMode("pause");
-    setShowEmergencyDialog(false);
+  const handleEmergencyBrake = async () => {
+    if (!capabilities.emergencyBrake || daemonLoading) return;
+    try {
+      await emergencyBrake();
+      setMode("pause");
+    } catch {
+      /* partial/fail surfaced via lastControlError */
+    } finally {
+      setShowEmergencyDialog(false);
+    }
+  };
+
+  const handleModeChange = (next: "pause" | "running" | "frenzy") => {
+    void requestMode(next);
   };
 
   const getSnakeStatus = () => {
@@ -326,13 +352,22 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
 
       <HUDBar
         mode={mode}
-        onModeChange={setMode}
+        onModeChange={capabilities.modeSwitching ? handleModeChange : undefined}
         confidence={confidence}
         onConfidenceChange={setConfidence}
-        waveNumber={liveData.stats.waveNumber || status?.activeWaves || 0}
+        waveNumber={
+          liveData.stats.waveNumber ||
+          (status?.activeWaves?.available ? status.activeWaves.value ?? 0 : 0)
+        }
         tasksDone={liveData.stats.tasksDone || 0}
-        tokens={liveData.stats.tokens || status?.tokensUsed || 0}
-        onEmergencyBrake={handleEmergencyBrake}
+        tokens={
+          capabilities.tokenMetrics && status?.tokensUsed?.available
+            ? status.tokensUsed.value ?? 0
+            : liveData.stats.tokens || 0
+        }
+        onEmergencyBrake={
+          capabilities.emergencyBrake ? handleEmergencyBrake : undefined
+        }
       />
 
       <TaskDetailPanel
