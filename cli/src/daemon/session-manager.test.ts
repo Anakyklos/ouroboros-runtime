@@ -418,22 +418,109 @@ describe('SessionManager', () => {
             expect(pauseCalls.length).toBe(0);
         });
 
-        it('Orchestrator.cancel settles in-flight loopUntilSuccess as CANCELLED', async () => {
+        it('Orchestrator.cancel waits for inner execute settlement (no Promise.race abandon)', async () => {
             const orch = new Orchestrator(
                 { verbose: false, skipPhaseValidation: true, maxRetries: 3 },
                 mockEventBus
             );
-            // Hang execute forever until cancel races it out
+            let innerStillRunning = true;
+            let releaseInner!: () => void;
+            const innerGate = new Promise<void>((r) => {
+                releaseInner = r;
+            });
             (orch as unknown as { executeWithTimeout: (p: string) => Promise<unknown> }).executeWithTimeout =
-                () => new Promise(() => {});
+                async () => {
+                    const signal = orch.currentRunSignal;
+                    await new Promise<void>((resolve, reject) => {
+                        const onAbort = () => {
+                            // Tool/provider already started: ignore abort until we choose to finish.
+                            // (Simulates non-abortable tool still in-flight.)
+                        };
+                        signal?.addEventListener('abort', onAbort, { once: true });
+                        innerGate.then(() => {
+                            innerStillRunning = false;
+                            signal?.removeEventListener('abort', onAbort);
+                            const e = new Error('aborted late');
+                            e.name = 'AbortError';
+                            reject(e);
+                        });
+                    });
+                    return { success: true, content: '', toolCallsCount: 0, durationMs: 0 };
+                };
 
-            const task = createTask('hang forever', PersonaType.DEVELOPER, { id: 'hang-1' });
+            const task = createTask('tool in flight', PersonaType.DEVELOPER, { id: 'hang-1' });
             const running = orch.loopUntilSuccess(task);
             await new Promise((r) => setTimeout(r, 30));
             orch.cancel('test brake');
+            // Must still be in-flight — cancel does not abandon wrapper early
+            expect(orch.hasInFlightExecute()).toBe(true);
+            expect(innerStillRunning).toBe(true);
+
+            const raced = await Promise.race([
+                running.then(() => 'settled'),
+                new Promise<'pending'>((r) => setTimeout(() => r('pending'), 80)),
+            ]);
+            expect(raced).toBe('pending');
+
+            releaseInner();
             const result = await running;
+            expect(innerStillRunning).toBe(false);
+            expect(orch.hasInFlightExecute()).toBe(false);
             expect(result.status).toBe(TaskStatus.CANCELLED);
             expect(result.error).toMatch(/cancel/i);
+        });
+
+        it('Orchestrator.cancel does not settle when execute ignores abort forever', async () => {
+            const orch = new Orchestrator(
+                { verbose: false, skipPhaseValidation: true, maxRetries: 2 },
+                mockEventBus
+            );
+            (orch as unknown as { executeWithTimeout: (p: string) => Promise<unknown> }).executeWithTimeout =
+                () => new Promise(() => {}); // never settles
+
+            const task = createTask('ignore abort', PersonaType.DEVELOPER, { id: 'ignore-1' });
+            const running = orch.loopUntilSuccess(task);
+            await new Promise((r) => setTimeout(r, 20));
+            orch.cancel('brake');
+            expect(orch.hasInFlightExecute()).toBe(true);
+            const raced = await Promise.race([
+                running.then(() => 'settled'),
+                new Promise<'pending'>((r) => setTimeout(() => r('pending'), 100)),
+            ]);
+            expect(raced).toBe('pending');
+            // Leave hanging promise — do not claim CANCELLED
+        });
+
+        it('setMode(running) does not resume Orchestrators when persist fails', async () => {
+            const controller = new (await import('./execution-control.js')).DaemonExecutionController({
+                opsStatePath: `/tmp/ouroboros-ops-setmode-${Date.now()}.json`,
+                persistFn: (payload) => {
+                    // Allow pause/brake; fail only when writing running
+                    if (payload.state.kind === 'running') {
+                        return { ok: false, reason: 'inject persist fail on running' };
+                    }
+                    return {
+                        ok: true,
+                        revision: payload.revision,
+                        persistedAt: new Date().toISOString(),
+                    };
+                },
+            });
+            const m = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+                controller,
+            });
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const resumeSpy = mock(() => {});
+            orch.resume = resumeSpy as typeof orch.resume;
+            m.attachOrchestrator('sess-resume', orch);
+
+            await m.setMode('pause');
+            expect(m.getMode()).toBe('pause');
+
+            const result = await m.setMode('running');
+            expect(result.operation).not.toBe('applied');
+            expect(resumeSpy).not.toHaveBeenCalled();
+            expect(m.getMode()).toBe('pause');
         });
 
         it('sendInput removes tasks from metrics on resolve and reject', async () => {
@@ -509,6 +596,41 @@ describe('SessionManager', () => {
             });
             expect(m2.getMode()).toBe('pause');
             expect(m2.acceptsNewWork()).toBe(false);
+        });
+
+        it('emergencyBrake stays partial while execute/tool ignores abort (no false cancelled_confirmed)', async () => {
+            const { DaemonExecutionController } = await import('./execution-control.js');
+            const controller = new DaemonExecutionController({
+                opsStatePath: `/tmp/ouroboros-ops-hang-brake-${Date.now()}.json`,
+                settlementTimeoutMs: 120,
+            });
+            const m = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+                controller,
+            });
+            const orch = new Orchestrator(
+                { verbose: false, skipPhaseValidation: true, maxRetries: 2 },
+                mockEventBus
+            );
+            // Real loopUntilSuccess path: inner execute never settles (tool ignores abort).
+            (orch as unknown as { executeWithTimeout: (p: string) => Promise<unknown> }).executeWithTimeout =
+                () => new Promise(() => {});
+            m.attachOrchestrator('sess-hang', orch);
+
+            const started = m.sendInput('sess-hang', 'long tool');
+            await new Promise((r) => setTimeout(r, 40));
+            expect(orch.hasInFlightExecute()).toBe(true);
+
+            const brake = await m.emergencyBrake();
+            expect(brake.complete).toBe(false);
+            expect(brake.outcome).toBe('partial');
+            const works = (brake as { works?: Array<{ action: string }> }).works ?? [];
+            expect(works.some((w) => w.action === 'abort_requested_unconfirmed')).toBe(true);
+            expect(works.every((w) => w.action !== 'cancelled_confirmed')).toBe(true);
+            expect(orch.hasInFlightExecute()).toBe(true);
+
+            // Do not await started (would hang); admission must stay closed.
+            expect(m.acceptsNewWork()).toBe(false);
+            void started;
         });
 
         it('provider AbortSignal is aborted by Orchestrator.cancel', async () => {

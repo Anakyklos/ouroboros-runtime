@@ -202,4 +202,87 @@ describe("WaveExecutor", () => {
         expect(n).toBe(2);
         expect(inst.successfulTasks.sort()).toEqual(["a", "b"]);
     });
+
+    it("brake waits for both parallel task inners — no silent CANCELLED race", async () => {
+        type OrchLike = {
+            cancel: (reason?: string) => void;
+            loopUntilSuccess: (task: unknown) => Promise<{
+                status: string;
+                output: string;
+                retryCount: number;
+                persona: string;
+                durationMs: number;
+                contextHistory: unknown[];
+            }>;
+            hasInFlightExecute: () => boolean;
+            _innerRunning: boolean;
+            _release: () => void;
+        };
+
+        const orchInstances: OrchLike[] = [];
+        let releaseAll!: () => void;
+        const allReleased = new Promise<void>((r) => {
+            releaseAll = r;
+        });
+
+        const withFactory = new WaveExecutor(null, { verbose: false, maxConcurrent: 2 }, {
+            createOrchestrator: () => {
+                let releaseInner!: () => void;
+                const innerGate = new Promise<void>((r) => {
+                    releaseInner = r;
+                });
+                const o: OrchLike = {
+                    _innerRunning: true,
+                    _release: () => releaseInner(),
+                    hasInFlightExecute: () => o._innerRunning,
+                    cancel: () => {
+                        // Signal only — does not finish loopUntilSuccess until inner gate opens
+                    },
+                    loopUntilSuccess: async () => {
+                        await Promise.race([innerGate, allReleased]);
+                        o._innerRunning = false;
+                        return {
+                            status: "CANCELLED",
+                            output: "",
+                            retryCount: 0,
+                            persona: "developer",
+                            durationMs: 1,
+                            contextHistory: [],
+                        };
+                    },
+                };
+                orchInstances.push(o);
+                return o as unknown as Orchestrator;
+            },
+        });
+
+        const execP = withFactory.execute([
+            { id: "w1", instruction: "task one" },
+            { id: "w2", instruction: "task two" },
+        ] as WaveTask[]);
+
+        for (let i = 0; i < 40 && orchInstances.length < 2; i++) {
+            await new Promise((r) => setTimeout(r, 5));
+        }
+        expect(orchInstances.length).toBe(2);
+        expect(orchInstances.every((o) => o.hasInFlightExecute())).toBe(true);
+
+        // Simulate brake: cancel both — neither must be claimed finished yet
+        for (const o of orchInstances) o.cancel("emergency");
+        const mid = await Promise.race([
+            execP.then(() => "done"),
+            new Promise<"pending">((r) => setTimeout(() => r("pending"), 60)),
+        ]);
+        expect(mid).toBe("pending");
+        expect(orchInstances.every((o) => o._innerRunning)).toBe(true);
+
+        // Both inners settle after brake signal
+        for (const o of orchInstances) o._release();
+        releaseAll();
+        const result = await execP;
+        expect(orchInstances.every((o) => !o._innerRunning)).toBe(true);
+        // Both finished as cancelled (not silently dropped)
+        expect(result.skippedTasks.sort()).toEqual(["w1", "w2"]);
+        expect(result.successfulTasks).toEqual([]);
+    });
 });

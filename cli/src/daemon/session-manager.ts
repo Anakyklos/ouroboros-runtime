@@ -206,15 +206,13 @@ export class SessionManager {
                 };
             }
         } else {
-            // running — clear brake if needed, then resume admission
+            // running — clear brake if needed, then resume admission.
+            // Only resume Orchestrators after durable open is confirmed.
             const st = this.controller.operationalState;
             const result =
                 st.kind === "braked" || st.kind === "degraded"
                     ? await this.controller.clearBrakeAndRun("setMode(running)")
                     : await this.controller.resume("setMode(running)");
-            for (const orchestrator of this.activeOrchestrators.values()) {
-                orchestrator.resume();
-            }
             if (!result.persistence.ok || result.resulting.kind !== "running") {
                 return {
                     operation: "rejected_invalid_transition",
@@ -224,6 +222,9 @@ export class SessionManager {
                     reason: result.message,
                     timestamp,
                 };
+            }
+            for (const orchestrator of this.activeOrchestrators.values()) {
+                orchestrator.resume();
             }
         }
 

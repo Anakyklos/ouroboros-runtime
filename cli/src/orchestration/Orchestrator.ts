@@ -53,9 +53,13 @@ export class Orchestrator {
     private resumeResolver: (() => void) | null = null;
     /** Cooperative cancel — aborts waitIfPaused and provider fetch via AbortSignal. */
     private cancelled = false;
-    private cancelReject: ((err: OrchestratorCancelledError) => void) | null = null;
     /** Per-run abort controller (new for each loopUntilSuccess). */
     private runAbort: AbortController | null = null;
+    /**
+     * In-flight executeWithTimeout promise for the current attempt.
+     * Cancel must wait for this to settle — never race-away and claim CANCELLED early.
+     */
+    private inFlightExecute: Promise<unknown> | null = null;
     private memoryRetriever: MemoryRetriever;
     private qualityGateRegistry: QualityGateRegistry;
     private enableQualityGates: boolean;
@@ -137,8 +141,9 @@ export class Orchestrator {
     }
 
     /**
-     * Cooperative cancel: unblocks pause waits and races in-flight execute
-     * so loopUntilSuccess can settle as CANCELLED without waiting for the provider.
+     * Cooperative cancel: signals AbortSignal and unblocks pause waits.
+     * Does **not** abandon executeWithTimeout — loopUntilSuccess only returns
+     * CANCELLED after the in-flight provider/tool promise settles (or errors).
      */
     cancel(reason = "Emergency brake"): void {
         this.cancelled = true;
@@ -152,16 +157,17 @@ export class Orchestrator {
             this.resumeResolver();
             this.resumeResolver = null;
         }
-        if (this.cancelReject) {
-            this.cancelReject(new OrchestratorCancelledError(reason));
-            this.cancelReject = null;
-        }
         this.log('warn', `🛑 Cancelled: ${reason}`);
     }
 
     /** Active abort signal for the current run (tests / diagnostics). */
     get currentRunSignal(): AbortSignal | null {
         return this.runAbort?.signal ?? null;
+    }
+
+    /** True while executeWithTimeout has not settled (tool/provider still running). */
+    hasInFlightExecute(): boolean {
+        return this.inFlightExecute !== null;
     }
 
     isCancelled(): boolean {
@@ -264,30 +270,23 @@ export class Orchestrator {
                     await this.validatePhase(phase, task.workDir);
                 }
 
-                // 3. Execute via AgentLoop — race cancel so brake can settle without waiting for provider
+                // 3. Execute via AgentLoop — await full settlement (provider/tool).
+                // AbortSignal is propagated; we never Promise.race away the inner work.
                 this.log('info', `\n🔄 Attempt ${retryCount + 1}/${this.config.maxRetries}`);
-                const cancelRace = new Promise<never>((_, reject) => {
-                    if (this.cancelled) {
-                        reject(new OrchestratorCancelledError());
-                        return;
-                    }
-                    this.cancelReject = reject;
-                });
                 let result;
+                const executePromise = this.executeWithTimeout(prompt);
+                this.inFlightExecute = executePromise;
                 try {
-                    result = await Promise.race([
-                        this.executeWithTimeout(prompt),
-                        cancelRace,
-                    ]);
+                    result = await executePromise;
                 } catch (e) {
-                    this.cancelReject = null;
                     if (e instanceof OrchestratorCancelledError || this.cancelled) {
                         return this.cancelledResult(task, startTime, contextHistory);
                     }
                     throw e;
                 } finally {
-                    this.cancelReject = null;
+                    this.inFlightExecute = null;
                 }
+                // Provider returned after cancel was requested (ignored abort or late finish).
                 if (this.cancelled) {
                     return this.cancelledResult(task, startTime, contextHistory);
                 }
