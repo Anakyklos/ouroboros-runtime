@@ -115,7 +115,7 @@ Portanto:
 |---|---:|---|
 | `401`/`403` | Não | falhar como `authentication`/`authorization`; nunca trocar chave automaticamente |
 | `400`/`422` | Não | falhar como `invalid_request`; corrigir payload/capability profile |
-| `408`, rede transitória | Sim | backoff exponencial com full jitter e limite de tentativas |
+| `408`, rede transitória | Sim | falhar como `network_error` quando não houver resposta HTTP; backoff exponencial com full jitter e limite de tentativas |
 | `429` | Sim, controlado | honrar `Retry-After`; não multiplicar carga; abrir circuito se recorrente |
 | `5xx` transitório | Sim | backoff+jitter; fallback após orçamento de tentativas |
 | timeout/cancelamento | Não automaticamente | distinguir timeout de cancelamento do usuário; propagar `AbortSignal` |
@@ -211,9 +211,11 @@ Elementos obrigatórios do contrato normalizado:
 - timeout externo e `AbortSignal` propagável;
 - conteúdo, tool calls, finish reason e usage;
 - status HTTP e headers permitidos para diagnóstico, sem segredo;
-- taxonomia: `authentication`, `authorization`, `invalid_request`, `rate_limited`, `timeout`, `cancelled`, `unavailable`, `provider_error`, `malformed_response`;
+- taxonomia: `authentication`, `authorization`, `invalid_request`, `rate_limited`, `timeout`, `cancelled`, `network_error`, `unavailable`, `provider_error`, `malformed_response`;
 - `retryable`, `retryAfterMs` e `fallbackAllowed` explícitos;
 - validação de resposta antes de entregar a gates críticos.
+
+`network_error` cobre falhas locais anteriores a qualquer resposta HTTP, como DNS, conexão recusada e queda de socket. Ele é diferente de indisponibilidade HTTP e de erro interno do provider.
 
 Perfis de modelo devem declarar capacidades, não inferi-las do nome do provider:
 
@@ -285,6 +287,7 @@ Só liberar além de experimento após Pedro aprovar:
 ### Falhas
 
 - `401`, `403`, `422`, `429`, `500`, `503`;
+- DNS, conexão recusada e queda de socket classificados como `network_error`;
 - rede desconectada;
 - timeout;
 - cancelamento pelo chamador;
