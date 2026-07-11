@@ -1,372 +1,312 @@
-# Avaliação da NVIDIA NIM como provider do Ouroboros
+# Avaliação da NVIDIA NIM como provider BYOK do Ouroboros
 
 - **Issue:** #42
 - **Parent:** #34
-- **Data de verificação:** 2026-07-11
+- **Data de verificação inicial:** 2026-07-11
+- **Revisão de visão:** 2026-07-11, após alinhamento com Pedro
 - **Natureza:** pesquisa arquitetural; nenhuma integração de produção foi implementada
-- **Resultado recomendado:** **experimentar de forma opcional e reversível**, nunca como provider principal neste ciclo
+- **Resultado recomendado:** adotar NVIDIA NIM como provider opcional BYOK, desenhado para execução lenta, durável e consciente de quota
 
 ## 1. Resumo executivo
 
-O produto analisado é o conjunto de **endpoints hospedados do NVIDIA API Catalog/NIM**, acessível por API compatível com o formato de Chat Completions da OpenAI em `https://integrate.api.nvidia.com/v1/chat/completions`. O NIM auto-hospedado é uma alternativa distinta, baseada em containers e infraestrutura NVIDIA.
+O produto analisado é o conjunto de endpoints hospedados do NVIDIA API Catalog/NIM, acessível por API no formato OpenAI Chat Completions em `https://integrate.api.nvidia.com/v1/chat/completions`.
 
-A oferta hospedada é adequada para protótipos, pesquisa, desenvolvimento e testes. A documentação oficial afirma que o acesso do NVIDIA Developer Program não é destinado a produção e não inclui estabilidade ou suporte empresarial. Uso real por usuários finais exige NVIDIA AI Enterprise. Por isso, a oferta hospedada gratuita não pode ser tratada como infraestrutura principal do Ouroboros.
+A visão do Ouroboros não é construir o agente mais rápido. O objetivo é construir um agente que continue trabalhando sob condições ruins: pouca quota, modelos gratuitos, hardware modesto, interrupções, indisponibilidade e orçamento quase nulo. Latência é secundária; continuidade, qualidade acumulada e capacidade de retomar são prioritárias.
 
-A hipótese de **40 requisições por minuto** não foi confirmada nas fontes oficiais consultadas. Não foi encontrada uma tabela pública estável de quota, granularidade, headers ou política por modelo/conta. O número não deve ser hardcoded.
+A NVIDIA é especialmente relevante para esse objetivo porque fornece uma variedade grande de modelos sob uma chave gratuita de desenvolvimento, mesmo com quota baixa. O limite padrão observado para chaves gratuitas é **40 RPM por chave**. Fóruns da NVIDIA registram repetidamente contas com esse limite e pedidos de aumento. Há também orientação de que a camada gratuita é para prototipagem e não recebe aumento manual pelo fórum.
 
-A compatibilidade com OpenAI é parcial e varia por modelo. Streaming SSE aparece nos modelos inspecionados, mas `tools` foi documentado para Qwen3 Coder e não apareceu nos contratos consultados de GLM4.7 e Nemotron 3 Nano. `response_format`/JSON Schema também não foi documentado nesses três contratos. Logo, o Ouroboros precisa de perfis de capacidade por modelo, não de uma flag genérica “OpenAI-compatible”.
+O número de 40 RPM deve ser usado como **baseline operacional conservador**, mas não como garantia contratual eterna. O cliente deve continuar configurável e reagir a `429`, `Retry-After`, mudanças por modelo e alterações futuras da plataforma.
 
-O principal bloqueio atual é interno: o runtime possui integrações paralelas e fortemente acopladas para Groq, Z.AI, Gemini, Antigravity e Ollama. Há uma interface `ILLMProvider`, mas ela não governa os providers usados pelo CLI atual. Integrar a NVIDIA diretamente aumentaria a fragmentação.
+A arquitetura correta não é compartilhar uma única chave do mantenedor entre todos os usuários. Cada usuário informa sua própria chave — modelo BYOK, _bring your own key_. Consequentemente, quota, cooldown, métricas e circuit breaker devem ser isolados por credencial do usuário, nunca tratados como uma quota global do Ouroboros.
 
-### Decisão proposta
+## 2. Princípio de produto: continuidade acima de velocidade
 
-1. Não substituir Groq, Z.AI, Gemini ou Ollama pela NVIDIA agora.
-2. Consolidar primeiro um contrato mínimo e uma taxonomia comum de erros/capacidades.
-3. Criar depois uma prova de conceito isolada do endpoint hospedado, sem dados sensíveis e sem custo não aprovado.
-4. Somente após a prova, considerar um adapter `nvidia-nim` atrás de feature flag, desligado por padrão.
-5. Manter o provider existente como caminho primário e rollback imediato.
-6. Reabrir a decisão de produção apenas com licença, custos, regiões, retenção e SLA documentados.
+O Ouroboros deve otimizar para:
 
-## 2. Produto e contrato oficial
+1. **trabalho concluído por quota disponível**, não requisições por segundo;
+2. **progresso persistente**, não sessões rápidas e descartáveis;
+3. **serialização segura**, não paralelismo agressivo;
+4. **retomada após horas ou dias**, não timeout global curto;
+5. **degradação controlada**, não falha total quando um provider acaba;
+6. **qualidade acumulada**, usando planejamento, execução, teste e revisão em etapas espaçadas;
+7. **infraestrutura do usuário**, sem subsidiar todos com uma chave central.
 
-### 2.1 Produto considerado
+Uma tarefa pode levar horas. Isso não é falha, desde que:
 
-| Opção | Natureza | Uso apropriado | Conclusão para o Ouroboros |
-|---|---|---|---|
-| NVIDIA API Catalog / NIM hosted endpoints | Inferência hospedada pela NVIDIA, chave de desenvolvedor, APIs por modelo | Protótipos, pesquisa, desenvolvimento e testes | Candidato apenas experimental |
-| NIM auto-hospedado | Containers de inferência executados em infraestrutura NVIDIA | Controle de dados e operação própria | Fora do ciclo atual; exige GPU/infraestrutura e avaliação de licença |
-| NVIDIA AI Enterprise | Licença e suporte empresarial para produção | Produção, estabilidade e suporte | Só considerar mediante decisão explícita de custo |
+- o estado esteja persistido;
+- o próximo passo seja conhecido;
+- o usuário consiga pausar, retomar e cancelar;
+- a fila não repita trabalho já concluído;
+- os limites e motivos de espera estejam visíveis;
+- o resultado passe por validação antes de promoção.
 
-A FAQ oficial apresenta o catálogo como ambiente para construir POCs e recomenda migrar para compute próprio após o protótipo. Também diferencia o Developer Program, destinado a prototipagem, do NVIDIA AI Enterprise, exigido para produção.
+## 3. Produto, uso e limitações
 
-### 2.2 Autenticação e endpoint
+| Opção | Natureza | Adequação ao Ouroboros |
+|---|---|---|
+| NVIDIA Build / NIM hosted | Endpoints hospedados, chave de desenvolvedor e catálogo amplo | Boa opção BYOK para execução restrita e prototipagem pessoal |
+| NIM auto-hospedado | Containers executados em hardware do usuário | Alternativa futura para usuários com GPU/infraestrutura compatível |
+| NVIDIA AI Enterprise | Licença e suporte comercial | Fora do objetivo gratuito inicial; avaliar apenas quando houver demanda real |
 
-- Autenticação: token Bearer.
-- Endpoint de chat hospedado observado: `POST https://integrate.api.nvidia.com/v1/chat/completions`.
-- Formato: descrito como compatível com Chat Completions da OpenAI.
-- O catálogo também expõe APIs distintas para embeddings, reranking, visão e outros domínios; não se deve presumir um contrato único.
+A oferta gratuita não deve ser apresentada como SLA de produção. O Ouroboros pode, porém, ser deliberadamente útil em ambientes pessoais e de desenvolvimento sem fingir que o endpoint possui garantias empresariais.
 
-### 2.3 Gratuidade, créditos e produção
+## 4. Limite de 40 RPM
 
-**Confirmado:** membros do NVIDIA Developer Program possuem acesso gratuito a endpoints NIM para prototipagem e a NIMs auto-hospedáveis para pesquisa/desenvolvimento/experimentação, dentro das condições do programa.
+### 4.1 Estado da premissa
 
-**Confirmado:** o programa gratuito não é uma licença de produção. A FAQ define produção como atividade além de desenvolvimento, teste, pesquisa ou avaliação, incluindo servir usuários reais.
+A premissa foi atualizada para:
 
-**Confirmado:** a documentação consultada informa que NVIDIA AI Enterprise começa em aproximadamente USD 4.500 por GPU/ano ou cerca de USD 1 por GPU/hora na nuvem. Esses números são referência do licenciamento de produção, não preço por requisição do endpoint de desenvolvimento.
+> **40 RPM é o limite padrão operacional observado para chaves gratuitas NVIDIA Build/NIM em 2026.**
 
-**Risco:** os termos permitem encerrar promoções gratuitas/descontadas, aplicar cobranças padrão após o fim da promoção ou após exceder seus termos, e alterar/depreciar tecnologia sem aviso prévio.
+Evidências operacionais:
 
-### 2.4 Dados, privacidade e segurança
+- tópico de junho de 2026 registra `Current limit: 40 RPM` e resposta descrevendo o teto gratuito como limite rígido do sandbox;
+- múltiplos pedidos de aumento de `40 → 200 RPM` relatam o mesmo limite;
+- moderação informa que não há aumento de quota pela camada gratuita e que os limites podem depender de modelo, uso e tráfego.
 
-Os Termos de Acesso à Tecnologia concedem à NVIDIA, afiliadas e prestadores uma licença sobre conteúdo enviado para operar, dar suporte, proteger e melhorar produtos/serviços. Salvo acordo de produto em contrário, os termos também proíbem o envio de informação confidencial, dados pessoais/controlados/sensíveis e outras categorias protegidas.
+Portanto, a implementação deve:
 
-Consequências para o Ouroboros hospedado:
-
-- não enviar código privado, segredos, dados pessoais ou conteúdo acadêmico/confidencial;
-- aplicar redaction antes da requisição;
-- nunca registrar chave, header Authorization, prompt integral ou resposta sensível;
-- considerar retenção, residência regional e prazo de exclusão como **desconhecidos** até existir documento específico do produto/conta;
-- tratar o endpoint gratuito como ambiente externo de desenvolvimento, não como boundary confiável de produção.
-
-## 3. Modelos e capacidades observadas
-
-A lista do catálogo é dinâmica. A tabela abaixo registra somente o contrato oficial consultado em 2026-07-11, não uma garantia permanente.
-
-| Modelo inspecionado | Chat OpenAI-style | Streaming | Tool calling documentado | Structured output documentado | `max_tokens` de saída documentado |
-|---|---:|---:|---:|---:|---:|
-| `z-ai/glm4.7` | Sim | Sim, SSE | Não localizado no contrato consultado | Não localizado | 1–32768 |
-| `qwen/qwen3-coder-480b-a35b-instruct` | Sim | Sim, SSE | Sim, campo `tools` | Não localizado | 1–16384 |
-| `nvidia/nemotron-3-nano-30b-a3b` | Sim | Sim, SSE | Não localizado no contrato consultado | Não localizado | 1–32768 |
-
-Observações:
-
-- “Não localizado” não significa que o modelo nunca suporte a capacidade; significa que ela não deve ser assumida sem prova e contrato oficial atual.
-- `max_tokens` é limite de geração documentado, não prova do contexto total.
-- Os defaults variam por modelo, inclusive `stream`; o adapter deve enviar valores explícitos.
-- O endpoint pode devolver `202` em algumas operações/modelos, portanto o contrato normalizado precisa admitir execução assíncrona ou rejeitá-la explicitamente.
-- A ausência de `response_format` nos contratos analisados impede chamar JSON por prompt de “structured output garantido”.
-
-## 4. Limites operacionais
-
-### 4.1 Hipótese de 40 RPM
-
-**Resultado:** não confirmada.
-
-Nas páginas oficiais consultadas não foi encontrada uma tabela pública que estabeleça 40 RPM como limite geral ou específico do Ouroboros. Também não foi localizado contrato público estável para:
-
-- quota por conta, chave, modelo ou endpoint;
-- requests/minuto e tokens/minuto;
-- concorrência;
-- headers de limite;
-- janela de reset;
-- comportamento formal de `429`.
-
-Portanto:
-
-- não codificar `40` como constante;
-- tornar limites configuráveis por `provider + model + operation`;
-- capturar, sem conteúdo sensível, status e headers de resposta observados na POC;
+- usar `40 RPM` como default do perfil `nvidia-free`;
+- mirar **36 RPM** por padrão, equivalente a aproximadamente uma chamada a cada 1,67 segundo, preservando margem;
+- usar `maxConcurrency = 1` por credencial no modo restrito;
+- permitir override explícito quando a conta tiver outro contrato;
+- reduzir dinamicamente a cadência após `429`;
 - respeitar `Retry-After` quando presente;
-- classificar `429` como defesa genérica de gateway, sem alegar que é contrato NVIDIA confirmado.
+- persistir `nextEligibleAt`, para que reiniciar o daemon não apague o cooldown;
+- nunca executar load test para descobrir quota.
 
-### 4.2 Política de resiliência proposta
+### 4.2 Escopo da quota
 
-| Evento | Retry? | Política |
-|---|---:|---|
-| `401`/`403` | Não | falhar como `authentication`/`authorization`; nunca trocar chave automaticamente |
-| `400`/`422` | Não | falhar como `invalid_request`; corrigir payload/capability profile |
-| `408`, rede transitória | Sim | falhar como `network_error` quando não houver resposta HTTP; backoff exponencial com full jitter e limite de tentativas |
-| `429` | Sim, controlado | honrar `Retry-After`; não multiplicar carga; abrir circuito se recorrente |
-| `5xx` transitório | Sim | backoff+jitter; fallback após orçamento de tentativas |
-| timeout/cancelamento | Não automaticamente | distinguir timeout de cancelamento do usuário; propagar `AbortSignal` |
+O limiter deve ser chaveado, no mínimo, por:
 
-Circuit breaker recomendado: chaveado por `providerId + modelId + operation`. Um estado local em memória é suficiente enquanto houver um único daemon. Só adotar estado distribuído quando houver múltiplos processos/instâncias concorrentes.
+```text
+providerId + credentialScope
+```
 
-## 5. Inventário da arquitetura atual
+E pode possuir buckets subordinados por:
 
-### 5.1 Chamadas diretas e acoplamentos
+```text
+providerId + credentialScope + modelId + operation
+```
 
-| Área | Arquivo | Provider/contrato atual | Riscos relevantes |
-|---|---|---|---|
-| Classificação de intenção | `cli/src/concierge/ConciergeClient.ts` | `groq-sdk`, modelo hardcoded | sem contrato compartilhado; fallback genérico; `console.error` |
-| Agente com tools | `cli/src/providers/direct-zai.ts` | HTTP OpenAI-style da Z.AI | modelo/base URL hardcoded; sem retry/rate limit/circuit breaker |
-| Loop de agente | `cli/src/providers/agent-loop.ts` | depende concretamente de `DirectZAIProvider` | não permite substituir provider sem refatorar o loop |
-| Review multi-modelo | `cli/src/orchestration/strategies/MultiModelReviewStrategy.ts` | fetch direto OpenAI-style | default de modelo Gemini combinado com endpoint Z.AI; falha pode virar heurística silenciosa; já coberto parcialmente por #36 |
-| Gemini | `cli/src/runtime/GeminiDirectAPI.ts` | REST específica do Google | tipos/modelos hardcoded; chave em query string; sem retry/rate limit |
-| Delegação daemon | `cli/src/daemon/rpc-gateway.ts` | roteamento por strings `gemini`, `glm`, `jules`, `antigravity` | Z.AI acoplada a wave/parser; carregamento de segredo fragmentado |
-| Inferência local | `cli/src/inference/LocalInferenceProvider.ts` | Ollama HTTP | retries e métricas locais, mas contrato exclusivo de Ollama |
-| Registry/router local | `cli/src/inference/ModelRegistry.ts`, `ModelRouter.ts`, `InferenceSubsystem.ts` | `LocalInferenceProvider` e `ollamaModel` | capacidades/roteamento não incluem dimensão de provider remoto |
-| Porta conceitual | `src/core/ports/ILLMProvider.ts` | interface mínima `chat()` | não governa os providers ativos do CLI; insuficiente para streaming, abort, usage e erros |
-| Configuração | `cli/src/utils/env-loader.ts`, `.env.example` | Groq/Google como obrigatórios | ausência de registry central de credenciais/providers; Z.AI carregada em outros pontos |
+`credentialScope` é um identificador interno opaco da chave do usuário. Não é a chave, não contém prefixo suficiente para reconstruí-la e pode ser derivado por hash com salt local.
 
-### 5.2 Achados críticos
+A regra conservadora para NVIDIA gratuita é um bucket superior de 40 RPM por credencial, mesmo quando modelos diferentes forem usados. Perfis inferiores podem ficar mais restritivos quando a POC ou headers indicarem limites por modelo/operação.
 
-1. Existem ao menos três arquiteturas de inferência em paralelo: core/ports, CLI providers remotos e subsistema local/Ollama.
-2. Compatibilidade OpenAI é usada como detalhe de transporte, mas não existe perfil formal de capacidades por modelo.
-3. Timeouts, retries, fallback, métricas e segredo são implementados de formas diferentes em cada integração.
-4. O `ModelRouter` possui circuit breaker e fallback somente no domínio de modelos locais e não controla Z.AI/Groq/Gemini.
-5. O `MultiModelReviewStrategy` já possui uma incoerência provider/model e deve ser corrigido pela #36, sem ampliar aquela issue para NVIDIA.
-6. Integrar NVIDIA diretamente em `direct-zai.ts` ou trocar apenas `baseUrl` criaria compatibilidade aparente e falhas silenciosas em tools, JSON e defaults.
+## 5. BYOK: cada usuário usa a própria chave
 
-## 6. Compatibilidade com os fluxos do Ouroboros
+### 5.1 Decisão
 
-| Necessidade atual | NVIDIA hosted | Situação |
+O Ouroboros não fornecerá uma chave NVIDIA compartilhada para todos os usuários.
+
+Cada usuário ou workspace configura sua própria credencial. Isso significa:
+
+- a quota de um usuário não consome a quota de outro;
+- erros `401`, `403` e `429` são atribuídos ao escopo correto;
+- métricas são separadas por identificador opaco de credencial;
+- fallback não pode trocar silenciosamente para a chave de outra pessoa;
+- nenhuma chave do mantenedor é distribuída no código, instalador, frontend ou documentação.
+
+### 5.2 Tratamento seguro
+
+A chave bruta:
+
+- nunca entra no repositório;
+- nunca aparece em logs, eventos, traces, métricas ou snapshots;
+- nunca é persistida na fila ou no SQLite de tarefas;
+- deve ficar em variável de ambiente, memória do processo ou secret store seguro;
+- só pode ser persistida quando existir armazenamento de segredo explicitamente projetado para isso;
+- deve ser redigida de mensagens de erro e dumps de request.
+
+A configuração comum referencia `credentialScope`/`credentialRef`, não o valor da chave.
+
+## 6. Capacidades por modelo
+
+A compatibilidade OpenAI é apenas de transporte. Capacidades devem ser declaradas por `provider + model`.
+
+| Modelo inspecionado | Chat | Streaming | Tools documentadas | Structured output garantido |
+|---|---:|---:|---:|---:|
+| `z-ai/glm4.7` | Sim | Sim | Não localizado no contrato consultado | Não localizado |
+| `qwen/qwen3-coder-480b-a35b-instruct` | Sim | Sim | Sim | Não localizado |
+| `nvidia/nemotron-3-nano-30b-a3b` | Sim | Sim | Não localizado no contrato consultado | Não localizado |
+
+“Não localizado” significa que a capacidade não pode ser presumida. JSON solicitado por prompt continua sendo texto não confiável e precisa de validação local conservadora.
+
+## 7. Inventário da arquitetura atual
+
+| Área | Implementação atual | Problema para BYOK durável |
 |---|---|---|
-| Chat simples | Compatível nos modelos analisados | Favorável |
-| Streaming SSE | Documentado | Favorável, requer parser robusto e cancelamento |
-| Tool calling do AgentLoop | Modelo-específico | Qwen3 Coder é candidato; não assumir para GLM/Nemotron |
-| JSON para routing/review | Prompt JSON possível; schema garantido não documentado | Insuficiente para gate crítico sem validação conservadora |
-| Usage/tokens | Resposta OpenAI-style pode fornecer usage, mas deve ser validada por modelo | POC necessária |
-| Embeddings/reranking | Existem APIs específicas no catálogo | Não usar o adapter de chat como abstração universal |
-| AbortSignal/timeout | Implementável no cliente | Favorável |
-| Fallback | Responsabilidade do Ouroboros | Requer contrato e roteador comuns |
-| Custos/orçamento | Oferta de dev não equivale a produção; quota pública não confirmada | Bloqueador para default/produção |
-| Dados confidenciais | Termos gerais não permitem no uso analisado sem acordo específico | Bloqueador para tarefas sensíveis |
+| Concierge | `groq-sdk` direto | modelo e credencial fora de um registry comum |
+| Agente com tools | `DirectZAIProvider` concreto | loop acoplado a um provider |
+| Gemini | REST própria | timeout/configuração específicos |
+| Review | fetch OpenAI-style direto | provider/model incoerentes e fallback silencioso, tratado em #36 |
+| Inferência local | `LocalInferenceProvider`/Ollama | arquitetura separada dos providers remotos |
+| RPC | strings `gemini`, `glm`, `jules`, `antigravity` | seleção não baseada em capacidades/credenciais |
+| Fila | `PriorityTaskQueue` com snapshot JSON | não possui `nextEligibleAt`, espera de quota ou estado `blocked_by_quota` |
+| Scheduler | `EvolutionScheduler` | possui budget e frequência, mas não governa quota por credencial/provider |
+| Porta conceitual | `ILLMProvider` | insuficiente para streaming, usage, abort, erro e escopo de credencial |
 
-## 7. Matriz de alternativas
+O projeto já possui peças úteis — fila persistível, deduplicação, budget, scheduler e circuit breaker — mas elas ainda não formam uma máquina de execução durável orientada por quota.
 
-Escala: 1 = ruim/alto risco; 5 = favorável.
+## 8. Arquitetura alvo
 
-| Alternativa | Custo inicial | Disponibilidade previsível | Complexidade | Lock-in | Segurança de dados | Testabilidade | Nota |
-|---|---:|---:|---:|---:|---:|---:|---|
-| NVIDIA principal | 3 | 1 | 2 | 2 | 1 | 3 | Rejeitar neste ciclo |
-| NVIDIA fallback global | 3 | 2 | 2 | 3 | 2 | 3 | Ainda amplo demais |
-| NVIDIA opcional por configuração | 4 | 3 | 3 | 4 | 3 | 4 | Recomendado após contrato/POC |
-| NVIDIA para tarefa/modelo específico | 4 | 3 | 3 | 4 | 3 | 4 | Melhor primeiro rollout |
-| Não adotar | 5 | 5 | 5 | 5 | 5 | 5 | Seguro, mas perde evidência prática |
-| NIM auto-hospedado agora | 1 | 3 | 1 | 2 | 5 | 3 | Fora do escopo/hardware atual |
-
-## 8. Premissas: confirmadas, rejeitadas e desconhecidas
-
-| Premissa | Estado | Evidência/consequência |
-|---|---|---|
-| “A NVIDIA é gratuita para desenvolvedores” | **Confirmada com qualificação** | gratuita para prototipagem/pesquisa/dev/testes no Developer Program; não é promessa de produção |
-| “O limite é 40 RPM” | **Não confirmada** | não localizada em fonte oficial consultada; proibir hardcode |
-| “É OpenAI-compatible” | **Confirmada parcialmente** | endpoint e formato de chat compatíveis; campos/capacidades variam por modelo |
-| “Todos os modelos têm tools” | **Rejeitada como premissa** | `tools` apareceu no Qwen3 Coder, não nos outros contratos analisados |
-| “JSON estruturado é garantido” | **Não confirmada** | `response_format`/schema não localizado nos três contratos |
-| “Pode substituir providers atuais” | **Rejeitada neste ciclo** | contrato de uso, quotas desconhecidas e fragmentação interna tornam a troca arriscada |
-| “Um limiter único de 40 RPM resolve” | **Rejeitada** | granularidade desconhecida; política deve ser configurável por provider/model/operação |
-| Retenção de prompts/outputs | **Desconhecida** | exigir documento específico antes de dados sensíveis |
-| Data residency/região do endpoint | **Desconhecida** | não assumir residência no Brasil/EUA |
-| SLA do endpoint gratuito | **Ausente para o caso analisado** | Developer Program não oferece estabilidade/suporte empresarial |
-
-## 9. Arquitetura alvo mínima
-
-Evitar uma abstração universal excessiva. O primeiro contrato deve cobrir apenas chat/streaming/tools usados pelo runtime.
+### 8.1 Contrato de provider
 
 ```ts
 interface ModelProvider {
   readonly id: string;
   capabilities(modelId: string): ModelCapabilities;
-  chat(request: ChatRequest, signal?: AbortSignal): Promise<ChatResult>;
-  stream?(request: ChatRequest, signal?: AbortSignal): AsyncIterable<ChatChunk>;
+  chat(request: ChatRequest, context: ProviderCallContext): Promise<ChatResult>;
+  stream?(request: ChatRequest, context: ProviderCallContext): AsyncIterable<ChatChunk>;
+}
+
+interface ProviderCallContext {
+  credentialRef: string;
+  credentialScope: string;
+  signal?: AbortSignal;
+  deadlineAt?: string;
+  taskId: string;
+  stepId: string;
 }
 ```
 
-Elementos obrigatórios do contrato normalizado:
+O contrato deve normalizar chat, streaming opcional, tools opcionais, usage, finish reason, cancelamento e erros. Embeddings, reranking, visão e agentes externos continuam em portas específicas.
 
-- `providerId`, `modelId`, operação e capability profile;
-- mensagens e tools normalizadas;
-- timeout externo e `AbortSignal` propagável;
-- conteúdo, tool calls, finish reason e usage;
-- status HTTP e headers permitidos para diagnóstico, sem segredo;
-- taxonomia: `authentication`, `authorization`, `invalid_request`, `rate_limited`, `timeout`, `cancelled`, `network_error`, `unavailable`, `provider_error`, `malformed_response`;
-- `retryable`, `retryAfterMs` e `fallbackAllowed` explícitos;
-- validação de resposta antes de entregar a gates críticos.
+### 8.2 Taxonomia de erros
 
-`network_error` cobre falhas locais anteriores a qualquer resposta HTTP, como DNS, conexão recusada e queda de socket. Ele é diferente de indisponibilidade HTTP e de erro interno do provider.
+- `authentication`
+- `authorization`
+- `invalid_request`
+- `rate_limited`
+- `timeout`
+- `cancelled`
+- `network_error`
+- `unavailable`
+- `provider_error`
+- `malformed_response`
 
-Perfis de modelo devem declarar capacidades, não inferi-las do nome do provider:
+Cada erro informa `retryable`, `retryAfterMs`, `fallbackAllowed` e o escopo opaco da credencial.
 
-```ts
-interface ModelCapabilities {
-  chat: boolean;
-  streaming: boolean;
-  tools: boolean;
-  structuredOutput: 'none' | 'json_object' | 'json_schema';
-  embeddings: boolean;
-  reranking: boolean;
-  vision: boolean;
-  maxOutputTokens?: number;
-}
+### 8.3 Scheduler restrito
+
+O scheduler precisa tratar espera como estado normal:
+
+```text
+pending
+ready
+running
+waiting_for_quota
+waiting_for_provider
+waiting_for_budget
+waiting_for_human
+completed
+failed_terminal
+cancelled
 ```
 
-## 10. Plano incremental e reversível
+Cada etapa persiste:
 
-### Fase A — contrato e inventário
+- input normalizado ou referência segura;
+- output validado ou hash/referência;
+- número de tentativas;
+- provider/modelo escolhido;
+- `credentialScope` opaco;
+- `nextEligibleAt`;
+- motivo de bloqueio;
+- checkpoint anterior e próxima ação.
 
-- consolidar o contrato mínimo sem mudar o provider padrão;
-- adaptar primeiro um provider existente como prova do contrato;
-- centralizar resolução de configuração e segredo;
-- criar testes de contrato com transport fake.
+Timeout de uma chamada não deve virar timeout da tarefa inteira. A tarefa pode voltar à fila e continuar mais tarde.
 
-### Fase B — POC NVIDIA isolada
+## 9. Estratégias para produzir qualidade com pouca quota
 
-- script/teste não importado pelo runtime principal;
-- chave apenas por `NVIDIA_API_KEY`;
-- modelo selecionado explicitamente;
-- chamada simples e streaming;
-- tool calling apenas em modelo cujo contrato documente `tools`;
-- JSON validado localmente;
-- credencial inválida, timeout, cancelamento e `429` simulado;
-- registrar status/headers de limite observados sem prompt/segredo;
-- nenhuma chamada paga ou teste de carga.
+- concorrência 1 por chave no perfil restrito;
+- agrupar contexto antes de chamar o modelo;
+- usar uma chamada maior e bem preparada em vez de várias chamadas impulsivas;
+- deduplicar subtarefas e perguntas equivalentes;
+- cachear respostas reutilizáveis com invalidação explícita;
+- executar parsing, busca local, testes, lint e transformações determinísticas sem LLM;
+- usar modelo local para classificação, sumarização e embeddings quando possível;
+- reservar o modelo remoto mais forte para planejamento, síntese, correções difíceis e revisão final;
+- limitar loops de reflexão e revisão por orçamento de valor esperado;
+- fazer checkpoint antes e depois de cada chamada externa;
+- pausar em vez de falhar quando a quota acabar.
 
-### Fase C — adapter experimental
+## 10. Resiliência e backpressure
 
-- feature flag `NVIDIA_NIM_ENABLED=false` por padrão;
-- allowlist de tarefas não sensíveis;
-- profile por modelo;
-- fallback para provider atual;
-- orçamento e limites configuráveis;
-- métricas e redaction.
+| Evento | Comportamento |
+|---|---|
+| `401`/`403` | bloquear somente a credencial afetada e pedir correção ao usuário |
+| `400`/`422` | não repetir; corrigir payload/capability profile |
+| `429` | persistir cooldown, respeitar `Retry-After`, reduzir ritmo e reagendar |
+| rede/DNS/socket | `network_error`, backoff com jitter e retomada |
+| `5xx` | retry limitado, circuit breaker e espera |
+| cancelamento | interromper chamada e marcar passo como cancelado, sem retry |
+| daemon reiniciado | restaurar fila, cooldowns e checkpoints |
+| provider indisponível | usar fallback permitido ou aguardar, conforme política da tarefa |
 
-### Fase D — decisão de rollout
+Não existe retry infinito. Toda política possui limite de tentativas por etapa, limite de tempo ativo, orçamento de tokens/custo e opção de espera longa.
 
-Só liberar além de experimento após Pedro aprovar:
+## 11. Estratégia de adoção
 
-- finalidade exata;
-- custo/licença;
-- limites observados e termos atualizados;
-- região/retenção;
-- modelo e capacidades verificadas;
-- rollback testado.
+1. consolidar contrato mínimo com `credentialScope`;
+2. centralizar BYOK e redaction;
+3. criar scheduler/limiter durável para ambientes restritos;
+4. executar POC NVIDIA isolada usando chave do próprio usuário;
+5. validar 40 RPM, `429`, headers, streaming, cancelamento e retomada;
+6. implementar adapter NVIDIA opcional;
+7. permitir seleção por configuração e capacidade;
+8. medir tarefas concluídas, não apenas latência;
+9. manter rollback removendo o provider da configuração.
 
-## 11. Plano de testes
+## 12. Métricas corretas para esta visão
 
-### Contrato
+Além de latência e erros, medir:
 
-- resposta simples normalizada;
-- usage ausente/presente;
-- tool calls válidas e malformadas;
-- streaming fragmentado entre chunks e `[DONE]`;
-- resposta vazia/malformada;
-- `202` tratado ou rejeitado explicitamente.
+- tarefas concluídas por 100 chamadas;
+- chamadas desperdiçadas por retry evitável;
+- tempo total em `waiting_for_quota`;
+- retomadas bem-sucedidas após reinício;
+- passos reutilizados por cache/deduplicação;
+- percentual de trabalho feito localmente;
+- falhas terminais versus pausas recuperáveis;
+- qualidade/gates aprovados por tarefa concluída;
+- consumo por `credentialScope`, sem revelar identidade ou chave.
 
-### Falhas
+O sucesso não é “respondeu em cinco segundos”. É “continuou avançando e entregou algo verificável sem estourar os recursos do usuário”.
 
-- `401`, `403`, `422`, `429`, `500`, `503`;
-- DNS, conexão recusada e queda de socket classificados como `network_error`;
-- rede desconectada;
-- timeout;
-- cancelamento pelo chamador;
-- `Retry-After` em segundos e data;
-- backoff com jitter determinístico via clock/RNG fake;
-- circuito abre, fica half-open e fecha após sucesso.
+## 13. Premissas atualizadas
 
-### Segurança
+| Premissa | Estado |
+|---|---|
+| Chave gratuita usa 40 RPM | Confirmada como baseline operacional observado em 2026 |
+| 40 RPM é contrato imutável para toda conta/modelo | Não confirmado; manter configuração e adaptação dinâmica |
+| Uma chave do projeto atenderá todos | Rejeitado; arquitetura é BYOK |
+| Paralelismo alto é necessário | Rejeitado; continuidade pode usar serialização |
+| Esperar quota é falha | Rejeitado; espera é estado persistente normal |
+| NVIDIA deve substituir todos os providers | Rejeitado; será uma opção entre providers do usuário |
+| Um agente lento não é útil | Rejeitado; qualidade acumulada e retomada são objetivos centrais |
 
-- chave não aparece em logs, eventos, erros ou snapshots;
-- headers são allowlisted;
-- prompt/resposta não são logados por padrão;
-- redaction de padrões de segredo;
-- provider experimental rejeita tarefas marcadas como sensíveis.
+## 14. Fontes
 
-### Fallback
-
-- primário saudável não chama NVIDIA;
-- erro não retryable não gera loop;
-- erro transitório respeita orçamento de retries;
-- fallback registra motivo e provider/model usados;
-- desligar feature flag restaura caminho anterior sem migração de dados.
-
-## 12. Observabilidade e rollback
-
-Métricas mínimas, sem conteúdo:
-
-- requests, sucessos e erros por `provider/model/operation`;
-- latência p50/p95/p99;
-- tokens de entrada/saída quando disponíveis;
-- retries, `429`, timeouts e circuit-open;
-- fallback count e motivo;
-- custo estimado somente quando houver tabela de preço aprovada.
-
-Rollback:
-
-1. desligar `NVIDIA_NIM_ENABLED`;
-2. retirar o modelo da allowlist;
-3. manter provider anterior como default;
-4. não persistir estado específico da NVIDIA;
-5. remover o adapter sem alterar histórico, memória ou formato de sessão.
-
-## 13. Decomposição recomendada
-
-Ordem de dependência:
-
-1. contrato mínimo de provider + capability profiles + taxonomia de erros;
-2. configuração/segredos centralizados e redaction;
-3. POC NVIDIA isolada e sem custo inesperado;
-4. resiliência genérica: retry, jitter, limiter configurável e circuit breaker;
-5. adapter NVIDIA experimental e feature flag;
-6. testes de contrato, métricas e runbook de rollout/rollback.
-
-Todas as issues de implementação devem permanecer bloqueadas até aprovação de Pedro e até o baseline da épica #34 permitir expansão arquitetural.
-
-## 14. Questões ainda abertas
-
-- Quais quotas são aplicadas à conta/chave/modelo real do projeto?
-- Quais headers de rate limit são retornados na conta de Pedro?
-- Existe retenção específica para API Catalog/NIM hosted além dos termos gerais?
-- Qual região processa e armazena as solicitações?
-- O modelo candidato mantém tool calling e usage com estabilidade suficiente?
-- A conta exige billing ou apenas Developer Program para a POC?
-
-Essas questões exigem conta/chave e, quando aplicável, confirmação contratual. Não foram simuladas como fatos.
-
-## 15. Fontes oficiais
-
-Consultadas em 2026-07-11:
+Documentação oficial consultada:
 
 - NVIDIA NIM — General FAQ: https://docs.api.nvidia.com/nim/docs/product
 - NVIDIA NIM — LLM APIs: https://docs.api.nvidia.com/nim/reference/llm-apis
-- GLM4.7 API contract: https://docs.api.nvidia.com/nim/reference/z-ai-glm4-7-infer
-- Qwen3 Coder API contract: https://docs.api.nvidia.com/nim/reference/qwen-qwen3-coder-480b-a35b-instruct-infer
-- Nemotron 3 Nano API contract: https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3-nano-30b-a3b-infer
-- NVIDIA Technology Access Terms of Use: https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA_Technology_Access_TOU.pdf
+- GLM4.7 API: https://docs.api.nvidia.com/nim/reference/z-ai-glm4-7-infer
+- Qwen3 Coder API: https://docs.api.nvidia.com/nim/reference/qwen-qwen3-coder-480b-a35b-instruct-infer
+- Nemotron 3 Nano API: https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3-nano-30b-a3b-infer
+- NVIDIA Technology Access Terms: https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA_Technology_Access_TOU.pdf
 
-## 16. Conclusão
+Evidência operacional de 40 RPM:
 
-**Recomendação final: experimentar, não migrar.**
+- https://forums.developer.nvidia.com/t/request-to-increase-nvidia-nim-api-rate-limit-from-40-rpm-to-250-300-rpm/372594
+- https://forums.developer.nvidia.com/t/request-for-nvidia-nim-api-rate-limit-increase-40-200-rpm/369472
+- https://forums.developer.nvidia.com/t/api-rate-limit-increase-for-nvidia-nim/366043
 
-A NVIDIA oferece um catálogo tecnicamente interessante e um transporte familiar, mas a oferta hospedada gratuita é explicitamente orientada a desenvolvimento, com limites operacionais não confirmados, termos incompatíveis com conteúdo sensível e diferenças de capacidade por modelo. O Ouroboros deve primeiro corrigir sua própria fragmentação de providers. Depois disso, uma POC pequena com Qwen3 Coder ou outro modelo de capacidade documentada pode gerar evidência real sem criar dependência estrutural.
+## 15. Conclusão
+
+A NVIDIA não deve ser descartada por ser lenta ou limitada. Essas limitações são precisamente o tipo de ambiente que o Ouroboros pretende dominar.
+
+A recomendação revisada é: **adotar NVIDIA NIM como provider opcional BYOK, com perfil restrito de 40 RPM, execução serial, fila durável, checkpoints e retomada**.
+
+A arquitetura não promete rapidez. Ela promete não desperdiçar a pouca capacidade disponível e continuar construindo, passo a passo, com os recursos que cada usuário possui.
