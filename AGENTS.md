@@ -8,9 +8,32 @@ Essential guidelines for AI agents working in the Ouroboros repository.
 
 ## 🚀 Essential Commands
 
+### Repository validation (baseline — issue #35)
+
+**Use this for PR confidence.** Full details: [`docs/BASELINE.md`](docs/BASELINE.md).
+
+```bash
+# Bun 1.3.9+ required (CI pins 1.3.9)
+bun install --frozen-lockfile
+cd web && bun install --frozen-lockfile && cd ..
+
+# Single command: install integrity + runtime compile + web build + mandatory tests
+bun run check
+
+# Or stepwise:
+bun run check:install   # frozen lockfiles; fail if tree mutates
+bun run check:runtime   # root tsc (CLI/runtime/scripts)
+bun run check:web       # web/ production build
+bun run check:tests     # mandatory unit tests (prints quarantine list)
+```
+
+CI: `.github/workflows/ci.yml` runs the same gate on `pull_request` and `push` to `main` (no API keys).
+
+Quarantined suites (not executed by `check:tests`, **not** counted as green): see `scripts/quarantine-manifest.json`. Recovery debt: issue **#41** (`tracking_issue`).
+
 ### Development & Building
 ```bash
-# Build TypeScript
+# Build TypeScript (runtime/CLI only — does NOT build web/)
 bun run build
 
 # Main TUI entry point
@@ -21,11 +44,18 @@ bun run daemon
 
 # Initial setup wizard
 bun run setup
+
+# Web UI (separate package)
+cd web && bun run dev     # development
+cd web && bun run build   # production (also: bun run check:web from root)
 ```
 
 ### Testing
 ```bash
-# Run all tests
+# Mandatory unit gate (preferred)
+bun run check:tests
+
+# Raw suite (includes quarantined files — may fail)
 bun run test
 
 # Run specific test file
@@ -310,7 +340,16 @@ test-glm-integration.test.ts: 1 pass, 0 fail ✅
 
 - `cli/src/ports/ITool.ts` — interface `ITool<TInput, TOutput>` usada pelo `SandboxTool`
 
-### Conhecidos não corrigidos (pré-existentes)
+### Conhecidos não corrigidos / quarentena (baseline #35)
 
-- `SandboxE2E.test.ts` — testes E2E criam seu próprio venv temporário em `temp_e2e_test/`; o setup interno desse venv falha (comportamento de design, não regressão)
-- `SandboxE2E.test.ts` — `Cannot access 'existsSync' before initialization` — bug de ordem de inicialização no próprio arquivo de teste
+Authoritative list: `scripts/quarantine-manifest.json` and `docs/BASELINE.md`.  
+Recovery tracking: **#41** (not #35 after baseline closes).
+
+- `SandboxE2E.test.ts` — TDZ em `existsSync` + venv Python ausente no temp dir (environment + test bug)
+- `SandboxRunner.test.ts`, `SandboxEscapeTests.test.ts`, `SandboxResourceLimits.test.ts`, `SandboxSecurity.test.ts` — dependem de `.ouroboros/venv`; incompatíveis com CI limpa sem setup hermético
+- `AntiVibeWorkflow.test.ts`, `PromotionManager.test.ts`, `QualityGateRegistry.test.ts` — falhas parciais de produto/contrato de status (não removidos; fora do gate obrigatório)
+- `SkillLoader.test.ts` — path externo fora do repositório (`engenharia reversa /AionUi/...`)
+- `tool-executor.test.ts` — arquivo com corrupção de merge (sintaxe inválida)
+- `web/.../mission-control-store.test.ts` — 2 asserções desalinhadas com o store atual
+
+**Não** use `bun run test` sozinho como prova de integridade do repositório: use `bun run check`.

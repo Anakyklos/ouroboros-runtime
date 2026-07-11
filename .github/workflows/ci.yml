@@ -1,0 +1,62 @@
+# Repository baseline CI — issue #35
+# Validates install, runtime compile, web compile, and mandatory unit tests.
+# No API keys, no paid model calls, no repository mutation.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  baseline:
+    name: Baseline (runtime + web + tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.9"
+
+      - name: Install root dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Install web dependencies (frozen lockfile)
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Verify install did not mutate tracked files
+        run: |
+          set -euo pipefail
+          if ! status="$(git status --porcelain)"; then
+            echo "✖ git status failed — cannot verify tree integrity"
+            exit 1
+          fi
+          if [ -n "$status" ]; then
+            echo "✖ Install changed tracked files:"
+            printf '%s\n' "$status"
+            exit 1
+          fi
+
+      - name: Check runtime / CLI (TypeScript)
+        run: bun run check:runtime
+
+      - name: Check web application build
+        run: bun run check:web
+
+      - name: Check mandatory unit tests
+        run: bun run check:tests

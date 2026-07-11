@@ -6,6 +6,10 @@
   "bin": {
     "ouroboros": "./bin/ouroboros.js"
   },
+  "packageManager": "bun@1.3.9",
+  "engines": {
+    "bun": ">=1.3.9"
+  },
   "scripts": {
     "setup": "tsx setup_ouroboros.ts",
     "daemon": "tsx cli/src/daemon/main.ts",
@@ -14,6 +18,11 @@
     "test:bridge": "tsx scripts/test-bridge.ts",
     "run:agent": "tsx scripts/run_agent.ts",
     "build": "tsc",
+    "check:install": "bun run scripts/check-install.ts",
+    "check:runtime": "tsc",
+    "check:web": "bun run --cwd web build",
+    "check:tests": "bun run scripts/run-mandatory-tests.ts",
+    "check": "bun run check:install && bun run check:runtime && bun run check:web && bun run check:tests",
     "health": "bun run scripts/health-check.ts",
     "start:headless": "bun run cli/src/main.ts",
     "agy": "bun run scripts/agy-bridge.ts",

@@ -43,7 +43,6 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
     ? waves.find(w => w.id === selectedWaveId)?.tasks.find(t => t.id === selectedTaskId) 
     : null;
   
-  const daemonConnected = useMissionControlStore((state) => state.daemonConnected);
   const activeQuadrant = useMissionControlStore((state) => state.activeQuadrant);
   const viewMode = useMissionControlStore((state) => state.viewMode);
   const setActiveQuadrant = useMissionControlStore((state) => state.setActiveQuadrant);

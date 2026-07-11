@@ -1,4 +1,11 @@
 /**
+ * QUARANTINED — excluded from `bun run check:tests` (baseline gate).
+ * Recovery debt: https://github.com/RenyEnnos/ouroboros-runtime/issues/41
+ * Manifest: scripts/quarantine-manifest.json
+ * Do not delete/rename this file to make CI green; fix or keep listed in the manifest.
+ */
+
+/**
  * 🔄 Anti-Vibe Workflow Integration Tests
  *
  * End-to-end tests for the complete Anti-Vibe Protocol workflow:
