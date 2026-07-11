@@ -15,6 +15,24 @@ import type { BudgetPort } from '../../ports/budget.port.js';
 import { z } from 'zod';
 
 // ============================================================
+// Schemas
+// ============================================================
+
+const findingSchema = z.object({
+    severity: z.enum(['error', 'warning', 'info']),
+    category: z.string(),
+    message: z.string(),
+    suggestion: z.string().optional(),
+    location: z.string().optional(),
+});
+
+const reportSchema = z.object({
+    verdict: z.enum(['approved', 'changes_requested', 'rejected']),
+    summary: z.string(),
+    findings: z.array(findingSchema),
+});
+
+// ============================================================
 // Types
 // ============================================================
 
@@ -250,21 +268,6 @@ Please review the code above and provide your assessment.`;
     }
 
     private parseReviewResponse(content: string): ReviewReport {
-        // Define Zod schema for strict validation
-        const findingSchema = z.object({
-            severity: z.enum(['error', 'warning', 'info']),
-            category: z.string(),
-            message: z.string(),
-            suggestion: z.string().optional(),
-            location: z.string().optional(),
-        });
-
-        const reportSchema = z.object({
-            verdict: z.enum(['approved', 'changes_requested', 'rejected']),
-            summary: z.string(),
-            findings: z.array(findingSchema),
-        });
-
         try {
             // Try to extract JSON from response (may be wrapped in markdown code block)
             const jsonMatch = content.match(/\{[\s\S]*\}/);
