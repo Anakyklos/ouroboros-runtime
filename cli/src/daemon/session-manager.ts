@@ -5,6 +5,8 @@
  * Cada sessão representa uma execução de agente que pode ser pausada/resumida.
  */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { StoragePort, Session, SessionSummary, SessionMemory, SessionCheckpoint } from '../ports/storage.port.js';
 import type { EventBus } from './event-bus.js';
 import { Orchestrator, createTask } from '../orchestration/index.js';
@@ -21,6 +23,12 @@ import {
     buildMetric,
     unavailableMetric,
 } from './daemon-controls.js';
+
+interface PersistedDaemonOps {
+    mode: DaemonMode;
+    braked: boolean;
+    updatedAt: string;
+}
 
 interface WaveState {
     id: string;
@@ -84,13 +92,25 @@ export class SessionManager {
     /** Operational mode — backend source of truth (issue #37). */
     private mode: DaemonMode = "running";
 
-    /** True after an emergency brake that left work interrupted; cleared when mode returns to running. */
+    /** True after an emergency brake; blocks new work until mode returns to running. */
     private braked = false;
 
-    constructor(storage: StoragePort, eventBus: EventBus, apiKey?: string, config?: SessionManagerConfig) {
+    /** Path for durable mode/brake flags (survives process restart). */
+    private readonly opsStatePath: string;
+
+    constructor(
+        storage: StoragePort,
+        eventBus: EventBus,
+        apiKey?: string,
+        config?: SessionManagerConfig & { opsStatePath?: string }
+    ) {
         this.storage = storage;
         this.eventBus = eventBus;
         this.apiKey = apiKey;
+        this.opsStatePath =
+            config?.opsStatePath ??
+            process.env.OUROBOROS_OPS_PATH ??
+            join(process.cwd(), ".ouroboros", "daemon-ops.json");
         this.maxCleanupIterations = config?.maxCleanupIterations ?? DEFAULT_SESSION_MANAGER_CONFIG.maxCleanupIterations!;
         this.cleanupTimeoutMs = config?.cleanupTimeoutMs ?? DEFAULT_SESSION_MANAGER_CONFIG.cleanupTimeoutMs!;
         // Reject non-positive / non-finite intervals — setInterval(0) burns CPU and hammers SQLite.
@@ -107,6 +127,54 @@ export class SessionManager {
             config.maxCheckpoints >= 1
                 ? Math.floor(config.maxCheckpoints)
                 : DEFAULT_SESSION_MANAGER_CONFIG.maxCheckpoints!;
+
+        this.loadOpsState();
+    }
+
+    private loadOpsState(): void {
+        try {
+            if (!existsSync(this.opsStatePath)) return;
+            const raw = JSON.parse(readFileSync(this.opsStatePath, "utf-8")) as PersistedDaemonOps;
+            if (isDaemonMode(raw.mode)) this.mode = raw.mode;
+            this.braked = Boolean(raw.braked);
+            if (this.braked) this.mode = "pause";
+        } catch {
+            // corrupt file → keep defaults
+        }
+    }
+
+    private persistOpsState(): void {
+        try {
+            const dir = dirname(this.opsStatePath);
+            if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+            const payload: PersistedDaemonOps = {
+                mode: this.mode,
+                braked: this.braked,
+                updatedAt: new Date().toISOString(),
+            };
+            writeFileSync(this.opsStatePath, JSON.stringify(payload, null, 2), "utf-8");
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.eventBus.log("warn", `Failed to persist daemon ops state: ${message}`, "SessionManager");
+        }
+    }
+
+    /**
+     * Whether the daemon accepts new work (send/resume). Pause/brake reject entry points.
+     */
+    acceptsNewWork(): boolean {
+        return this.mode === "running" && !this.braked;
+    }
+
+    private assertAcceptsNewWork(action: string): void {
+        if (this.braked) {
+            throw new Error(
+                `Daemon emergency brake is engaged; cannot ${action} until setMode('running'). Cancelled work is not auto-resumed (brakeRecoverable=false).`
+            );
+        }
+        if (this.mode === "pause") {
+            throw new Error(`Daemon mode is pause; cannot ${action}. Call setMode('running') first.`);
+        }
     }
 
     /** Current operational mode stored in this process. */
@@ -128,7 +196,7 @@ export class SessionManager {
                 previousMode,
                 requestedMode: requested === undefined || requested === null ? null : String(requested),
                 resultingMode: previousMode,
-                reason: `Unknown mode. Valid modes: running, pause, frenzy.`,
+                reason: `Unknown mode. Valid modes: running, pause.`,
                 timestamp,
             };
         }
@@ -161,14 +229,15 @@ export class SessionManager {
             for (const orchestrator of this.activeOrchestrators.values()) {
                 orchestrator.pause();
             }
-        } else if (previousMode === "pause" && (requested === "running" || requested === "frenzy")) {
+        } else if (previousMode === "pause" && requested === "running") {
             for (const orchestrator of this.activeOrchestrators.values()) {
                 orchestrator.resume();
             }
-            this.braked = false;
-        } else if (requested === "running" || requested === "frenzy") {
+            // Clearing brake only when explicitly returning to running.
             this.braked = false;
         }
+
+        this.persistOpsState();
 
         this.eventBus.log("info", `Daemon mode ${previousMode} → ${requested}`, "SessionManager");
         this.eventBus.emit("daemon", {
@@ -302,6 +371,7 @@ export class SessionManager {
             const outcome = wasBraked ? "already_stopped" : "no_active_work";
             this.mode = "pause";
             this.braked = true;
+            this.persistOpsState();
             this.eventBus.emit("daemon", {
                 type: "emergency_brake",
                 outcome,
@@ -320,8 +390,8 @@ export class SessionManager {
                 timestamp,
                 message:
                     outcome === "already_stopped"
-                        ? "Emergency brake already engaged; no live work remains."
-                        : "No active sessions, tasks, or checkpoint timers to interrupt.",
+                        ? "Emergency brake already engaged; no live work remains. New work is blocked until setMode('running')."
+                        : "No active work. Mode is pause and new work is blocked until setMode('running'). Cancel is not recoverable (brakeRecoverable=false).",
             };
         }
 
@@ -369,6 +439,17 @@ export class SessionManager {
                     entry.error = err instanceof Error ? err.message : String(err);
                 }
 
+                // Mutate in-memory snapshot BEFORE checkpoint so durable state is post-brake.
+                const waves = this.sessionWaves.get(sessionId);
+                if (waves) {
+                    for (const wave of waves) {
+                        if (wave.status === "active") wave.status = "pending";
+                        for (const task of wave.tasks) {
+                            if (task.phase !== "complete") task.phase = "paused";
+                        }
+                    }
+                }
+
                 try {
                     await this.createCheckpoint(sessionId);
                     entry.checkpointOk = true;
@@ -381,16 +462,6 @@ export class SessionManager {
                         `Emergency brake checkpoint failed (best-effort) for ${sessionId}: ${message}`,
                         "SessionManager"
                     );
-                }
-
-                const waves = this.sessionWaves.get(sessionId);
-                if (waves) {
-                    for (const wave of waves) {
-                        if (wave.status === "active") wave.status = "pending";
-                        for (const task of wave.tasks) {
-                            if (task.phase !== "complete") task.phase = "paused";
-                        }
-                    }
                 }
 
                 const timer = this.checkpointIntervals.get(sessionId);
@@ -459,6 +530,7 @@ export class SessionManager {
 
         this.mode = "pause";
         this.braked = true;
+        this.persistOpsState();
 
         let outcome: EmergencyBrakeResult["outcome"];
         if (failedCount > 0) {
@@ -494,12 +566,12 @@ export class SessionManager {
             mode: this.mode,
             timestamp,
             message: complete
-                ? `Interrupted ${interruptedCount} session(s); mode is pause.${
+                ? `Cancelled in-flight work on ${interruptedCount} session(s); mode is pause; new work blocked until setMode('running'). Cancelled executions are not auto-resumed (brakeRecoverable=false).${
                       checkpointDegradedCount > 0
                           ? ` (${checkpointDegradedCount} checkpoint(s) degraded, best-effort)`
                           : ""
                   }`
-                : `Partial emergency brake: ${interruptedCount} interrupted, ${failedCount} failed.`,
+                : `Partial emergency brake: ${interruptedCount} interrupted, ${failedCount} failed. UI must not treat failed sessions as paused.`,
         };
     }
 
@@ -527,7 +599,12 @@ export class SessionManager {
     }
 
     async createSession(data: Omit<Session, 'id' | 'createdAt' | 'updatedAt'>): Promise<Session> {
-        const session = await this.storage.createSession(data);
+        // Creating a session is allowed while paused, but the orchestrator starts paused
+        // and sendInput remains blocked until mode is running and not braked.
+        const session = await this.storage.createSession({
+            ...data,
+            status: this.acceptsNewWork() ? data.status ?? "active" : "paused",
+        } as Omit<Session, "id" | "createdAt" | "updatedAt">);
 
         const orchestrator = new Orchestrator(
             { verbose: true, skipPhaseValidation: true },
@@ -538,6 +615,10 @@ export class SessionManager {
             orchestrator.initialize(this.apiKey);
         } else {
             this.eventBus.log('warn', 'Orchestrator not initialized: No API Key provided', 'SessionManager');
+        }
+
+        if (!this.acceptsNewWork()) {
+            orchestrator.pause();
         }
 
         this.activeOrchestrators.set(session.id, orchestrator);
@@ -587,7 +668,12 @@ export class SessionManager {
                 orchestrator.initialize(this.apiKey);
             }
 
+            if (!this.acceptsNewWork()) {
+                orchestrator.pause();
+            }
             this.activeOrchestrators.set(id, orchestrator);
+        } else if (!this.acceptsNewWork()) {
+            this.activeOrchestrators.get(id)?.pause();
         }
 
         const waves = await this.storage.listWaves(id);
@@ -707,10 +793,19 @@ export class SessionManager {
     }
 
     async sendInput(sessionId: string, prompt: string): Promise<{ taskId: string }> {
+        this.assertAcceptsNewWork("sendInput");
+
         const orchestrator = this.activeOrchestrators.get(sessionId);
 
         if (!orchestrator) {
             throw new Error(`No active orchestrator for session: ${sessionId}`);
+        }
+
+        // Strict serialization: one active execution per session (single cancel handle).
+        if ((this.activeTasks.get(sessionId)?.size ?? 0) > 0) {
+            throw new Error(
+                `Session ${sessionId} already has an active task; concurrent sendInput is rejected.`
+            );
         }
 
         await this.storage.appendLog({
@@ -733,12 +828,15 @@ export class SessionManager {
                     content: result.output || result.error || 'No output',
                 });
 
+                // Cancelled work is terminal for that execution (not auto-resumable).
                 const nextStatus =
                     result.status === 'SUCCESS'
                         ? 'completed'
-                        : result.status === 'NEEDS_HUMAN' || isCancelled
+                        : result.status === 'NEEDS_HUMAN'
                           ? 'paused'
-                          : 'failed';
+                          : isCancelled
+                            ? 'paused'
+                            : 'failed';
 
                 await this.updateSession(sessionId, { status: nextStatus });
 
@@ -788,7 +886,13 @@ export class SessionManager {
         this.eventBus.log('info', `Session interrupted: ${sessionId}`, 'SessionManager');
     }
 
+    /**
+     * Allows new work on a session only when the daemon accepts work.
+     * Does NOT re-run a cancelled task (brakeRecoverable=false).
+     */
     async resumeSession(sessionId: string): Promise<void> {
+        this.assertAcceptsNewWork("resumeSession");
+
         const orchestrator = this.activeOrchestrators.get(sessionId);
 
         if (orchestrator) {

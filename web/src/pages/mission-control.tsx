@@ -26,7 +26,7 @@ interface MissionControlProps {
 }
 
 export function MissionControl({ onSettingsClick }: MissionControlProps) {
-  const [mode, setMode] = useState<"pause" | "running" | "frenzy">("running");
+  const [mode, setMode] = useState<"pause" | "running">("running");
   const [confidence, setConfidence] = useState(80);
   const [showLogs, setShowLogs] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
@@ -60,7 +60,7 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
   const { promotingWave, activateWave } = useWaveManager();
   const liveData = useLiveMissionControl();
 
-  const requestMode = async (next: "pause" | "running" | "frenzy") => {
+  const requestMode = async (next: "pause" | "running") => {
     if (!capabilities.modeSwitching) return;
     try {
       await setDaemonMode(next);
@@ -132,13 +132,12 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
     }
   };
 
-  const handleModeChange = (next: "pause" | "running" | "frenzy") => {
+  const handleModeChange = (next: "pause" | "running") => {
     void requestMode(next);
   };
 
   const getSnakeStatus = () => {
     if (mode === "pause") return "debating" as const;
-    if (mode === "frenzy") return "healthy" as const;
     return "healthy" as const;
   };
 

@@ -12,10 +12,10 @@ import {
 } from "./daemon-controls.js";
 
 describe("daemon-controls contracts", () => {
-    it("accepts only known modes", () => {
+    it("accepts only known modes (no scenic frenzy)", () => {
         expect(isDaemonMode("running")).toBe(true);
         expect(isDaemonMode("pause")).toBe(true);
-        expect(isDaemonMode("frenzy")).toBe(true);
+        expect(isDaemonMode("frenzy")).toBe(false);
         expect(isDaemonMode("turbo")).toBe(false);
         expect(isDaemonMode(null)).toBe(false);
         expect(isDaemonMode(undefined)).toBe(false);
@@ -25,16 +25,17 @@ describe("daemon-controls contracts", () => {
     it("allows documented transitions including no-ops", () => {
         expect(canTransitionMode("running", "pause")).toBe(true);
         expect(canTransitionMode("pause", "running")).toBe(true);
-        expect(canTransitionMode("running", "frenzy")).toBe(true);
-        expect(canTransitionMode("frenzy", "pause")).toBe(true);
         expect(canTransitionMode("running", "running")).toBe(true);
     });
 
-    it("declares token metrics unavailable in capability contract", () => {
+    it("declares honest capabilities", () => {
         expect(DAEMON_CAPABILITIES.tokenMetrics).toBe(false);
         expect(DAEMON_CAPABILITIES.statusMetrics).toBe(true);
         expect(DAEMON_CAPABILITIES.modeSwitching).toBe(true);
         expect(DAEMON_CAPABILITIES.emergencyBrake).toBe(true);
+        expect(DAEMON_CAPABILITIES.brakeRecoverable).toBe(false);
+        expect(DAEMON_CAPABILITIES.modePersistence).toBe(true);
+        expect([...DAEMON_CAPABILITIES.supportedModes]).toEqual(["running", "pause"]);
     });
 
     it("distinguishes real zero from unavailable metrics", () => {

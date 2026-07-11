@@ -19,6 +19,7 @@ describe('RpcGateway', () => {
     let mockOrchestrator: GatewayOrchestrator;
 
     beforeEach(() => {
+        process.env.OUROBOROS_OPS_PATH = `/tmp/ouroboros-rpc-ops-${Date.now()}-${Math.random()}.json`;
         mockEventBus = new EventBus();
 
         mockStorage = {

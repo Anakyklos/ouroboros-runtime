@@ -51,9 +51,11 @@ export class Orchestrator {
     private eventBus: EventBus;
     private isPaused = false;
     private resumeResolver: (() => void) | null = null;
-    /** Cooperative cancel — aborts waitIfPaused and races in-flight execute. */
+    /** Cooperative cancel — aborts waitIfPaused and provider fetch via AbortSignal. */
     private cancelled = false;
     private cancelReject: ((err: OrchestratorCancelledError) => void) | null = null;
+    /** Per-run abort controller (new for each loopUntilSuccess). */
+    private runAbort: AbortController | null = null;
     private memoryRetriever: MemoryRetriever;
     private qualityGateRegistry: QualityGateRegistry;
     private enableQualityGates: boolean;
@@ -141,6 +143,11 @@ export class Orchestrator {
     cancel(reason = "Emergency brake"): void {
         this.cancelled = true;
         this.isPaused = true;
+        try {
+            this.runAbort?.abort(reason);
+        } catch {
+            /* ignore double-abort */
+        }
         if (this.resumeResolver) {
             this.resumeResolver();
             this.resumeResolver = null;
@@ -150,6 +157,11 @@ export class Orchestrator {
             this.cancelReject = null;
         }
         this.log('warn', `🛑 Cancelled: ${reason}`);
+    }
+
+    /** Active abort signal for the current run (tests / diagnostics). */
+    get currentRunSignal(): AbortSignal | null {
+        return this.runAbort?.signal ?? null;
     }
 
     isCancelled(): boolean {
@@ -197,6 +209,10 @@ export class Orchestrator {
         let lastError: string | undefined;
         const startTime = Date.now();
         const contextHistory: ContextEntry[] = [];
+        // Fresh abort controller per run so concurrent runs are not silently supported —
+        // SessionManager must serialize; this still replaces any previous run's controller.
+        this.runAbort = new AbortController();
+        this.cancelled = false;
 
         this.log('info', `🎯 Starting task: ${task.id}`);
         this.log('info', `   Persona: ${task.persona}`);
@@ -581,13 +597,22 @@ IMPORTANT: Analyze the error carefully before proceeding.
     }
 
     /**
-     * Execute prompt via AgentLoop.
+     * Execute prompt via AgentLoop with the current run's AbortSignal.
      */
     private async executeWithTimeout(prompt: string): Promise<AgentResult> {
         if (!this.agentLoop) {
             throw new Error('Orchestrator not initialized. Call initialize(apiKey) first.');
         }
-        return this.agentLoop.run(prompt);
+        try {
+            return await this.agentLoop.run(prompt, undefined, this.runAbort?.signal);
+        } catch (e) {
+            const name = e instanceof Error ? e.name : "";
+            const msg = e instanceof Error ? e.message : String(e);
+            if (name === "AbortError" || /abort/i.test(msg) || this.cancelled) {
+                throw new OrchestratorCancelledError(msg || "Provider aborted");
+            }
+            throw e;
+        }
     }
 
     /**

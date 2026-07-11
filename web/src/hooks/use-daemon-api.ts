@@ -60,6 +60,8 @@ function metricNumber(m: MetricValue | undefined): number | undefined {
   return undefined;
 }
 
+export type UiDaemonMode = "running" | "pause";
+
 export function useDaemonAPI(options: DaemonAPIOptions = {}) {
   const { baseUrl = "/api" } = options;
 
@@ -153,7 +155,7 @@ export function useDaemonAPI(options: DaemonAPIOptions = {}) {
    * Rejects when capability is off or RPC fails — no optimistic UI success.
    */
   const setMode = useCallback(
-    async (mode: DaemonMode): Promise<SetModeResult> => {
+    async (mode: UiDaemonMode): Promise<SetModeResult> => {
       if (!capabilities.modeSwitching) {
         const msg = "Mode switching is not available (capability off).";
         setLastControlError(msg);
@@ -170,7 +172,9 @@ export function useDaemonAPI(options: DaemonAPIOptions = {}) {
           throw new Error(result.reason ?? "setMode rejected");
         }
         // Confirm with backend before treating UI as authoritative.
-        storeSetMode(result.resultingMode);
+        if (result.resultingMode === "running" || result.resultingMode === "pause") {
+          storeSetMode(result.resultingMode);
+        }
         await fetchStatus();
         return result;
       } catch (err) {
@@ -186,7 +190,7 @@ export function useDaemonAPI(options: DaemonAPIOptions = {}) {
 
   /**
    * Emergency brake: waits for backend result before local UI projection.
-   * Partial outcomes surface as errors if complete=false.
+   * Partial outcomes must NOT globally pause all waves (would hide failures).
    */
   const emergencyBrake = useCallback(async (): Promise<EmergencyBrakeResult> => {
     if (!capabilities.emergencyBrake) {
@@ -205,14 +209,15 @@ export function useDaemonAPI(options: DaemonAPIOptions = {}) {
           result.message ||
           `Partial emergency brake: ${result.failedCount} failure(s).`;
         setLastControlError(msg);
-        // Still project local pause for interrupted work, but do not claim full success.
-        applyEmergencyBrakeLocally();
+        // Do not apply global local pause — refresh from backend only.
         await fetchStatus();
         throw new Error(msg);
       }
 
       applyEmergencyBrakeLocally();
-      storeSetMode(result.mode);
+      if (result.mode === "running" || result.mode === "pause") {
+        storeSetMode(result.mode);
+      }
       await fetchStatus();
       return result;
     } catch (err) {

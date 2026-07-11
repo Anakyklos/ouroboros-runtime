@@ -95,14 +95,22 @@ export class WaveExecutor {
                 tasks: waveResults.map(r => ({
                     id: r.taskId,
                     name: r.taskId,
-                    status: r.result.status === "SUCCESS" ? 'completed' : 'failed'
-                }))
+                    status:
+                        r.result.status === "SUCCESS"
+                            ? "completed"
+                            : r.result.status === "CANCELLED"
+                              ? "failed" // wave event status union is limited; cancelled listed as skipped below
+                              : "failed",
+                })),
             });
 
-            // Atualizar listas de sucesso/falha
+            // Atualizar listas de sucesso/falha — CANCELLED is operational, not a product failure
             for (const wr of waveResults) {
                 if (wr.result.status === "SUCCESS") {
                     successfulTasks.push(wr.taskId);
+                } else if (wr.result.status === "CANCELLED") {
+                    skippedTasks.push(wr.taskId);
+                    this.log(`\n⏹️ Task cancelled (not a failure): ${wr.taskId}`);
                 } else {
                     failedTasks.push(wr.taskId);
 

@@ -40,8 +40,8 @@ describe("MissionControlStore", () => {
     store.setMode("pause");
     expect(useMissionControlStore.getState().mode).toBe("pause");
 
-    store.setMode("frenzy");
-    expect(useMissionControlStore.getState().mode).toBe("frenzy");
+    store.setMode("running");
+    expect(useMissionControlStore.getState().mode).toBe("running");
   });
 
   it("should update confidence", () => {

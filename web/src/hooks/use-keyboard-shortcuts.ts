@@ -142,24 +142,7 @@ export function useKeyboardShortcuts(options: UseKeyboardShortcutsOptions = {}) 
           }
           break;
 
-        case "f":
-        case "F":
-          // F for frenzy mode (with confirmation)
-          if (event.shiftKey) {
-            event.preventDefault();
-            const confirmed = window.confirm(
-              "🔥 FRENZY MODE\n\nThis removes all safety checks. Continue?"
-            );
-            if (confirmed) {
-              setMode("frenzy");
-              addLogEntry({
-                level: "warn",
-                message: "FRENZY mode activated",
-                source: "Keyboard",
-              });
-            }
-          }
-          break;
+        // Shift+F frenzy removed — scenic mode without real backend effect (issue #37).
       }
     },
     [mode, setMode, setActiveQuadrant, setViewMode, viewMode, activeQuadrant, onPause, onResume, onEmergencyBrake, onToggleLogs, onFocusTerminal, onQuadrantSwitch, confirmEmergency, addLogEntry]

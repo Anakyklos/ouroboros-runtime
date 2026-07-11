@@ -2,9 +2,9 @@ import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 
 interface HUDBarProps {
-  mode: "pause" | "running" | "frenzy";
+  mode: "pause" | "running";
   /** When omitted, mode controls are disabled (capability off). */
-  onModeChange?: (mode: "pause" | "running" | "frenzy") => void;
+  onModeChange?: (mode: "pause" | "running") => void;
   confidence: number;
   onConfidenceChange: (value: number) => void;
   /** Display label for current wave number (not active-wave count). */
@@ -31,12 +31,6 @@ const modeConfig = {
     color: "bg-[var(--color-emerald)]",
     textColor: "text-[var(--color-obsidian)]",
     glow: "shadow-[var(--shadow-glow-emerald)]",
-  },
-  frenzy: {
-    label: "FRENZY",
-    color: "bg-[var(--color-gold)]",
-    textColor: "text-[var(--color-obsidian)]",
-    glow: "shadow-[var(--shadow-glow-gold)]",
   },
 };
 
@@ -68,7 +62,7 @@ export function HUDBar({
         </div>
 
         <div className="flex items-center gap-2">
-          {(["pause", "running", "frenzy"] as const).map((m) => (
+          {(["pause", "running"] as const).map((m) => (
             <motion.button
               key={m}
               type="button"

@@ -4,8 +4,11 @@
  * Fail-honest: never claim success without an observable backend effect.
  */
 
-/** Valid operational modes stored in the daemon (not only in the UI). */
-export const DAEMON_MODES = ["running", "pause", "frenzy"] as const;
+/**
+ * Valid operational modes with real backend effects.
+ * `frenzy` was removed (scenic-only — same as running with no measurable effect).
+ */
+export const DAEMON_MODES = ["running", "pause"] as const;
 export type DaemonMode = (typeof DAEMON_MODES)[number];
 
 export function isDaemonMode(value: unknown): value is DaemonMode {
@@ -17,9 +20,8 @@ export function isDaemonMode(value: unknown): value is DaemonMode {
  * Unknown modes are rejected before this table is consulted.
  */
 export const MODE_TRANSITIONS: Record<DaemonMode, readonly DaemonMode[]> = {
-    running: ["running", "pause", "frenzy"],
-    pause: ["pause", "running", "frenzy"],
-    frenzy: ["frenzy", "running", "pause"],
+    running: ["running", "pause"],
+    pause: ["pause", "running"],
 };
 
 export function canTransitionMode(from: DaemonMode, to: DaemonMode): boolean {
@@ -32,8 +34,22 @@ export interface DaemonCapabilities {
     statusMetrics: true;
     /** Mode is stored and applied in the backend. */
     modeSwitching: true;
-    /** Emergency brake interrupts live sessions/orchestrators. */
+    /** Modes with real effects (no scenic aliases). */
+    supportedModes: readonly DaemonMode[];
+    /**
+     * Emergency brake: cooperative cancel of in-flight work via AbortSignal.
+     * Not a recoverable pause of the same task (see brakeRecoverable).
+     */
     emergencyBrake: true;
+    /**
+     * Whether cancelled work can be resumed exactly-once from checkpoint.
+     * Currently false — brake is terminal for the cancelled execution.
+     */
+    brakeRecoverable: false;
+    /**
+     * Mode/brake flags are written to `.ouroboros/daemon-ops.json` and reloaded on start.
+     */
+    modePersistence: true;
     /**
      * Token accounting is not backed by a reliable daemon-wide source yet.
      * Clients must not invent zeros as "usage".
@@ -44,7 +60,10 @@ export interface DaemonCapabilities {
 export const DAEMON_CAPABILITIES: DaemonCapabilities = {
     statusMetrics: true,
     modeSwitching: true,
+    supportedModes: DAEMON_MODES,
     emergencyBrake: true,
+    brakeRecoverable: false,
+    modePersistence: true,
     tokenMetrics: false,
 };
 

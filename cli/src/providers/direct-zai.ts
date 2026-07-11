@@ -113,7 +113,7 @@ export class DirectZAIProvider {
     async chat(
         messages: Message[],
         tools?: ToolDefinition[],
-        options?: { temperature?: number; max_tokens?: number }
+        options?: { temperature?: number; max_tokens?: number; signal?: AbortSignal }
     ): Promise<ChatResponse> {
         const body = {
             model: this._model,
@@ -126,7 +126,7 @@ export class DirectZAIProvider {
 
         this.log('debug', `Sending chat request with ${messages.length} messages`);
 
-        const response = await this.fetch('/chat/completions', body);
+        const response = await this.fetch('/chat/completions', body, options?.signal);
 
         if (!response.ok) {
             const error = await response.text();
@@ -237,9 +237,18 @@ export class DirectZAIProvider {
     // Private
     // ============================================================
 
-    private async fetch(endpoint: string, body: unknown): Promise<Response> {
+    private async fetch(endpoint: string, body: unknown, externalSignal?: AbortSignal): Promise<Response> {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+
+        const onExternalAbort = () => controller.abort();
+        if (externalSignal) {
+            if (externalSignal.aborted) {
+                clearTimeout(timeoutId);
+                throw new DOMException("The operation was aborted.", "AbortError");
+            }
+            externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+        }
 
         try {
             return await fetch(`${this.baseUrl}${endpoint}`, {
@@ -253,6 +262,7 @@ export class DirectZAIProvider {
             });
         } finally {
             clearTimeout(timeoutId);
+            externalSignal?.removeEventListener("abort", onExternalAbort);
         }
     }
 

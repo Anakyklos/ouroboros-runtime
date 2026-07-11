@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
-export type DaemonMode = "pause" | "running" | "frenzy";
+/** Modes with real backend effects (frenzy removed — scenic-only). */
+export type DaemonMode = "pause" | "running";
 export type ViewMode = "grid" | "focused";
 export type Quadrant = 1 | 2 | 3 | 4 | null;
 
@@ -41,6 +42,9 @@ export interface DaemonCapabilities {
   modeSwitching: boolean;
   emergencyBrake: boolean;
   tokenMetrics: boolean;
+  brakeRecoverable?: boolean;
+  modePersistence?: boolean;
+  supportedModes?: DaemonMode[];
 }
 
 export const DEFAULT_CAPABILITIES: DaemonCapabilities = {
@@ -48,6 +52,9 @@ export const DEFAULT_CAPABILITIES: DaemonCapabilities = {
   modeSwitching: false,
   emergencyBrake: false,
   tokenMetrics: false,
+  brakeRecoverable: false,
+  modePersistence: false,
+  supportedModes: [],
 };
 
 interface MissionControlState {

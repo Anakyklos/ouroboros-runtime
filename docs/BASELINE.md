@@ -169,7 +169,7 @@ Authoritative behavior is implemented in `cli/src/daemon/session-manager.ts` and
 | Method | Behavior |
 |--------|----------|
 | `daemon.status` | Real mode, uptime, **live** sessions/waves/tasks only; `tokensUsed` is **unavailable** (not scenic zero) |
-| `daemon.setMode` | Enum `running` \| `pause` \| `frenzy`; rejects unknown; applies backend mode |
-| `daemon.emergencyBrake` | Cooperative `Orchestrator.cancel()` races in-flight execute; required: cancel + persist + task settle; checkpoint best-effort (`checkpointDegradedCount`); outcomes: `no_active_work`, `all_stopped`, `already_stopped`, `partial` (`complete: false` if required step fails). Terminal sessions are skipped (not rewritten to paused). |
+| `daemon.setMode` | Enum **`running` \| `pause` only** (no scenic `frenzy`); rejects unknown; applies backend mode; persists to `.ouroboros/daemon-ops.json` |
+| `daemon.emergencyBrake` | `Orchestrator.cancel()` aborts provider via `AbortSignal`; serializes one task/session; blocks new work while braked; checkpoint **after** pause snapshot; **not** recoverable for the cancelled execution (`brakeRecoverable: false`). Outcomes: `no_active_work`, `all_stopped`, `already_stopped`, `partial`. |
 
-Capabilities are returned on every `daemon.status` (`capabilities` object). The web UI disables controls when the corresponding capability is false or until the first status response. Tokens show `n/a` when unavailable.
+Capabilities on every `daemon.status`. UI disables controls until capabilities arrive. Tokens show `n/a` when unavailable. Partial brake does **not** globally paint all waves as paused.

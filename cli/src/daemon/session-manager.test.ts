@@ -66,7 +66,10 @@ describe('SessionManager', () => {
             saveMemory: mock(async (m) => ({ ...m, id: 'm1', createdAt: new Date() })),
             listMemory: mock(async () => []),
         } as unknown as StoragePort;
-        manager = new TestSessionManager(mockStorage, mockEventBus);
+        // Isolate persisted ops so tests do not leak brake/mode into each other or the repo tree.
+        manager = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+            opsStatePath: `/tmp/ouroboros-ops-test-main-${Date.now()}-${Math.random()}.json`,
+        });
     });
 
     it('cleanupSession should wait for all tasks and clear activeTasks', async () => {
@@ -457,6 +460,93 @@ describe('SessionManager', () => {
             await new Promise((r) => setTimeout(r, 10));
             snap = manager.getStatusSnapshot();
             if (snap.activeTasks.available) expect(snap.activeTasks.value).toBe(0);
+        });
+
+        it('blocks sendInput while braked / paused', async () => {
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            manager.attachOrchestrator('session-1', orch);
+            await manager.emergencyBrake();
+            await expect(manager.sendInput('session-1', 'nope')).rejects.toThrow(/brake|pause/i);
+            await expect(manager.resumeSession('session-1')).rejects.toThrow(/brake|pause/i);
+        });
+
+        it('rejects concurrent sendInput on the same session', async () => {
+            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            manager.attachOrchestrator('session-1', orch);
+            const hang = createDeferred();
+            orch.loopUntilSuccess = mock(async () => {
+                await hang.promise;
+                return {
+                    status: TaskStatus.SUCCESS,
+                    output: 'ok',
+                    retryCount: 0,
+                    persona: PersonaType.DEVELOPER,
+                    durationMs: 1,
+                    contextHistory: [],
+                };
+            });
+            const first = manager.sendInput('session-1', 'first');
+            await new Promise((r) => setTimeout(r, 5));
+            await expect(manager.sendInput('session-1', 'second')).rejects.toThrow(/already has an active task/i);
+            hang.resolve();
+            await first;
+        });
+
+        it('persists brake across SessionManager restart', async () => {
+            const opsPath = `/tmp/ouroboros-ops-test-${Date.now()}.json`;
+            const m1 = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+                opsStatePath: opsPath,
+            });
+            await m1.emergencyBrake();
+            expect(m1.getMode()).toBe('pause');
+
+            const m2 = new TestSessionManager(mockStorage, mockEventBus, undefined, {
+                opsStatePath: opsPath,
+            });
+            expect(m2.getMode()).toBe('pause');
+            expect(m2.acceptsNewWork()).toBe(false);
+        });
+
+        it('provider AbortSignal is aborted by Orchestrator.cancel', async () => {
+            const orch = new Orchestrator(
+                { verbose: false, skipPhaseValidation: true, maxRetries: 2 },
+                mockEventBus
+            );
+            let sawAbort = false;
+            (orch as unknown as { executeWithTimeout: (p: string) => Promise<unknown> }).executeWithTimeout =
+                async () => {
+                    const signal = orch.currentRunSignal;
+                    expect(signal).toBeTruthy();
+                    await new Promise<void>((resolve, reject) => {
+                        if (!signal) return reject(new Error('no signal'));
+                        if (signal.aborted) {
+                            sawAbort = true;
+                            const e = new Error('aborted');
+                            e.name = 'AbortError';
+                            reject(e);
+                            return;
+                        }
+                        signal.addEventListener(
+                            'abort',
+                            () => {
+                                sawAbort = true;
+                                const e = new Error('aborted');
+                                e.name = 'AbortError';
+                                reject(e);
+                            },
+                            { once: true }
+                        );
+                    });
+                    return { success: true, content: '', toolCallsCount: 0, durationMs: 0 };
+                };
+
+            const task = createTask('abort me', PersonaType.DEVELOPER, { id: 'ab-1' });
+            const running = orch.loopUntilSuccess(task);
+            await new Promise((r) => setTimeout(r, 20));
+            orch.cancel('test');
+            const result = await running;
+            expect(sawAbort).toBe(true);
+            expect(result.status).toBe(TaskStatus.CANCELLED);
         });
     });
 });
