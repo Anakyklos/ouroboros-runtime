@@ -118,11 +118,14 @@ Printed at the start of every `bun run check:tests` run. The runner **fails** if
 
 Rules for quarantine:
 
-- Test **names/paths remain visible** (manifest + runner output)  
+- Test **names/paths remain visible** (manifest + runner output + file banner `QUARANTINED`)  
 - Suites are **not** executed in the mandatory gate  
 - Failures are **not** counted as pass  
 - Files are **not** deleted or renamed to hide them  
-- Re-enable when the `reactivate_when` condition in the manifest is met; track progress on **#41**
+- Each entry has `tracking_issue` (or inherits global) — currently **#41**  
+- Re-enable when the `reactivate_when` condition in the manifest is met; track progress on **#41**  
+- Mandatory suite size is not reduced just to keep CI green  
+- No `|| true`, `continue-on-error`, or broad silence filters on required checks
 
 Current quarantined files (summary):
 

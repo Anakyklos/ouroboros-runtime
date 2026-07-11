@@ -1,3 +1,10 @@
+/**
+ * QUARANTINED — excluded from `bun run check:tests` (baseline gate).
+ * Recovery debt: https://github.com/RenyEnnos/ouroboros-runtime/issues/41
+ * Manifest: scripts/quarantine-manifest.json
+ * Do not delete/rename this file to make CI green; fix or keep listed in the manifest.
+ */
+
 import { describe, it, expect } from "bun:test";
 import { useMissionControlStore } from "./mission-control-store";
 import type { Wave } from "./mission-control-store";

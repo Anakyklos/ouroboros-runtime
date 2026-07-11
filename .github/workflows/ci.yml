@@ -41,9 +41,14 @@ jobs:
 
       - name: Verify install did not mutate tracked files
         run: |
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "Install changed tracked files:"
-            git status --porcelain
+          set -euo pipefail
+          if ! status="$(git status --porcelain)"; then
+            echo "✖ git status failed — cannot verify tree integrity"
+            exit 1
+          fi
+          if [ -n "$status" ]; then
+            echo "✖ Install changed tracked files:"
+            printf '%s\n' "$status"
             exit 1
           fi
 

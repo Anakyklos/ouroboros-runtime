@@ -96,9 +96,11 @@ function loadAndValidateManifest(manifestPath: string): QuarantineManifest {
         process.exit(1);
     }
 
-    if (manifest.tracking_issue !== undefined && typeof manifest.tracking_issue !== "number") {
-        console.error("✖ Quarantine manifest.tracking_issue must be a number when present.");
-        process.exit(1);
+    if (manifest.tracking_issue !== undefined) {
+        if (typeof manifest.tracking_issue !== "number" || !Number.isInteger(manifest.tracking_issue) || manifest.tracking_issue <= 0) {
+            console.error("✖ Quarantine manifest.tracking_issue must be a positive integer when present.");
+            process.exit(1);
+        }
     }
 
     const seen = new Set<string>();
@@ -117,6 +119,15 @@ function loadAndValidateManifest(manifestPath: string): QuarantineManifest {
             if (!isNonEmptyString(entry[field])) {
                 validationErrors.push(`${prefix}.${field}: must be a non-empty string`);
             }
+        }
+
+        const entryIssue = entry.tracking_issue ?? manifest.tracking_issue;
+        if (entryIssue === undefined) {
+            validationErrors.push(
+                `${prefix}.tracking_issue: required (set per entry or global manifest.tracking_issue — recovery debt, e.g. #41)`
+            );
+        } else if (typeof entryIssue !== "number" || !Number.isInteger(entryIssue) || entryIssue <= 0) {
+            validationErrors.push(`${prefix}.tracking_issue: must be a positive integer`);
         }
 
         if (isNonEmptyString(entry.path)) {

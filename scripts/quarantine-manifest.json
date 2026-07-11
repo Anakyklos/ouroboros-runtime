@@ -7,67 +7,78 @@
       "path": "cli/src/runtime/SandboxE2E.test.ts",
       "classification": "test-bug + environment",
       "reason": "beforeAll fails: TDZ on existsSync (Cannot access 'existsSync' before initialization) and sandbox venv python missing (ENOENT under temp_e2e_test/.ouroboros/venv). Requires isolated Python venv creation that currently fails in clean CI.",
-      "reactivate_when": "SandboxE2E initializes without TDZ errors and creates a working temp venv without root project .ouroboros/venv; CI image has python3 available for venv."
+      "reactivate_when": "SandboxE2E initializes without TDZ errors and creates a working temp venv without root project .ouroboros/venv; CI image has python3 available for venv.",
+      "tracking_issue": 41
     },
     {
       "path": "cli/src/runtime/SandboxRunner.test.ts",
       "classification": "environment / CI-incompatible",
       "reason": "Depends on project .ouroboros/venv/bin/python; spawn fails with ENOENT and Sandbox initialization timeout without prior setup.",
-      "reactivate_when": "Tests create self-contained temp venv or CI runs setup that provisions .ouroboros/venv without secrets."
+      "reactivate_when": "Tests create self-contained temp venv or CI runs setup that provisions .ouroboros/venv without secrets.",
+      "tracking_issue": 41
     },
     {
       "path": "cli/src/runtime/SandboxEscapeTests.test.ts",
       "classification": "environment / load-time failure",
       "reason": "Suite fails at load/setup (0 tests run, 1 error) when sandbox python path is missing.",
-      "reactivate_when": "Same as SandboxRunner: reliable isolated python for security escape tests."
+      "reactivate_when": "Same as SandboxRunner: reliable isolated python for security escape tests.",
+      "tracking_issue": 41
     },
     {
       "path": "cli/src/runtime/SandboxResourceLimits.test.ts",
       "classification": "environment / load-time failure",
       "reason": "Suite fails at load/setup when .ouroboros/venv is absent; not safe as unit gate.",
-      "reactivate_when": "Resource-limit checks run against a disposable venv created in beforeAll without relying on committed state."
+      "reactivate_when": "Resource-limit checks run against a disposable venv created in beforeAll without relying on committed state.",
+      "tracking_issue": 41
     },
     {
       "path": "cli/src/runtime/SandboxSecurity.test.ts",
       "classification": "environment / CI-incompatible",
       "reason": "beforeAll times out waiting for sandbox init when python binary is missing.",
-      "reactivate_when": "Sandbox security suite has hermetic setup usable in GitHub Actions without API keys."
+      "reactivate_when": "Sandbox security suite has hermetic setup usable in GitHub Actions without API keys.",
+      "tracking_issue": 41
     },
     {
       "path": "cli/src/orchestration/AntiVibeWorkflow.test.ts",
       "classification": "product-bug + test-bug (partial)",
       "reason": "6 of 19 tests fail: promotion status mismatches (REJECTED vs AWAITING_APPROVAL), typecheck script missing in temp dirs, report assertions outdated. Passing cases remain valuable but file is quarantined as a unit until product/test alignment.",
-      "reactivate_when": "All cases in this file pass without mocks that hide product failures; promote/typecheck contracts match implementation."
+      "reactivate_when": "All cases in this file pass without mocks that hide product failures; promote/typecheck contracts match implementation.",
+      "tracking_issue": 41
     },
     {
       "path": "cli/src/orchestration/PromotionManager.test.ts",
       "classification": "product-bug (partial)",
       "reason": "13 of 28 tests fail around approval/promotion state machine (candidates end REJECTED instead of AWAITING_APPROVAL). Not removed; blocked from mandatory gate.",
-      "reactivate_when": "PromotionManager status transitions match test expectations or tests are updated with product agreement."
+      "reactivate_when": "PromotionManager status transitions match test expectations or tests are updated with product agreement.",
+      "tracking_issue": 41
     },
     {
       "path": "cli/src/orchestration/QualityGateRegistry.test.ts",
       "classification": "product-bug + test-bug (partial)",
       "reason": "Error-handling cases expect 'not registered' but receive 'disabled' (default gates pre-registered). File quarantined until error-contract tests are isolated and green.",
-      "reactivate_when": "Non-registered vs disabled gate errors are distinct and tests assert the real contract."
+      "reactivate_when": "Non-registered vs disabled gate errors are distinct and tests assert the real contract.",
+      "tracking_issue": 41
     },
     {
       "path": "cli/src/orchestration/SkillLoader.test.ts",
       "classification": "external dependency",
       "reason": "Hard-coded path outside repo: ../engenharia reversa /AionUi/_adapted/skills — not available in CI or clean clones.",
-      "reactivate_when": "Fixtures ship inside the repository or tests use a temp skills dir under the repo."
+      "reactivate_when": "Fixtures ship inside the repository or tests use a temp skills dir under the repo.",
+      "tracking_issue": 41
     },
     {
       "path": "cli/src/providers/tool-executor.test.ts",
       "classification": "broken test file (syntax)",
       "reason": "File is merge-corrupted (nested describe mid-block, Unexpected end of file). Cannot load under bun test.",
-      "reactivate_when": "File is reconstructed into valid suites and all cases pass against ToolExecutor."
+      "reactivate_when": "File is reconstructed into valid suites and all cases pass against ToolExecutor.",
+      "tracking_issue": 41
     },
     {
       "path": "web/src/stores/mission-control-store.test.ts",
       "classification": "product-bug or stale test",
       "reason": "2 of 5 fail: task update within waves and emergency brake (wave/tasks shape mismatch).",
-      "reactivate_when": "Store API and tests agree on wave/task updates and emergency-brake behavior."
+      "reactivate_when": "Store API and tests agree on wave/task updates and emergency-brake behavior.",
+      "tracking_issue": 41
     }
   ]
 }
