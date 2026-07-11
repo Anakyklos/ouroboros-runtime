@@ -57,9 +57,12 @@ Taxonomia mínima:
 - `rate_limited`
 - `timeout`
 - `cancelled`
+- `network_error`
 - `unavailable`
 - `provider_error`
 - `malformed_response`
+
+`network_error` representa falhas locais anteriores a uma resposta HTTP, como DNS, conexão recusada ou queda de socket. Ele não deve ser confundido com `unavailable`, normalmente associado a uma resposta transitória do serviço, nem com `provider_error`.
 
 Cada erro deverá indicar `retryable`, `retryAfterMs` quando conhecido e `fallbackAllowed`.
 
