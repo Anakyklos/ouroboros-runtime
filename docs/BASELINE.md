@@ -166,22 +166,23 @@ Do not use `|| true` or optional steps to hide these failures.
 
 **Control plane:** `cli/src/daemon/execution-control.ts` (`DaemonExecutionController`).
 
-Atomic admission leases close the TOCTOU window between “check mode” and “start work”. All executable entry points acquire a lease:
+### State machine
+`running` → `paused` | `braking` → `braked` | `degraded`. Admission open **only** in `running`.
 
-| Entry | Kind | Blocked when admission closed |
-|-------|------|-------------------------------|
-| `agent.input` / `sendInput` | `session_task` | yes |
-| `agent.resume` | — | yes (assert) |
-| `daemon.delegate:gemini\|antigravity\|jules\|glm\|wave` | `delegate_*` | yes |
-| `session.create` / `attach` | config only | create allowed paused; cannot send until running |
-| `daemon.list_agents` / `session.list` | read-only | no |
+### Stop capability by WorkKind (honest)
+| Kind | Stop | Brake action |
+|------|------|----------------|
+| `session_task`, `delegate_glm`, `delegate_glm_wave` | abortable local | `cancelled_confirmed` |
+| `delegate_gemini`, `delegate_antigravity` | request only | `abort_requested_unconfirmed` → aggregate **partial** |
+| `delegate_jules` | detached remote | `detached_remote` → **partial**; remote may continue |
 
-| Method | Behavior |
-|--------|----------|
-| `daemon.status` | Live work metrics + control-plane snapshot; `tokensUsed` unavailable |
-| `daemon.setMode` | `running` \| `pause` only; maps to controller pause / clearBrakeAndRun; fail-honest if persist fails |
-| `daemon.emergencyBrake` | Exclusive lock closes admission → abort all leases → session cleanup; **not** recoverable (`brakeRecoverable: false` / `recoverablePause.*: false`) |
+### Brake durability (two phases)
+1. Close admission in memory  
+2. **Persist `braking` intent** (fail → partial/degraded; no durable claim)  
+3. Apply per-kind stop  
+4. Persist final `braked complete|partial`  
 
-**pause ≠ cancel:** pause sets cooperative pause on leases; cancel/brake aborts. Cancelled executions are terminal. Delegates without proven remote abort are still admission-blocked but may report detached remote work.
+`clearBrakeAndRun` / resume: persist `running` **before** unpausing leases.
 
-Persist path: atomic write+rename to `.ouroboros/daemon-ops.json` (`modePersistence` reflects last health).
+### pause ≠ cancel
+Pause is cooperative where supported; cancel/brake is terminal for local work. Exact-once resume of cancelled tasks is **not** claimed (`recoverablePause.*: false`).

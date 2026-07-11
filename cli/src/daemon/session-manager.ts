@@ -372,8 +372,16 @@ export class SessionManager {
         // Session-level cleanup for any remaining live maps (orchestrators/tasks).
         const sessionIds = this.collectLiveSessionIds();
         const sessions: EmergencyBrakeSessionResult[] = [];
-        let interruptedCount = plane.works.filter((w) => w.action === "cancelled").length;
-        let failedCount = plane.works.filter((w) => w.action === "failed").length;
+        let interruptedCount = plane.works.filter(
+            (w) => w.action === "cancelled_confirmed"
+        ).length;
+        let failedCount = plane.works.filter(
+            (w) =>
+                w.action === "failed" ||
+                w.action === "abort_requested_unconfirmed" ||
+                w.action === "detached_remote" ||
+                w.action === "unsupported"
+        ).length;
         let checkpointTimersCleared = 0;
         let checkpointDegradedCount = 0;
 

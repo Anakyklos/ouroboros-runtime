@@ -166,7 +166,15 @@ export class RpcGateway implements RpcPort {
         });
     }
 
-    private async parseWaveTasks(prompt: string): Promise<WaveTask[]> {
+    private async parseWaveTasks(
+        prompt: string,
+        control?: {
+            abortSignal?: AbortSignal;
+            waitUntilRunnable?: () => Promise<void>;
+            throwIfAborted?: () => void;
+        }
+    ): Promise<WaveTask[]> {
+        control?.throwIfAborted?.();
         const apiKey = this.loadZAIKey();
 
         const parser = createAgent({
@@ -198,7 +206,7 @@ Rules:
 - If no tasks needed, return empty array: []
 `;
 
-        const parseResult = await parser.run(parsePrompt);
+        const parseResult = await parser.run(parsePrompt, undefined, control);
 
         if (!parseResult.success || !parseResult.content) {
             throw new Error(`Failed to parse wave tasks: ${parseResult.content ?? 'No response from parser'}`);
@@ -420,8 +428,9 @@ Rules:
                     case 'glm': {
                         if (prompt.trim().toUpperCase().startsWith('WAVE:')) {
                             const wavePrompt = prompt.trim().substring(5).trim();
-                            const tasks = await this.parseWaveTasks(wavePrompt);
+                            const tasks = await this.parseWaveTasks(wavePrompt, control);
 
+                            lease.signal.throwIfAborted();
                             if (tasks.length === 0) {
                                 result = {
                                     mode: 'wave',
