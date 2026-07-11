@@ -407,11 +407,26 @@ Please review the code above and provide your assessment.`;
         const warningCount = report.findings.filter(f => f.severity === 'warning').length;
 
         // Determine if the gate passes based on config
+        // Basic requirement: must be approved. 'changes_requested' and 'rejected' always fail.
+        if (report.verdict !== 'approved') {
+            return {
+                isValid: false,
+                message: `[${report.reviewModel}] ${report.summary} (Verdict: ${report.verdict})`,
+                details: {
+                    verdict: report.verdict,
+                    findings: report.findings,
+                    reviewModel: report.reviewModel,
+                    costUsd: report.costUsd,
+                },
+            };
+        }
+
+        // For approved verdicts, apply minSeverityToFail thresholds
         let isValid = true;
         if (this.config.minSeverityToFail === 'error') {
-            isValid = report.verdict !== 'rejected' && errorCount === 0;
+            isValid = errorCount === 0;
         } else if (this.config.minSeverityToFail === 'warning') {
-            isValid = report.verdict === 'approved' && warningCount === 0 && errorCount === 0;
+            isValid = warningCount === 0 && errorCount === 0;
         } else {
             isValid = report.findings.length === 0;
         }

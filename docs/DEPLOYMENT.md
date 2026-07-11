@@ -6,6 +6,17 @@ The Ouroboros Web UI consists of two main components:
 1. **Web UI** (React 19 + Vite) - The Mission Control dashboard
 2. **Daemon** (Fastify) - The backend with WebSocket, SSE, and PTY support
 
+## Local validation (before deploy)
+
+Repository baseline (issue #35) — see [`docs/BASELINE.md`](BASELINE.md):
+
+```bash
+# Bun 1.3.9+; frozen lockfiles for root and web/
+bun run check
+```
+
+This compiles the runtime/CLI **and** the web app, and runs mandatory unit tests. It does **not** replace smoke-testing the live daemon or browser UI.
+
 ## Deployment Options
 
 ### Option 1: Development Mode (Separate Processes)

@@ -51,23 +51,20 @@ describe('MultiModelReviewStrategy', () => {
     });
 
     const mockFetchSuccess = (json: any) => {
-        global.fetch = (async () => ({
-            ok: true,
+        global.fetch = (async () => new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify(json) } }],
+            usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 }
+        }), {
             status: 200,
-            json: async () => ({
-                choices: [{ message: { content: JSON.stringify(json) } }],
-                usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 }
-            }),
-        } as any)) as typeof globalThis.fetch;
+            headers: { 'Content-Type': 'application/json' }
+        })) as typeof globalThis.fetch;
     };
 
     const mockFetchError = (status: number) => {
-        global.fetch = (async () => ({
-            ok: false,
+        global.fetch = (async () => new Response('Error body', {
             status,
-            statusText: 'Error',
-            text: async () => 'Error body',
-        } as any)) as typeof globalThis.fetch;
+            statusText: 'Error'
+        })) as typeof globalThis.fetch;
     };
 
     // ============================================================
@@ -177,14 +174,12 @@ describe('MultiModelReviewStrategy', () => {
 
         it('fails when response JSON is invalid', async () => {
             process.env.ZAI_API_KEY = 'test-key';
-            // Simulate content that doesn't contain valid JSON structure
-            global.fetch = (async () => ({
-                ok: true,
+            global.fetch = (async () => new Response(JSON.stringify({
+                choices: [{ message: { content: 'This content has no JSON structure' } }]
+            }), {
                 status: 200,
-                json: async () => ({
-                    choices: [{ message: { content: 'This is not JSON at all' } }]
-                }),
-            } as any)) as typeof globalThis.fetch;
+                headers: { 'Content-Type': 'application/json' }
+            })) as typeof globalThis.fetch;
 
             const result = await strategy.validate(createContext('some code'));
             expect(result.isValid).toBe(false);
@@ -205,18 +200,22 @@ describe('MultiModelReviewStrategy', () => {
 
         it('handles timeout correctly', async () => {
             process.env.ZAI_API_KEY = 'test-key';
-            global.fetch = (async (url: any, options: any) => {
+            global.fetch = (async (_url: any, options: any) => {
                 const signal = options?.signal;
                 return new Promise((_, reject) => {
-                    if (signal) {
-                        signal.addEventListener('abort', () => {
-                            const err = new Error('The operation was aborted');
-                            err.name = 'AbortError';
-                            reject(err);
-                        });
+                    if (signal?.aborted) {
+                        const err = new Error('The operation was aborted');
+                        err.name = 'AbortError';
+                        reject(err);
+                        return;
                     }
+                    signal?.addEventListener('abort', () => {
+                        const err = new Error('The operation was aborted');
+                        err.name = 'AbortError';
+                        reject(err);
+                    });
                 });
-            }) as any;
+            }) as typeof globalThis.fetch;
 
             const timeoutStrategy = createMultiModelReviewStrategy({
                 timeoutMs: 10,
@@ -234,19 +233,86 @@ describe('MultiModelReviewStrategy', () => {
             global.fetch = (async (url: string, options: any) => {
                 capturedUrl = url;
                 capturedBody = JSON.parse(options.body);
-                return {
-                    ok: true,
-                    status: 200,
-                    json: async () => ({
-                        choices: [{ message: { content: JSON.stringify({ verdict: 'approved', summary: 'ok', findings: [] }) } }]
-                    }),
-                } as any;
+                return new Response(JSON.stringify({
+                    choices: [{ message: { content: JSON.stringify({ verdict: 'approved', summary: 'ok', findings: [] }) } }]
+                }));
             }) as typeof globalThis.fetch;
 
             await strategy.performReview(createContext('code'));
 
             expect(capturedUrl).toContain('api.z.ai');
             expect(capturedBody.model).toBe('glm-4-flash');
+        });
+    });
+
+    // ============================================================
+    // Quality Gate API - validate()
+    // ============================================================
+
+    describe('validate() endpoint', () => {
+        beforeEach(() => {
+            process.env.ZAI_API_KEY = 'test-key';
+        });
+
+        it('fails when verdict is changes_requested even if no errors', async () => {
+            mockFetchSuccess({
+                verdict: 'changes_requested',
+                summary: 'Refactor suggested',
+                findings: [{
+                    severity: 'warning',
+                    category: 'best_practices',
+                    message: 'Consider cleaner approach'
+                }]
+            });
+
+            const result = await strategy.validate(createContext('code'));
+            expect(result.isValid).toBe(false);
+            expect(result.message).toContain('changes_requested');
+        });
+
+        it('fails when verdict is rejected even if no errors', async () => {
+            mockFetchSuccess({
+                verdict: 'rejected',
+                summary: 'Start over',
+                findings: []
+            });
+
+            const result = await strategy.validate(createContext('code'));
+            expect(result.isValid).toBe(false);
+            expect(result.message).toContain('rejected');
+        });
+
+        it('passes when verdict is approved and no errors (threshold error)', async () => {
+            mockFetchSuccess({
+                verdict: 'approved',
+                summary: 'Looks good',
+                findings: [{
+                    severity: 'warning',
+                    category: 'best_practices',
+                    message: 'Small detail'
+                }]
+            });
+
+            const result = await strategy.validate(createContext('code'));
+            expect(result.isValid).toBe(true);
+        });
+
+        it('fails when verdict is approved but has warnings and threshold warning', async () => {
+            const strictStrategy = createMultiModelReviewStrategy({
+                minSeverityToFail: 'warning'
+            });
+            mockFetchSuccess({
+                verdict: 'approved',
+                summary: 'Approved with minor suggestions',
+                findings: [{
+                    severity: 'warning',
+                    category: 'best_practices',
+                    message: 'Fix this please'
+                }]
+            });
+
+            const result = await strictStrategy.validate(createContext('code'));
+            expect(result.isValid).toBe(false);
         });
     });
 
@@ -258,40 +324,17 @@ describe('MultiModelReviewStrategy', () => {
         it('sanitizes triple backticks to prevent prompt injection', async () => {
             process.env.ZAI_API_KEY = 'test-key';
             let capturedPrompt = '';
-            global.fetch = (async (url: any, options: any) => {
+            global.fetch = (async (_url: any, options: any) => {
                 capturedPrompt = JSON.parse(options.body).messages[1].content;
-                return {
-                    ok: true,
-                    status: 200,
-                    json: async () => ({
-                        choices: [{ message: { content: JSON.stringify({ verdict: 'approved', summary: 'ok', findings: [] }) } }]
-                    }),
-                } as any;
+                return new Response(JSON.stringify({
+                    choices: [{ message: { content: JSON.stringify({ verdict: 'approved', summary: 'ok', findings: [] }) } }]
+                }));
             }) as typeof globalThis.fetch;
 
             await strategy.performReview(createContext('Code with ``` injection'));
 
             expect(capturedPrompt).not.toContain('``` injection');
             expect(capturedPrompt).toContain('\u0060\u200B\u0060\u200B\u0060 injection');
-        });
-    });
-
-    // ============================================================
-    // Severity Configuration
-    // ============================================================
-
-    describe('severity configuration', () => {
-        it('fails on warnings when configured', async () => {
-            const strictStrategy = createMultiModelReviewStrategy({
-                minSeverityToFail: 'warning',
-                allowHeuristicFallback: true,
-            });
-
-            const result = await strictStrategy.validate(createContext(`
-                const data = response as any;
-            `));
-
-            expect(result.isValid).toBe(false);
         });
     });
 

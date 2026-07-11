@@ -1,4 +1,11 @@
 /**
+ * QUARANTINED — excluded from `bun run check:tests` (baseline gate).
+ * Recovery debt: https://github.com/RenyEnnos/ouroboros-runtime/issues/41
+ * Manifest: scripts/quarantine-manifest.json
+ * Do not delete/rename this file to make CI green; fix or keep listed in the manifest.
+ */
+
+/**
  * 🧪 End-to-End Sandbox Verification Tests
  *
  * Verifica a segurança e isolamento do sandbox em cenários completos:
