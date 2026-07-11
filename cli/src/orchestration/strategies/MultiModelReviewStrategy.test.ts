@@ -54,10 +54,6 @@ describe('MultiModelReviewStrategy', () => {
         global.fetch = (async () => ({
             ok: true,
             status: 200,
-            text: async () => JSON.stringify({
-                choices: [{ message: { content: JSON.stringify(json) } }],
-                usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 }
-            }),
             json: async () => ({
                 choices: [{ message: { content: JSON.stringify(json) } }],
                 usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 }
@@ -181,11 +177,13 @@ describe('MultiModelReviewStrategy', () => {
 
         it('fails when response JSON is invalid', async () => {
             process.env.ZAI_API_KEY = 'test-key';
+            // Simulate content that doesn't contain valid JSON structure
             global.fetch = (async () => ({
                 ok: true,
                 status: 200,
-                text: async () => 'not a json',
-                json: async () => { throw new Error('parse error'); }
+                json: async () => ({
+                    choices: [{ message: { content: 'This is not JSON at all' } }]
+                }),
             } as any)) as typeof globalThis.fetch;
 
             const result = await strategy.validate(createContext('some code'));
@@ -217,7 +215,6 @@ describe('MultiModelReviewStrategy', () => {
                             reject(err);
                         });
                     }
-                    // Never resolves otherwise
                 });
             }) as any;
 
@@ -228,6 +225,28 @@ describe('MultiModelReviewStrategy', () => {
             const result = await timeoutStrategy.validate(createContext('some code'));
             expect(result.isValid).toBe(false);
             expect(result.message).toContain('aborted');
+        });
+
+        it('uses default GLM model and ZAI endpoint by default', async () => {
+            process.env.ZAI_API_KEY = 'test-key';
+            let capturedUrl = '';
+            let capturedBody: any = {};
+            global.fetch = (async (url: string, options: any) => {
+                capturedUrl = url;
+                capturedBody = JSON.parse(options.body);
+                return {
+                    ok: true,
+                    status: 200,
+                    json: async () => ({
+                        choices: [{ message: { content: JSON.stringify({ verdict: 'approved', summary: 'ok', findings: [] }) } }]
+                    }),
+                } as any;
+            }) as typeof globalThis.fetch;
+
+            await strategy.performReview(createContext('code'));
+
+            expect(capturedUrl).toContain('api.z.ai');
+            expect(capturedBody.model).toBe('glm-4-flash');
         });
     });
 
