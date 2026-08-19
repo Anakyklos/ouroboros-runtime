@@ -76,7 +76,8 @@ export type ReviewUnavailableReason =
     | 'network_error'
     | 'invalid_response'
     | 'parsing'
-    | 'validation';
+    | 'validation'
+    | 'accounting_error';
 
 export interface RemoteReviewOutcome {
     kind: 'review';
@@ -244,19 +245,7 @@ export class MultiModelReviewStrategy implements ValidationStrategy {
                 return this.withOptionalAdvisory(context, response);
             }
 
-            let envelope: unknown;
-            try {
-                envelope = await response.response.json() as unknown;
-            } catch {
-                return this.withOptionalAdvisory(context, this.unavailable(
-                    'parsing',
-                    false,
-                    source,
-                    'The remote review response could not be decoded as JSON.',
-                ));
-            }
-
-            const extracted = this.extractEnvelope(envelope);
+            const extracted = this.extractEnvelope(response.envelope);
             if (!extracted) {
                 return this.withOptionalAdvisory(context, this.unavailable(
                     'invalid_response',
@@ -276,7 +265,12 @@ export class MultiModelReviewStrategy implements ValidationStrategy {
                         category: 'review',
                     });
                 } catch {
-                    // Budget telemetry must not turn a valid content review into a content finding.
+                    return this.withOptionalAdvisory(context, this.unavailable(
+                        'accounting_error',
+                        true,
+                        source,
+                        'Remote review accounting failed; the review result was not promoted.',
+                    ));
                 }
             }
 
@@ -383,7 +377,7 @@ export class MultiModelReviewStrategy implements ValidationStrategy {
         apiKey: string,
         context: ValidationContext,
         externalSignal?: AbortSignal,
-    ): Promise<{ kind: 'response'; response: Response } | UnavailableReviewOutcome> {
+    ): Promise<{ kind: 'response'; envelope: unknown } | UnavailableReviewOutcome> {
         const controller = new AbortController();
         let timedOut = false;
         let cancelledExternally = false;
@@ -431,11 +425,33 @@ export class MultiModelReviewStrategy implements ValidationStrategy {
                 return this.unavailable('network_error', true, source, 'The remote review transport failed before an HTTP response.');
             }
 
-            if (response.ok) {
-                return { kind: 'response', response };
+            if (!response.ok) {
+                return this.httpFailure(response, source);
             }
 
-            return this.httpFailure(response, source);
+            let body: string;
+            try {
+                body = await response.text();
+            } catch {
+                if (cancelledExternally || externalSignal?.aborted) {
+                    return this.unavailable('cancelled', false, source, 'Remote review was cancelled by the caller.');
+                }
+                if (timedOut) {
+                    return this.unavailable('timeout', true, source, 'The remote review request timed out.');
+                }
+                return this.unavailable('network_error', true, source, 'The remote review response body could not be read.');
+            }
+
+            try {
+                return { kind: 'response', envelope: JSON.parse(body) as unknown };
+            } catch {
+                return this.unavailable(
+                    'parsing',
+                    false,
+                    source,
+                    'The remote review response could not be decoded as JSON.',
+                );
+            }
         } finally {
             clearTimeout(timeoutId);
             externalSignal?.removeEventListener('abort', onExternalAbort);

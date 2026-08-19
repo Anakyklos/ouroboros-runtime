@@ -10,6 +10,7 @@ import {
 } from './MultiModelReviewStrategy.js';
 import type { MultiModelReviewConfig } from './MultiModelReviewStrategy.js';
 import type { ValidationContext } from '../types.js';
+import type { BudgetPort } from '../../ports/budget.port.js';
 
 type CapturedRequest = {
     input: RequestInfo | URL;
@@ -69,6 +70,86 @@ const remoteStrategy = (
 ): MultiModelReviewStrategy => createMultiModelReviewStrategy({
     apiKey: SYNTHETIC_API_KEY,
     ...config,
+});
+
+const TEST_DEADLINE = Symbol('test-deadline');
+
+const withTestDeadline = async <T>(promise: Promise<T>, timeoutMs = 100): Promise<T | typeof TEST_DEADLINE> => {
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<typeof TEST_DEADLINE>(resolve => {
+        timer = setTimeout(() => resolve(TEST_DEADLINE), timeoutMs);
+    });
+    try {
+        return await Promise.race([promise, deadline]);
+    } finally {
+        clearTimeout(timer);
+    }
+};
+
+type HangingBody = {
+    response: Response;
+    started: Promise<void>;
+    abort: () => void;
+    close: () => void;
+};
+
+const hangingBodyResponse = (chunk: string): HangingBody => {
+    let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let resolveStarted: (() => void) | undefined;
+    const started = new Promise<void>(resolve => {
+        resolveStarted = resolve;
+    });
+    const stream = new ReadableStream<Uint8Array>({
+        start(nextController) {
+            controller = nextController;
+            nextController.enqueue(new TextEncoder().encode(chunk));
+            resolveStarted?.();
+        },
+    });
+    return {
+        response: new Response(stream),
+        started,
+        abort: () => {
+            try {
+                controller?.error(new DOMException('aborted', 'AbortError'));
+            } catch {
+                // The transport may already have cancelled the stream.
+            }
+        },
+        close: () => {
+            try {
+                controller?.close();
+            } catch {
+                // The transport may already have cancelled the stream.
+            }
+        },
+    };
+};
+
+const createBudgetPort = (recordUsage: BudgetPort['recordUsage']): BudgetPort => ({
+    recordUsage,
+    getSummary: async () => ({
+        totalSpentUsd: 0,
+        budgetLimitUsd: 0,
+        budgetUsedPct: 0,
+        remainingUsd: 0,
+        totalCalls: 0,
+        totalTokens: 0,
+        byCategory: {
+            task: { costUsd: 0, calls: 0 },
+            consciousness: { costUsd: 0, calls: 0 },
+            evolution: { costUsd: 0, calls: 0 },
+            review: { costUsd: 0, calls: 0 },
+            direct_chat: { costUsd: 0, calls: 0 },
+        },
+        byModel: {},
+    }),
+    setBudgetLimit: () => undefined,
+    getBudgetLimit: () => 0,
+    isBudgetExceeded: async () => false,
+    getRecentUsage: async () => [],
+    initialize: async () => undefined,
+    close: async () => undefined,
 });
 
 describe('MultiModelReviewStrategy', () => {
@@ -253,6 +334,76 @@ describe('MultiModelReviewStrategy', () => {
     });
 
     describe('timeout, cancellation and transport', () => {
+        it('times out while the response body remains incomplete', async () => {
+            const body = hangingBodyResponse('{"choices":');
+            setFetch(async (_input, init) => {
+                init?.signal?.addEventListener('abort', body.abort, { once: true });
+                return body.response;
+            });
+
+            const pending = remoteStrategy({ timeoutMs: 5 }).performReview(createContext('code'));
+            await body.started;
+            const report = await withTestDeadline(pending);
+            if (report === TEST_DEADLINE) {
+                body.close();
+                await pending;
+            }
+
+            expect(report).not.toBe(TEST_DEADLINE);
+            if (report !== TEST_DEADLINE) {
+                expect(report.kind).toBe('unavailable');
+                if (report.kind === 'unavailable') {
+                    expect(report.reason).toBe('timeout');
+                    expect(report.retryable).toBe(true);
+                }
+            }
+        });
+
+        it('classifies external cancellation after headers and before body completion as cancelled', async () => {
+            const body = hangingBodyResponse('{"choices":');
+            const externalController = new AbortController();
+            setFetch(async (_input, init) => {
+                init?.signal?.addEventListener('abort', body.abort, { once: true });
+                return body.response;
+            });
+
+            const pending = remoteStrategy({ timeoutMs: 5_000 }).performReview(createContext('code'), externalController.signal);
+            await body.started;
+            externalController.abort();
+            const report = await withTestDeadline(pending);
+            if (report === TEST_DEADLINE) {
+                body.close();
+                await pending;
+            }
+
+            expect(report).not.toBe(TEST_DEADLINE);
+            if (report !== TEST_DEADLINE) {
+                expect(report.kind).toBe('unavailable');
+                if (report.kind === 'unavailable') {
+                    expect(report.reason).toBe('cancelled');
+                    expect(report.retryable).toBe(false);
+                }
+            }
+        });
+
+        it('cleans the transport timer and external listener after body settlement', async () => {
+            const externalController = new AbortController();
+            let providerAbortCount = 0;
+            setFetch(async (_input, init) => {
+                init?.signal?.addEventListener('abort', () => {
+                    providerAbortCount += 1;
+                }, { once: true });
+                return remoteResponse(reviewPayload('approved', []));
+            });
+
+            const report = await remoteStrategy({ timeoutMs: 5 }).performReview(createContext('code'), externalController.signal);
+            await new Promise<void>(resolve => setTimeout(resolve, 25));
+            externalController.abort();
+
+            expect(report.kind).toBe('review');
+            expect(providerAbortCount).toBe(0);
+        });
+
         it('distinguishes internal timeout from external cancellation', async () => {
             const hangingFetch: typeof globalThis.fetch = (_input, init) => new Promise<Response>((_resolve, reject) => {
                 const signal = init?.signal;
@@ -298,6 +449,51 @@ describe('MultiModelReviewStrategy', () => {
             expect(result.details?.kind).toBe('unavailable');
             expect(result.details?.reason).toBe('network_error');
             expect(result.details?.findings).toBeUndefined();
+        });
+    });
+
+    describe('budget accounting', () => {
+        it('blocks an approved review as accounting_error when usage recording fails', async () => {
+            setFetch(async () => remoteResponse(reviewPayload('approved', [], 'Approved with remote secret')));
+            const budgetTracker = createBudgetPort(async () => {
+                throw new Error(`synthetic accounting failure ${SYNTHETIC_API_KEY}`);
+            });
+
+            const strategy = remoteStrategy({ budgetTracker });
+            const report = await strategy.performReview(createContext('code'));
+            const result = await strategy.validate(createContext('code'));
+            const serialized = JSON.stringify({ report, result });
+
+            expect(report.kind).toBe('unavailable');
+            if (report.kind === 'unavailable') {
+                expect(report.reason).toBe('accounting_error');
+                expect(report.retryable).toBe(true);
+            }
+            expect(result.isValid).toBe(false);
+            expect(result.exitCode).toBe(1);
+            expect(result.details?.reason).toBe('accounting_error');
+            expect(serialized).not.toContain(SYNTHETIC_API_KEY);
+            expect(serialized).not.toContain('Approved with remote secret');
+            if (report.kind === 'unavailable') {
+                expect(report.advisory).toBeUndefined();
+            }
+        });
+
+        it('allows an approved review to proceed when usage recording succeeds', async () => {
+            setFetch(async () => remoteResponse(reviewPayload('approved', [], 'Accounting recorded')));
+            const budgetTracker = createBudgetPort(async record => ({
+                id: 'synthetic-usage-id',
+                timestamp: new Date(0),
+                costUsd: 0,
+                ...record,
+            }));
+
+            const report = await remoteStrategy({ budgetTracker }).performReview(createContext('code'));
+
+            expect(report.kind).toBe('review');
+            if (report.kind === 'review') {
+                expect(report.verdict).toBe('approved');
+            }
         });
     });
 
