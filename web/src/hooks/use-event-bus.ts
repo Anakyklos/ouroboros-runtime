@@ -1,15 +1,12 @@
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLogStore } from "@/stores/log-store";
-import { useMissionControlStore } from "@/stores/mission-control-store";
-
-interface EventBusMessage {
-  type: string;
-  level?: "debug" | "info" | "warn" | "error";
-  message?: string;
-  source?: string;
-  timestamp?: string;
-  data?: unknown;
-}
+import { useMissionControlStore, type DaemonCapabilities } from "@/stores/mission-control-store";
+import { DaemonWebSocketConnection } from "@/lib/daemon-websocket-connection";
+import type {
+  DaemonEventEnvelope,
+  DaemonSnapshot,
+  ProtocolDiagnostic,
+} from "../../../shared/daemon-event-contract";
 
 interface UseEventBusOptions {
   url?: string;
@@ -18,12 +15,24 @@ interface UseEventBusOptions {
 
 type ConnectionStatus = "connected" | "disconnected" | "reconnecting";
 
-const INITIAL_BACKOFF = 1000;
-const MAX_BACKOFF = 30000;
+function toStoreCapabilities(snapshot: DaemonSnapshot): DaemonCapabilities {
+  return {
+    statusMetrics: snapshot.capabilities.statusMetrics,
+    modeSwitching: snapshot.capabilities.modeSwitching,
+    emergencyBrake: snapshot.capabilities.emergencyBrake,
+    tokenMetrics: snapshot.capabilities.tokenMetrics,
+    brakeRecoverable: snapshot.capabilities.brakeRecoverable,
+    modePersistence: snapshot.capabilities.modePersistence,
+    supportedModes: [...snapshot.capabilities.supportedModes],
+  };
+}
 
-function calculateBackoff(attempt: number): number {
-  const backoff = INITIAL_BACKOFF * Math.pow(2, attempt);
-  return Math.min(backoff, MAX_BACKOFF);
+function metricValue(metric: DaemonSnapshot["status"]["activeTasks"]): number | undefined {
+  return metric.available ? metric.value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 export function useEventBus(options: UseEventBusOptions = {}) {
@@ -32,135 +41,89 @@ export function useEventBus(options: UseEventBusOptions = {}) {
     maxReconnectAttempts = 10,
   } = options;
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectAttemptsRef = useRef(0);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const connectionRef = useRef<DaemonWebSocketConnection | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("disconnected");
 
   const addLogEntry = useLogStore((state) => state.addEntry);
   const setDaemonConnected = useMissionControlStore((state) => state.setDaemonConnected);
+  const setCapabilities = useMissionControlStore((state) => state.setCapabilities);
+  const applyDaemonMetrics = useMissionControlStore((state) => state.applyDaemonMetrics);
 
-  const handleMessage = useCallback((event: MessageEvent) => {
-    try {
-      const rawData = JSON.parse(event.data);
-      
-      // Handle connection message
-      if (rawData.event === 'connected') {
-        setDaemonConnected(true);
-        return;
+  const handleSnapshot = useCallback((snapshot: DaemonSnapshot) => {
+    const status = snapshot.status;
+    setCapabilities(toStoreCapabilities(snapshot));
+    applyDaemonMetrics({
+      mode: status.mode,
+      activeTasks: metricValue(status.activeTasks),
+      activeWaves: metricValue(status.activeWaves),
+      uptimeSeconds: status.uptimeSeconds,
+      tokens: status.tokensUsed.available ? status.tokensUsed.value : null,
+    });
+  }, [applyDaemonMetrics, setCapabilities]);
+
+  const handleEnvelope = useCallback((envelope: DaemonEventEnvelope) => {
+    const payload = envelope.data;
+    const detail = isRecord(payload)
+      ? { type: envelope.event, ...payload, data: payload, envelope }
+      : { type: envelope.event, data: payload, envelope };
+
+    if (envelope.event === "log" && isRecord(payload)) {
+      const level = payload.level;
+      const message = payload.message;
+      const source = payload.source;
+      if (
+        (level === "debug" || level === "info" || level === "warn" || level === "error") &&
+        typeof message === "string" &&
+        typeof source === "string"
+      ) {
+        addLogEntry({ level, message, source });
       }
-      
-      // Extract event data - backend sends { event, data } format
-      const data: EventBusMessage = {
-        type: rawData.event || rawData.type,
-        ...rawData.data,
-        data: rawData.data,
-      };
-
-      // Route events to appropriate stores
-      switch (data.type) {
-        case "log":
-          if (data.level && data.message && data.source) {
-            addLogEntry({
-              level: data.level,
-              message: data.message,
-              source: data.source,
-            });
-          }
-          break;
-
-        case "wave":
-        case "wave:created":
-        case "wave:updated":
-        case "wave:progress":
-        case "task:progress":
-        case "council:vote":
-        case "council:consensus":
-        case "daemon":
-          // These will be handled by specific stores
-          window.dispatchEvent(new CustomEvent("daemon:event", { detail: data }));
-          break;
-
-        case "daemon:status":
-          // Update daemon status
-          break;
-
-        default:
-          // Dispatch generic event for other handlers
-          window.dispatchEvent(new CustomEvent("daemon:event", { detail: data }));
-      }
-    } catch (err) {
-      console.error("[EventBus] Failed to parse message:", err);
     }
-  }, [addLogEntry, setDaemonConnected]);
+
+    if (envelope.event !== "snapshot") {
+      window.dispatchEvent(new CustomEvent("daemon:event", { detail }));
+    }
+  }, [addLogEntry]);
+
+  const handleDiagnostic = useCallback((diagnostic: ProtocolDiagnostic) => {
+    console.warn(`[EventBus] WebSocket protocol diagnostic: ${diagnostic.code}`);
+  }, []);
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    if (connectionRef.current) return;
 
-    try {
-      setConnectionStatus("reconnecting");
-      wsRef.current = new WebSocket(url);
-
-      wsRef.current.onopen = () => {
-        console.log("[EventBus] Connected to daemon");
-        setDaemonConnected(true);
-        setConnectionStatus("connected");
-        reconnectAttemptsRef.current = 0;
-      };
-
-      wsRef.current.onmessage = handleMessage;
-
-      wsRef.current.onclose = () => {
-        console.log("[EventBus] Disconnected from daemon");
-        setDaemonConnected(false);
-        setConnectionStatus("disconnected");
-
-        if (reconnectAttemptsRef.current < maxReconnectAttempts) {
-          const backoff = calculateBackoff(reconnectAttemptsRef.current);
-          reconnectAttemptsRef.current++;
-          console.log(`[EventBus] Reconnecting in ${backoff}ms (${reconnectAttemptsRef.current}/${maxReconnectAttempts})...`);
-          setConnectionStatus("reconnecting");
-          
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connect();
-          }, backoff);
-        } else {
-          console.error("[EventBus] Max reconnection attempts reached. Daemon offline.");
-        }
-      };
-
-      wsRef.current.onerror = (error) => {
-        console.error("[EventBus] WebSocket error:", error);
-      };
-    } catch (err) {
-      console.error("[EventBus] Failed to connect:", err);
-      setDaemonConnected(false);
-      setConnectionStatus("disconnected");
-    }
-  }, [url, handleMessage, maxReconnectAttempts, setDaemonConnected]);
+    const connection = new DaemonWebSocketConnection({
+      url,
+      maxReconnectAttempts,
+      onStatus: (status) => {
+        setConnectionStatus(status);
+        setDaemonConnected(status === "connected");
+      },
+      onSnapshot: handleSnapshot,
+      onEnvelope: handleEnvelope,
+      onDiagnostic: handleDiagnostic,
+    });
+    connectionRef.current = connection;
+    connection.start();
+  }, [handleDiagnostic, handleEnvelope, handleSnapshot, maxReconnectAttempts, setDaemonConnected, url]);
 
   const disconnect = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-    }
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
+    const connection = connectionRef.current;
+    connectionRef.current = null;
+    connection?.disconnect();
     setDaemonConnected(false);
+    setConnectionStatus("disconnected");
   }, [setDaemonConnected]);
 
   const send = useCallback((data: unknown) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(data));
-    } else {
+    if (!connectionRef.current?.send(data)) {
       console.warn("[EventBus] Cannot send - not connected");
     }
   }, []);
 
   useEffect(() => {
     connect();
-    return () => disconnect();
+    return disconnect;
   }, [connect, disconnect]);
 
   return {

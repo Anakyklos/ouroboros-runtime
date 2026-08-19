@@ -9,6 +9,8 @@ import Fastify, { FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
 import { EventBus, globalEventBus } from './event-bus.js';
 import { RpcGateway } from './rpc-gateway.js';
+import { DaemonProjection, type ProjectionClient } from './daemon-projection.js';
+import { isAllowedDaemonEvent } from '../../../shared/daemon-event-contract.js';
 import { GatewayOrchestrator } from '../orchestration/GatewayOrchestrator.js';
 import type { StoragePort } from '../ports/storage.port.js';
 
@@ -30,6 +32,8 @@ export class DaemonServer {
     private eventBus: EventBus;
     private rpcGateway: RpcGateway;
     private gatewayOrchestrator: GatewayOrchestrator;
+    private projection: DaemonProjection;
+    private eventForwardingUnsubscribe: (() => void) | null = null;
     private isRunning = false;
     private initialized = false;
 
@@ -47,6 +51,15 @@ export class DaemonServer {
         }
         
         this.rpcGateway = new RpcGateway(this.gatewayOrchestrator, storage, eventBus, this.config.apiKey);
+        this.projection = new DaemonProjection({
+            snapshot: (cursor) => ({
+                ...this.rpcGateway.getProjectionSnapshot(),
+                cursor,
+            }),
+            onDiagnostic: (diagnostic) => {
+                this.eventBus.log('warn', `WebSocket protocol diagnostic: ${diagnostic.code}`, 'DaemonServer');
+            },
+        });
 
         this.app = Fastify({
             logger: false,
@@ -63,14 +76,24 @@ export class DaemonServer {
     }
 
     private setupEventForwarding(): void {
-        this.eventBus.on('*', (data) => {
-            const message = JSON.stringify(data);
-            this.app.websocketServer?.clients.forEach((client: { readyState: number; send: (msg: string) => void }) => {
-                if (client.readyState === 1) {
-                    client.send(message);
-                }
-            });
+        if (this.eventForwardingUnsubscribe) return;
+
+        this.eventForwardingUnsubscribe = this.eventBus.on('*', (data) => {
+            if (!data || typeof data !== 'object') return;
+            const forwarded = data as { event?: unknown; data?: unknown };
+            if (!isAllowedDaemonEvent(forwarded.event) || forwarded.event === 'snapshot') {
+                return;
+            }
+            this.projection.broadcast(forwarded.event, forwarded.data);
         });
+    }
+
+    private cleanupTransport(): void {
+        this.eventForwardingUnsubscribe?.();
+        this.eventForwardingUnsubscribe = null;
+        this.projection.closeClients();
+        this.app.server.closeAllConnections?.();
+        this.app.server.closeIdleConnections?.();
     }
 
     private setupRoutes(): void {
@@ -91,10 +114,10 @@ export class DaemonServer {
         });
 
         this.app.get('/ws', { websocket: true }, (socket) => {
-            socket.send(JSON.stringify({
-                event: 'connected',
-                data: { timestamp: new Date().toISOString() }
-            }));
+            const client = socket as unknown as ProjectionClient;
+            this.projection.connectClient(client);
+            socket.on('close', () => this.projection.disconnectClient(client));
+            socket.on('error', () => this.projection.disconnectClient(client));
         });
 
         this.app.post('/rpc', async (request, reply) => {
@@ -152,10 +175,12 @@ export class DaemonServer {
 
     async stop(): Promise<void> {
         if (!this.isRunning) {
+            this.cleanupTransport();
             return;
         }
 
         this.eventBus.emit('daemon', { type: 'shutting_down' });
+        this.cleanupTransport();
 
         try {
             await this.app.close();
@@ -163,6 +188,7 @@ export class DaemonServer {
             this.eventBus.emit('daemon', { type: 'stopped' });
             this.eventBus.log('info', 'Daemon stopped gracefully', 'DaemonServer');
         } catch (err) {
+            this.isRunning = false;
             this.eventBus.log('error', `Error stopping daemon: ${err}`, 'DaemonServer');
             throw err;
         }
