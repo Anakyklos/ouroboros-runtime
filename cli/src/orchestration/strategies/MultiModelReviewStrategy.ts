@@ -1,15 +1,11 @@
 /**
  * 🔍 Multi-Model Review Strategy
- * 
- * ValidationStrategy que envia o output de uma task para um segundo modelo LLM
- * (diferente do que produziu o código) para review.
- * 
- * Inspirado pelo review.py do razzant/ouroboros,
- * integrado como strategy no QualityGateRegistry existente.
- * 
- * ADR-02: Modelo separado para review garante diversidade de perspectiva.
+ *
+ * Quality gate que obtém uma revisão remota independente e nunca transforma
+ * indisponibilidade do provider em um parecer sobre o conteúdo revisado.
  */
 
+import { z } from 'zod';
 import type { ValidationStrategy, ValidationContext, ValidationResult } from '../types.js';
 import type { BudgetPort } from '../../ports/budget.port.js';
 
@@ -18,24 +14,34 @@ import type { BudgetPort } from '../../ports/budget.port.js';
 // ============================================================
 
 export interface MultiModelReviewConfig {
-    /** Modelo a usar para review (deve ser diferente do modelo de execução) */
+    /** Provider atualmente suportado por esta estratégia. */
+    provider?: string;
+    /** Modelo a usar para review (deve ser diferente do modelo de execução). */
     reviewModel: string;
-    /** API key para o modelo de review (se diferente) */
+    /** API key para o modelo de review (se diferente). */
     apiKey?: string;
-    /** Base URL do provider de review */
+    /** Base URL do provider de review. Quando omitida, usa o endpoint Z.AI oficial. */
     baseUrl?: string;
-    /** Timeout em ms (default: 60s) */
+    /** Timeout interno da requisição em ms. */
     timeoutMs: number;
-    /** Severidade mínima para falhar o gate ('error' | 'warning' | 'info') */
+    /** Severidade mínima para falhar o gate em uma revisão remota aprovada. */
     minSeverityToFail: 'error' | 'warning' | 'info';
-    /** Se usa BudgetTracker para registrar custo do review */
+    /** Se usa BudgetTracker para registrar custo do review. */
     budgetTracker?: BudgetPort;
+    /** Fallback local opt-in; nunca satisfaz o gate remoto obrigatório. */
+    allowHeuristicFallback?: boolean;
+    /** Sinal de cancelamento externo opcional para chamadas diretas. */
+    signal?: AbortSignal;
+    /** Relógio injetável para o parsing determinístico de HTTP-date. */
+    now?: () => number;
 }
 
 export const DEFAULT_REVIEW_CONFIG: MultiModelReviewConfig = {
-    reviewModel: 'gemini-2.5-flash',
+    provider: 'zai',
+    reviewModel: 'glm-4-flash',
     timeoutMs: 60_000,
     minSeverityToFail: 'error',
+    allowHeuristicFallback: false,
 };
 
 export interface ReviewFinding {
@@ -46,18 +52,101 @@ export interface ReviewFinding {
     location?: string;
 }
 
-export interface ReviewReport {
-    /** Veredicto geral */
-    verdict: 'approved' | 'changes_requested' | 'rejected';
-    /** Lista de findings */
-    findings: ReviewFinding[];
-    /** Resumo textual */
-    summary: string;
-    /** Modelo que fez o review */
-    reviewModel: string;
-    /** Custo estimado */
-    costUsd?: number;
+export interface RemoteReviewSource {
+    type: 'remote';
+    provider: string;
+    model: string;
+    baseUrl: string;
+    credentialSource: 'explicit' | 'ZAI_API_KEY' | 'ZHIPU_API_KEY' | 'none';
 }
+
+export interface HeuristicReviewSource {
+    type: 'heuristic';
+}
+
+export type ReviewUnavailableReason =
+    | 'missing_credentials'
+    | 'invalid_configuration'
+    | 'authentication'
+    | 'authorization'
+    | 'rate_limited'
+    | 'provider_unavailable'
+    | 'timeout'
+    | 'cancelled'
+    | 'network_error'
+    | 'invalid_response'
+    | 'parsing'
+    | 'validation';
+
+export interface RemoteReviewOutcome {
+    kind: 'review';
+    verdict: 'approved' | 'changes_requested' | 'rejected';
+    findings: ReviewFinding[];
+    summary: string;
+    source: RemoteReviewSource;
+}
+
+export interface AdvisoryReviewOutcome {
+    kind: 'advisory';
+    verdict: 'approved' | 'changes_requested';
+    findings: ReviewFinding[];
+    summary: string;
+    source: HeuristicReviewSource;
+}
+
+export interface UnavailableReviewOutcome {
+    kind: 'unavailable';
+    reason: ReviewUnavailableReason;
+    retryable: boolean;
+    retryAfterMs?: number;
+    source: RemoteReviewSource;
+    message: string;
+    httpStatus?: number;
+    advisory?: AdvisoryReviewOutcome;
+}
+
+export type ReviewOutcome = RemoteReviewOutcome | UnavailableReviewOutcome | AdvisoryReviewOutcome;
+
+/** Mantém o nome histórico exportado, agora com a semântica discriminada. */
+export type ReviewReport = ReviewOutcome;
+
+interface RemoteEnvelope {
+    content: string;
+    usage?: {
+        prompt_tokens: number;
+        completion_tokens: number;
+        total_tokens: number;
+    };
+}
+
+interface Credential {
+    value: string;
+    source: Exclude<RemoteReviewSource['credentialSource'], 'none'>;
+}
+
+const DEFAULT_ZAI_BASE_URL = 'https://api.z.ai/api/coding/paas/v4';
+const SUPPORTED_ZAI_MODELS = new Set(['glm-4-flash', 'glm-4.7', 'glm-4-plus', 'glm-4']);
+const CODE_DELIMITER = '```';
+const SANITIZED_DELIMITER = '\u0060\u200b\u0060\u200b\u0060';
+const SEVERITY_RANK: Record<ReviewFinding['severity'], number> = {
+    info: 1,
+    warning: 2,
+    error: 3,
+};
+
+const reviewFindingSchema = z.object({
+    severity: z.enum(['error', 'warning', 'info']),
+    category: z.string().min(1),
+    message: z.string().min(1),
+    suggestion: z.string().optional(),
+    location: z.string().optional(),
+}).strict();
+
+const reviewPayloadSchema = z.object({
+    verdict: z.enum(['approved', 'changes_requested', 'rejected']),
+    summary: z.string().min(1),
+    findings: z.array(reviewFindingSchema),
+}).strict();
 
 // ============================================================
 // Review System Prompt
@@ -110,162 +199,432 @@ export class MultiModelReviewStrategy implements ValidationStrategy {
     }
 
     /**
-     * Valida o output de uma task enviando para um segundo modelo de review.
+     * Valida o output de uma task usando uma revisão remota confiável.
+     * O segundo argumento é opcional para permitir cancelamento sem alterar o
+     * ValidationContext compartilhado pelas demais estratégias.
      */
-    async validate(context: ValidationContext): Promise<ValidationResult> {
-        try {
-            const report = await this.performReview(context);
-            return this.reportToResult(report);
-        } catch (err) {
-            return {
-                isValid: false,
-                message: `Review failed: ${err instanceof Error ? err.message : String(err)}`,
-                exitCode: 1,
-                details: { error: String(err) },
-            };
-        }
+    async validate(context: ValidationContext, externalSignal?: AbortSignal): Promise<ValidationResult> {
+        const outcome = await this.performReview(context, externalSignal);
+        return this.outcomeToResult(outcome);
     }
 
     /**
-     * Executa o review e retorna o report estruturado.
-     * Pode ser chamado diretamente para obter o report completo.
+     * Executa o review e retorna um outcome explicitamente discriminado.
      */
-    async performReview(context: ValidationContext): Promise<ReviewReport> {
-        const reviewPrompt = this.buildReviewPrompt(context);
+    async performReview(context: ValidationContext, externalSignal?: AbortSignal): Promise<ReviewOutcome> {
+        const source = this.remoteSource();
+        const configurationError = this.validateConfiguration(source);
+        if (configurationError) {
+            return this.withOptionalAdvisory(context, configurationError);
+        }
 
-        // Try to call the review model
-        // If no API key is configured, fall back to heuristic review
-        if (!this.config.apiKey && !process.env.ZAI_API_KEY && !process.env.ZHIPU_API_KEY) {
-            return this.heuristicReview(context);
+        const credential = this.resolveCredential();
+        if (!credential) {
+            return this.withOptionalAdvisory(context, this.unavailable(
+                'missing_credentials',
+                false,
+                source,
+                'Remote review credentials are not configured.',
+            ));
+        }
+
+        const signal = externalSignal ?? this.config.signal;
+        if (signal?.aborted) {
+            return this.withOptionalAdvisory(context, this.unavailable(
+                'cancelled',
+                false,
+                source,
+                'Remote review was cancelled by the caller.',
+            ));
         }
 
         try {
-            const apiKey = this.config.apiKey ?? process.env.ZAI_API_KEY ?? process.env.ZHIPU_API_KEY ?? '';
-            const baseUrl = this.config.baseUrl ?? 'https://api.z.ai/api/coding/paas/v4';
+            const response = await this.fetchReview(source, credential.value, context, signal);
+            if (response.kind === 'unavailable') {
+                return this.withOptionalAdvisory(context, response);
+            }
 
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
-
+            let envelope: unknown;
             try {
-                const response = await fetch(`${baseUrl}/chat/completions`, {
+                envelope = await response.response.json() as unknown;
+            } catch {
+                return this.withOptionalAdvisory(context, this.unavailable(
+                    'parsing',
+                    false,
+                    source,
+                    'The remote review response could not be decoded as JSON.',
+                ));
+            }
+
+            const extracted = this.extractEnvelope(envelope);
+            if (!extracted) {
+                return this.withOptionalAdvisory(context, this.unavailable(
+                    'invalid_response',
+                    false,
+                    source,
+                    'The remote review response did not contain a usable review envelope.',
+                ));
+            }
+
+            if (this.config.budgetTracker && extracted.usage) {
+                try {
+                    await this.config.budgetTracker.recordUsage({
+                        model: source.model,
+                        promptTokens: extracted.usage.prompt_tokens,
+                        completionTokens: extracted.usage.completion_tokens,
+                        totalTokens: extracted.usage.total_tokens,
+                        category: 'review',
+                    });
+                } catch {
+                    // Budget telemetry must not turn a valid content review into a content finding.
+                }
+            }
+
+            return this.parseReviewResponse(extracted.content, source, credential.value);
+        } catch {
+            return this.withOptionalAdvisory(context, this.unavailable(
+                'network_error',
+                true,
+                source,
+                'The remote review transport failed before a reliable response was obtained.',
+            ));
+        }
+    }
+
+    // ============================================================
+    // Configuration and transport
+    // ============================================================
+
+    private remoteSource(): RemoteReviewSource {
+        const baseUrl = this.normalizedBaseUrl();
+        const credential = this.resolveCredential();
+        return {
+            type: 'remote',
+            provider: this.config.provider ?? 'zai',
+            model: this.config.reviewModel,
+            baseUrl,
+            credentialSource: credential?.source ?? 'none',
+        };
+    }
+
+    private normalizedBaseUrl(): string {
+        return (this.config.baseUrl ?? DEFAULT_ZAI_BASE_URL).replace(/\/+$/, '');
+    }
+
+    private validateConfiguration(source: RemoteReviewSource): UnavailableReviewOutcome | undefined {
+        if (source.provider !== 'zai' || !source.model.trim() || !Number.isFinite(this.config.timeoutMs) || this.config.timeoutMs <= 0) {
+            return this.unavailable(
+                'invalid_configuration',
+                false,
+                source,
+                'The remote review provider configuration is invalid.',
+            );
+        }
+
+        try {
+            const parsedUrl = new URL(source.baseUrl);
+            if (parsedUrl.protocol !== 'https:' && !this.isExplicitTestEndpoint(parsedUrl)) {
+                return this.unavailable(
+                    'invalid_configuration',
+                    false,
+                    source,
+                    'The remote review base URL must use HTTPS unless explicitly configured for a test endpoint.',
+                );
+            }
+        } catch {
+            return this.unavailable(
+                'invalid_configuration',
+                false,
+                source,
+                'The remote review base URL is invalid.',
+            );
+        }
+
+        if (!this.config.baseUrl && !SUPPORTED_ZAI_MODELS.has(source.model)) {
+            return this.unavailable(
+                'invalid_configuration',
+                false,
+                source,
+                'The selected model is not compatible with the default Z.AI review endpoint.',
+            );
+        }
+
+        if (this.config.baseUrl && !SUPPORTED_ZAI_MODELS.has(source.model)) {
+            return this.unavailable(
+                'invalid_configuration',
+                false,
+                source,
+                'The selected model is not in the supported Z.AI review model set.',
+            );
+        }
+
+        return undefined;
+    }
+
+    private isExplicitTestEndpoint(url: URL): boolean {
+        return url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]' || url.hostname.endsWith('.test');
+    }
+
+    private resolveCredential(): Credential | undefined {
+        if (this.config.apiKey) {
+            return { value: this.config.apiKey, source: 'explicit' };
+        }
+        if (process.env.ZAI_API_KEY) {
+            return { value: process.env.ZAI_API_KEY, source: 'ZAI_API_KEY' };
+        }
+        if (process.env.ZHIPU_API_KEY) {
+            return { value: process.env.ZHIPU_API_KEY, source: 'ZHIPU_API_KEY' };
+        }
+        return undefined;
+    }
+
+    private async fetchReview(
+        source: RemoteReviewSource,
+        apiKey: string,
+        context: ValidationContext,
+        externalSignal?: AbortSignal,
+    ): Promise<{ kind: 'response'; response: Response } | UnavailableReviewOutcome> {
+        const controller = new AbortController();
+        let timedOut = false;
+        let cancelledExternally = false;
+        const timeoutId = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, this.config.timeoutMs);
+        const onExternalAbort = () => {
+            cancelledExternally = true;
+            controller.abort();
+        };
+
+        if (externalSignal) {
+            externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+        }
+
+        try {
+            let response: Response;
+            try {
+                response = await fetch(`${source.baseUrl}/chat/completions`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${apiKey}`,
                     },
                     body: JSON.stringify({
-                        model: this.config.reviewModel,
+                        model: source.model,
                         messages: [
                             { role: 'system', content: REVIEW_SYSTEM_PROMPT },
-                            { role: 'user', content: reviewPrompt },
+                            { role: 'user', content: this.buildReviewPrompt(context) },
                         ],
-                        temperature: 0.2, // Low temperature for consistent reviews
+                        temperature: 0.2,
                         max_tokens: 2048,
                         stream: false,
                     }),
                     signal: controller.signal,
                 });
-
-                if (!response.ok) {
-                    throw new Error(`Review API error: ${response.status}`);
+            } catch {
+                if (cancelledExternally || externalSignal?.aborted) {
+                    return this.unavailable('cancelled', false, source, 'Remote review was cancelled by the caller.');
                 }
-
-                const data = await response.json() as {
-                    choices: Array<{ message: { content: string } }>;
-                    usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
-                };
-
-                // Record budget if tracker available
-                if (this.config.budgetTracker && data.usage) {
-                    await this.config.budgetTracker.recordUsage({
-                        model: this.config.reviewModel,
-                        promptTokens: data.usage.prompt_tokens,
-                        completionTokens: data.usage.completion_tokens,
-                        totalTokens: data.usage.total_tokens,
-                        category: 'review',
-                    });
+                if (timedOut) {
+                    return this.unavailable('timeout', true, source, 'The remote review request timed out.');
                 }
-
-                const content = data.choices[0]?.message?.content ?? '';
-                return this.parseReviewResponse(content);
-
-            } finally {
-                clearTimeout(timeout);
+                return this.unavailable('network_error', true, source, 'The remote review transport failed before an HTTP response.');
             }
-        } catch (err) {
-            // Fall back to heuristic review on API failure
-            return this.heuristicReview(context);
+
+            if (response.ok) {
+                return { kind: 'response', response };
+            }
+
+            return this.httpFailure(response, source);
+        } finally {
+            clearTimeout(timeoutId);
+            externalSignal?.removeEventListener('abort', onExternalAbort);
         }
     }
 
+    private httpFailure(response: Response, source: RemoteReviewSource): UnavailableReviewOutcome {
+        if (response.status === 401) {
+            return this.unavailable('authentication', false, source, 'The remote review provider rejected authentication.', response.status);
+        }
+        if (response.status === 403) {
+            return this.unavailable('authorization', false, source, 'The remote review provider rejected authorization.', response.status);
+        }
+        if (response.status === 429) {
+            const retryAfterHeader = response.headers.get('Retry-After');
+            const retryAfterMs = retryAfterHeader
+                ? this.parseRetryAfter(retryAfterHeader)
+                : undefined;
+            return this.unavailable('rate_limited', true, source, 'The remote review provider rate limited the request.', response.status, retryAfterMs);
+        }
+        if (response.status >= 500 && response.status <= 599) {
+            return this.unavailable('provider_unavailable', true, source, 'The remote review provider is unavailable.', response.status);
+        }
+        return this.unavailable('provider_unavailable', false, source, 'The remote review provider returned an unsuccessful HTTP response.', response.status);
+    }
+
+    private parseRetryAfter(value: string): number | undefined {
+        const trimmed = value.trim();
+        if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+            return Math.max(0, Math.round(Number(trimmed) * 1000));
+        }
+        const dateMs = Date.parse(trimmed);
+        if (Number.isNaN(dateMs)) {
+            return undefined;
+        }
+        return Math.max(0, dateMs - (this.config.now?.() ?? Date.now()));
+    }
+
     // ============================================================
-    // Private
+    // Prompt and response handling
     // ============================================================
 
     private buildReviewPrompt(context: ValidationContext): string {
-        // Sanitize output to prevent prompt injection via triple backticks
-        const sanitizedOutput = context.output
-            .substring(0, 8000)
-            .replace(/```/g, '\u0060\u0060\u0060');
+        const sanitizedOutput = this.sanitizeDelimitedContent(context.output.substring(0, 8000));
+        const sanitizedAdditionalContext = context.additionalContext
+            ? this.sanitizeDelimitedContent(context.additionalContext)
+            : undefined;
 
         return `## Task ID: ${context.taskId}
 
 ## Code Output to Review
-\`\`\`
+${CODE_DELIMITER}
 ${sanitizedOutput}
-\`\`\`
+${CODE_DELIMITER}
 
-${context.additionalContext ? `## Additional Context\n${context.additionalContext}` : ''}
+${sanitizedAdditionalContext ? `## Additional Context\n${sanitizedAdditionalContext}` : ''}
 
 Please review the code above and provide your assessment.`;
     }
 
-    private parseReviewResponse(content: string): ReviewReport {
-        try {
-            // Try to extract JSON from response (may be wrapped in markdown code block)
-            const jsonMatch = content.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                const parsed = JSON.parse(jsonMatch[0]) as Partial<ReviewReport>;
-                return {
-                    verdict: parsed.verdict ?? 'approved',
-                    findings: (parsed.findings ?? []).map(f => ({
-                        severity: f.severity ?? 'info',
-                        category: f.category ?? 'general',
-                        message: f.message ?? '',
-                        suggestion: f.suggestion,
-                        location: f.location,
-                    })),
-                    summary: parsed.summary ?? content.substring(0, 200),
-                    reviewModel: this.config.reviewModel,
-                };
-            }
-        } catch {
-            // Failed to parse JSON
+    private sanitizeDelimitedContent(content: string): string {
+        return content.replaceAll(CODE_DELIMITER, SANITIZED_DELIMITER);
+    }
+
+    private extractEnvelope(value: unknown): RemoteEnvelope | undefined {
+        if (!this.isRecord(value) || !Array.isArray(value.choices)) {
+            return undefined;
+        }
+        const firstChoice = value.choices[0];
+        if (!this.isRecord(firstChoice) || !this.isRecord(firstChoice.message) || typeof firstChoice.message.content !== 'string' || !firstChoice.message.content.trim()) {
+            return undefined;
         }
 
-        // Fallback: treat the entire response as a summary
+        const usage = this.parseUsage(value.usage);
+        return { content: firstChoice.message.content, usage };
+    }
+
+    private parseUsage(value: unknown): RemoteEnvelope['usage'] {
+        if (!this.isRecord(value)) {
+            return undefined;
+        }
+        const promptTokens = value.prompt_tokens;
+        const completionTokens = value.completion_tokens;
+        const totalTokens = value.total_tokens;
+        if (typeof promptTokens !== 'number' || !Number.isFinite(promptTokens) || typeof completionTokens !== 'number' || !Number.isFinite(completionTokens) || typeof totalTokens !== 'number' || !Number.isFinite(totalTokens)) {
+            return undefined;
+        }
         return {
-            verdict: 'approved',
-            findings: [],
-            summary: content.substring(0, 500),
-            reviewModel: this.config.reviewModel,
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+            total_tokens: totalTokens,
         };
     }
 
-    /**
-     * Review heurístico quando LLM não está disponível.
-     * Analisa padrões no output para detectar problemas comuns.
-     */
-    private heuristicReview(context: ValidationContext): ReviewReport {
+    private parseReviewResponse(content: string, source: RemoteReviewSource, credential: string): ReviewOutcome {
+        const jsonCandidate = this.findJsonCandidate(content);
+        if (!jsonCandidate) {
+            return this.unavailable('parsing', false, source, 'The remote review content did not contain a JSON object.');
+        }
+
+        let decoded: unknown;
+        try {
+            decoded = JSON.parse(jsonCandidate);
+        } catch {
+            return this.unavailable('parsing', false, source, 'The remote review content contained invalid JSON.');
+        }
+
+        const parsed = reviewPayloadSchema.safeParse(decoded);
+        if (!parsed.success) {
+            return this.unavailable('validation', false, source, 'The remote review JSON did not satisfy the required schema.');
+        }
+
+        return {
+            kind: 'review',
+            verdict: parsed.data.verdict,
+            findings: parsed.data.findings.map(finding => ({
+                ...finding,
+                category: this.redactSensitiveText(finding.category, credential),
+                message: this.redactSensitiveText(finding.message, credential),
+                ...(finding.suggestion === undefined ? {} : { suggestion: this.redactSensitiveText(finding.suggestion, credential) }),
+                ...(finding.location === undefined ? {} : { location: this.redactSensitiveText(finding.location, credential) }),
+            })),
+            summary: this.redactSensitiveText(parsed.data.summary, credential),
+            source,
+        };
+    }
+
+    private redactSensitiveText(text: string, credential: string): string {
+        return credential.length > 0 ? text.split(credential).join('[REDACTED]') : text;
+    }
+
+    private findJsonCandidate(content: string): string | undefined {
+        const start = content.indexOf('{');
+        if (start < 0) {
+            try {
+                const decoded: unknown = JSON.parse(content);
+                return this.isRecord(decoded) ? content : undefined;
+            } catch {
+                return undefined;
+            }
+        }
+
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        for (let index = start; index < content.length; index += 1) {
+            const character = content[index];
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (character === '\\') {
+                    escaped = true;
+                } else if (character === '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (character === '"') {
+                inString = true;
+            } else if (character === '{') {
+                depth += 1;
+            } else if (character === '}') {
+                depth -= 1;
+                if (depth === 0) {
+                    return content.substring(start, index + 1);
+                }
+            }
+        }
+        return undefined;
+    }
+
+    private isRecord(value: unknown): value is Record<string, unknown> {
+        return typeof value === 'object' && value !== null && !Array.isArray(value);
+    }
+
+    // ============================================================
+    // Heuristic advisory and ValidationResult conversion
+    // ============================================================
+
+    private heuristicReview(context: ValidationContext): AdvisoryReviewOutcome {
         const findings: ReviewFinding[] = [];
         const output = context.output;
 
-        // Check for common anti-patterns
-        if (output.includes('any') && output.includes('as any')) {
+        const unsafeCastMarker = ['as', 'any'].join(' ');
+        if (output.includes('any') && output.includes(unsafeCastMarker)) {
             findings.push({
                 severity: 'warning',
                 category: 'type_safety',
-                message: 'Uses `as any` cast — potential type safety issue',
+                message: 'Uses an unsafe any cast — potential type safety issue',
                 suggestion: 'Use proper typing or generic constraints',
             });
         }
@@ -279,7 +638,7 @@ Please review the code above and provide your assessment.`;
             });
         }
 
-        if (output.match(/\bcatch\s*\(/)) {
+        if (/\bcatch\s*\(/.test(output)) {
             findings.push({
                 severity: 'info',
                 category: 'error_handling',
@@ -304,7 +663,6 @@ Please review the code above and provide your assessment.`;
             });
         }
 
-        // Security checks
         if (output.includes('eval(') || output.includes('Function(')) {
             findings.push({
                 severity: 'error',
@@ -314,10 +672,8 @@ Please review the code above and provide your assessment.`;
             });
         }
 
-        // Localized credential check: keyword and long string must appear on same line
-        const lines = output.split('\n');
-        const hasHardcodedCreds = lines.some(line =>
-            /password|secret|api.?key/i.test(line) && /['"][^'"]{8,}['"]/.test(line)
+        const hasHardcodedCreds = output.split('\n').some(line =>
+            /password|secret|api.?key/i.test(line) && /['"][^'"]{8,}['"]/.test(line),
         );
         if (hasHardcodedCreds) {
             findings.push({
@@ -328,43 +684,101 @@ Please review the code above and provide your assessment.`;
             });
         }
 
-        const hasErrors = findings.some(f => f.severity === 'error');
-        const hasWarnings = findings.some(f => f.severity === 'warning');
-
+        const hasErrors = findings.some(finding => finding.severity === 'error');
         return {
-            verdict: hasErrors ? 'changes_requested' : (hasWarnings ? 'approved' : 'approved'),
+            kind: 'advisory',
+            verdict: hasErrors ? 'changes_requested' : 'approved',
             findings,
             summary: hasErrors
-                ? `Found ${findings.filter(f => f.severity === 'error').length} error(s) requiring attention`
+                ? `Found ${findings.filter(finding => finding.severity === 'error').length} error(s) requiring attention`
                 : findings.length > 0
                     ? `Found ${findings.length} suggestions for improvement`
                     : 'Code looks clean, no significant issues detected',
-            reviewModel: 'heuristic',
+            source: { type: 'heuristic' },
         };
     }
 
-    private reportToResult(report: ReviewReport): ValidationResult {
-        const errorCount = report.findings.filter(f => f.severity === 'error').length;
-        const warningCount = report.findings.filter(f => f.severity === 'warning').length;
-
-        // Determine if the gate passes based on config
-        let isValid = true;
-        if (this.config.minSeverityToFail === 'error') {
-            isValid = report.verdict !== 'rejected' && errorCount === 0;
-        } else if (this.config.minSeverityToFail === 'warning') {
-            isValid = report.verdict === 'approved' && warningCount === 0 && errorCount === 0;
-        } else {
-            isValid = report.findings.length === 0;
+    private withOptionalAdvisory(context: ValidationContext, outcome: UnavailableReviewOutcome): UnavailableReviewOutcome {
+        if (!this.config.allowHeuristicFallback) {
+            return outcome;
         }
+        return { ...outcome, advisory: this.heuristicReview(context) };
+    }
+
+    private unavailable(
+        reason: ReviewUnavailableReason,
+        retryable: boolean,
+        source: RemoteReviewSource,
+        message: string,
+        httpStatus?: number,
+        retryAfterMs?: number,
+    ): UnavailableReviewOutcome {
+        return {
+            kind: 'unavailable',
+            reason,
+            retryable,
+            ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+            source,
+            message,
+            ...(httpStatus === undefined ? {} : { httpStatus }),
+        };
+
+    }
+
+    private outcomeToResult(outcome: ReviewOutcome): ValidationResult {
+        if (outcome.kind === 'unavailable') {
+            return {
+                isValid: false,
+                message: `Remote review unavailable: ${outcome.message}`,
+                exitCode: 1,
+                details: {
+                    kind: outcome.kind,
+                    reason: outcome.reason,
+                    retryable: outcome.retryable,
+                    ...(outcome.retryAfterMs === undefined ? {} : { retryAfterMs: outcome.retryAfterMs }),
+                    ...(outcome.httpStatus === undefined ? {} : { httpStatus: outcome.httpStatus }),
+                    source: outcome.source,
+                    message: outcome.message,
+                    ...(outcome.advisory ? { advisory: outcome.advisory } : {}),
+                    qualityGateSatisfied: false,
+                },
+            };
+        }
+
+        if (outcome.kind === 'advisory') {
+            return {
+                isValid: false,
+                message: `Heuristic advisory: ${outcome.summary}`,
+                exitCode: 1,
+                details: {
+                    kind: outcome.kind,
+                    verdict: outcome.verdict,
+                    findings: outcome.findings,
+                    summary: outcome.summary,
+                    source: outcome.source,
+                    qualityGateSatisfied: false,
+                },
+            };
+        }
+
+        const isValid = outcome.verdict === 'approved' && !outcome.findings.some(finding =>
+            SEVERITY_RANK[finding.severity] >= SEVERITY_RANK[this.config.minSeverityToFail],
+        );
+        const errorCount = outcome.findings.filter(finding => finding.severity === 'error').length;
+        const warningCount = outcome.findings.filter(finding => finding.severity === 'warning').length;
+        const message = `[${outcome.source.provider}/${outcome.source.model}] ${outcome.summary} (${errorCount} errors, ${warningCount} warnings)`;
 
         return {
             isValid,
-            message: `[${report.reviewModel}] ${report.summary} (${errorCount} errors, ${warningCount} warnings)`,
+            ...(isValid ? {} : { exitCode: 1 }),
+            message,
             details: {
-                verdict: report.verdict,
-                findings: report.findings,
-                reviewModel: report.reviewModel,
-                costUsd: report.costUsd,
+                kind: outcome.kind,
+                verdict: outcome.verdict,
+                findings: outcome.findings,
+                summary: outcome.summary,
+                source: outcome.source,
+                qualityGateSatisfied: isValid,
             },
         };
     }
@@ -375,7 +789,7 @@ Please review the code above and provide your assessment.`;
 // ============================================================
 
 export function createMultiModelReviewStrategy(
-    config?: Partial<MultiModelReviewConfig>
+    config?: Partial<MultiModelReviewConfig>,
 ): MultiModelReviewStrategy {
     return new MultiModelReviewStrategy(config);
 }
