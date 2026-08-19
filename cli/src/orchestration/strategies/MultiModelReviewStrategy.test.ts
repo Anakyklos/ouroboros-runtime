@@ -453,30 +453,77 @@ describe('MultiModelReviewStrategy', () => {
     });
 
     describe('budget accounting', () => {
-        it('blocks an approved review as accounting_error when usage recording fails', async () => {
-            setFetch(async () => remoteResponse(reviewPayload('approved', [], 'Approved with remote secret')));
+                it('marks accounting_error non-retryable after the remote call completes', async () => {
+            let remoteCalls = 0;
+            let recordUsageCalls = 0;
+            setFetch(async () => {
+                remoteCalls += 1;
+                return remoteResponse(reviewPayload('approved', [], 'Approved with remote secret'));
+            });
             const budgetTracker = createBudgetPort(async () => {
+                recordUsageCalls += 1;
                 throw new Error(`synthetic accounting failure ${SYNTHETIC_API_KEY}`);
             });
+            const result = await remoteStrategy({ budgetTracker }).validate(createContext('code'));
+            const serialized = JSON.stringify(result);
 
-            const strategy = remoteStrategy({ budgetTracker });
-            const report = await strategy.performReview(createContext('code'));
-            const result = await strategy.validate(createContext('code'));
-            const serialized = JSON.stringify({ report, result });
-
-            expect(report.kind).toBe('unavailable');
-            if (report.kind === 'unavailable') {
-                expect(report.reason).toBe('accounting_error');
-                expect(report.retryable).toBe(true);
-            }
+            expect(remoteCalls).toBe(1);
+            expect(recordUsageCalls).toBe(1);
             expect(result.isValid).toBe(false);
             expect(result.exitCode).toBe(1);
+            expect(result.details?.kind).toBe('unavailable');
             expect(result.details?.reason).toBe('accounting_error');
+            expect(result.details?.retryable).toBe(false);
+            expect(result.details?.findings).toBeUndefined();
             expect(serialized).not.toContain(SYNTHETIC_API_KEY);
             expect(serialized).not.toContain('Approved with remote secret');
-            if (report.kind === 'unavailable') {
-                expect(report.advisory).toBeUndefined();
-            }
+        });
+
+        it('blocks an approved review when budget tracking receives no usage', async () => {
+            setFetch(async () => remoteResponse(
+                reviewPayload('approved', [], 'Approved without usage'),
+                200,
+                undefined,
+                JSON.stringify({ choices: [{ message: { content: reviewPayload('approved', [], 'Approved without usage') } }] }),
+            ));
+            let recordUsageCalls = 0;
+            const budgetTracker = createBudgetPort(async record => {
+                recordUsageCalls += 1;
+                return { id: 'unexpected', timestamp: new Date(0), costUsd: 0, ...record };
+            });
+            const result = await remoteStrategy({ budgetTracker }).validate(createContext('code'));
+
+            expect(recordUsageCalls).toBe(0);
+            expect(result.isValid).toBe(false);
+            expect(result.exitCode).toBe(1);
+            expect(result.details?.kind).toBe('unavailable');
+            expect(result.details?.reason).toBe('accounting_error');
+            expect(result.details?.findings).toBeUndefined();
+        });
+
+        it('blocks an approved review when budget tracking receives malformed usage', async () => {
+            setFetch(async () => remoteResponse(
+                reviewPayload('approved', [], 'Approved with malformed usage'),
+                200,
+                undefined,
+                JSON.stringify({
+                    choices: [{ message: { content: reviewPayload('approved', [], 'Approved with malformed usage') } }],
+                    usage: { prompt_tokens: '10', completion_tokens: 8, total_tokens: 18 },
+                }),
+            ));
+            let recordUsageCalls = 0;
+            const budgetTracker = createBudgetPort(async record => {
+                recordUsageCalls += 1;
+                return { id: 'unexpected', timestamp: new Date(0), costUsd: 0, ...record };
+            });
+            const result = await remoteStrategy({ budgetTracker }).validate(createContext('code'));
+
+            expect(recordUsageCalls).toBe(0);
+            expect(result.isValid).toBe(false);
+            expect(result.exitCode).toBe(1);
+            expect(result.details?.kind).toBe('unavailable');
+            expect(result.details?.reason).toBe('accounting_error');
+            expect(result.details?.findings).toBeUndefined();
         });
 
         it('allows an approved review to proceed when usage recording succeeds', async () => {

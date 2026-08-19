@@ -255,7 +255,15 @@ export class MultiModelReviewStrategy implements ValidationStrategy {
                 ));
             }
 
-            if (this.config.budgetTracker && extracted.usage) {
+            if (this.config.budgetTracker) {
+                if (!extracted.usage) {
+                    return this.withOptionalAdvisory(context, this.unavailable(
+                        'accounting_error',
+                        false,
+                        source,
+                        'Remote review usage was missing or invalid; the review result was not promoted.',
+                    ));
+                }
                 try {
                     await this.config.budgetTracker.recordUsage({
                         model: source.model,
@@ -267,7 +275,7 @@ export class MultiModelReviewStrategy implements ValidationStrategy {
                 } catch {
                     return this.withOptionalAdvisory(context, this.unavailable(
                         'accounting_error',
-                        true,
+                        false,
                         source,
                         'Remote review accounting failed; the review result was not promoted.',
                     ));
