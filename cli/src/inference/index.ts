@@ -54,12 +54,18 @@ export { LocalBenchmark, createLocalBenchmark } from "./LocalBenchmark.js";
 export {
     CredentialRegistry,
     CredentialUnavailableError,
+    CredentialScopeMismatchError,
+    CredentialedProviderInvoker,
     createCredentialScope,
+    loadOrCreateCredentialScopeSalt,
+    type CredentialRegistryOptions,
+    type CredentialSelection,
+    type CredentialedProviderTransport,
     type ProviderFeatureFlags,
     type ProviderModelConfig,
     type ResolvedCredential,
 } from "./provider-security.js";
-export { REDACTED_VALUE, redactText, redactValue } from "./redaction.js";
+export { REDACTED_VALUE, redactError, redactText, redactValue } from "./redaction.js";
 
 // --- Subsystem Facade ---
 export { InferenceSubsystem, createInferenceSubsystem } from "./InferenceSubsystem.js";
@@ -72,6 +78,7 @@ export {
     POLICY_SYSTEM_PROMPT,
     CODER_SYSTEM_PROMPT,
 } from "./inference-config.js";
+export type { LoadInferenceConfigOptions } from "./inference-config.js";
 
 // --- Schemas ---
 export {

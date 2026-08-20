@@ -40,10 +40,18 @@ export class DatasetPipeline {
     private entries: DatasetEntry[] = [];
     private eventBus: EventBus;
     private knownSecrets: string[];
+    private unsubscribeRedaction: () => void;
 
     constructor(eventBus?: EventBus, knownSecrets: readonly string[] = []) {
         this.eventBus = eventBus ?? globalEventBus;
         this.knownSecrets = [...knownSecrets].filter(secret => secret.length > 0);
+        this.unsubscribeRedaction = this.eventBus.onRedactionSecret((secret, active) => {
+            if (active) {
+                if (!this.knownSecrets.includes(secret)) this.knownSecrets.push(secret);
+            } else {
+                this.knownSecrets = this.knownSecrets.filter(knownSecret => knownSecret !== secret);
+            }
+        });
         for (const secret of this.knownSecrets) {
             this.eventBus.registerRedactionSecret(secret);
         }
@@ -173,6 +181,12 @@ export class DatasetPipeline {
      */
     clear(): void {
         this.entries = [];
+    }
+
+    /** Libera a inscrição no ciclo de vida quando o pipeline deixa de ser usado. */
+    dispose(): void {
+        this.unsubscribeRedaction();
+        this.knownSecrets = [];
     }
 
     // ========================================================================

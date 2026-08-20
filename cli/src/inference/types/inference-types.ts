@@ -195,6 +195,12 @@ export interface RoutingDecision {
  * Configuração do provider de inferência local.
  * O bloco providerModel contém somente referências e metadados não sensíveis.
  */
+export interface ProviderCredentialSource {
+    providerId: string;
+    credentialRef: string;
+    source: string;
+}
+
 export interface InferenceProviderConfig {
     /** URL base do Ollama */
     ollamaBaseUrl: string;
@@ -212,6 +218,8 @@ export interface InferenceProviderConfig {
     traceDir?: string;
     /** Configuração centralizada do par provider/modelo, sem segredo bruto */
     providerModel?: ProviderModelConfig;
+    /** Referências de credenciais descobertas, nunca os segredos correspondentes */
+    credentialSources?: ProviderCredentialSource[];
 }
 
 /**

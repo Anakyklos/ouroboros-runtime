@@ -43,6 +43,22 @@ export function redactText(value: string, knownSecrets: readonly string[] = []):
 /**
  * Redige recursivamente valores estruturados sem alterar datas ou primitivos seguros.
  */
+/**
+ * Cria um erro seguro para propagar depois que uma credencial foi usada.
+ * O tipo/nome é preservado, mas mensagem e cause passam pelo mesmo redactor.
+ */
+export function redactError(error: unknown, knownSecrets: readonly string[] = []): Error {
+    if (error instanceof Error) {
+        const safeError = new Error(redactText(error.message, knownSecrets), {
+            cause: redactValue(error.cause, knownSecrets),
+        });
+        safeError.name = error.name;
+        return safeError;
+    }
+
+    return new Error(redactText(String(error), knownSecrets));
+}
+
 export function redactValue(value: unknown, knownSecrets: readonly string[] = []): unknown {
     if (typeof value === "string") return redactText(value, knownSecrets);
     if (value instanceof Date) return value;

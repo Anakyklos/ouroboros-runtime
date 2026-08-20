@@ -8,6 +8,7 @@
 import { redactText, redactValue } from "../inference/redaction.js";
 
 type EventCallback<T = unknown> = (data: T) => void;
+type RedactionLifecycleCallback = (secret: string, active: boolean) => void;
 
 export interface LogEvent {
     level: 'debug' | 'info' | 'warn' | 'error';
@@ -83,6 +84,7 @@ export type EventMap = {
 export class EventBus {
     private listeners: Map<string, Set<EventCallback>> = new Map();
     private redactionSecrets = new Set<string>();
+    private redactionLifecycleListeners = new Set<RedactionLifecycleCallback>();
 
     /**
      * Subscribe to an event type
@@ -129,14 +131,26 @@ export class EventBus {
         });
     }
 
+    /**
+     * Observa o ciclo de vida de segredos ativos para que traces/datasets
+     * possam redigir durante a mesma janela da chamada, sem wiring manual.
+     */
+    onRedactionSecret(callback: RedactionLifecycleCallback): () => void {
+        this.redactionLifecycleListeners.add(callback);
+        return () => this.redactionLifecycleListeners.delete(callback);
+    }
+
     /** Registra uma chave em memória para redaction exata em eventos futuros. */
     registerRedactionSecret(secret: string): void {
-        if (secret) this.redactionSecrets.add(secret);
+        if (!secret || this.redactionSecrets.has(secret)) return;
+        this.redactionSecrets.add(secret);
+        this.redactionLifecycleListeners.forEach(callback => callback(secret, true));
     }
 
     /** Remove uma chave da lista de redaction quando o chamador revoga seu registro. */
     revokeRedactionSecret(secret: string): void {
-        this.redactionSecrets.delete(secret);
+        if (!this.redactionSecrets.delete(secret)) return;
+        this.redactionLifecycleListeners.forEach(callback => callback(secret, false));
     }
 
     /**
@@ -155,8 +169,12 @@ export class EventBus {
      * Clear all listeners (for testing)
      */
     clear(): void {
+        for (const secret of this.redactionSecrets) {
+            this.redactionLifecycleListeners.forEach(callback => callback(secret, false));
+        }
         this.listeners.clear();
         this.redactionSecrets.clear();
+        this.redactionLifecycleListeners.clear();
     }
 }
 
