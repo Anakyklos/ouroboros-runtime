@@ -50,6 +50,17 @@ export { InferenceGuardrails, createInferenceGuardrails } from "./InferenceGuard
 export { DatasetPipeline, createDatasetPipeline } from "./DatasetPipeline.js";
 export { LocalBenchmark, createLocalBenchmark } from "./LocalBenchmark.js";
 
+// --- Provider security ---
+export {
+    CredentialRegistry,
+    CredentialUnavailableError,
+    createCredentialScope,
+    type ProviderFeatureFlags,
+    type ProviderModelConfig,
+    type ResolvedCredential,
+} from "./provider-security.js";
+export { REDACTED_VALUE, redactText, redactValue } from "./redaction.js";
+
 // --- Subsystem Facade ---
 export { InferenceSubsystem, createInferenceSubsystem } from "./InferenceSubsystem.js";
 export type { InferenceSubsystemConfig, InferenceStatus } from "./InferenceSubsystem.js";

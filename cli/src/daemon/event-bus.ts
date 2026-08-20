@@ -5,6 +5,8 @@
  * Substitui console.log direto por eventos tipados.
  */
 
+import { redactText, redactValue } from "../inference/redaction.js";
+
 type EventCallback<T = unknown> = (data: T) => void;
 
 export interface LogEvent {
@@ -80,6 +82,7 @@ export type EventMap = {
 
 export class EventBus {
     private listeners: Map<string, Set<EventCallback>> = new Map();
+    private redactionSecrets = new Set<string>();
 
     /**
      * Subscribe to an event type
@@ -105,23 +108,35 @@ export class EventBus {
      * Emit an event
      */
     emit<K extends Exclude<keyof EventMap, '*'>>(event: K, data: EventMap[K]): void {
+        const safeData = redactValue(data, [...this.redactionSecrets]) as EventMap[K];
+
         // Trigger specific listeners
         this.listeners.get(event)?.forEach(callback => {
             try {
-                callback(data);
+                callback(safeData);
             } catch (err) {
-                console.error(`[EventBus] Error in ${String(event)} handler:`, err);
+                console.error(`[EventBus] Error in ${String(event)} handler:`, redactText(String(err), [...this.redactionSecrets]));
             }
         });
 
         // Trigger wildcard listeners
         this.listeners.get('*')?.forEach(callback => {
             try {
-                callback({ event, data });
+                callback({ event, data: safeData });
             } catch (err) {
-                console.error(`[EventBus] Error in wildcard handler for ${String(event)}:`, err);
+                console.error(`[EventBus] Error in wildcard handler for ${String(event)}:`, redactText(String(err), [...this.redactionSecrets]));
             }
         });
+    }
+
+    /** Registra uma chave em memória para redaction exata em eventos futuros. */
+    registerRedactionSecret(secret: string): void {
+        if (secret) this.redactionSecrets.add(secret);
+    }
+
+    /** Remove uma chave da lista de redaction quando o chamador revoga seu registro. */
+    revokeRedactionSecret(secret: string): void {
+        this.redactionSecrets.delete(secret);
     }
 
     /**
@@ -141,6 +156,7 @@ export class EventBus {
      */
     clear(): void {
         this.listeners.clear();
+        this.redactionSecrets.clear();
     }
 }
 

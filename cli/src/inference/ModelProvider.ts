@@ -1,5 +1,7 @@
 export type ModelMessageRole = "system" | "user" | "assistant" | "tool";
 
+import { redactText, redactValue } from "./redaction.js";
+
 export interface ModelMessage {
     role: ModelMessageRole;
     content: string;
@@ -122,6 +124,7 @@ export interface ModelProviderErrorOptions {
     retryAfterMs?: number;
     fallbackAllowed: boolean;
     cause?: unknown;
+    redactionSecrets?: readonly string[];
 }
 
 export class ModelProviderError extends Error {
@@ -131,7 +134,9 @@ export class ModelProviderError extends Error {
     readonly fallbackAllowed: boolean;
 
     constructor(message: string, options: ModelProviderErrorOptions) {
-        super(message, { cause: options.cause });
+        super(redactText(message, options.redactionSecrets), {
+            cause: redactValue(options.cause, options.redactionSecrets),
+        });
         this.name = "ModelProviderError";
         this.kind = options.kind;
         this.retryable = options.retryable;

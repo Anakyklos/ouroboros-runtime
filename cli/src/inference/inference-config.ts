@@ -15,14 +15,28 @@ import type { ModelConfig, InferenceProviderConfig } from "./types/inference-typ
  * Carrega configuração do provider a partir de env vars.
  */
 export function loadInferenceConfig(): InferenceProviderConfig {
+    const ollamaBaseUrl = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
+    const defaultTimeoutMs = parseInt(process.env.INFERENCE_TIMEOUT_MS ?? "60000", 10);
+
     return {
-        ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? "http://localhost:11434",
-        defaultTimeoutMs: parseInt(process.env.INFERENCE_TIMEOUT_MS ?? "60000", 10),
+        ollamaBaseUrl,
+        defaultTimeoutMs,
         maxRetries: parseInt(process.env.INFERENCE_MAX_RETRIES ?? "3", 10),
         retryDelayMs: parseInt(process.env.INFERENCE_RETRY_DELAY_MS ?? "1000", 10),
         logRequests: process.env.INFERENCE_LOG_REQUESTS !== "false",
         collectMetrics: process.env.INFERENCE_COLLECT_METRICS !== "false",
         traceDir: process.env.INFERENCE_TRACE_DIR ?? ".agent/traces",
+        providerModel: {
+            providerId: "ollama-local",
+            modelId: "default",
+            endpoint: ollamaBaseUrl,
+            timeoutMs: defaultTimeoutMs,
+            featureFlags: {
+                streaming: false,
+                tools: false,
+                structuredOutput: false,
+            },
+        },
     };
 }
 

@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { InferenceTrace } from "./schemas/inference-schemas.js";
 import { EventBus, globalEventBus } from "../daemon/event-bus.js";
+import { redactText } from "./redaction.js";
 
 // ============================================================================
 // Types
@@ -38,9 +39,14 @@ export interface DatasetStats {
 export class DatasetPipeline {
     private entries: DatasetEntry[] = [];
     private eventBus: EventBus;
+    private knownSecrets: string[];
 
-    constructor(eventBus?: EventBus) {
+    constructor(eventBus?: EventBus, knownSecrets: readonly string[] = []) {
         this.eventBus = eventBus ?? globalEventBus;
+        this.knownSecrets = [...knownSecrets].filter(secret => secret.length > 0);
+        for (const secret of this.knownSecrets) {
+            this.eventBus.registerRedactionSecret(secret);
+        }
     }
 
     /**
@@ -49,8 +55,8 @@ export class DatasetPipeline {
     addTrace(trace: InferenceTrace): void {
         this.entries.push({
             type: "trace",
-            input: trace.input,
-            output: trace.output,
+            input: this.redact(trace.input),
+            output: this.redact(trace.output),
             label: `${trace.modelRole}:${trace.modelId}`,
             outcome: (trace.outcome as DatasetEntry["outcome"]) ?? "success",
             metadata: {
@@ -76,8 +82,8 @@ export class DatasetPipeline {
     ): void {
         this.entries.push({
             type: "policy_decision",
-            input,
-            output: decision,
+            input: this.redact(input),
+            output: this.redact(decision),
             label: "policy",
             outcome,
             metadata: {},
@@ -95,8 +101,8 @@ export class DatasetPipeline {
     ): void {
         this.entries.push({
             type: "retrieval_result",
-            input: query,
-            output: results,
+            input: this.redact(query),
+            output: this.redact(results),
             label: "retrieval",
             outcome: wasUseful ? "success" : "failure",
             metadata: { wasUseful },
@@ -115,8 +121,8 @@ export class DatasetPipeline {
     ): void {
         this.entries.push({
             type: accepted ? "patch_accepted" : "patch_rejected",
-            input: instruction,
-            output: patch,
+            input: this.redact(instruction),
+            output: this.redact(patch),
             label: "patch",
             outcome: rollback ? "rollback" : (accepted ? "success" : "failure"),
             metadata: { accepted, rollback: !!rollback },
@@ -172,6 +178,10 @@ export class DatasetPipeline {
     // ========================================================================
     // Private
     // ========================================================================
+
+    private redact(value: string): string {
+        return redactText(value, this.knownSecrets);
+    }
 
     private log(level: "debug" | "info" | "warn" | "error", message: string): void {
         this.eventBus.log(level, `[DatasetPipeline] ${message}`, "DatasetPipeline");
