@@ -27,9 +27,15 @@ export interface ModelRequest {
 }
 
 export interface ProviderCallContext {
-    /** Opaque reference to a credential held by a separate credential service. */
+    /**
+     * Opaque reference selected by the higher-level credential/auth layer.
+     * The provider must not resolve this value or treat it as authorization.
+     */
     credentialRef: string;
-    /** Opaque scope identifying the credential owner or isolation boundary. */
+    /**
+     * Opaque isolation boundary selected by the higher-level credential/auth layer.
+     * This value does not grant, prove, or validate authorization in the provider.
+     */
     credentialScope: string;
     taskId: string;
     stepId: string;
@@ -75,6 +81,10 @@ export interface CapabilitySupport {
     verified: boolean;
 }
 
+/**
+ * The authoritative runtime profile for what a provider/model may be asked to do.
+ * Optional methods and transport compatibility are not capability signals by themselves.
+ */
 export interface CapabilityProfile {
     providerId: string;
     modelId: string;
@@ -132,7 +142,15 @@ export class ModelProviderError extends Error {
 
 export interface ModelProvider {
     readonly providerId: string;
+
+    /** Consumers must consult this profile before selecting an operation or feature. */
     getCapabilities(modelId: string): CapabilityProfile;
+
     complete(request: ModelRequest, context: ProviderCallContext): Promise<ModelResponse>;
+
+    /**
+     * Optional implementation hook. Its presence does not advertise streaming support;
+     * consumers must use `getCapabilities(modelId)` as the source of truth.
+     */
     stream?(request: ModelRequest, context: ProviderCallContext): AsyncIterable<ModelStreamChunk>;
 }

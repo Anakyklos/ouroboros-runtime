@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { EventBus } from "../../daemon/event-bus.js";
 import { LocalInferenceProvider } from "../LocalInferenceProvider.js";
 import type {
     ModelProvider,
@@ -81,6 +82,57 @@ describe("ModelProvider contract", () => {
             verified: false,
         });
         expect((provider() as ModelProvider).stream).toBeUndefined();
+    });
+
+    test("treats CapabilityProfile as authoritative even when an optional stream method exists", () => {
+        const providerWithOptionalStream = Object.assign(provider(), {
+            async *stream() {
+                yield { delta: "not available" };
+            },
+        }) as ModelProvider;
+
+        expect(providerWithOptionalStream.stream).toBeDefined();
+        expect(providerWithOptionalStream.getCapabilities("test-model").operations.stream.implemented).toBe(false);
+        expect(providerWithOptionalStream.getCapabilities("test-model").features.streaming.implemented).toBe(false);
+    });
+
+    test("keeps credential context out of transport, logs, and provider state", async () => {
+        const eventBus = new EventBus();
+        const logEvents: unknown[] = [];
+        const unsubscribe = eventBus.on("log", (event) => logEvents.push(event));
+        const credentialRef = "credential://sentinel-do-not-leak";
+        const credentialScope = "scope://sentinel-do-not-leak";
+        let requestPayload: unknown;
+
+        globalThis.fetch = async (_input, init) => {
+            requestPayload = JSON.parse(String(init?.body));
+            return new Response(JSON.stringify({
+                message: { content: "isolated" },
+                done_reason: "stop",
+            }), { status: 200 });
+        };
+
+        const localProvider = new LocalInferenceProvider({
+            ollamaBaseUrl: "http://ollama.test",
+            collectMetrics: false,
+            logRequests: true,
+        }, eventBus);
+
+        await localProvider.complete({
+            modelId: "test-model",
+            messages: [{ role: "user", content: "hello" }],
+        }, context({ credentialRef, credentialScope }));
+        unsubscribe();
+
+        const serializedPayload = JSON.stringify(requestPayload);
+        const serializedLogs = JSON.stringify(logEvents);
+        const serializedProviderState = JSON.stringify(localProvider);
+        expect(serializedPayload).not.toContain(credentialRef);
+        expect(serializedPayload).not.toContain(credentialScope);
+        expect(serializedLogs).not.toContain(credentialRef);
+        expect(serializedLogs).not.toContain(credentialScope);
+        expect(serializedProviderState).not.toContain(credentialRef);
+        expect(serializedProviderState).not.toContain(credentialScope);
     });
 
     test("rejects tools before transport when the capability is not implemented", async () => {

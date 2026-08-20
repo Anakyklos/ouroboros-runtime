@@ -30,13 +30,21 @@ const response = await provider.complete(
 );
 ```
 
-`credentialRef` identifica uma credencial administrada fora do provider. `credentialScope` identifica a fronteira de isolamento definida pelo runtime. Ambos são opacos: não são a chave, não devem ser resolvidos por um secret store criado pelo provider e não devem conter material secreto. O contrato não possui campo para chave bruta.
+`credentialRef` identifica uma credencial selecionada por uma camada superior de credenciais e autorização. `credentialScope` identifica a fronteira de isolamento definida por essa camada. Ambos são opacos: não são a chave, não devem ser resolvidos por um secret store criado pelo provider e não devem conter material secreto. O contrato não possui campo para chave bruta.
 
-`ModelResponse` normaliza o resultado em `content`, `modelId`, `usage` opcional, `finishReason` e `toolCalls` opcionais. `stream` também é opcional na interface, portanto um provider não precisa anunciar streaming quando não houver implementação verificada.
+### Responsabilidade por autorização
+
+A camada superior é responsável por autenticar o chamador, autorizar o uso da credencial e escolher as referências que entram em `ProviderCallContext`. O provider recebe `credentialRef` e `credentialScope` apenas como contexto opaco para correlação ou seleção já autorizada; ele **não resolve a referência, não consulta um secret store, não concede autorização e não valida que o escopo autoriza a chamada**. Portanto, um `ModelProviderError` de `authentication` ou `authorization` só representa uma rejeição observada no transporte/provider, não uma decisão de autorização feita pelo adapter local.
+
+O provider também não deve persistir, registrar ou misturar essas referências no payload de transporte. Os testes do contrato usam apenas sentinelas artificiais e verificam que elas não aparecem no payload, nos eventos de log ou no estado serializado do adapter.
+
+`ModelResponse` normaliza o resultado em `content`, `modelId`, `usage` opcional, `finishReason` e `toolCalls` opcionais. `stream` também é opcional na interface, mas sua presença não anuncia suporte: consumidores devem consultar `getCapabilities(modelId)` antes de selecionar a operação.
 
 ## Capacidades declaradas, implementadas e verificadas
 
 Cada capability é representada por três estados independentes. `declared` registra o que o provider afirma suportar; `implemented` registra o que o adapter realmente executa; `verified` só deve ser marcado quando houver teste determinístico ou outra verificação equivalente. Compatibilidade superficial com uma API, especialmente compatibilidade com OpenAI, não preenche esses estados automaticamente.
+
+`CapabilityProfile` é a **fonte de verdade para os consumidores**. A existência de um método opcional, como `stream`, ou a possibilidade técnica de enviar um campo ao transporte não torna a capability disponível. Antes de chamar uma operação ou enviar tools/structured output, o consumidor deve consultar o perfil do `providerId`/`modelId` e respeitar os estados publicados. No caso do adapter local, o método `stream` não existe e o perfil mantém streaming como não declarado, não implementado e não verificado; mesmo que uma implementação futura adicione esse método, ela não estará disponível até o perfil afirmar a capacidade.
 
 O perfil atual do provider local é o seguinte:
 
@@ -77,7 +85,7 @@ O timeout encerra somente a chamada em andamento. `ModelProvider` não persiste 
 
 ## Segurança operacional
 
-O novo caminho não registra prompt, resposta integral ou credencial. O contexto de chamada não é serializado no corpo enviado ao Ollama; referências de credencial e escopo permanecem metadados internos. Nenhuma chave real é necessária nos testes ou na CI.
+O novo caminho não registra prompt, resposta integral, credencial ou referências de credencial. O contexto de chamada não é serializado no corpo enviado ao Ollama; referências de credencial e escopo permanecem metadados internos e não são usados como autorização pelo adapter. O teste de isolamento cobre simultaneamente payload, eventos de log e estado serializado do provider. Nenhuma chave real é necessária nos testes ou na CI.
 
 A implementação mantém `chat`, `embed`, a factory e o provider default existentes. `complete` prova a adaptação de exatamente um provider, enquanto os consumidores atuais continuam usando suas APIs públicas legadas.
 
