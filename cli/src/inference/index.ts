@@ -11,6 +11,23 @@
 
 // --- Core Infrastructure ---
 export { LocalInferenceProvider, createLocalInferenceProvider } from "./LocalInferenceProvider.js";
+export {
+    ModelProviderError,
+    type CapabilityProfile,
+    type CapabilitySupport,
+    type FinishReason,
+    type ModelMessage,
+    type ModelMessageRole,
+    type ModelProvider,
+    type ModelRequest,
+    type ModelResponse,
+    type ModelStreamChunk,
+    type ModelToolCall,
+    type ModelToolDefinition,
+    type ModelUsage,
+    type ProviderCallContext,
+    type ProviderErrorKind,
+} from "./ModelProvider.js";
 export { ModelRegistry, createModelRegistry } from "./ModelRegistry.js";
 export { ModelRouter, createModelRouter } from "./ModelRouter.js";
 
