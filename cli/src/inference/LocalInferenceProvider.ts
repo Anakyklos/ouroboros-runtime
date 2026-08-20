@@ -576,7 +576,14 @@ export class LocalInferenceProvider implements ModelProvider {
     }
 }
 
-function parseRetryAfterMs(value: string | null): number | undefined {
+/**
+ * Parse a `Retry-After` header value (seconds or HTTP-date) into
+ * milliseconds. Preserved from the local provider contract (#44);
+ * the resilience policy (#47) consumes the parsed `retryAfterMs`
+ * already carried by `ModelProviderError` instead of duplicating
+ * this parser.
+ */
+export function parseRetryAfterMs(value: string | null): number | undefined {
     if (!value) return undefined;
 
     const seconds = Number(value);
