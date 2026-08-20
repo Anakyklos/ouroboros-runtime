@@ -22,12 +22,22 @@ import type {
 } from "./types/inference-types.js";
 import { ModelFailureReportSchema, type ModelFailureReport } from "./schemas/inference-schemas.js";
 import { loadInferenceConfig } from "./inference-config.js";
+import {
+    ModelProviderError,
+    type CapabilityProfile,
+    type FinishReason,
+    type ModelProvider,
+    type ModelRequest,
+    type ModelResponse,
+    type ProviderCallContext,
+} from "./ModelProvider.js";
 
 // ============================================================================
 // LocalInferenceProvider
 // ============================================================================
 
-export class LocalInferenceProvider {
+export class LocalInferenceProvider implements ModelProvider {
+    readonly providerId = "ollama-local";
     private config: InferenceProviderConfig;
     private eventBus: EventBus;
     private metrics: Map<string, ModelMetrics> = new Map();
@@ -37,6 +47,156 @@ export class LocalInferenceProvider {
         const defaults = loadInferenceConfig();
         this.config = { ...defaults, ...config };
         this.eventBus = eventBus ?? globalEventBus;
+    }
+
+    getCapabilities(modelId: string): CapabilityProfile {
+        const unsupported = {
+            declared: false,
+            implemented: false,
+            verified: false,
+        } as const;
+
+        return {
+            providerId: this.providerId,
+            modelId,
+            features: {
+                streaming: unsupported,
+                tools: unsupported,
+                structuredOutput: unsupported,
+            },
+            limits: {},
+            operations: {
+                complete: {
+                    declared: true,
+                    implemented: true,
+                    verified: true,
+                },
+                stream: unsupported,
+            },
+        };
+    }
+
+    async complete(request: ModelRequest, context: ProviderCallContext): Promise<ModelResponse> {
+        const capabilities = this.getCapabilities(request.modelId);
+        if (request.tools && request.tools.length > 0 && !capabilities.features.tools.implemented) {
+            throw new ModelProviderError("Ollama local provider does not implement tools through ModelProvider", {
+                kind: "invalid_request",
+                retryable: false,
+                fallbackAllowed: false,
+            });
+        }
+        if (request.structuredOutput && !capabilities.features.structuredOutput.implemented) {
+            throw new ModelProviderError("Ollama local provider does not implement structured output through ModelProvider", {
+                kind: "invalid_request",
+                retryable: false,
+                fallbackAllowed: false,
+            });
+        }
+
+        const deadlineMs = context.deadline.getTime() - Date.now();
+        if (deadlineMs <= 0) {
+            throw new ModelProviderError("Model provider call deadline has elapsed", {
+                kind: "timeout",
+                retryable: false,
+                fallbackAllowed: true,
+            });
+        }
+
+        const controller = new AbortController();
+        let abortKind: "timeout" | "cancellation" | undefined;
+        const onCallerAbort = () => {
+            abortKind = "cancellation";
+            controller.abort(context.signal.reason);
+        };
+        const requestTimeoutMs = Math.max(
+            0,
+            Math.min(request.requestTimeoutMs ?? Number.POSITIVE_INFINITY, deadlineMs),
+        );
+        const timeoutId = setTimeout(() => {
+            if (!context.signal.aborted) {
+                abortKind = "timeout";
+                controller.abort();
+            }
+        }, requestTimeoutMs);
+
+        if (context.signal.aborted) {
+            onCallerAbort();
+        } else {
+            context.signal.addEventListener("abort", onCallerAbort, { once: true });
+        }
+
+        try {
+            const response = await fetch(`${this.config.ollamaBaseUrl}/api/chat`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    model: request.modelId,
+                    messages: request.messages,
+                    stream: false,
+                    options: {
+                        temperature: request.temperature,
+                        num_predict: request.maxTokens,
+                    },
+                }),
+                signal: controller.signal,
+            });
+
+            if (!response.ok) {
+                const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After"));
+                throw classifyHttpError(response.status, retryAfterMs);
+            }
+
+            let data: unknown;
+            try {
+                data = await response.json();
+            } catch (error) {
+                throw new ModelProviderError("Provider returned invalid JSON", {
+                    kind: "malformed_response",
+                    retryable: false,
+                    fallbackAllowed: true,
+                    cause: error,
+                });
+            }
+
+            return normalizeOllamaResponse(request.modelId, data);
+        } catch (error) {
+            if (error instanceof ModelProviderError) {
+                throw error;
+            }
+            if (abortKind === "cancellation" || context.signal.aborted) {
+                throw new ModelProviderError("Model provider call was cancelled", {
+                    kind: "cancellation",
+                    retryable: false,
+                    fallbackAllowed: false,
+                    cause: error,
+                });
+            }
+            if (abortKind === "timeout" || isAbortError(error)) {
+                throw new ModelProviderError("Model provider call timed out", {
+                    kind: "timeout",
+                    retryable: false,
+                    fallbackAllowed: true,
+                    cause: error,
+                });
+            }
+            if (isNetworkError(error)) {
+                throw new ModelProviderError("Model provider network request failed", {
+                    kind: "network",
+                    retryable: true,
+                    fallbackAllowed: true,
+                    cause: error,
+                });
+            }
+            throw new ModelProviderError("Model provider request failed", {
+                kind: "provider",
+                retryable: false,
+                fallbackAllowed: true,
+                cause: error,
+            });
+        } finally {
+            clearTimeout(timeoutId);
+            context.signal.removeEventListener("abort", onCallerAbort);
+        }
     }
 
     // ========================================================================
@@ -414,6 +574,153 @@ export class LocalInferenceProvider {
             this.eventBus.log(level, `[LocalInference] ${message}`, "LocalInferenceProvider");
         }
     }
+}
+
+function parseRetryAfterMs(value: string | null): number | undefined {
+    if (!value) return undefined;
+
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+
+    const dateMs = Date.parse(value) - Date.now();
+    return Number.isFinite(dateMs) && dateMs >= 0 ? dateMs : undefined;
+}
+
+function classifyHttpError(status: number, retryAfterMs?: number): ModelProviderError {
+    if (status === 401) {
+        return new ModelProviderError("Provider authentication failed", {
+            kind: "authentication",
+            retryable: false,
+            fallbackAllowed: false,
+            retryAfterMs,
+        });
+    }
+    if (status === 403) {
+        return new ModelProviderError("Provider authorization failed", {
+            kind: "authorization",
+            retryable: false,
+            fallbackAllowed: false,
+            retryAfterMs,
+        });
+    }
+    if (status === 400 || status === 422) {
+        return new ModelProviderError("Provider rejected the request", {
+            kind: "invalid_request",
+            retryable: false,
+            fallbackAllowed: false,
+            retryAfterMs,
+        });
+    }
+    if (status === 429) {
+        return new ModelProviderError("Provider rate limit exceeded", {
+            kind: "rate_limit",
+            retryable: true,
+            fallbackAllowed: true,
+            retryAfterMs,
+        });
+    }
+    return new ModelProviderError(`Provider unavailable with HTTP ${status}`, {
+        kind: "http_unavailable",
+        retryable: status >= 500,
+        fallbackAllowed: true,
+        retryAfterMs,
+    });
+}
+
+function normalizeOllamaResponse(modelId: string, data: unknown): ModelResponse {
+    if (!data || typeof data !== "object") {
+        throw new ModelProviderError("Provider response is not an object", {
+            kind: "malformed_response",
+            retryable: false,
+            fallbackAllowed: true,
+        });
+    }
+
+    const record = data as Record<string, unknown>;
+    const message = record.message;
+    if (!message || typeof message !== "object") {
+        throw new ModelProviderError("Provider response has no message", {
+            kind: "malformed_response",
+            retryable: false,
+            fallbackAllowed: true,
+        });
+    }
+
+    const messageRecord = message as Record<string, unknown>;
+    if (typeof messageRecord.content !== "string") {
+        throw new ModelProviderError("Provider response message has no content", {
+            kind: "malformed_response",
+            retryable: false,
+            fallbackAllowed: true,
+        });
+    }
+
+    const inputTokens = numberOrUndefined(record.prompt_eval_count);
+    const outputTokens = numberOrUndefined(record.eval_count);
+    const usage = inputTokens !== undefined || outputTokens !== undefined
+        ? {
+            inputTokens,
+            outputTokens,
+            totalTokens: (inputTokens ?? 0) + (outputTokens ?? 0),
+        }
+        : undefined;
+
+    const rawToolCalls = messageRecord.tool_calls;
+    const toolCalls = Array.isArray(rawToolCalls)
+        ? rawToolCalls.flatMap((candidate, index) => {
+            if (!candidate || typeof candidate !== "object") return [];
+            const call = candidate as Record<string, unknown>;
+            const functionData = call.function && typeof call.function === "object"
+                ? call.function as Record<string, unknown>
+                : call;
+            if (typeof functionData.name !== "string") return [];
+            return [{
+                id: typeof call.id === "string" ? call.id : `${modelId}-tool-${index}`,
+                name: functionData.name,
+                arguments: parseToolArguments(functionData.arguments),
+            }];
+        })
+        : undefined;
+
+    return {
+        modelId,
+        content: messageRecord.content,
+        usage,
+        finishReason: normalizeFinishReason(record.done_reason),
+        ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
+    };
+}
+
+function parseToolArguments(value: unknown): Record<string, unknown> {
+    if (value && typeof value === "object") return value as Record<string, unknown>;
+    if (typeof value === "string") {
+        try {
+            const parsed = JSON.parse(value);
+            if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+        } catch {
+            // The normalized response must remain a JSON object even for a malformed tool payload.
+        }
+    }
+    return {};
+}
+
+function normalizeFinishReason(value: unknown): FinishReason {
+    if (value === "stop" || value === "length" || value === "tool_call" || value === "content_filter") {
+        return value;
+    }
+    return "unknown";
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function isAbortError(error: unknown): boolean {
+    return error instanceof DOMException && error.name === "AbortError";
+}
+
+function isNetworkError(error: unknown): boolean {
+    return error instanceof TypeError || (error instanceof Error && /fetch|network|connect/i.test(error.message));
 }
 
 // ============================================================================
