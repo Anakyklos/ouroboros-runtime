@@ -11,6 +11,7 @@ import { SessionManager } from './session-manager.js';
 import { GatewayOrchestrator } from '../orchestration/GatewayOrchestrator.js';
 import type { StoragePort } from '../ports/storage.port.js';
 import type { EventBus } from './event-bus.js';
+import type { DaemonSnapshot } from '../../../shared/daemon-event-contract.js';
 import type { GeminiModel } from '../bridges/GeminiCliBridge.js';
 import { createAgent } from '../providers/agent-loop.js';
 import { readFileSync, existsSync } from 'fs';
@@ -46,6 +47,19 @@ export class RpcGateway implements RpcPort {
 
     registerMethod(name: string, handler: RpcMethodHandler): void {
         this.methods.set(name, handler);
+    }
+
+    /**
+     * Authoritative, transport-safe projection for WebSocket handshake/resync.
+     * The status contract already excludes prompt and response content.
+     */
+    getProjectionSnapshot(): DaemonSnapshot {
+        const status = this.sessionManager.getStatusSnapshot();
+        return {
+            cursor: 0,
+            status,
+            capabilities: status.capabilities,
+        };
     }
 
     async handleRequest(request: RpcRequest): Promise<RpcResponse> {

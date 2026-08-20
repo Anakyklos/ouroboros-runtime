@@ -37,7 +37,7 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   
-  const { connectionStatus } = useEventBus();
+  const { connectionStatus } = useEventBus({ url: "ws://localhost:3001/ws" });
   const waves = useMissionControlStore((state) => state.waves);
   const selectedTask = selectedTaskId && selectedWaveId 
     ? waves.find(w => w.id === selectedWaveId)?.tasks.find(t => t.id === selectedTaskId) 
@@ -48,8 +48,6 @@ export function MissionControl({ onSettingsClick }: MissionControlProps) {
   const setActiveQuadrant = useMissionControlStore((state) => state.setActiveQuadrant);
   const setViewMode = useMissionControlStore((state) => state.setViewMode);
 
-  // Initialize daemon connections
-  useEventBus({ url: "ws://localhost:3001/ws" });
   const {
     status,
     emergencyBrake,

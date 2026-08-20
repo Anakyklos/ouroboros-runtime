@@ -17,6 +17,7 @@ class MockStorage implements StoragePort {
 describe("DaemonServer", () => {
   let server: DaemonServer;
   let storage: StoragePort;
+  const eventBus = new EventBus();
   const TEST_PORT = 17777;
 
   beforeAll(async () => {
@@ -27,7 +28,7 @@ describe("DaemonServer", () => {
       port: TEST_PORT,
       host: "127.0.0.1",
       enableWebUI: false,
-    });
+    }, eventBus);
 
     await server.start();
   });
@@ -79,5 +80,78 @@ describe("DaemonServer", () => {
     expect(response.status).toBe(400);
     expect(data.error).toBeDefined();
     expect(data.error.code).toBe(-32600);
+  });
+
+  it("should forward normal daemon events through the same versioned envelope", async () => {
+    const socket = new WebSocket(`ws://127.0.0.1:${TEST_PORT}/ws`);
+    const messages: Record<string, unknown>[] = [];
+    const nextMessage = () => new Promise<Record<string, unknown>>((resolve, reject) => {
+      socket.addEventListener("message", (event) => {
+        try {
+          const parsed = JSON.parse(String(event.data)) as Record<string, unknown>;
+          messages.push(parsed);
+          resolve(parsed);
+        } catch (error) {
+          reject(error);
+        }
+      }, { once: true });
+      socket.addEventListener("error", () => reject(new Error("websocket connection failed")), { once: true });
+    });
+
+    try {
+      await nextMessage();
+      eventBus.emit("daemon", { type: "ready", port: TEST_PORT });
+      const message = await nextMessage();
+
+      expect(message.version).toBe(1);
+      expect(message.event).toBe("daemon");
+      expect(message.sequence).toBe(2);
+      expect(message.data).toMatchObject({ type: "ready", port: TEST_PORT });
+      expect(messages).toHaveLength(2);
+    } finally {
+      socket.close();
+      await new Promise<void>((resolve) => {
+        if (socket.readyState === WebSocket.CLOSED) {
+          resolve();
+          return;
+        }
+        socket.addEventListener("close", () => resolve(), { once: true });
+      });
+    }
+  });
+
+  it("should send a versioned snapshot envelope when a websocket connects", async () => {
+    const socket = new WebSocket(`ws://127.0.0.1:${TEST_PORT}/ws`);
+    const message = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      socket.addEventListener("message", (event) => {
+        try {
+          resolve(JSON.parse(String(event.data)) as Record<string, unknown>);
+        } catch (error) {
+          reject(error);
+        }
+      }, { once: true });
+      socket.addEventListener("error", () => reject(new Error("websocket connection failed")), { once: true });
+    });
+
+    try {
+      expect(message.version).toBe(1);
+      expect(typeof message.eventId).toBe("string");
+      expect(message.sequence).toBe(2);
+      expect(message.event).toBe("snapshot");
+      expect(typeof message.timestamp).toBe("string");
+      expect(message.data).toMatchObject({
+        cursor: 2,
+        status: { processStatus: "alive" },
+      });
+    } finally {
+      socket.close();
+      await new Promise<void>((resolve) => {
+        if (socket.readyState === WebSocket.CLOSED) {
+          resolve();
+          return;
+        }
+        socket.addEventListener("close", () => resolve(), { once: true });
+      });
+    }
   });
 });
