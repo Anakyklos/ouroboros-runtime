@@ -13,6 +13,7 @@ import type {
     ProviderCallContext,
 } from "./ModelProvider.js";
 import type { EventBus } from "../daemon/event-bus.js";
+import type { ProviderResilience } from "./provider-resilience.js";
 
 const SCOPE_SALT_ENV = "OUROBOROS_CREDENTIAL_SCOPE_SALT";
 const SCOPE_SALT_FILE = "credential-scope-salt";
@@ -242,6 +243,7 @@ export class CredentialedProviderInvoker {
         private readonly registry: CredentialRegistry,
         private readonly eventBus: EventBus,
         private readonly transport: CredentialedProviderTransport = defaultTransport,
+        private readonly resilience?: ProviderResilience,
     ) {}
 
     async complete(
@@ -263,7 +265,7 @@ export class CredentialedProviderInvoker {
 
         this.eventBus.registerRedactionSecret(resolved.secret);
         try {
-            return await this.transport.complete(
+            const callTransport = () => this.transport.complete(
                 this.provider,
                 request,
                 {
@@ -273,6 +275,13 @@ export class CredentialedProviderInvoker {
                 },
                 resolved.secret,
             );
+            return await (this.resilience
+                ? this.resilience.execute(
+                    { providerId: this.provider.providerId, credentialScope: resolved.credentialScope },
+                    context.signal,
+                    callTransport,
+                )
+                : callTransport());
         } catch (error) {
             throw redactError(error, [resolved.secret]);
         } finally {

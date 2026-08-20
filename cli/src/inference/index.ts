@@ -30,6 +30,36 @@ export {
 } from "./ModelProvider.js";
 export { ModelRegistry, createModelRegistry } from "./ModelRegistry.js";
 export { ModelRouter, createModelRouter } from "./ModelRouter.js";
+export {
+    CircuitBreaker,
+    CircuitBreakerRegistry,
+    CredentialScopeRateLimiter,
+    ProviderResilience,
+    ProviderResilienceCancellationError,
+    RetryPolicy,
+    classifyProviderError,
+} from "./provider-resilience.js";
+export type {
+    CircuitBreakerOptions,
+    CircuitBreakerSnapshot,
+    CircuitPermit,
+    CircuitState,
+    CircuitBreakerRegistryEntry,
+    CircuitBreakerRegistrySnapshot,
+    RateLimitAdmission,
+    RateLimiterBucketSnapshot,
+    RateLimiterOptions,
+    RateLimiterSnapshot,
+    ProviderResilienceEvent,
+    ProviderResilienceOptions,
+    ProviderResilienceSnapshot,
+    ResilienceClock,
+    ResilienceIdentity,
+    ResilienceRandom,
+    ResilienceSleep,
+    RetryClassification,
+    RetryPolicyOptions,
+} from "./provider-resilience.js";
 
 // --- Engines ---
 export { PolicyEngine, createPolicyEngine } from "./PolicyEngine.js";

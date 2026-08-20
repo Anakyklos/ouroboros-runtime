@@ -38,7 +38,9 @@ O suporte BYOK é opt-in. `loadInferenceConfig({ credentialRegistry, env })` rec
 
 O provider Ollama local, suas APIs legadas (`chat`, `embed`, `complete`), a factory existente, retries legados e métricas continuam compatíveis. A configuração nova não substitui a superfície antiga imediatamente; ela fornece contratos seguros para migração gradual de adapters. O invoker e o registry são opt-in para consumidores que precisam de credenciais.
 
-Esta camada não implementa NVIDIA NIM, quota global, retry novo, circuit breaker, scheduler, fila durável ou secret manager externo. Uma integração futura deve resolver a referência imediatamente antes do transporte, comparar o scope autorizado, manter a chave apenas no frame da chamada e passar mensagens/corpos de erro pelas mesmas fronteiras de redaction.
+A boundary comum agora fornece retry limitado, token bucket por `credentialScope` e circuit breaker por `(providerId, credentialScope)` para consumidores que injetam `ProviderResilience` no `CredentialedProviderInvoker`. Ela não implementa NVIDIA NIM, quota global, scheduler, fila durável, `waiting_for_quota` final ou secret manager externo. O estado de limiter e breaker pode ser exportado e restaurado em snapshots que contêm somente scopes opacos, contagens e timestamps; a persistência durável continua sendo responsabilidade da camada de execução.
+
+Retry só ocorre para `ModelProviderError` explicitamente retryable. `maxAttempts` inclui a chamada inicial, `Retry-After` é respeitado quando presente e cancelamento não inicia transporte adicional. Falhas permanentes, credenciais inválidas, autorização e configuração não recebem fallback silencioso.
 
 ## Regras de uso
 
