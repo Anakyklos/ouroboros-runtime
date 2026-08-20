@@ -5,24 +5,83 @@
  * Lida com variáveis de ambiente, defaults e validação.
  */
 
+import type { CredentialRegistry } from "./provider-security.js";
 import type { ModelConfig, InferenceProviderConfig } from "./types/inference-types.js";
+
+export interface LoadInferenceConfigOptions {
+    env?: NodeJS.ProcessEnv;
+    credentialRegistry?: CredentialRegistry;
+}
 
 // ============================================================================
 // Environment-based Config
 // ============================================================================
 
 /**
- * Carrega configuração do provider a partir de env vars.
+ * Lê um inteiro finito dentro do domínio permitido. Configuração inválida
+ * falha no startup em vez de ser convertida silenciosamente em NaN/negativo.
  */
-export function loadInferenceConfig(): InferenceProviderConfig {
+function parseInteger(
+    env: NodeJS.ProcessEnv,
+    name: string,
+    fallback: number,
+    minimum: number,
+): number {
+    const raw = env[name];
+    if (raw === undefined || raw.trim() === "") return fallback;
+    if (!/^-?\d+$/.test(raw.trim())) {
+        throw new Error(`${name} must be an integer`);
+    }
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value < minimum) {
+        throw new Error(`${name} must be an integer >= ${minimum}`);
+    }
+    return value;
+}
+
+/**
+ * Carrega configuração do provider a partir de env vars.
+ * O suporte BYOK é opt-in: um registry explícito recebe a chave apenas em
+ * memória; o objeto retornado contém somente a referência não sensível.
+ */
+export function loadInferenceConfig(options: LoadInferenceConfigOptions = {}): InferenceProviderConfig {
+    const env = options.env ?? process.env;
+    const ollamaBaseUrl = env.OLLAMA_BASE_URL ?? "http://localhost:11434";
+    const defaultTimeoutMs = parseInteger(env, "INFERENCE_TIMEOUT_MS", 60_000, 1);
+    const maxRetries = parseInteger(env, "INFERENCE_MAX_RETRIES", 3, 0);
+    const retryDelayMs = parseInteger(env, "INFERENCE_RETRY_DELAY_MS", 1000, 0);
+    const credentialSources = [] as NonNullable<InferenceProviderConfig["credentialSources"]>;
+    const nvidiaApiKey = env.NVIDIA_API_KEY?.trim();
+    if (nvidiaApiKey) {
+        const credentialRef = "credential://env/nvidia-api-key";
+        options.credentialRegistry?.register(credentialRef, nvidiaApiKey);
+        credentialSources.push({
+            providerId: "nvidia-nim",
+            credentialRef,
+            source: "NVIDIA_API_KEY",
+        });
+    }
+
     return {
-        ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? "http://localhost:11434",
-        defaultTimeoutMs: parseInt(process.env.INFERENCE_TIMEOUT_MS ?? "60000", 10),
-        maxRetries: parseInt(process.env.INFERENCE_MAX_RETRIES ?? "3", 10),
-        retryDelayMs: parseInt(process.env.INFERENCE_RETRY_DELAY_MS ?? "1000", 10),
-        logRequests: process.env.INFERENCE_LOG_REQUESTS !== "false",
-        collectMetrics: process.env.INFERENCE_COLLECT_METRICS !== "false",
-        traceDir: process.env.INFERENCE_TRACE_DIR ?? ".agent/traces",
+        ollamaBaseUrl,
+        defaultTimeoutMs,
+        maxRetries,
+        retryDelayMs,
+        logRequests: env.INFERENCE_LOG_REQUESTS !== "false",
+        collectMetrics: env.INFERENCE_COLLECT_METRICS !== "false",
+        traceDir: env.INFERENCE_TRACE_DIR ?? ".agent/traces",
+        credentialSources,
+        providerModel: {
+            providerId: "ollama-local",
+            modelId: "default",
+            endpoint: ollamaBaseUrl,
+            timeoutMs: defaultTimeoutMs,
+            featureFlags: {
+                streaming: false,
+                tools: false,
+                structuredOutput: false,
+            },
+        },
     };
 }
 

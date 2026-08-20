@@ -20,7 +20,11 @@ import { EventBus, globalEventBus } from "../daemon/event-bus.js";
 import { LocalInferenceProvider, createLocalInferenceProvider } from "./LocalInferenceProvider.js";
 import { ModelRegistry, createModelRegistry } from "./ModelRegistry.js";
 import { ModelRouter, createModelRouter } from "./ModelRouter.js";
-import { loadInferenceConfig, DEFAULT_MODELS } from "./inference-config.js";
+import { DEFAULT_MODELS } from "./inference-config.js";
+import {
+    CredentialRegistry,
+    CredentialedProviderInvoker,
+} from "./provider-security.js";
 
 // Engines
 import { PolicyEngine, createPolicyEngine } from "./PolicyEngine.js";
@@ -52,6 +56,10 @@ export interface InferenceSubsystemConfig {
     provider?: Partial<InferenceProviderConfig>;
     /** Diretório raiz do projeto (para persistência de memória) */
     projectRoot?: string;
+    /** Diretório de estado local para a identidade estável de credential scopes */
+    stateDir?: string;
+    /** Registry opcional injetado pela camada superior de credenciais */
+    credentialRegistry?: CredentialRegistry;
 }
 
 export interface InferenceStatus {
@@ -69,6 +77,8 @@ export interface InferenceStatus {
 
 export class InferenceSubsystem {
     private provider!: LocalInferenceProvider;
+    private credentialRegistry: CredentialRegistry;
+    private credentialedInvoker!: CredentialedProviderInvoker;
     private registry!: ModelRegistry;
     private router!: ModelRouter;
 
@@ -93,6 +103,10 @@ export class InferenceSubsystem {
     constructor(config?: InferenceSubsystemConfig, eventBus?: EventBus) {
         this.config = config ?? {};
         this.eventBus = eventBus ?? globalEventBus;
+        this.credentialRegistry = this.config.credentialRegistry ?? new CredentialRegistry({
+            projectRoot: this.config.projectRoot ?? process.cwd(),
+            stateDir: this.config.stateDir ?? ".ouroboros",
+        });
     }
 
     /**
@@ -109,6 +123,11 @@ export class InferenceSubsystem {
 
         // 1. Provider (Ollama connection)
         this.provider = createLocalInferenceProvider(this.config.provider, this.eventBus);
+        this.credentialedInvoker = new CredentialedProviderInvoker(
+            this.provider,
+            this.credentialRegistry,
+            this.eventBus,
+        );
 
         // 2. Check Ollama health
         const healthy = await this.provider.isHealthy();
@@ -223,6 +242,8 @@ export class InferenceSubsystem {
     // ========================================================================
 
     getProvider(): LocalInferenceProvider { return this.provider; }
+    getCredentialRegistry(): CredentialRegistry { return this.credentialRegistry; }
+    getCredentialedInvoker(): CredentialedProviderInvoker { return this.credentialedInvoker; }
     getRegistry(): ModelRegistry { return this.registry; }
     getRouter(): ModelRouter { return this.router; }
     getPolicy(): PolicyEngine { return this.policy; }

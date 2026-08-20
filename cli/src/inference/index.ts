@@ -50,6 +50,23 @@ export { InferenceGuardrails, createInferenceGuardrails } from "./InferenceGuard
 export { DatasetPipeline, createDatasetPipeline } from "./DatasetPipeline.js";
 export { LocalBenchmark, createLocalBenchmark } from "./LocalBenchmark.js";
 
+// --- Provider security ---
+export {
+    CredentialRegistry,
+    CredentialUnavailableError,
+    CredentialScopeMismatchError,
+    CredentialedProviderInvoker,
+    createCredentialScope,
+    loadOrCreateCredentialScopeSalt,
+    type CredentialRegistryOptions,
+    type CredentialSelection,
+    type CredentialedProviderTransport,
+    type ProviderFeatureFlags,
+    type ProviderModelConfig,
+    type ResolvedCredential,
+} from "./provider-security.js";
+export { REDACTED_VALUE, redactError, redactText, redactValue } from "./redaction.js";
+
 // --- Subsystem Facade ---
 export { InferenceSubsystem, createInferenceSubsystem } from "./InferenceSubsystem.js";
 export type { InferenceSubsystemConfig, InferenceStatus } from "./InferenceSubsystem.js";
@@ -61,6 +78,7 @@ export {
     POLICY_SYSTEM_PROMPT,
     CODER_SYSTEM_PROMPT,
 } from "./inference-config.js";
+export type { LoadInferenceConfigOptions } from "./inference-config.js";
 
 // --- Schemas ---
 export {
