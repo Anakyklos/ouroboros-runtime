@@ -169,8 +169,11 @@ future missions benefit from evidence
    Ouroboros Mission Control é operacional. Não duplicar personalidade/chat.
 5. **Electron não é default arquitetural.** Web stack histórico não obriga
    continuidade. Framework desktop escolhido após contracts + POC/benchmark.
-6. **TUI completa não compete como segunda UI principal.** Direção:
-   RETIRE/DEFER como produto principal; preservar CLI pequena.
+6. **TUI completa não compete como segunda UI principal.** Decision na
+   matriz: **RETIRE** como produto principal. Componentes realmente úteis
+   para debug/recovery podem ser reaproveitados e uma CLI pequena permanece
+   (`ouroboros status/missions/...`); isso não altera a Decision da TUI
+   completa.
 7. **IPC local em vez de web server como default.** Unix domain socket
    candidato. HTTP/WebSocket remoto só introduzido se caso real de cliente
    remoto surgir.

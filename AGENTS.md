@@ -131,18 +131,18 @@ cli/src/
 ├── commands/       # Command handlers
 ├── concierge/      # Intent classification (LEGACY: reavaliar)
 ├── daemon/         # Server, RPC gateway, session, event bus (KEEP)
-├── inference/      # Local inference (ADAPT/DEFER)
+├── inference/      # Local inference (ADAPT — planner backend opcional)
 ├── orchestration/  # Orchestrator, WaveExecutor, Memory, Promotion (classificar)
 ├── ports/          # Interface definitions (hexagonal)
 ├── providers/      # Agent execution engines
 ├── runtime/        # SelfModifyingEngine, Sandbox* (LEGACY: RETIRE)
-└── tui/            # React/Ink TUI (LEGACY: RETIRE/DEFER)
+└── tui/            # React/Ink TUI (LEGACY: RETIRE)
 ```
 
 > ⚠️ Antes de editar arquivos em `bridges/`, `runtime/`, `orchestration/`,
 > `tui/`, `inference/` ou `scripts/ralph/`, leia a linha correspondente na
-> matriz de legado e respeite a decisão (não amplie feature de subsistema
-> RETIRE/DEFER).
+> matriz de legado e respeite a Decision única registrada (não amplie feature
+> de subsistema classificado `RETIRE`/`DEFER`).
 
 ---
 

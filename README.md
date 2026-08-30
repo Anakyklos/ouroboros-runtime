@@ -228,9 +228,11 @@ bun run check:tests    # testes obrigatórios
 > - `bun run daemon` → **entrypoint atual válido** do daemon/headless runtime.
 >   O daemon é parte da direção preservada (core `KEEP` na matriz). O entrypoint
 >   atual não deve ser confundido com a arquitetura-alvo `ouroborosd` do #70:
->   as semânticas internas atuais (Fastify/WebSocket, RPC gateway) estão
->   classificadas `ADAPT`/`DEFER` na matriz até os contracts centrais
->   estabilizarem.
+>   o **daemon/headless core atual, incluindo o RPC gateway**, permanece
+>   `KEEP` (foundation da direção até sua boundary evoluir pelos contracts
+>   futuros). O **transporte atual (Fastify/WebSocket)** é classificado
+>   `ADAPT` na matriz — pode ser adaptado ou substituído por IPC local
+>   posteriormente, sem alterar a decisão `KEEP` do core.
 >
 > **Entrypoint atual ≠ arquitetura-alvo.** O daemon atual é comportamento
 > comprovado (`Current`); `ouroborosd` headless com Mission Engine, Capability

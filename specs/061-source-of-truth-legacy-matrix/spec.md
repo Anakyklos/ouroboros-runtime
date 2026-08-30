@@ -154,7 +154,8 @@ skip/todo/only/`|| true`/continue-on-error/remoção de testes.
   Fastify/WebSocket transport, React/Ink TUI, web frontend, terminal pane,
   direct daemon/UI coupling, duplicated frontend stores/state.
 - **FR-011**: Decisões vinculantes da #61/#69/#70 MUST ser respeitadas:
-  SelfModifyingEngine → RETIRE/MOVE/EXTRACT (nunca KEEP AS CORE); Council/personas
+  SelfModifyingEngine → RETIRE (nunca KEEP AS CORE; extração de primitives
+  registrada em Future owner/boundary); Council/personas
   → não arquitetura central; Anti-Vibe → conceitos fail-closed podem sobreviver,
   verificação técnica de software → Runstead, promotion/capability evolution →
   Cadinho, mission-level gates → Ouroboros; Memory → durable Mission state
@@ -213,7 +214,7 @@ skip/todo/only/`|| true`/continue-on-error/remoção de testes.
   documentação legada do produto`; Current ≠ Direction ≠ Legacy ≠ Hypothesis.
 - Issue #60/#61/#69/#70 e seus comentários são decisões vinculantes; a
   matriz não reabre decisões já tomadas (ex.: Electron rejeitado como default,
-  SelfModifyingEngine RETIRE/MOVE/EXTRACT).
+  SelfModifyingEngine RETIRE).
 - A estrutura atual do repositório (root package + web/ package, Bun 1.3.9,
   baseline #35) permanece válida e não será alterada por esta PR.
 - A documentação será escrita em português/inglês conforme o estilo atual do
