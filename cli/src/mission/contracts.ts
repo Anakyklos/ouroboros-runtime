@@ -161,6 +161,26 @@ export interface EvidenceRef {
 }
 
 /**
+ * Advisory declaration by the planner that a step REQUIRES approval.
+ *
+ * This is a proposal, never a grant: it carries NO `granted`/`grantedBy`/
+ * `grantedAt` fields. The authoritative grant state lives only on the
+ * Mission (`Mission.approvalRequirements`) and can only change through an
+ * explicit authorized path such as `MissionEngine.recordApproval()`.
+ *
+ * Any candidate that smuggles grant fields inside this object is
+ * deterministically rejected by the policy (`APPROVAL_GRANT_FORBIDDEN`).
+ */
+export interface StepApprovalRequirement {
+    /** Id referencing the approval requirement (Mission-level or proposed). */
+    approvalId: string;
+    /** Who must approve (role/interface), declared by the planner. */
+    approver: string;
+    /** Why approval is needed (sanitized, no CoT). */
+    reason: string;
+}
+
+/**
  * A declarative step proposed by the planner. Proposals are advisory —
  * nothing in here grants authority to execute effects.
  */
@@ -179,8 +199,8 @@ export interface PlanStep {
     expectedAcceptance: string[];
     /** Effect class the planner believes the capability has. */
     effectClass: EffectClass;
-    /** Whether this step requires explicit human approval. */
-    approvalRequirement?: ApprovalRequirement;
+    /** Whether this step requires explicit human approval (advisory only). */
+    approvalRequirement?: StepApprovalRequirement;
     /** Budget hint for this step (proposal only). */
     budgetHint?: { units?: number; maxDurationMs?: number };
     /** Alternatives/fallbacks — always only proposals. */
@@ -262,6 +282,20 @@ export interface InvocationResult {
     completedAt: string;
 }
 
+/** A deterministic, typed criterion-level verification result. */
+export interface CriterionVerification {
+    /** The acceptance criterion text (immutable, stable for Mission lifetime). */
+    criterionId: string;
+    /** Whether the criterion is satisfied (deterministic, not planner narrative). */
+    satisfied: boolean;
+    /** Source of the verdict (e.g. "module-owner:runstead", "operator"). */
+    source: string;
+    /** When the verification was recorded. */
+    verifiedAt: string;
+    /** Optional reference to supporting evidence. */
+    evidenceRefId?: string;
+}
+
 /** Verification reported by the module owner for an invocation. */
 export interface OwnerVerification {
     invocationId: string;
@@ -323,10 +357,12 @@ export interface Mission {
     state: MissionState;
     /** Current accepted plan revision id (null before first acceptance). */
     currentPlanRevisionId: string | null;
-    /** References to child/capability invocations. */
+    /** References to child/capability invocations (derived from canonical store). */
     invocationRefs: CapabilityInvocationRef[];
     /** Evidence/result references collected so far. */
     evidenceRefs: EvidenceRef[];
+    /** Typed criterion-level verification results (completion authority). */
+    criterionVerifications: CriterionVerification[];
     /** Unresolved questions (may require user/operator input). */
     unresolvedQuestions: string[];
     /** Timestamps/recovery metadata. */
@@ -358,6 +394,7 @@ export enum PolicyRejectionCode {
     DEPENDENCY_CYCLE = "dependency_cycle",
     EFFECT_NOT_AUTHORIZED = "effect_not_authorized",
     APPROVAL_MISSING = "approval_missing",
+    APPROVAL_GRANT_FORBIDDEN = "approval_grant_forbidden",
     INPUT_INCOMPATIBLE = "input_incompatible",
     ACCEPTANCE_MUTATION = "acceptance_mutation",
     CONSTRAINT_MUTATION = "constraint_mutation",
@@ -396,6 +433,12 @@ export interface CapabilityContract {
     effectClass: EffectClass;
     /** Whether the capability requires explicit human approval. */
     requiresApproval: boolean;
+    /**
+     * Whether the module owner MUST verify the invocation result before it
+     * can count toward Mission completion. Missing mandatory owner
+     * verification is never implicit success.
+     */
+    requiresOwnerVerification: boolean;
     /** Allowed prefixes for input references (schema-ish, deterministic). */
     allowedInputRefPrefixes: string[];
     /**

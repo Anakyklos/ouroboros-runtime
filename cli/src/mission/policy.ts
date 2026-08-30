@@ -97,7 +97,8 @@ function findCycleOrUnknownSteps(steps: PlanStep[]): {
 
 /** Deterministic validation of a PlanCandidate against a Mission. */
 export class PlanPolicyValidator {
-    private readonly resolver: CapabilityResolver;
+    /** Capability catalog used by this policy (public for dispatch gates). */
+    readonly resolver: CapabilityResolver;
 
     constructor(resolver: CapabilityResolver) {
         this.resolver = resolver;
@@ -207,6 +208,17 @@ export class PlanPolicyValidator {
             decision.reject(
                 PolicyRejectionCode.EFFECT_NOT_AUTHORIZED,
                 `Step "${step.stepId}" declares effect class "${step.effectClass}" but capability "${step.capabilityRequirement}" is cataloged as "${contract.effectClass}".`,
+            );
+        }
+
+        // Planner can propose that a step REQUIRES approval, but can never
+        // fabricate a grant. Any candidate carrying grant fields is rejected
+        // deterministically, regardless of the planner's intent.
+        const rawReq = step.approvalRequirement as unknown as Record<string, unknown> | undefined;
+        if (rawReq && (rawReq.granted !== undefined || rawReq.grantedBy !== undefined || rawReq.grantedAt !== undefined)) {
+            decision.reject(
+                PolicyRejectionCode.APPROVAL_GRANT_FORBIDDEN,
+                `Step "${step.stepId}" carries a fabricated approval grant; the planner cannot concede approval.`,
             );
         }
 

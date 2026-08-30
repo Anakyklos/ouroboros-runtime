@@ -20,6 +20,7 @@ import {
     ApprovalRequirement,
     BudgetPolicy,
     CapabilityInvocationRef,
+    CriterionVerification,
     EvidenceRef,
     InvocationResult,
     InvocationStatus,
@@ -32,10 +33,12 @@ import {
     PlanCandidate,
     PlanRevision,
     PolicyDecision,
+    StepApprovalRequirement,
     WAITING_STATES,
     TERMINAL_STATES,
 } from "./contracts.js";
 import {
+    CapabilityResolver,
     ClockService,
     IdGenerator,
     MissionStore,
@@ -115,19 +118,62 @@ export class InvalidStateTransitionError extends Error {
 }
 
 /**
- * Deterministic Mission-level verifier.
+ * Deterministic dispatch rejection. The Mission/step is not authorized to
+ * dispatch right now (state, approval, availability, policy). No invocation
+ * is created when this is thrown.
+ */
+export class DispatchRejectedError extends Error {
+    readonly reason: string;
+    constructor(reason: string) {
+        super(`Dispatch rejected: ${reason}`);
+        this.name = "DispatchRejectedError";
+        this.reason = reason;
+    }
+}
+
+/**
+ * An invocation already exists for the same logical step. Thrown to prevent
+ * replay after restart and blind redispatch of effects whose outcome is
+ * completed or uncertain. Never a second invocation row.
+ */
+export class InvocationConflictError extends Error {
+    readonly invocationId: string;
+    readonly status: InvocationStatus;
+    constructor(missionId: string, stepId: string, invocationId: string, status: InvocationStatus) {
+        super(
+            `Step "${stepId}" of mission ${missionId} already has invocation ${invocationId} (${status}); blind redispatch is forbidden`,
+        );
+        this.name = "InvocationConflictError";
+        this.invocationId = invocationId;
+        this.status = status;
+    }
+}
+
+/**
+ * Deterministic Mission-level verifier (fail-closed).
  *
- * Satisfaction rules:
- *  - every invocation must be terminal;
- *  - every completed invocation with an owner verification must be
- *    positively verified by its module owner;
- *  - each acceptance criterion must be covered by an evidence ref label.
+ * Satisfaction rules (all mandatory):
+ *  - every invocation must be terminal and successful;
+ *  - negative module-owner verification blocks completion (ownerBlocked),
+ *    and the planner's opinion can never override it;
+ *  - for every invocation whose capability REQUIRES owner verification
+ *    (per the capability catalog), a positive owner verification must be
+ *    present — a missing mandatory lower-layer verification is never
+ *    implicit success;
+ *  - every acceptance criterion must have an explicit typed
+ *    `CriterionVerification` record with `satisfied: true` recorded through
+ *    the engine's authorized path (`recordCriterionVerification`).
  *
- * Owner-blocked rule (binding): if any owner verification is negative,
- * the Mission is NOT satisfied — the planner's opinion cannot override
- * the module owner's negative verification.
+ * Text labels are NEVER completion authority: an `EvidenceRef.label` that
+ * happens to contain the acceptance text proves nothing.
  */
 class DefaultMissionVerifier implements MissionVerifier {
+    private readonly resolver: CapabilityResolver;
+
+    constructor(resolver: CapabilityResolver) {
+        this.resolver = resolver;
+    }
+
     async verify(mission: Mission): Promise<{
         satisfied: boolean;
         ownerBlocked: boolean;
@@ -171,7 +217,7 @@ class DefaultMissionVerifier implements MissionVerifier {
             return { satisfied: false, ownerBlocked: false, reasons };
         }
 
-        // Owner verification: negative owner verification blocks completion.
+        // Negative owner verification blocks completion (binding rule).
         const negativeOwners = invocations.filter(
             (inv) => inv.ownerVerification !== undefined && !inv.ownerVerification.verified,
         );
@@ -182,20 +228,49 @@ class DefaultMissionVerifier implements MissionVerifier {
             return { satisfied: false, ownerBlocked: true, reasons };
         }
 
-        // Evidence coverage against acceptance criteria.
-        const evidenceLabels = mission.evidenceRefs.map((ref) => ref.label.toLowerCase());
-        const missingAcceptance = mission.acceptanceCriteria.filter((criterion) => {
-            const needle = criterion.toLowerCase();
-            return !evidenceLabels.some((label) => label.includes(needle));
-        });
-        if (missingAcceptance.length > 0) {
+        // Mandatory owner verification: fail closed when the capability's
+        // catalog contract requires it and the owner has not positively
+        // verified the invocation.
+        for (const inv of invocations) {
+            const contract = await this.resolver.resolve(inv.capabilityId);
+            if (!contract) {
+                reasons.push(
+                    `Invocation ${inv.invocationId} references unknown capability "${inv.capabilityId}"; cannot be trusted`,
+                );
+                return { satisfied: false, ownerBlocked: false, reasons };
+            }
+            if (
+                contract.requiresOwnerVerification &&
+                (inv.ownerVerification === undefined || !inv.ownerVerification.verified)
+            ) {
+                reasons.push(
+                    `Invocation ${inv.invocationId} requires module-owner verification by "${contract.moduleOwner}" which is missing or negative; missing lower-layer verification is not implicit success`,
+                );
+                return { satisfied: false, ownerBlocked: false, reasons };
+            }
+        }
+
+        // Typed criterion verification: every acceptance criterion must have
+        // an explicit, deterministic, satisfied CriterionVerification record.
+        // Text labels are NOT acceptance evidence.
+        const satisfiedCriteria = new Set(
+            mission.criterionVerifications
+                .filter((cv) => cv.satisfied)
+                .map((cv) => cv.criterionId),
+        );
+        const missingCriteria = mission.acceptanceCriteria.filter(
+            (criterion) => !satisfiedCriteria.has(criterion),
+        );
+        if (missingCriteria.length > 0) {
             reasons.push(
-                `Acceptance criteria not covered by evidence: ${missingAcceptance.join(", ")}`,
+                `Acceptance criteria lack typed verification: ${missingCriteria.join(", ")} (text labels are not completion authority)`,
             );
             return { satisfied: false, ownerBlocked: false, reasons };
         }
 
-        reasons.push("All invocations completed, owner verifications positive, acceptance covered by evidence");
+        reasons.push(
+            "All invocations completed, mandatory owner verifications positive, all acceptance criteria verified by typed records",
+        );
         return { satisfied: true, ownerBlocked: false, reasons };
     }
 }
@@ -214,7 +289,7 @@ export class MissionEngine {
         this.clock = options.clock ?? new SystemClock();
         this.ids = options.ids ?? new UuidGenerator();
         this.interpreter = options.interpreter ?? defaultInterpreter;
-        this.verifier = options.verifier ?? new DefaultMissionVerifier();
+        this.verifier = options.verifier ?? new DefaultMissionVerifier(this.policy.resolver);
     }
 
     /**
@@ -251,6 +326,7 @@ export class MissionEngine {
             currentPlanRevisionId: null,
             invocationRefs: [],
             evidenceRefs: [],
+            criterionVerifications: [],
             unresolvedQuestions: [],
             createdAt: now,
             updatedAt: now,
@@ -315,6 +391,11 @@ export class MissionEngine {
      * Accept a proposed revision as the Mission's current plan.
      * The previous accepted revision is marked superseded (never deleted:
      * completed effects/invocation refs are preserved).
+     *
+     * Step-level approval requirements become UN-GRANTED Mission requirements
+     * (the planner proposes the requirement; grant comes from the explicit
+     * `recordApproval()` path only). Any grant fields smuggled by the planner
+     * are stripped.
      */
     async acceptPlan(missionId: string, revisionId: string): Promise<Mission> {
         const mission = await this.requireMission(missionId);
@@ -331,41 +412,54 @@ export class MissionEngine {
             throw new Error(`Plan revision ${revisionId} is not in 'proposed' status`);
         }
 
-        // Mark previous accepted revision superseded (auditable, kept).
-        if (mission.currentPlanRevisionId) {
-            await this.store.updatePlanRevisionStatus(
-                mission.currentPlanRevisionId,
-                "superseded",
-                `Superseded by revision ${revisionId}`,
-            );
-        }
-
-        await this.store.updatePlanRevisionStatus(revisionId, "accepted");
-
-        // Merge step-level approval requirements into the Mission's approval
-        // state so that recordApproval can find them regardless of whether
-        // they were pre-declared or introduced by the plan.
-        const stepApprovals = revision.steps
-            .map((s) => s.approvalRequirement)
-            .filter((req): req is ApprovalRequirement => req !== undefined);
-        const mergedApprovals = [...mission.approvalRequirements];
-        for (const req of stepApprovals) {
-            if (!mergedApprovals.some((r) => r.approvalId === req.approvalId)) {
-                mergedApprovals.push({ ...req });
+        await this.store.withTransaction(async () => {
+            // Mark previous accepted revision superseded (auditable, kept).
+            if (mission.currentPlanRevisionId) {
+                await this.store.updatePlanRevisionStatus(
+                    mission.currentPlanRevisionId,
+                    "superseded",
+                    `Superseded by revision ${revisionId}`,
+                );
             }
-        }
+            await this.store.updatePlanRevisionStatus(revisionId, "accepted");
 
-        const needsApproval = mergedApprovals.some((req) => !req.granted);
+            // Step approval requirements become UN-GRANTED Mission requirements.
+            // The planner proposes requirement, the grant comes from the
+            // explicit `recordApproval()` path. Any grant fields the planner
+            // smuggled are stripped (authoritative grant state is on the Mission).
+            const mergedApprovals = [...mission.approvalRequirements];
+            for (const step of revision.steps) {
+                const req = step.approvalRequirement;
+                if (!req) continue;
+                const existing = mergedApprovals.find((r) => r.approvalId === req.approvalId);
+                if (existing) {
+                    // Planner proposed requirement metadata can update the
+                    // requirement description, but the authoritative grant state
+                    // (granted/grantedBy/grantedAt) is never touched by the planner.
+                    existing.reason = req.reason;
+                    existing.approver = req.approver;
+                } else {
+                    // New requirement, always starts un-granted.
+                    mergedApprovals.push({
+                        approvalId: req.approvalId,
+                        approver: req.approver,
+                        reason: req.reason,
+                        granted: false,
+                    });
+                }
+            }
 
-        const nextState = needsApproval
-            ? MissionState.WAITING_FOR_APPROVAL
-            : MissionState.READY;
+            const needsApproval = mergedApprovals.some((r) => !r.granted);
+            const nextState = needsApproval
+                ? MissionState.WAITING_FOR_APPROVAL
+                : MissionState.READY;
 
-        await this.store.updateMission(missionId, {
-            currentPlanRevisionId: revisionId,
-            state: nextState,
-            approvalRequirements: mergedApprovals,
-            updatedAt: this.clock.isoNow(),
+            await this.store.updateMission(missionId, {
+                currentPlanRevisionId: revisionId,
+                state: nextState,
+                approvalRequirements: mergedApprovals,
+                updatedAt: this.clock.isoNow(),
+            });
         });
 
         return this.requireMission(missionId);
@@ -418,21 +512,82 @@ export class MissionEngine {
      * invocation reference. Mission state and invocation state are kept
      * distinct: this only records the reference; the durable scheduler
      * machinery belongs to #50.
+     *
+     * Authoritative gate (fail-closed before any invocation is created):
+     *  1. Mission state must be READY or EXECUTING.
+     *  2. Step must exist in the current accepted revision.
+     *  3. No existing invocation for the same logical step (replay/uncertainty
+     *     protection — see Blocker 3).
+     *  4. Required approvals are granted (authoritative Mission state).
+     *  5. Capability is still available in the current catalog.
+     *  6. The accepted plan is revalidated against current policy (authorization
+     *     is not frozen at proposal time).
+     *
+     * Writes are atomic (invocation row + mission state in one transaction).
      */
     async dispatchStep(missionId: string, stepId: string): Promise<CapabilityInvocationRef> {
         const mission = await this.requireMission(missionId);
+
+        // Gate 1: Mission state must be authorizable.
+        if (mission.state !== MissionState.READY && mission.state !== MissionState.EXECUTING) {
+            throw new DispatchRejectedError(
+                `mission ${missionId} is in state "${mission.state}"; dispatch requires ready/executing`,
+            );
+        }
+
         if (!mission.currentPlanRevisionId) {
-            throw new Error(`Mission ${missionId} has no accepted plan to dispatch from`);
+            throw new DispatchRejectedError(
+                `mission ${missionId} has no accepted plan to dispatch from`,
+            );
         }
         const revision = await this.store.getPlanRevision(mission.currentPlanRevisionId);
         if (!revision) {
-            throw new Error(
-                `Current plan revision not found: ${mission.currentPlanRevisionId}`,
-            );
+            throw new Error(`Current plan revision not found: ${mission.currentPlanRevisionId}`);
         }
         const step = revision.steps.find((s) => s.stepId === stepId);
         if (!step) {
             throw new Error(`Step not found in current plan: ${stepId}`);
+        }
+
+        // Gate 2: replay/uncertainty protection — one invocation per logical step.
+        const existing = await this.store.listInvocations(missionId);
+        const prior = existing.find((inv) => inv.stepId === stepId);
+        if (prior) {
+            throw new InvocationConflictError(missionId, stepId, prior.invocationId, prior.status);
+        }
+
+        // Gate 3: required approvals granted (authoritative Mission state).
+        if (step.approvalRequirement) {
+            const requirement = mission.approvalRequirements.find(
+                (r) => r.approvalId === step.approvalRequirement!.approvalId,
+            );
+            if (!requirement || !requirement.granted) {
+                throw new DispatchRejectedError(
+                    `step "${stepId}" requires approval "${step.approvalRequirement.approvalId}" which is not granted`,
+                );
+            }
+        }
+
+        // Gate 4: capability still available in the current catalog.
+        const contract = await this.policy.resolver.resolve(step.capabilityRequirement);
+        if (!contract) {
+            throw new DispatchRejectedError(
+                `capability "${step.capabilityRequirement}" is no longer available`,
+            );
+        }
+
+        // Gate 5: revalidate the accepted plan against current policy.
+        // Authorization is not frozen at proposal time.
+        const revalidation = await this.policy.validate(mission, {
+            planId: revision.planId,
+            missionId,
+            plannerNote: revision.reason,
+            steps: revision.steps,
+        });
+        if (!revalidation.valid) {
+            throw new DispatchRejectedError(
+                `plan no longer authorized: ${revalidation.reasons.join("; ")}`,
+            );
         }
 
         const invocation: CapabilityInvocationRef = {
@@ -445,11 +600,13 @@ export class MissionEngine {
             resultRefs: [],
         };
 
-        await this.store.saveInvocation(invocation);
-        await this.store.updateMission(missionId, {
-            invocationRefs: [...mission.invocationRefs, invocation],
-            state: MissionState.EXECUTING,
-            updatedAt: this.clock.isoNow(),
+        // Atomic: invocation row + mission state in one transaction.
+        await this.store.withTransaction(async () => {
+            await this.store.saveInvocation(invocation);
+            await this.store.updateMission(missionId, {
+                state: MissionState.EXECUTING,
+                updatedAt: this.clock.isoNow(),
+            });
         });
 
         return invocation;
@@ -459,6 +616,7 @@ export class MissionEngine {
      * Record an invocation result with optional owner verification.
      * A negative owner verification is preserved and dominates any
      * mission-level "looks good" judgment.
+     * Writes are atomic (invocation row + Mission evidence in one transaction).
      */
     async recordInvocationResult(
         invocationId: string,
@@ -480,8 +638,6 @@ export class MissionEngine {
             ownerVerification: ownerVerification ?? invocation.ownerVerification,
         };
 
-        await this.store.updateInvocation(invocationId, updated);
-
         const newEvidenceRefs = [...mission.evidenceRefs];
         for (const ref of result.evidenceRefs) {
             if (!newEvidenceRefs.some((existing) => existing.refId === ref.refId)) {
@@ -489,15 +645,53 @@ export class MissionEngine {
             }
         }
 
-        await this.store.updateMission(invocation.missionId, {
-            invocationRefs: mission.invocationRefs.map((inv) =>
-                inv.invocationId === invocationId ? updated : inv,
-            ),
-            evidenceRefs: newEvidenceRefs,
-            updatedAt: this.clock.isoNow(),
+        await this.store.withTransaction(async () => {
+            await this.store.updateInvocation(invocationId, updated);
+            await this.store.updateMission(invocation.missionId, {
+                evidenceRefs: newEvidenceRefs,
+                updatedAt: this.clock.isoNow(),
+            });
         });
 
         return this.requireMission(invocation.missionId);
+    }
+
+    /**
+     * Record an explicit, deterministic, typed verification for one
+     * acceptance criterion. This is the ONLY path through which acceptance
+     * can be proven for completion — text labels are never completion
+     * authority. `source` must be an authorized deterministic verifier
+     * (e.g. a module owner or an operator), not planner narrative.
+     */
+    async recordCriterionVerification(
+        missionId: string,
+        criterionId: string,
+        satisfied: boolean,
+        source: string,
+        evidenceRefId?: string,
+    ): Promise<Mission> {
+        const mission = await this.requireMission(missionId);
+        const entry: CriterionVerification = {
+            criterionId,
+            satisfied,
+            source,
+            verifiedAt: this.clock.isoNow(),
+            evidenceRefId,
+        };
+        const existing = mission.criterionVerifications.find(
+            (cv) => cv.criterionId === criterionId,
+        );
+        const criterionVerifications = existing
+            ? mission.criterionVerifications.map((cv) =>
+                  cv.criterionId === criterionId ? entry : cv,
+              )
+            : [...mission.criterionVerifications, entry];
+
+        await this.store.updateMission(missionId, {
+            criterionVerifications,
+            updatedAt: this.clock.isoNow(),
+        });
+        return this.requireMission(missionId);
     }
 
     /**

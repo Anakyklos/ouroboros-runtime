@@ -496,7 +496,6 @@ describe("MissionEngine", () => {
                             approvalId: "ap-write",
                             approver: "operator",
                             reason: "Write to life domain requires operator approval",
-                            granted: false,
                         },
                     }),
                 ],
@@ -535,7 +534,6 @@ describe("MissionEngine", () => {
                             approvalId: "ap-step-only",
                             approver: "operator",
                             reason: "Write to life domain",
-                            granted: false,
                         },
                     }),
                 ],
@@ -556,6 +554,123 @@ describe("MissionEngine", () => {
             await expect(engine.dispatchStep(mission.missionId, "ghost-step")).rejects.toThrow(
                 /not found in current plan/i,
             );
+        });
+
+        it("BLOCKER: rejects dispatch while waiting_for_approval with zero invocation created", async () => {
+            const intent = makeIntent("cli");
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            const proposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId, {
+                steps: [
+                    makeStep({
+                        stepId: "step-write",
+                        capabilityRequirement: "lifeos.write",
+                        effectClass: EffectClass.WRITE,
+                        inputRefs: ["refs/lifeos/journal"],
+                        approvalRequirement: {
+                            approvalId: "ap-write",
+                            approver: "operator",
+                            reason: "Write to life domain",
+                        },
+                    }),
+                ],
+            }));
+            if (!proposal.ok) throw new Error("plan rejected");
+            await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+            // Mission is waiting for approval.
+            const waiting = await engine.getMission(mission.missionId);
+            expect(waiting.state).toBe(MissionState.WAITING_FOR_APPROVAL);
+
+            // Dispatch must be rejected and must NOT create an invocation.
+            await expect(engine.dispatchStep(mission.missionId, "step-write")).rejects.toThrow(
+                /approval/i,
+            );
+            const after = await engine.getMission(mission.missionId);
+            expect(after.invocationRefs).toHaveLength(0);
+            expect(await harness.store.listInvocations(mission.missionId)).toHaveLength(0);
+            expect(after.state).toBe(MissionState.WAITING_FOR_APPROVAL);
+        });
+
+        it("BLOCKER: rejects dispatch when capability becomes unavailable (no invocation created)", async () => {
+            const intent = makeIntent("cli");
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            const proposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId, {
+                steps: [
+                    makeStep({
+                        stepId: "step-deploy",
+                        capabilityRequirement: "runstead.deploy",
+                        effectClass: EffectClass.NETWORK,
+                        inputRefs: ["refs/runstead/prod"],
+                        approvalRequirement: {
+                            approvalId: "ap-deploy",
+                            approver: "operator",
+                            reason: "Deployment requires approval",
+                        },
+                    }),
+                ],
+            }));
+            if (!proposal.ok) throw new Error("plan rejected");
+            await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+            await engine.recordApproval(mission.missionId, "ap-deploy", "operator");
+
+            const ready = await engine.getMission(mission.missionId);
+            expect(ready.state).toBe(MissionState.READY);
+
+            // Capability becomes unavailable after plan validation.
+            harness.resolver.unregister("runstead.deploy");
+
+            await expect(engine.dispatchStep(mission.missionId, "step-deploy")).rejects.toThrow(
+                /no longer available/i,
+            );
+            const after = await engine.getMission(mission.missionId);
+            expect(after.invocationRefs).toHaveLength(0);
+            expect(await harness.store.listInvocations(mission.missionId)).toHaveLength(0);
+        });
+
+        it("BLOCKER: completed invocation cannot be re-dispatched (no second invocation)", async () => {
+            const intent = makeIntent("cli");
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            const proposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId));
+            if (!proposal.ok) throw new Error("plan rejected");
+            await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.recordInvocationResult(
+                invocation.invocationId,
+                {
+                    invocationId: invocation.invocationId,
+                    status: InvocationStatus.COMPLETED,
+                    summary: "done",
+                    evidenceRefs: [],
+                    completedAt: BASE_TIME,
+                },
+                {
+                    invocationId: invocation.invocationId,
+                    verified: true,
+                    reason: "ok",
+                    owner: "runstead",
+                    verifiedAt: BASE_TIME,
+                },
+            );
+
+            // Re-dispatch of the same logical step is forbidden.
+            await expect(engine.dispatchStep(mission.missionId, "step-1")).rejects.toThrow(
+                /blind redispatch|already has invocation/i,
+            );
+            const after = await engine.getMission(mission.missionId);
+            expect(after.invocationRefs).toHaveLength(1);
+            expect(after.invocationRefs[0].invocationId).toBe(invocation.invocationId);
+            expect(after.invocationRefs[0].status).toBe(InvocationStatus.COMPLETED);
+            expect(await harness.store.listInvocations(mission.missionId)).toHaveLength(1);
         });
 
         it("keeps a waiting_* state as waiting, never turning it into failure", async () => {
@@ -600,9 +715,6 @@ describe("MissionEngine", () => {
                             approvalId: "ap-deploy",
                             approver: "operator",
                             reason: "Deployment requires approval",
-                            granted: true,
-                            grantedBy: "operator",
-                            grantedAt: BASE_TIME,
                         },
                     }),
                 ],
@@ -772,7 +884,7 @@ describe("MissionEngine", () => {
             expect(after.state).not.toBe(MissionState.COMPLETED);
         });
 
-        it("completes a Mission only when evidence covers acceptance and owners verify positively", async () => {
+        it("completes a Mission only with typed criterion verification + positive owner verification", async () => {
             const intent = makeIntent("cli");
             const mission = await engine.createMission({
                 intent,
@@ -804,12 +916,76 @@ describe("MissionEngine", () => {
                 },
             );
 
+            // Without typed criterion verification, evidence labels alone
+            // must NOT satisfy acceptance (fail-closed).
+            const beforeTyped = await engine.verifyMission(mission.missionId);
+            expect(beforeTyped.satisfied).toBe(false);
+            expect(beforeTyped.ownerBlocked).toBe(false);
+
+            // Explicit deterministic typed verification per acceptance criterion.
+            await engine.recordCriterionVerification(
+                mission.missionId,
+                "PR merged",
+                true,
+                "module-owner:runstead",
+                "ev-1",
+            );
+            await engine.recordCriterionVerification(
+                mission.missionId,
+                "CI green",
+                true,
+                "module-owner:runstead",
+                "ev-2",
+            );
+
             const verification = await engine.verifyMission(mission.missionId);
             expect(verification.satisfied).toBe(true);
             expect(verification.ownerBlocked).toBe(false);
 
             const completed = await engine.completeMission(mission.missionId);
             expect(completed.state).toBe(MissionState.COMPLETED);
+        });
+
+        it("does NOT complete when evidence labels match acceptance but typed verification is absent", async () => {
+            const intent = makeIntent("cli");
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            const proposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId));
+            if (!proposal.ok) throw new Error("plan rejected");
+            await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.recordInvocationResult(
+                invocation.invocationId,
+                {
+                    invocationId: invocation.invocationId,
+                    status: InvocationStatus.COMPLETED,
+                    summary: "Review completed",
+                    // Labels that happen to contain the acceptance text.
+                    evidenceRefs: [
+                        { refId: "ev-1", owner: "runstead", externalRef: "runstead:review/1", label: "PR merged" },
+                        { refId: "ev-2", owner: "runstead", externalRef: "runstead:ci/1", label: "CI green" },
+                    ],
+                    completedAt: BASE_TIME,
+                },
+                {
+                    invocationId: invocation.invocationId,
+                    verified: true,
+                    reason: "Review verified",
+                    owner: "runstead",
+                    verifiedAt: BASE_TIME,
+                },
+            );
+
+            // Text labels are NOT completion authority.
+            const verification = await engine.verifyMission(mission.missionId);
+            expect(verification.satisfied).toBe(false);
+            expect(verification.ownerBlocked).toBe(false);
+            await expect(engine.completeMission(mission.missionId)).rejects.toThrow();
+            const after = await engine.getMission(mission.missionId);
+            expect(after.state).not.toBe(MissionState.COMPLETED);
         });
 
         it("does not complete when an invocation is still in a non-terminal state", async () => {

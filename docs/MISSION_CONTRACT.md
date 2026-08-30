@@ -121,6 +121,19 @@ only.
 An accepted revision carries a revision id, version number and a **sanitized
 reason based on event/evidence** (no chain of thought).
 
+### Approval authority — planner proposes, policy/recordApproval grants
+
+- `PlanStep.approvalRequirement` is **advisory only** (`StepApprovalRequirement`):
+  it declares that a step *requires* approval (approval id, approver, reason).
+  It carries **no** `granted` / `grantedBy` / `grantedAt` fields.
+- The authoritative grant state lives only on the Mission
+  (`Mission.approvalRequirements`), created un-granted at plan acceptance
+  and changed **only** through the explicit `MissionEngine.recordApproval()`
+  path.
+- A candidate that smuggles grant fields inside an approval requirement is
+  deterministically rejected (`APPROVAL_GRANT_FORBIDDEN`). The planner cannot
+  concede its own approval.
+
 Invariants (enforced by contract/test):
 
 - `originalIntent`, constraints and acceptance never change silently during
@@ -152,6 +165,31 @@ the same input always yields the same decision. The Capability Registry
 (#63) will later provide the real catalog; #62 proves the gate with an
 injectable resolver/fake.
 
+## Dispatch gate (authorization is re-checked immediately before dispatch)
+
+`MissionEngine.dispatchStep()` fails closed before any invocation is
+created when:
+
+- the Mission is not in an authorizable state (`ready` / `executing`) —
+  e.g. `waiting_for_approval` → `DispatchRejectedError`, zero invocation;
+- the step is not in the current accepted revision;
+- an invocation already exists for the same logical step (replay
+  protection);
+- a required approval is not granted (authoritative Mission state);
+- the capability is no longer available in the current catalog;
+- the accepted plan is no longer authorized by current policy (a validation
+  performed at proposal time does not grant eternal authority).
+
+## Replay protection (idempotency boundary for #62)
+
+- One invocation per logical `(mission, step)`. A second `dispatchStep()` for
+  a step that already has an invocation — including after store restart —
+  throws `InvocationConflictError` and never creates a second row.
+- This preserves the mandatory criterion: **a completed invocation is never
+  repeated after restart**, and an effect whose outcome is completed or
+  uncertain is never blindly re-dispatched.
+- Full exactly-once scheduling belongs to #50.
+
 ## Persistence / recovery
 
 `SqliteMissionStore` (`cli/src/mission/sqlite-mission-store.ts`) persists
@@ -160,10 +198,21 @@ Missions, plan revisions and invocation references using the repo-approved
 statements. Missions and the current plan revision are recoverable after
 restart/reinstantiation of the store.
 
+Atomicity and single authority:
+
+- `mission_invocations` is the **canonical** table for invocation state;
+  `Mission.invocationRefs` is derived from it on read (no divergent
+  duplicate).
+- Multi-record transitions (dispatch = invocation + mission state; accept =
+  supersede old revision + accept new + current pointer + approvals) run in
+  a single SQLite transaction (`MissionStore.withTransaction`). A crash
+  mid-transition rolls back atomically; restart always reconstructs an
+  internally consistent state.
+
 Scope discipline: only the Mission contract is persisted. No scheduler
 state, provider state or private module state.
 
-## Mission-level verification
+## Mission-level verification (fail-closed, typed)
 
 `MissionVerifier` (engine default) verifies only the executive level:
 do the capability results satisfy the Mission's objective/acceptance?
@@ -175,6 +224,14 @@ moduleOwnerVerification = failed
 plannerSuggestion       = "looks good"
 → Mission MUST NOT become completed
 ```
+
+Completion is **not** derived from text heuristics. The default verifier
+fails closed unless, for every acceptance criterion, there is an explicit
+typed `CriterionVerification` record (`satisfied: true`) recorded through
+the engine's authorized path (`recordCriterionVerification`). A missing
+mandatory lower-layer verification (per `CapabilityContract.
+requiresOwnerVerification`) is never implicit success — the invocation must
+carry a positive module-owner verification.
 
 Domain/technical verification (Runstead, Tecer, LifeOS, device modules)
 stays with the respective module owner (#66/#67 follow-ups).

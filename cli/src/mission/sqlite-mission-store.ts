@@ -37,8 +37,8 @@ interface MissionRow {
     context_refs: string;
     state: string;
     current_plan_revision_id: string | null;
-    invocation_refs: string;
     evidence_refs: string;
+    criterion_verifications: string;
     unresolved_questions: string;
     created_at: string;
     updated_at: string;
@@ -123,8 +123,8 @@ export class SqliteMissionStore implements MissionStore {
                 context_refs TEXT NOT NULL DEFAULT '[]',
                 state TEXT NOT NULL,
                 current_plan_revision_id TEXT,
-                invocation_refs TEXT NOT NULL DEFAULT '[]',
-                evidence_refs TEXT NOT NULL DEFAULT '[]',
+                            evidence_refs TEXT NOT NULL DEFAULT '[]',
+                criterion_verifications TEXT NOT NULL DEFAULT '[]',
                 unresolved_questions TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -185,7 +185,7 @@ export class SqliteMissionStore implements MissionStore {
                 mission_id, schema_version, source, original_intent, interpreted_objective,
                 constraints, acceptance_criteria, budget_policy, allowed_capability_scope,
                 approval_requirements, context_refs, state, current_plan_revision_id,
-                invocation_refs, evidence_refs, unresolved_questions, created_at, updated_at,
+                evidence_refs, criterion_verifications, unresolved_questions, created_at, updated_at,
                 recovery_metadata
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(mission_id) DO UPDATE SET
@@ -201,8 +201,8 @@ export class SqliteMissionStore implements MissionStore {
                 context_refs = excluded.context_refs,
                 state = excluded.state,
                 current_plan_revision_id = excluded.current_plan_revision_id,
-                invocation_refs = excluded.invocation_refs,
                 evidence_refs = excluded.evidence_refs,
+                criterion_verifications = excluded.criterion_verifications,
                 unresolved_questions = excluded.unresolved_questions,
                 created_at = excluded.created_at,
                 updated_at = excluded.updated_at,
@@ -221,8 +221,8 @@ export class SqliteMissionStore implements MissionStore {
             JSON.stringify(mission.contextRefs),
             mission.state,
             mission.currentPlanRevisionId,
-            JSON.stringify(mission.invocationRefs),
             JSON.stringify(mission.evidenceRefs),
+            JSON.stringify(mission.criterionVerifications),
             JSON.stringify(mission.unresolvedQuestions),
             mission.createdAt,
             mission.updatedAt,
@@ -236,7 +236,9 @@ export class SqliteMissionStore implements MissionStore {
             "getMission",
             "SELECT * FROM missions WHERE mission_id = ?",
         ).get(missionId) as MissionRow | null;
-        return row ? this.rowToMission(row) : null;
+        if (!row) return null;
+        const invocations = this.listInvocationRows(missionId);
+        return this.rowToMission(row, invocations);
     }
 
     async updateMission(missionId: string, updates: Partial<Mission>): Promise<void> {
@@ -263,7 +265,19 @@ export class SqliteMissionStore implements MissionStore {
                 "SELECT * FROM missions ORDER BY created_at DESC",
             ).all() as unknown as MissionRow[];
         }
-        return rows.map((row) => this.rowToMission(row));
+        // Batch-load all invocations to avoid N+1.
+        if (rows.length === 0) return [];
+        const allInvocations = this.stmt(
+            "listAllInvocations",
+            "SELECT * FROM mission_invocations ORDER BY mission_id, rowid ASC",
+        ).all() as unknown as InvocationRow[];
+        const byMission = new Map<string, InvocationRow[]>();
+        for (const inv of allInvocations) {
+            const list = byMission.get(inv.mission_id);
+            if (list) list.push(inv);
+            else byMission.set(inv.mission_id, [inv]);
+        }
+        return rows.map((row) => this.rowToMission(row, byMission.get(row.mission_id) ?? []));
     }
 
     async deleteMission(missionId: string): Promise<void> {
@@ -379,12 +393,16 @@ export class SqliteMissionStore implements MissionStore {
         return row ? this.rowToInvocation(row) : null;
     }
 
-    async listInvocations(missionId: string): Promise<CapabilityInvocationRef[]> {
-        const rows = this.stmt(
+    /** Sync helper used by getMission and listMissions. */
+    private listInvocationRows(missionId: string): InvocationRow[] {
+        return this.stmt(
             "listInvocations",
             "SELECT * FROM mission_invocations WHERE mission_id = ? ORDER BY rowid ASC",
         ).all(missionId) as unknown as InvocationRow[];
-        return rows.map((row) => this.rowToInvocation(row));
+    }
+
+    async listInvocations(missionId: string): Promise<CapabilityInvocationRef[]> {
+        return this.listInvocationRows(missionId).map((row) => this.rowToInvocation(row));
     }
 
     async updateInvocation(
@@ -403,7 +421,7 @@ export class SqliteMissionStore implements MissionStore {
     // Row mappers
     // ------------------------------------------------------------------
 
-    private rowToMission(row: MissionRow): Mission {
+    private rowToMission(row: MissionRow, invocations: InvocationRow[] = []): Mission {
         return {
             missionId: row.mission_id,
             schemaVersion: row.schema_version,
@@ -422,8 +440,10 @@ export class SqliteMissionStore implements MissionStore {
             contextRefs: parseJson(row.context_refs, []),
             state: row.state as MissionState,
             currentPlanRevisionId: row.current_plan_revision_id,
-            invocationRefs: parseJson(row.invocation_refs, []),
+            // Invocation refs are derived from the canonical mission_invocations table.
+            invocationRefs: invocations.map((i) => this.rowToInvocation(i)),
             evidenceRefs: parseJson(row.evidence_refs, []),
+            criterionVerifications: parseJson(row.criterion_verifications, []),
             unresolvedQuestions: parseJson(row.unresolved_questions, []),
             createdAt: row.created_at,
             updatedAt: row.updated_at,
@@ -465,6 +485,26 @@ export class SqliteMissionStore implements MissionStore {
                 : undefined,
             error: row.error ?? undefined,
         };
+    }
+
+    /** Execute a function inside a BEGIN/COMMIT transaction. */
+    async withTransaction<T>(fn: () => Promise<T>): Promise<T> {
+        const db = this.ensureDb();
+        db.exec("BEGIN");
+        try {
+            const result = await fn();
+            db.exec("COMMIT");
+            return result;
+        } catch (e) {
+            db.exec("ROLLBACK");
+            throw e;
+        }
+    }
+
+    /** Close and (for tests) reopen to simulate restart. */
+    async reopen(): Promise<void> {
+        await this.close();
+        await this.initialize();
     }
 }
 

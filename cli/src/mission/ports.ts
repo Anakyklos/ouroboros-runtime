@@ -22,6 +22,14 @@ export interface MissionStore {
     initialize(): Promise<void>;
     close(): Promise<void>;
 
+    /**
+     * Execute a function inside a single database transaction. If `fn`
+     * throws, every write it performed is rolled back atomically.
+     * Used to keep multi-record transitions (mission + invocation,
+     * plan-revision supersede/accept + current pointer) consistent.
+     */
+    withTransaction<T>(fn: () => Promise<T>): Promise<T>;
+
     // Mission CRUD
     createMission(mission: Mission): Promise<Mission>;
     getMission(missionId: string): Promise<Mission | null>;

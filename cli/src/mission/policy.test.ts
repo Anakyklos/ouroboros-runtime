@@ -240,18 +240,19 @@ describe("PlanPolicyValidator (deterministic policy)", () => {
         expect(decision.codes).toContain(PolicyRejectionCode.APPROVAL_MISSING);
     });
 
-    it("accepts a proposed approval even when not yet granted (Mission will wait for approval)", async () => {
+    it("accepts a proposed approval (requirement only, no grant) — Mission will wait for approval", async () => {
         const candidate = makeCandidate({
             steps: [
                 makeStep({
                     capabilityRequirement: "lifeos.write",
                     effectClass: EffectClass.WRITE,
                     inputRefs: ["refs/lifeos/journal"],
+                    // Planner can only propose the requirement; grant state
+                    // is forbidden and will be rejected.
                     approvalRequirement: {
                         approvalId: "ap-1",
                         approver: "operator",
                         reason: "Write to life domain",
-                        granted: false,
                     },
                 }),
             ],
@@ -262,7 +263,11 @@ describe("PlanPolicyValidator (deterministic policy)", () => {
         expect(decision.valid).toBe(true);
     });
 
-    it("accepts a step whose approval is granted", async () => {
+    it("rejects a planner-fabricated approval grant — the planner cannot concede approval", async () => {
+        // The planner sends an approval requirement with granted:true.
+        // The policy must reject this deterministically (APPROVAL_GRANT_FORBIDDEN).
+        // TypeScript cannot prevent plain-object construction, so the policy
+        // performs a runtime check.
         const candidate = makeCandidate({
             steps: [
                 makeStep({
@@ -276,12 +281,13 @@ describe("PlanPolicyValidator (deterministic policy)", () => {
                         granted: true,
                         grantedBy: "operator",
                         grantedAt: "2026-08-30T12:00:00.000Z",
-                    },
+                    } as any,
                 }),
             ],
         });
         const decision = await policy.validate(makeMission(makeIntent()), candidate);
-        expect(decision.valid).toBe(true);
+        expect(decision.valid).toBe(false);
+        expect(decision.codes).toContain(PolicyRejectionCode.APPROVAL_GRANT_FORBIDDEN);
     });
 
     it("rejects input references incompatible with the capability contract", async () => {

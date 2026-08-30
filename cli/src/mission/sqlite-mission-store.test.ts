@@ -424,4 +424,147 @@ describe("SqliteMissionStore (durability + recovery)", () => {
 
         expect(existsSync(dbPath)).toBe(true);
     });
+
+    it("BLOCKER: restart does not authorize replay — same logical step cannot create a second invocation", async () => {
+        const dir = track(makeTempDir("mission-replay-"));
+        const dbPath = join(dir.path, "missions.db");
+
+        // First lifetime: create, accept plan, dispatch, complete.
+        const store1 = new SqliteMissionStore(dbPath);
+        await store1.initialize();
+        const engine1 = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-a"), store1);
+
+        const mission = await engine1.createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+        const proposal = await engine1.proposePlan(mission.missionId, {
+            planId: "plan-1",
+            missionId: mission.missionId,
+            plannerNote: "proposal",
+            steps: [makeStep()],
+        });
+        if (!proposal.ok) throw new Error("plan rejected");
+        await engine1.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+        const invocation = await engine1.dispatchStep(mission.missionId, "step-1");
+        await engine1.recordInvocationResult(
+            invocation.invocationId,
+            {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.COMPLETED,
+                summary: "done",
+                evidenceRefs: [],
+                completedAt: BASE_TIME,
+            },
+            {
+                invocationId: invocation.invocationId,
+                verified: true,
+                reason: "ok",
+                owner: "runstead",
+                verifiedAt: BASE_TIME,
+            },
+        );
+        await store1.close();
+
+        // Second lifetime: reopen, then try to dispatch the same step.
+        const store2 = new SqliteMissionStore(dbPath);
+        await store2.initialize();
+        const engine2 = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-b"), store2);
+
+        const recovered = await engine2.getMission(mission.missionId);
+        expect(recovered!.invocationRefs).toHaveLength(1);
+        expect(recovered!.invocationRefs[0].status).toBe(InvocationStatus.COMPLETED);
+
+        // Dispatch after restart of the same logical step is forbidden.
+        await expect(engine2.dispatchStep(mission.missionId, "step-1")).rejects.toThrow(
+            /blind redispatch|already has invocation/i,
+        );
+        expect(await store2.listInvocations(mission.missionId)).toHaveLength(1);
+        expect((await store2.getMission(mission.missionId))!.invocationRefs).toHaveLength(1);
+
+        await store2.close();
+    });
+
+    it("BLOCKER: a rolled-back transaction leaves no partial writes (atomicity)", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const engine = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-a"), store);
+
+        const mission = await engine.createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+        const before = await store.getMission(mission.missionId);
+        expect(before!.invocationRefs).toHaveLength(0);
+
+        const invocation = {
+            invocationId: "inv-rollback",
+            missionId: mission.missionId,
+            stepId: "step-1",
+            capabilityId: "runstead.code-review",
+            status: InvocationStatus.DISPATCHED,
+            dispatchedAt: BASE_TIME,
+            resultRefs: [],
+        };
+
+        // Simulate a crash mid-transition: invocation inserted, then error.
+        await expect(
+            store.withTransaction(async () => {
+                await store.saveInvocation(invocation);
+                await store.updateMission(mission.missionId, {
+                    state: MissionState.EXECUTING,
+                    updatedAt: BASE_TIME,
+                });
+                throw new Error("simulated crash after partial writes");
+            }),
+        ).rejects.toThrow(/simulated crash/);
+
+        // Rollback: no invocation row, Mission state untouched.
+        expect(await store.listInvocations(mission.missionId)).toHaveLength(0);
+        const after = await store.getMission(mission.missionId);
+        expect(after!.invocationRefs).toHaveLength(0);
+        expect(after!.state).toBe(MissionState.CREATED);
+        expect(after!.currentPlanRevisionId).toBeNull();
+
+        await store.close();
+    });
+
+    it("BLOCKER: invocation refs are derived from the canonical table (no divergent duplicate authority)", async () => {
+        const dir = track(makeTempDir("mission-canonical-"));
+        const dbPath = join(dir.path, "missions.db");
+
+        const store1 = new SqliteMissionStore(dbPath);
+        await store1.initialize();
+        const engine1 = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-a"), store1);
+
+        const mission = await engine1.createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+        const proposal = await engine1.proposePlan(mission.missionId, {
+            planId: "plan-1",
+            missionId: mission.missionId,
+            plannerNote: "proposal",
+            steps: [makeStep()],
+        });
+        if (!proposal.ok) throw new Error("plan rejected");
+        await engine1.acceptPlan(mission.missionId, proposal.revision.revisionId);
+        const invocation = await engine1.dispatchStep(mission.missionId, "step-1");
+        await store1.close();
+
+        // After restart the Mission view is rebuilt from mission_invocations.
+        const store2 = new SqliteMissionStore(dbPath);
+        await store2.initialize();
+        const recovered = await store2.getMission(mission.missionId);
+        const tableRows = await store2.listInvocations(mission.missionId);
+        expect(recovered!.invocationRefs).toHaveLength(1);
+        expect(recovered!.invocationRefs[0].invocationId).toBe(invocation.invocationId);
+        expect(recovered!.invocationRefs[0].stepId).toBe(tableRows[0].stepId);
+        expect(recovered!.invocationRefs[0].status).toBe(tableRows[0].status);
+        // The Mission view and the table cannot diverge after restart.
+        expect(recovered!.invocationRefs).toEqual(tableRows);
+
+        await store2.close();
+    });
 });
