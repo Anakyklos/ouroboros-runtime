@@ -195,6 +195,29 @@ describe("MissionEngine", () => {
             expect(mission.originalIntent).toBe(intent.originalIntent);
         });
 
+        it("surfaces explicitly represented approvals from MissionIntent as Mission approval state (data, not authority)", async () => {
+            const intent: MissionIntent = {
+                ...makeIntent("mission_control"),
+                approvals: [
+                    {
+                        approvalId: "ap-export",
+                        approver: "operator",
+                        reason: "Export explicitly authorized by operator",
+                        granted: true,
+                        grantedBy: "operator",
+                    },
+                ],
+            };
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            // Explicit approval represented on the intent flows to the Mission.
+            expect(mission.approvalRequirements).toHaveLength(1);
+            expect(mission.approvalRequirements[0].approvalId).toBe("ap-export");
+            expect(mission.approvalRequirements[0].granted).toBe(true);
+        });
+
         it("can be created, persisted and inspected without Katherine installed", async () => {
             const intent = makeIntent("operator");
             const mission = await engine.createMission({
@@ -362,6 +385,62 @@ describe("MissionEngine", () => {
             expect(revisions).toHaveLength(1);
             expect(revisions[0].status).toBe("accepted");
         });
+
+        it("proves the advisory-planner loop through PlannerPort: proposal rejected, replan accepted, intent preserved", async () => {
+            const intent = makeIntent("cli");
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+
+            // Planner (via PlannerPort) first proposes an unauthorized capability.
+            harness.planner.setCandidate(makeCandidate(mission.missionId, {
+                steps: [
+                    makeStep({
+                        capabilityRequirement: "tecer.health-check", // NOT in DEFAULT_SCOPE
+                        inputRefs: ["refs/tecer/health"],
+                    }),
+                ],
+            }));
+            const firstProposal = await engine.proposePlan(
+                mission.missionId,
+                await harness.planner.proposePlan(mission),
+            );
+            expect(firstProposal.ok).toBe(false);
+
+            // Planner replans with an authorized capability.
+            harness.planner.setCandidate(makeCandidate(mission.missionId, {
+                planId: "plan-2",
+                steps: [makeStep({ inputRefs: ["refs/runstead/pr/42"] })],
+            }));
+            const secondProposal = await engine.proposePlan(
+                mission.missionId,
+                await harness.planner.replan(mission, "capability not authorized"),
+            );
+            expect(secondProposal.ok).toBe(true);
+            if (!secondProposal.ok) return;
+            const accepted = await engine.acceptPlan(mission.missionId, secondProposal.revision.revisionId);
+            expect(accepted.state).toBe(MissionState.READY);
+            // Original intent was never touched by the planner loop.
+            expect(accepted.originalIntent).toBe(intent.originalIntent);
+            expect(accepted.acceptanceCriteria).toEqual(intent.acceptanceCriteria);
+        });
+
+        it("rejects planning on a terminal Mission (cancelled)", async () => {
+            const intent = makeIntent("cli");
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            await engine.cancelMission(mission.missionId, "operator cancelled");
+
+            await expect(
+                engine.proposePlan(mission.missionId, makeCandidate(mission.missionId)),
+            ).rejects.toThrow(/terminal/i);
+            // Durable state untouched.
+            const after = await engine.getMission(mission.missionId);
+            expect(after.state).toBe(MissionState.CANCELLED);
+        });
     });
 
     describe("state machine and invocation boundary", () => {
@@ -434,6 +513,42 @@ describe("MissionEngine", () => {
             expect(approved.approvalRequirements[0].granted).toBe(true);
             expect(approved.approvalRequirements[0].grantedBy).toBe("operator");
             expect(approved.state).toBe(MissionState.READY);
+        });
+
+        it("merges an approval declared only on the plan step into Mission approval state", async () => {
+            const intent = makeIntent("cli");
+            // No mission-level approval requirement at creation.
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            expect(mission.approvalRequirements).toEqual([]);
+
+            const proposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId, {
+                steps: [
+                    makeStep({
+                        stepId: "step-write",
+                        capabilityRequirement: "lifeos.write",
+                        effectClass: EffectClass.WRITE,
+                        inputRefs: ["refs/lifeos/journal"],
+                        approvalRequirement: {
+                            approvalId: "ap-step-only",
+                            approver: "operator",
+                            reason: "Write to life domain",
+                            granted: false,
+                        },
+                    }),
+                ],
+            }));
+            if (!proposal.ok) throw new Error("plan rejected");
+
+            const waiting = await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+            expect(waiting.state).toBe(MissionState.WAITING_FOR_APPROVAL);
+            // Step approval surfaced on the Mission.
+            expect(waiting.approvalRequirements.some((r) => r.approvalId === "ap-step-only")).toBe(true);
+
+            const ready = await engine.recordApproval(mission.missionId, "ap-step-only", "operator");
+            expect(ready.state).toBe(MissionState.READY);
         });
 
         it("rejects dispatch of a step that does not exist in the accepted plan", async () => {

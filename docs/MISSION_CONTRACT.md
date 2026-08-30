@@ -47,6 +47,8 @@ future CapabilityInvocation
   **same creation pipeline** (`MissionEngine.createMission`) — there is no
   per-interface state machine.
 - `MissionIntent` is never implicit authorization for arbitrary effects.
+  Approvals/permissions explicitly represented on the intent surface on the
+  Mission as `approvalRequirements` (data, not authority).
 
 ## Contract version
 

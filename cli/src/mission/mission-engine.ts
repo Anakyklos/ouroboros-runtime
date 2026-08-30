@@ -33,6 +33,7 @@ import {
     PlanRevision,
     PolicyDecision,
     WAITING_STATES,
+    TERMINAL_STATES,
 } from "./contracts.js";
 import {
     ClockService,
@@ -241,7 +242,10 @@ export class MissionEngine {
                 allowedEffectClasses: [...allowedCapabilityScope.allowedEffectClasses],
                 allowedRefPrefixes: [...allowedCapabilityScope.allowedRefPrefixes],
             },
-            approvalRequirements: approvalRequirements ?? [],
+            // Explicit approvals/permissions represented by the intent flow
+            // into the Mission approval state (data, not implicit authority);
+            // a caller-supplied policy wins over the intent's representation.
+            approvalRequirements: approvalRequirements ?? intent.approvals ?? [],
             contextRefs: intent.contextRefs ?? [],
             state: MissionState.CREATED,
             currentPlanRevisionId: null,
@@ -267,6 +271,17 @@ export class MissionEngine {
      */
     async proposePlan(missionId: string, candidate: PlanCandidate): Promise<PlanProposalResult> {
         const mission = await this.requireMission(missionId);
+
+        // No planning from terminal states — the Mission is done.
+        if (TERMINAL_STATES.has(mission.state)) {
+            throw new InvalidStateTransitionError(
+                missionId,
+                mission.state,
+                MissionState.PLANNING,
+                `terminal missions cannot be re-planned`,
+            );
+        }
+
         const decision = await this.policy.validate(mission, candidate);
 
         if (!decision.valid) {
@@ -327,10 +342,20 @@ export class MissionEngine {
 
         await this.store.updatePlanRevisionStatus(revisionId, "accepted");
 
-        const needsApproval = revision.steps.some((step) => {
-            const req = step.approvalRequirement;
-            return req !== undefined && !req.granted;
-        });
+        // Merge step-level approval requirements into the Mission's approval
+        // state so that recordApproval can find them regardless of whether
+        // they were pre-declared or introduced by the plan.
+        const stepApprovals = revision.steps
+            .map((s) => s.approvalRequirement)
+            .filter((req): req is ApprovalRequirement => req !== undefined);
+        const mergedApprovals = [...mission.approvalRequirements];
+        for (const req of stepApprovals) {
+            if (!mergedApprovals.some((r) => r.approvalId === req.approvalId)) {
+                mergedApprovals.push({ ...req });
+            }
+        }
+
+        const needsApproval = mergedApprovals.some((req) => !req.granted);
 
         const nextState = needsApproval
             ? MissionState.WAITING_FOR_APPROVAL
@@ -339,6 +364,7 @@ export class MissionEngine {
         await this.store.updateMission(missionId, {
             currentPlanRevisionId: revisionId,
             state: nextState,
+            approvalRequirements: mergedApprovals,
             updatedAt: this.clock.isoNow(),
         });
 
