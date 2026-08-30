@@ -102,9 +102,10 @@ skip/todo/only/`|| true`/continue-on-error/remoção de testes.
 - Documento legado que contém conceitos obsoletos misturados com instruções
   operacionais válidas (ex.: AGENTS.md com comandos de baseline corretos):
   preservar a parte operacional, reclassificar a parte de identidade.
-- Anakyklos/architecture não acessível publicamente (404): registrar
-  provenance a partir de #60/#69/#70 e do SYSTEM-MAP citado nas issues, e
-  indicar que o repo de arquitetura deve ser consultado quando acessível.
+- Anakyklos/architecture acessado via GitHub autenticado (privado): README.md,
+  SYSTEM-MAP.md, VISION.md, policies/resource-efficiency.md,
+  policies/module-autonomy.md, RFC 0001, languages/ (Technology Palette).
+  Registrar provenance explícita e reconciliar docs com essas fontes.
 - Subsystem com nuance real (ex.: WaveExecutor com lógica de scheduling
   reaproveitável, Anti-Vibe com conceitos fail-closed reaproveitáveis):
   não forçar classificação simplista; justificar com evidência de código.
@@ -203,11 +204,11 @@ skip/todo/only/`|| true`/continue-on-error/remoção de testes.
 
 ## Assumptions
 
-- `Anakyklos/architecture` (README.md/SYSTEM-MAP.md) não está acessível
-  publicamente nesta máquina (HTTP 404); a direção autoritativa é derivada de
-  #60, #69, #70 e comentários, que citam e vinculam o SYSTEM-MAP. A doc deve
-  registrar essa provenance e apontar para o repo de arquitetura quando
-  acessível.
+- `Anakyklos/architecture` (README.md/SYSTEM-MAP.md/VISION.md/policies/
+  RFC 0001/languages/) acessado via GitHub autenticado (repositório privado);
+  a direção autoritativa é reconciliada com essas fontes primárias e com
+  #60/#69/#70, conforme hierarquia `code + tests + observed behavior >
+  product documentation > architecture repository`.
 - Issue #60/#61/#69/#70 e seus comentários são decisões vinculantes; a
   matriz não reabre decisões já tomadas (ex.: Electron rejeitado como default,
   SelfModifyingEngine RETIRE/MOVE/EXTRACT).
@@ -216,9 +217,12 @@ skip/todo/only/`|| true`/continue-on-error/remoção de testes.
 - A documentação será escrita em português/inglês conforme o estilo atual do
   repositório (README histórico em inglês com seções em PT; docs mistos);
   priorizar clareza sobre consistência de idioma.
-- Spec Kit artifacts (spec.md, plan.md, tasks.md, constitution.md) fazem parte
-  da entrega e são versionados no repo, mas não criam arquitetura paralela nem
-  documentação redundante do produto (são processo, não produto).
-- `.jcode/speckit/commands/` e `.specify/` são configuração local ao projeto
-  (Spec Kit), não instalação global; versioná-los é aceitável se mínimo e
-  justificado (processo Spec Kit exigido pela issue).
+- Spec Kit foi utilizado como workflow para executar a #61; apenas os
+  artefatos específicos da issue (spec.md, plan.md, tasks.md em
+  specs/061-source-of-truth-legacy-matrix/) são versionados. O scaffold
+  genérico (.specify/, .jcode/speckit/commands/, constitution.md) foi
+  removido da PR — adoção permanente de Spec Kit/JCode tooling deve ser
+  decidida separadamente se houver necessidade demonstrada.
+- A source of truth do repositório permanece: Anakyklos/architecture
+  (fonte primária), decisões aprovadas/issues arquiteturais, README.md /
+  AGENTS.md / docs apropriados, e código + testes para comportamento atual.

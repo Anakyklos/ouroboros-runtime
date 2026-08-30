@@ -1,10 +1,14 @@
 # Ouroboros Architecture
 
 > **Status**: Current (Direction) — Esta documentação reflete a direção arquitetural
-> do Ouroboros conforme a epic #60. Conteúdo que descreve comportamento já
-> implementado está em *Current*. Conteúdo que descreve onde o produto está
-> indo está em *Direction*. Código existente que não representa mais a direção
-> está em *Legacy*. Decisões dependentes de POC/benchmark estão em *Hypothesis*.
+> do Ouroboros conforme a epic #60 e o repositório `Anakyklos/architecture`.
+> Conteúdo que descreve comportamento já implementado está em *Current*.
+> Conteúdo que descreve onde o produto está indo está em *Direction*.
+> Código existente que não representa mais a direção está em *Legacy*.
+> Decisões dependentes de POC/benchmark estão em *Hypothesis*.
+>
+> **Hierarquia de autoridade**: `code + tests + observed behavior > product
+> documentation > architecture repository` (fonte: `Anakyklos/architecture/README.md`).
 
 ---
 
@@ -12,28 +16,31 @@
 
 Ouroboros é o **executive runtime / sistema nervoso do Anakyklos**.
 
-**O que Ouroboros faz:**
-- Preserva intent original, constraints e acceptance
-- Cria e mantém Missions (entidades duráveis)
-- Compila contexto mínimo autorizado
-- Propõe e decompõe trabalho (via Planner)
-- Descobre capabilities disponíveis (via Capability Registry)
-- Aplica policy determinística para autorizar effects
-- Coordena module owners (Runstead, LifeOS, Tecer, device modules, etc.)
-- Mantém execução durável e checkpoints
-- Coleta evidence e resultados
-- Faz mission-level verification (não substitui verificação técnica do owner)
+**Responsabilidades-alvo** (SYSTEM-MAP.md, RFC 0001):
+- Receber e preservar intent original do usuário + constraints explícitas
+- Decompor objetivos maiores em tarefas delimitadas (mission decomposition)
+- Descobrir capabilities disponíveis dos módulos (capability discovery)
+- Compilar pacotes de contexto mínimo para executors downstream
+- Coordenar dependências e task graphs
+- Reagir a eventos do sistema sem polling cego
+- Rastrear progresso em nível de mission
+- Determinar quando o usuário deve ser consultado
+- Identificar capability gaps recorrentes
+- Fazer mission-level verification (não substitui verificação do módulo executor)
 
-**O que Ouroboros NÃO é:**
+**O que Ouroboros NÃO é** (SYSTEM-MAP.md, #60):
 - **Não** é coding agent concorrente do Runstead
 - **Não** é capability factory / autônoma concorrente do Cadinho
-- **Não** é self-modifying runtime (não altera/promove silenciosamente o próprio código)
+- **Não** é self-modifying runtime (não altera/promove silenciosamente o próprio código;
+  SYSTEM-MAP.md: "silently self-promoting changes" é non-responsibility explícita)
 - **Não** é arquitetura de Council/personas (não coleção fixa de personas internas)
 - **Não** é executor irrestrito de Python/shell
 - **Não** é banco universal de memória/personal data
 - **Não** é dono das invariantes/internals de LifeOS, Tecer, device modules
 - **Não** é chatbot concorrente da Katherine
 - **Não** substitui verificação técnica do módulo executor (Runstead)
+- **Não** ganha autoridade ilimitada meramente por coordenar o sistema
+  (RFC 0001: "No module gains authority merely because it coordinates another")
 
 ---
 
@@ -88,7 +95,9 @@ concede a si mesmo authority para executar effects.**
 
 Código/policy persistível decide: capability permitida, approval necessário,
 budgets, dispatch, retries permitidos, state transitions, cancellation,
-evidence acceptance, recovery/idempotency.
+evidence acceptance, recovery/idempotency. (RFC 0001: "Ouroboros agentic
+planning must not be the final source of authorization. Deterministic policy
+and downstream module validation remain required.")
 
 ---
 
@@ -121,19 +130,6 @@ Capability Registry exposes approved version
         ↓
 future missions benefit from evidence
 ```
-
-**Níveis de adaptação:**
-1. **Adaptação operacional bounded** (automática se autorizada): ranking
-   entre capabilities já aprovadas, seleção entre providers/modelos já
-   autorizados, context selection/budget, caching/batching, scheduling,
-   retry timing. Não amplia permissions, não adiciona capability.
-2. **Melhoria de configuração/policy** (proposta ou auto-promoção sob
-   policy explícita): thresholds, defaults, ranking rules, budget policy,
-   preferred provider profile.
-3. **Evolução de capability/código** (nunca self-modification direta):
-   nova capability, novo connector, novo algoritmo, novo módulo. Fluxo
-   obrigatório: Ouroboros detecta gap → Cadinho candidate → Runstead
-   implementation → verification → promoção explícita.
 
 ---
 
@@ -220,31 +216,45 @@ direção futura do produto. Ver classificação detalhada em
 
 ## Direction (executive coordination desejada)
 
-A direção arquitetural, conforme #60, #62, #63, #64, #69, #70:
+A direção arquitetural, conforme `Anakyklos/architecture` (README.md,
+SYSTEM-MAP.md, RFC 0001, VISION.md, policies) + issues #60, #62, #63, #64,
+#69, #70:
 
 - **Mission** como entidade durável first-class (#62)
 - **Capability Registry** + connector versionado (#63)
 - **Context Compiler** com provenance e ownership externo (#64)
 - **Planning agentic** advisory; **policy determinística** autoritativa
-- **Lifecycle de Mission**: created, planning, waiting_for_context,
-  waiting_for_approval, ready, executing, waiting_for_capability,
-  waiting_for_provider, waiting_for_budget, verifying, completed, blocked,
-  failed_terminal, cancelled
 - **Mission-level verification** separada de domain/technical verification
+  (SYSTEM-MAP.md: "No higher layer may erase a lower layer's safety or
+  correctness checks")
 - **Self-improving** governado (#69): Ouroboros observa → adaptação bounded
   OR CapabilityGap → Cadinho trial → Runstead implementation → verification
   → promoção explícita
 - **Execução durável** (#50/#59): supervisão, recovery, reconciliation
 - **Contexto compilado** sob orçamento, com provenance, sem universal memory
+  (policies/resource-efficiency.md: "Ouroboros should coordinate context
+  without duplicating all module state")
 - **Headless daemon** (ouroborosd) como autoridade
 - **Mission Control desktop** leve como interface principal
 - **IPC local** (Unix socket) como transporte default
 - **CLI pequena** para admin/recovery
 - **Katherine** como interface opcional via contract público
+  (policies/module-autonomy.md: companion mode remains useful without Ouroboros;
+  Anakyklos interface mode é adicional)
 - **Capability discovery** substitui bridges hardcoded no orchestrator
 - **Runstead** boundary explícita: software work pertence ao Runstead
+  (SYSTEM-MAP.md: "Runstead retains responsibility for proving that its own
+  technical work was actually performed correctly")
 - **Cadinho** boundary: capability-gap evolution explícita
+  (RFC 0001: "a new capability does not imply a new agent")
 - **Domain modules** (LifeOS, Tecer, devices) mantêm state ownership
+  (SYSTEM-MAP.md: "No direct cross-module database access")
+- **Verificação em camadas**: Runstead technical verification → domain
+  verification → Ouroboros mission verification (SYSTEM-MAP.md)
+- **Knowledge ownership**: Katherine owns conversational memory; LifeOS owns
+  life-domain facts; Tecer owns health/wellness; device modules own device
+  state; Ouroboros routes, references, and compiles rather than becoming
+  universal source of truth (SYSTEM-MAP.md)
 
 ---
 
@@ -279,30 +289,44 @@ vinculante de cada subsistema está em [LEGACY_MATRIX.md](LEGACY_MATRIX.md).
 Decisões que dependem de pesquisa, POC ou benchmark antes de serem
 incorporadas à direção:
 
-- **Go como runtime core** (#58): avaliar Go para ouroborosd após semântica
-  estabilizada (Mission, Capability, Context contracts). Não migrar primeiro
-  e depois descobrir o que o core deveria fazer.
-- **Zig/Rust para boundaries especializadas**: reservar para boundaries de
-  segurança/performance quando justificado.
+- **Migração Go para ouroborosd** (#58): Go é CORE na Technology Palette
+  (`Anakyklos/architecture/languages/go.md`) para "infrastructure runtimes,
+  agents, complex CLIs, local services, moderate daemons and I/O-heavy control
+  planes". A migração do runtime atual (TypeScript/Bun) para Go depende de
+  semântica estabilizada (Mission, Capability, Context contracts) e de
+  avaliação de custo/benefício. Não migrar primeiro e depois descobrir o que
+  o core deveria fazer.
+- **Zig/Rust para boundaries especializadas**: SPECIALIST na Technology
+  Palette; reservar para boundaries de segurança/performance quando justificado.
 - **Framework desktop**: Tauri, Wails, pywebview, WebKitGTK, system WebView
   — decidir após contracts estabilizados e POC de IPC local.
 - **IPC protocol**: Unix domain socket vs outros — decidir após benchmark
   com Mission/Capability contracts.
-- **WebView vs HTML/CSS/JS local**: reaproveitar componentes web existentes
-  em shell leve, ou reescrever em framework nativo — POC pendente.
 - **Service lifecycle**: systemd user service, crash recovery, upgrade
   semantics — avaliar após definição do runtime.
+- **Cadinho repository**: SYSTEM-MAP.md registra que localização exata do
+  repositório do Cadinho ainda precisa ser registrada.
 
 ---
 
-## Proveniência
+## Proveniência e fontes primárias
 
-> **Nota**: O repositório `Anakyklos/architecture` (README.md, SYSTEM-MAP.md)
-> não está acessível publicamente (HTTP 404). A direção arquitetural registrada
-> neste documento foi derivada das issues #60, #69, #70, seus comentários, e
-> das referências ao SYSTEM-MAP citadas nessas issues. Quando o repositório
-> de arquitetura estiver acessível, este documento deve ser reconciliado com
-> ele como fonte primária.
+Este documento foi reconciliado com as seguintes fontes do repositório
+`Anakyklos/architecture` (privado, acessível via GitHub autenticado):
+
+| Fonte | Conteúdo |
+|---|---|
+| [`README.md`](https://github.com/Anakyklos/architecture) | Authority hierarchy, status vocabulary, first principles |
+| [`SYSTEM-MAP.md`](https://github.com/Anakyklos/architecture/blob/main/SYSTEM-MAP.md) | System boundaries, verification layers, knowledge ownership |
+| [`VISION.md`](https://github.com/Anakyklos/architecture/blob/main/VISION.md) | Long-term direction, module autonomy, Katherine envelopes |
+| [`policies/resource-efficiency.md`](https://github.com/Anakyklos/architecture/blob/main/policies/resource-efficiency.md) | Resource efficiency priority, context coordination |
+| [`policies/module-autonomy.md`](https://github.com/Anakyklos/architecture/blob/main/policies/module-autonomy.md) | Standalone-first rule, graceful degradation |
+| [`RFC 0001`](https://github.com/Anakyklos/architecture/blob/main/rfcs/0001-system-boundaries.md) | System boundaries, cross-system invariants |
+| [`languages/`](https://github.com/Anakyklos/architecture/blob/main/languages/README.md) | Technology Palette (Go CORE, TypeScript CORE, Python CORE) |
+| [`STATUS.md`](https://github.com/Anakyklos/architecture/blob/main/STATUS.md) | Architectural maturity snapshot |
+
+**Regra de authority** (fonte: `Anakyklos/architecture/README.md`):
+> `code + tests + observed behavior > product documentation > architecture repository`
 
 ---
 

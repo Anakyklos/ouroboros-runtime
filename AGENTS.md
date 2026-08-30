@@ -4,6 +4,11 @@
 > Este guia direciona agentes e executores para a arquitetura autoritativa.
 > **Direção**: epic #60 + [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 > **Classificação de legado**: [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
+> **Fonte arquitetural primária**: `Anakyklos/architecture` (privado) —
+> `README.md`, `SYSTEM-MAP.md`, `VISION.md`, `policies/`,
+> `rfcs/0001-system-boundaries.md`, `languages/` (Technology Palette).
+> Hierarquia de authority: `code + tests + observed behavior > product
+> documentation > architecture repository`.
 
 ---
 

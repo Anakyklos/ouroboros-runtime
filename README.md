@@ -14,6 +14,16 @@ persiste **Missions**, propõe/decompõe trabalho com planning advisory, aplica
 > representa a direção futura** e está marcado como `Legacy`.
 > Ver [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) e
 > [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
+>
+> **Fonte arquitetural primária**: `Anakyklos/architecture` (privado) —
+> [`README.md`](https://github.com/Anakyklos/architecture),
+> [`SYSTEM-MAP.md`](https://github.com/Anakyklos/architecture/blob/main/SYSTEM-MAP.md),
+> [`VISION.md`](https://github.com/Anakyklos/architecture/blob/main/VISION.md),
+> [policies](https://github.com/Anakyklos/architecture/tree/main/policies),
+> [RFC 0001](https://github.com/Anakyklos/architecture/blob/main/rfcs/0001-system-boundaries.md),
+> [Technology Palette](https://github.com/Anakyklos/architecture/tree/main/languages).
+> Hierarquia de authority: `code + tests + observed behavior > product
+> documentation > architecture repository`.
 
 ---
 

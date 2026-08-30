@@ -42,7 +42,9 @@ vigente algo formalmente classificado — e deve ser mínima e justificada.
   alterados para obter verde, `skip`/`todo`/`only`/`|| true`/continue-on-error.
 - Ocorrências de conceitos obsoletos só podem continuar em seções `Legacy`/histórico.
 - Working tree final contém somente mudanças da #61.
-- Anakyklos/architecture não acessível publicamente (404) — provenance via #60/#69/#70.
+- Anakyklos/architecture acessado via GitHub autenticado (privado) e reconciliado:
+  README.md, SYSTEM-MAP.md, VISION.md, policies/resource-efficiency.md,
+  policies/module-autonomy.md, RFC 0001, languages/ (Technology Palette).
 
 **Scale/Scope**: ~28 subsistemas a classificar; ~6+ arquivos de doc a atualizar/criar.
 

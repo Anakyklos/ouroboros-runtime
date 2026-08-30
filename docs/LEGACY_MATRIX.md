@@ -28,7 +28,7 @@
 | **Decision** | **RETIRE** do runtime core. **MOVE/EXTRACT** somente de primitives realmente reutilizáveis (backup/rollback/test-run) para Cadinho/Runstead, se justificado por eles. |
 | **Future owner/boundary** | Cadinho (evolution de capabilities) e Runstead (software work). Ouroboros não possui `modifySelf()` nem authority equivalente. |
 | **Rationale** | #60: "sistema que altera/promove silenciosamente o próprio código" está na lista de "Ouroboros não deve ser". #69: proibido preservar `Ouroboros.modifySelf()` com authority de produção. Software work pertence ao Runstead; forging/evolution pertence ao Cadinho com promoção explícita. |
-| **Follow-up implication** | Abrir issue de remoção do SelfModifyingEngine do core + avaliação de extração de primitives (backup/rollback) para Cadinho/Runstead. A remoção também pode resolver a quarentena de `SelfModifyingEngine.test.ts` (#41). |
+| **Follow-up implication** | Abrir issue de remoção do SelfModifyingEngine do core + avaliação de extração de primitives (backup/rollback) para Cadinho/Runstead. `SelfModifyingEngine.test.ts` não está na quarentena (#41) — a decisão RETIRE não depende de quarentena para ser executada. |
 
 ### 2. PersistentPythonREPL
 
@@ -39,7 +39,7 @@
 | **Decision** | **RETIRE** do runtime core. |
 | **Future owner/boundary** | Nenhum módulo do Anakyklos reivindicou REPL Python arbitrário persistente. Se surgir necessidade legítima de execução Python, será via capability declarada com owner (ex.: Runstead para software work) sob policy. |
 | **Rationale** | #60: Ouroboros "não é executor irrestrito de Python/shell". Execução arbitrária persistente não é necessidade executiva do coordination runtime. |
-| **Follow-up implication** | Remoção do runtime core; quarentena `PersistentPythonREPL.test.ts` pode ser resolvida após decisão (#41). |
+| **Follow-up implication** | Remoção do runtime core. `PersistentPythonREPL.test.ts` não está na quarentena (#41) — a decisão RETIRE é independente de quarentena. |
 
 ### 3. SandboxRunner
 
@@ -342,7 +342,7 @@
 ## Follow-ups recomendados (para o mantenedor criar após merge)
 
 1. **#61-followup-1**: Remover SelfModifyingEngine do runtime core; avaliar extração de primitives backup/rollback para Cadinho/Runstead.
-2. **#61-followup-2**: Remover PersistentPythonREPL, SandboxRunner, SandboxTool do runtime core; resolver quarentenas #41 relacionadas.
+2. **#61-followup-2**: Remover PersistentPythonREPL, SandboxRunner, SandboxTool do runtime core. Os testes de sandbox que estão na quarentena #41 (SandboxE2E, SandboxEscapeTests, SandboxResourceLimits, SandboxRunner, SandboxSecurity) são consequência da decisão RETIRE.
 3. **#61-followup-3**: Migration map do Orchestrator (#62) — remover personas/ESCALATION_CHAIN como abstração first-class.
 4. **#61-followup-4**: GatewayOrchestrator (#63) — remover bridges hardcoded em favor de Capability Registry/connectors.
 5. **#61-followup-5**: MemoryManager/MemoryRetriever → Context Compiler (#64) com provenance.
