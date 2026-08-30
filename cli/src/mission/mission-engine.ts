@@ -45,6 +45,7 @@ import {
     MissionVerifier,
 } from "./ports.js";
 import { PlanPolicyValidator } from "./policy.js";
+import { sanitizeText, sanitizeStringArray } from "./sanitize.js";
 
 /** Default clock (real time). */
 class SystemClock implements ClockService {
@@ -251,11 +252,18 @@ class DefaultMissionVerifier implements MissionVerifier {
         }
 
         // Typed criterion verification: every acceptance criterion must have
-        // an explicit, deterministic, satisfied CriterionVerification record.
-        // Text labels are NOT acceptance evidence.
+        // an explicit, deterministic, satisfied CriterionVerification record
+        // whose source is a module owner that has positively verified an
+        // invocation of this Mission. A caller-supplied "module-owner:runstead"
+        // string is not authority on its own.
+        const trustedOwners = new Set(
+            invocations
+                .filter((inv) => inv.ownerVerification?.verified === true)
+                .map((inv) => inv.ownerVerification!.owner),
+        );
         const satisfiedCriteria = new Set(
             mission.criterionVerifications
-                .filter((cv) => cv.satisfied)
+                .filter((cv) => cv.satisfied && trustedOwners.has(cv.source))
                 .map((cv) => cv.criterionId),
         );
         const missingCriteria = mission.acceptanceCriteria.filter(
@@ -301,16 +309,22 @@ export class MissionEngine {
         const { intent, allowedCapabilityScope, budgetPolicy, approvalRequirements } = input;
         const now = this.clock.isoNow();
         const missionId = this.ids.generate();
-        const interpretedObjective = await this.interpreter(intent);
+        const interpretedObjective = sanitizeText(await this.interpreter(intent));
+
+        // Free-form external text is sanitized before durable storage
+        // (Authorization/Bearer/api-key/credentials/tokens are redacted).
+        const sanitizedApprovals = (approvalRequirements ?? intent.approvals ?? []).map(
+            (req) => ({ ...req, reason: sanitizeText(req.reason) }),
+        );
 
         const mission: Mission = {
             missionId,
             schemaVersion: MISSION_CONTRACT_VERSION,
             source: intent.source,
-            originalIntent: intent.originalIntent,
+            originalIntent: sanitizeText(intent.originalIntent),
             interpretedObjective,
-            constraints: [...intent.constraints],
-            acceptanceCriteria: [...intent.acceptanceCriteria],
+            constraints: sanitizeStringArray(intent.constraints),
+            acceptanceCriteria: sanitizeStringArray(intent.acceptanceCriteria),
             budgetPolicy: budgetPolicy ?? {},
             allowedCapabilityScope: {
                 capabilityIds: [...allowedCapabilityScope.capabilityIds],
@@ -320,8 +334,12 @@ export class MissionEngine {
             // Explicit approvals/permissions represented by the intent flow
             // into the Mission approval state (data, not implicit authority);
             // a caller-supplied policy wins over the intent's representation.
-            approvalRequirements: approvalRequirements ?? intent.approvals ?? [],
-            contextRefs: intent.contextRefs ?? [],
+            approvalRequirements: sanitizedApprovals,
+            contextRefs: (intent.contextRefs ?? []).map((ref) => ({
+                ...ref,
+                label: sanitizeText(ref.label),
+                externalRef: sanitizeText(ref.externalRef),
+            })),
             state: MissionState.CREATED,
             currentPlanRevisionId: null,
             invocationRefs: [],
@@ -371,9 +389,14 @@ export class MissionEngine {
             revisionNumber,
             planId: candidate.planId,
             missionId,
-            steps: candidate.steps.map((step) => ({ ...step })),
+            // Free-form planner text is sanitized before durable storage.
+            steps: candidate.steps.map((step) => ({
+                ...step,
+                desiredOutcome: sanitizeText(step.desiredOutcome),
+                expectedAcceptance: sanitizeStringArray(step.expectedAcceptance),
+            })),
             status: "proposed",
-            reason: candidate.plannerNote || "Proposed by planner",
+            reason: sanitizeText(candidate.plannerNote) || "Proposed by planner",
             createdAt: this.clock.isoNow(),
         };
         await this.store.savePlanRevision(revision);
@@ -399,6 +422,8 @@ export class MissionEngine {
      */
     async acceptPlan(missionId: string, revisionId: string): Promise<Mission> {
         const mission = await this.requireMission(missionId);
+        this.guardNotTerminal(mission, "acceptPlan");
+
         const revision = await this.store.getPlanRevision(revisionId);
         if (!revision) {
             throw new Error(`Plan revision not found: ${revisionId}`);
@@ -433,15 +458,32 @@ export class MissionEngine {
                 if (!req) continue;
                 const existing = mergedApprovals.find((r) => r.approvalId === req.approvalId);
                 if (existing) {
-                    // Planner proposed requirement metadata can update the
-                    // requirement description, but the authoritative grant state
-                    // (granted/grantedBy/grantedAt) is never touched by the planner.
-                    existing.reason = req.reason;
-                    existing.approver = req.approver;
+                    // The planner may reference an existing requirement only
+                    // when it is exactly compatible. The requirement's
+                    // authoritative metadata (scopeDescriptor, approver,
+                    // reason, granted state) is IMMUTABLE: the planner can
+                    // never rewrite it. Scope was already validated by policy;
+                    // this is the defensive, authoritative double-check.
+                    const scopeOk =
+                        existing.scopeDescriptor.capabilityId === step.capabilityRequirement &&
+                        existing.scopeDescriptor.effectClass === step.effectClass;
+                    if (!scopeOk) {
+                        throw new Error(
+                            `Approval requirement "${req.approvalId}" scope mismatch: planner cannot re-purpose a granted approval for "${step.capabilityRequirement}/${step.effectClass}"`,
+                        );
+                    }
+                    // Deliberately do NOT touch existing.approver /
+                    // existing.reason / existing.scopeDescriptor.
                 } else {
-                    // New requirement, always starts un-granted.
+                    // New requirement proposed by the planner: authoritative
+                    // state starts UN-GRANTED with an immutable scope derived
+                    // from the step itself.
                     mergedApprovals.push({
                         approvalId: req.approvalId,
+                        scopeDescriptor: {
+                            capabilityId: step.capabilityRequirement,
+                            effectClass: step.effectClass,
+                        },
                         approver: req.approver,
                         reason: req.reason,
                         granted: false,
@@ -479,6 +521,7 @@ export class MissionEngine {
         grantedBy: string,
     ): Promise<Mission> {
         const mission = await this.requireMission(missionId);
+        this.guardNotTerminal(mission, "recordApproval");
         const requirement = mission.approvalRequirements.find(
             (req) => req.approvalId === approvalId,
         );
@@ -629,6 +672,28 @@ export class MissionEngine {
         }
         const mission = await this.requireMission(invocation.missionId);
 
+        // OwnerVerification must be bound to the real invocation and to the
+        // capability's module owner — a caller-supplied {owner, verified}
+        // string is never trusted on its own (fail-closed).
+        if (ownerVerification) {
+            if (ownerVerification.invocationId !== invocationId) {
+                throw new Error(
+                    `OwnerVerification.invocationId "${ownerVerification.invocationId}" does not match invocation "${invocationId}"`,
+                );
+            }
+            const contract = await this.policy.resolver.resolve(invocation.capabilityId);
+            if (!contract) {
+                throw new Error(
+                    `cannot verify invocation of unknown capability "${invocation.capabilityId}"`,
+                );
+            }
+            if (ownerVerification.owner !== contract.moduleOwner) {
+                throw new Error(
+                    `OwnerVerification.owner "${ownerVerification.owner}" does not match module owner "${contract.moduleOwner}" for capability "${invocation.capabilityId}"`,
+                );
+            }
+        }
+
         const updated: CapabilityInvocationRef = {
             ...invocation,
             status: result.status,
@@ -660,8 +725,11 @@ export class MissionEngine {
      * Record an explicit, deterministic, typed verification for one
      * acceptance criterion. This is the ONLY path through which acceptance
      * can be proven for completion — text labels are never completion
-     * authority. `source` must be an authorized deterministic verifier
-     * (e.g. a module owner or an operator), not planner narrative.
+     * authority.
+     *
+     * `source` is NOT free-form authority: it must be a module owner that
+     * has positively verified an invocation of this Mission. Without a
+     * trusted owner on record, criterion verification fails closed.
      */
     async recordCriterionVerification(
         missionId: string,
@@ -671,6 +739,22 @@ export class MissionEngine {
         evidenceRefId?: string,
     ): Promise<Mission> {
         const mission = await this.requireMission(missionId);
+        this.guardNotTerminal(mission, "recordCriterionVerification");
+
+        // A criterion can only be verified by a module owner that has
+        // positively verified an invocation of this Mission. A caller-supplied
+        // "module-owner:runstead" string is not authority on its own.
+        const trustedOwners = new Set(
+            mission.invocationRefs
+                .filter((inv) => inv.ownerVerification?.verified === true)
+                .map((inv) => inv.ownerVerification!.owner),
+        );
+        if (satisfied && !trustedOwners.has(source)) {
+            throw new Error(
+                `CriterionVerification source "${source}" is not a positively verified module owner of this Mission`,
+            );
+        }
+
         const entry: CriterionVerification = {
             criterionId,
             satisfied,
@@ -721,6 +805,7 @@ export class MissionEngine {
      */
     async completeMission(missionId: string): Promise<Mission> {
         const mission = await this.requireMission(missionId);
+        this.guardNotTerminal(mission, "completeMission");
         const verification = await this.verifyMission(missionId);
         if (!verification.satisfied || verification.ownerBlocked) {
             throw new InvalidStateTransitionError(
@@ -752,6 +837,7 @@ export class MissionEngine {
         unresolvedQuestion?: string,
     ): Promise<Mission> {
         const mission = await this.requireMission(missionId);
+        this.guardNotTerminal(mission, "setWaiting");
         if (!WAITING_STATES.has(state)) {
             throw new Error(`Not a waiting state: ${state}`);
         }
@@ -773,14 +859,7 @@ export class MissionEngine {
      */
     async blockMission(missionId: string, reason: string): Promise<Mission> {
         const mission = await this.requireMission(missionId);
-        if (mission.state === MissionState.COMPLETED || mission.state === MissionState.CANCELLED) {
-            throw new InvalidStateTransitionError(
-                missionId,
-                mission.state,
-                MissionState.BLOCKED,
-                "terminal missions cannot be blocked",
-            );
-        }
+        this.guardNotTerminal(mission, "blockMission");
         await this.store.updateMission(missionId, {
             state: MissionState.BLOCKED,
             unresolvedQuestions: [...mission.unresolvedQuestions, `blocked: ${reason}`],
@@ -792,6 +871,7 @@ export class MissionEngine {
     /** Cancel a Mission (cooperative, terminal). */
     async cancelMission(missionId: string, reason: string): Promise<Mission> {
         const mission = await this.requireMission(missionId);
+        this.guardNotTerminal(mission, "cancelMission");
         await this.store.updateMission(missionId, {
             state: MissionState.CANCELLED,
             unresolvedQuestions: [...mission.unresolvedQuestions, `cancelled: ${reason}`],
@@ -803,6 +883,7 @@ export class MissionEngine {
     /** Mark the Mission as failed_terminal (explicit, terminal). */
     async failMission(missionId: string, reason: string): Promise<Mission> {
         const mission = await this.requireMission(missionId);
+        this.guardNotTerminal(mission, "failMission");
         await this.store.updateMission(missionId, {
             state: MissionState.FAILED_TERMINAL,
             unresolvedQuestions: [...mission.unresolvedQuestions, `failed: ${reason}`],
@@ -826,6 +907,23 @@ export class MissionEngine {
             throw new MissionNotFoundError(missionId);
         }
         return mission;
+    }
+
+    /**
+     * Terminality is a code invariant, not a comment: no normal operation
+     * may mutate a Mission in a terminal state. Future exceptional recovery
+     * must be a distinct, explicit operation — not a side effect of these
+     * methods.
+     */
+    private guardNotTerminal(mission: Mission, action: string): void {
+        if (TERMINAL_STATES.has(mission.state)) {
+            throw new InvalidStateTransitionError(
+                mission.missionId,
+                mission.state,
+                mission.state,
+                `${action} is forbidden on terminal Mission state "${mission.state}"`,
+            );
+        }
     }
 }
 

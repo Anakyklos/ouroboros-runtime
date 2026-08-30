@@ -567,4 +567,55 @@ describe("SqliteMissionStore (durability + recovery)", () => {
 
         await store2.close();
     });
+
+    it("BLOCKER: raw secrets injected via MissionIntent/plannerNote never reach persisted data", async () => {
+        const dir = track(makeTempDir("mission-secrets-"));
+        const dbPath = join(dir.path, "missions.db");
+
+        const store1 = new SqliteMissionStore(dbPath);
+        await store1.initialize();
+        const engine1 = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-a"), store1);
+
+        // Intent and planner note contain real secret patterns.
+        const intent = makeIntent("cli");
+        intent.originalIntent = "Review the PR using Authorization: Bearer test-secret-value";
+        intent.constraints = ["Use api_key=test-constraint-secret only for auth"];
+        const mission = await engine1.createMission({
+            intent,
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+        const proposal = await engine1.proposePlan(mission.missionId, {
+            planId: "plan-1",
+            missionId: mission.missionId,
+            plannerNote: "use token=test-planner-secret for deploy",
+            steps: [makeStep()],
+        });
+        if (!proposal.ok) throw new Error("plan rejected");
+        await store1.close();
+
+        // Reopen the store and read everything back.
+        const store2 = new SqliteMissionStore(dbPath);
+        await store2.initialize();
+        const recovered = await store2.getMission(mission.missionId);
+        const revisions = await store2.getPlanRevisions(mission.missionId);
+
+        const persistedBlob = JSON.stringify({
+            originalIntent: recovered!.originalIntent,
+            constraints: recovered!.constraints,
+            acceptanceCriteria: recovered!.acceptanceCriteria,
+            revisionReason: revisions[0].reason,
+            steps: revisions[0].steps,
+        });
+
+        // The raw secret values must never appear in persisted data.
+        for (const secret of ["test-secret-value", "test-constraint-secret", "test-planner-secret"]) {
+            expect(persistedBlob).not.toContain(secret);
+        }
+        // Redaction markers are present (the structure is preserved).
+        expect(persistedBlob).toContain("[REDACTED]");
+        expect(persistedBlob).toContain("Bearer");
+        expect(persistedBlob).toContain("api_key");
+
+        await store2.close();
+    });
 });

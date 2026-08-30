@@ -84,6 +84,15 @@ export interface BudgetPolicy {
 /** Approval requirement that a Mission step may declare. */
 export interface ApprovalRequirement {
     approvalId: string;
+    /**
+     * Immutable scope of what was approved. A grant is bound to exactly this
+     * capability+effect; the planner cannot reuse a granted approval for a
+     * different step/capability/effect (APPROVAL_SCOPE_MISMATCH).
+     */
+    scopeDescriptor: {
+        capabilityId: string;
+        effectClass: EffectClass;
+    };
     /** Who must approve (role/interface), not a free-form narrative. */
     approver: string;
     /** Why the approval is needed (sanitized, no CoT). */
@@ -395,6 +404,7 @@ export enum PolicyRejectionCode {
     EFFECT_NOT_AUTHORIZED = "effect_not_authorized",
     APPROVAL_MISSING = "approval_missing",
     APPROVAL_GRANT_FORBIDDEN = "approval_grant_forbidden",
+    APPROVAL_SCOPE_MISMATCH = "approval_scope_mismatch",
     INPUT_INCOMPATIBLE = "input_incompatible",
     ACCEPTANCE_MUTATION = "acceptance_mutation",
     CONSTRAINT_MUTATION = "constraint_mutation",

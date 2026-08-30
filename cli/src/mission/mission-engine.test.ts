@@ -201,6 +201,7 @@ describe("MissionEngine", () => {
                 approvals: [
                     {
                         approvalId: "ap-export",
+                        scopeDescriptor: { capabilityId: "runstead.code-review", effectClass: EffectClass.EXECUTION },
                         approver: "operator",
                         reason: "Export explicitly authorized by operator",
                         granted: true,
@@ -441,6 +442,56 @@ describe("MissionEngine", () => {
             const after = await engine.getMission(mission.missionId);
             expect(after.state).toBe(MissionState.CANCELLED);
         });
+
+        it("BLOCKER: a granted approval cannot be hijacked for another effect — mission never ready, no dispatch", async () => {
+            const intent = makeIntent("cli");
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+                approvalRequirements: [
+                    {
+                        approvalId: "ap-write",
+                        // Granted approval is bound to lifeos.write / WRITE.
+                        scopeDescriptor: { capabilityId: "lifeos.write", effectClass: EffectClass.WRITE },
+                        approver: "operator",
+                        reason: "Approved for life-domain write",
+                        granted: true,
+                        grantedBy: "operator",
+                        grantedAt: BASE_TIME,
+                    },
+                ],
+            });
+
+            // Planner tries to reuse the SAME approval id for a different
+            // capability/effect (runstead.deploy / NETWORK).
+            const proposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId, {
+                steps: [
+                    makeStep({
+                        stepId: "step-deploy",
+                        capabilityRequirement: "runstead.deploy",
+                        effectClass: EffectClass.NETWORK,
+                        inputRefs: ["refs/runstead/prod"],
+                        approvalRequirement: {
+                            approvalId: "ap-write",
+                            approver: "operator",
+                            reason: "Deploy to production",
+                        },
+                    }),
+                ],
+            }));
+            // Rejected deterministically; old grant does NOT authorize the new step.
+            expect(proposal.ok).toBe(false);
+            if (proposal.ok) return;
+
+            const after = await engine.getMission(mission.missionId);
+            expect(after.state).not.toBe(MissionState.READY);
+            // No accepted plan to dispatch from, and no invocation can exist.
+            expect(after.currentPlanRevisionId).toBeNull();
+            expect(after.invocationRefs).toHaveLength(0);
+            await expect(engine.dispatchStep(mission.missionId, "step-deploy")).rejects.toThrow(
+                /no accepted plan|dispatch/i,
+            );
+        });
     });
 
     describe("state machine and invocation boundary", () => {
@@ -479,6 +530,7 @@ describe("MissionEngine", () => {
                 approvalRequirements: [
                     {
                         approvalId: "ap-write",
+                        scopeDescriptor: { capabilityId: "lifeos.write", effectClass: EffectClass.WRITE },
                         approver: "operator",
                         reason: "Write to life domain requires operator approval",
                         granted: false,
@@ -671,6 +723,78 @@ describe("MissionEngine", () => {
             expect(after.invocationRefs[0].invocationId).toBe(invocation.invocationId);
             expect(after.invocationRefs[0].status).toBe(InvocationStatus.COMPLETED);
             expect(await harness.store.listInvocations(mission.missionId)).toHaveLength(1);
+        });
+
+        it("BLOCKER: terminal states are immutable — no normal operation can resurrect or reclassify them", async () => {
+            // COMPLETED
+            const intent = makeIntent("cli");
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            const proposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId));
+            if (!proposal.ok) throw new Error("plan rejected");
+            await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.recordInvocationResult(
+                invocation.invocationId,
+                {
+                    invocationId: invocation.invocationId,
+                    status: InvocationStatus.COMPLETED,
+                    summary: "done",
+                    evidenceRefs: [
+                        { refId: "ev-1", owner: "runstead", externalRef: "r:1", label: "PR merged" },
+                        { refId: "ev-2", owner: "runstead", externalRef: "r:2", label: "CI green" },
+                    ],
+                    completedAt: BASE_TIME,
+                },
+                {
+                    invocationId: invocation.invocationId,
+                    verified: true,
+                    reason: "ok",
+                    owner: "runstead",
+                    verifiedAt: BASE_TIME,
+                },
+            );
+            await engine.recordCriterionVerification(mission.missionId, "PR merged", true, "runstead", "ev-1");
+            await engine.recordCriterionVerification(mission.missionId, "CI green", true, "runstead", "ev-2");
+            const completed = await engine.completeMission(mission.missionId);
+            expect(completed.state).toBe(MissionState.COMPLETED);
+
+            // No normal operation may mutate a completed Mission.
+            await expect(engine.setWaiting(mission.missionId, MissionState.WAITING_FOR_CONTEXT)).rejects.toThrow(/terminal/i);
+            await expect(engine.cancelMission(mission.missionId, "late cancel")).rejects.toThrow(/terminal/i);
+            await expect(engine.failMission(mission.missionId, "late fail")).rejects.toThrow(/terminal/i);
+            await expect(engine.blockMission(mission.missionId, "late block")).rejects.toThrow(/terminal/i);
+            await expect(engine.completeMission(mission.missionId)).rejects.toThrow(/terminal/i);
+            await expect(engine.recordApproval(mission.missionId, "ap-write", "operator")).rejects.toThrow(/terminal/i);
+            // State is still COMPLETED.
+            expect((await engine.getMission(mission.missionId)).state).toBe(MissionState.COMPLETED);
+
+            // CANCELLED
+            const m2 = await engine.createMission({
+                intent: makeIntent("cli"),
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            await engine.cancelMission(m2.missionId, "operator cancelled");
+            await expect(engine.completeMission(m2.missionId)).rejects.toThrow(/terminal/i);
+            await expect(engine.setWaiting(m2.missionId, MissionState.WAITING_FOR_CONTEXT)).rejects.toThrow(/terminal/i);
+            await expect(engine.failMission(m2.missionId, "late fail")).rejects.toThrow(/terminal/i);
+            await expect(engine.blockMission(m2.missionId, "late block")).rejects.toThrow(/terminal/i);
+            expect((await engine.getMission(m2.missionId)).state).toBe(MissionState.CANCELLED);
+
+            // FAILED_TERMINAL
+            const m3 = await engine.createMission({
+                intent: makeIntent("cli"),
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            await engine.failMission(m3.missionId, "fatal error");
+            await expect(engine.blockMission(m3.missionId, "late block")).rejects.toThrow(/terminal/i);
+            await expect(engine.completeMission(m3.missionId)).rejects.toThrow(/terminal/i);
+            await expect(engine.setWaiting(m3.missionId, MissionState.WAITING_FOR_CONTEXT)).rejects.toThrow(/terminal/i);
+            await expect(engine.cancelMission(m3.missionId, "late cancel")).rejects.toThrow(/terminal/i);
+            expect((await engine.getMission(m3.missionId)).state).toBe(MissionState.FAILED_TERMINAL);
         });
 
         it("keeps a waiting_* state as waiting, never turning it into failure", async () => {
@@ -884,6 +1008,127 @@ describe("MissionEngine", () => {
             expect(after.state).not.toBe(MissionState.COMPLETED);
         });
 
+        it("BLOCKER: rejects OwnerVerification whose owner is not the capability's module owner", async () => {
+            const intent = makeIntent("cli");
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            const proposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId));
+            if (!proposal.ok) throw new Error("plan rejected");
+            await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            // runstead.code-review belongs to "runstead", but the caller
+            // claims "katherine" verified it — must be rejected fail-closed.
+            await expect(
+                engine.recordInvocationResult(
+                    invocation.invocationId,
+                    {
+                        invocationId: invocation.invocationId,
+                        status: InvocationStatus.COMPLETED,
+                        summary: "done",
+                        evidenceRefs: [],
+                        completedAt: BASE_TIME,
+                    },
+                    {
+                        invocationId: invocation.invocationId,
+                        verified: true,
+                        reason: "looks good",
+                        owner: "katherine",
+                        verifiedAt: BASE_TIME,
+                    },
+                ),
+            ).rejects.toThrow(/module owner/i);
+
+            const after = await engine.getMission(mission.missionId);
+            expect(after.invocationRefs[0].ownerVerification).toBeUndefined();
+        });
+
+        it("BLOCKER: rejects OwnerVerification whose invocationId does not match the real invocation", async () => {
+            const intent = makeIntent("cli");
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            const proposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId));
+            if (!proposal.ok) throw new Error("plan rejected");
+            await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await expect(
+                engine.recordInvocationResult(
+                    invocation.invocationId,
+                    {
+                        invocationId: invocation.invocationId,
+                        status: InvocationStatus.COMPLETED,
+                        summary: "done",
+                        evidenceRefs: [],
+                        completedAt: BASE_TIME,
+                    },
+                    {
+                        invocationId: "some-other-invocation",
+                        verified: true,
+                        reason: "ok",
+                        owner: "runstead",
+                        verifiedAt: BASE_TIME,
+                    },
+                ),
+            ).rejects.toThrow(/invocationId/i);
+
+            const after = await engine.getMission(mission.missionId);
+            expect(after.invocationRefs[0].ownerVerification).toBeUndefined();
+        });
+
+        it("BLOCKER: criterion verification with a forged textual source cannot complete a Mission", async () => {
+            const intent = makeIntent("cli");
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            const proposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId));
+            if (!proposal.ok) throw new Error("plan rejected");
+            await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.recordInvocationResult(
+                invocation.invocationId,
+                {
+                    invocationId: invocation.invocationId,
+                    status: InvocationStatus.COMPLETED,
+                    summary: "Review completed",
+                    evidenceRefs: [
+                        { refId: "ev-1", owner: "runstead", externalRef: "runstead:review/1", label: "PR merged" },
+                        { refId: "ev-2", owner: "runstead", externalRef: "runstead:ci/1", label: "CI green" },
+                    ],
+                    completedAt: BASE_TIME,
+                },
+                {
+                    invocationId: invocation.invocationId,
+                    verified: true,
+                    reason: "Review verified",
+                    owner: "runstead",
+                    verifiedAt: BASE_TIME,
+                },
+            );
+
+            // The caller tries to fabricate criterion verification with a
+            // textual source that is NOT a positively verified module owner.
+            await expect(
+                engine.recordCriterionVerification(
+                    mission.missionId,
+                    "PR merged",
+                    true,
+                    "module-owner:runstead", // forged string, not the real owner "runstead"
+                    "ev-1",
+                ),
+            ).rejects.toThrow(/not a positively verified module owner/i);
+
+            const verification = await engine.verifyMission(mission.missionId);
+            expect(verification.satisfied).toBe(false);
+            await expect(engine.completeMission(mission.missionId)).rejects.toThrow();
+        });
+
         it("completes a Mission only with typed criterion verification + positive owner verification", async () => {
             const intent = makeIntent("cli");
             const mission = await engine.createMission({
@@ -927,14 +1172,14 @@ describe("MissionEngine", () => {
                 mission.missionId,
                 "PR merged",
                 true,
-                "module-owner:runstead",
+                "runstead",
                 "ev-1",
             );
             await engine.recordCriterionVerification(
                 mission.missionId,
                 "CI green",
                 true,
-                "module-owner:runstead",
+                "runstead",
                 "ev-2",
             );
 

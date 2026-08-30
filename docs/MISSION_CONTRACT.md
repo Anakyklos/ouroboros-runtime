@@ -130,9 +130,18 @@ reason based on event/evidence** (no chain of thought).
   (`Mission.approvalRequirements`), created un-granted at plan acceptance
   and changed **only** through the explicit `MissionEngine.recordApproval()`
   path.
+- Each `ApprovalRequirement` carries an **immutable `scopeDescriptor`**
+  (`capabilityId` + `effectClass`). A grant is bound to exactly that scope.
+  A step may reference an existing requirement **only when its
+  capability+effect matches** the requirement's scope — otherwise the
+  policy rejects it (`APPROVAL_SCOPE_MISMATCH`) and the planner cannot
+  hijack a granted approval for a different step/effect. New requirements
+  proposed by a plan start **un-granted** and derive their immutable scope
+  from the step.
 - A candidate that smuggles grant fields inside an approval requirement is
   deterministically rejected (`APPROVAL_GRANT_FORBIDDEN`). The planner cannot
-  concede its own approval.
+  concede its own approval, and cannot rewrite the authoritative metadata
+  (scope, approver, reason, grant state) of an existing requirement.
 
 Invariants (enforced by contract/test):
 
@@ -212,7 +221,7 @@ Atomicity and single authority:
 Scope discipline: only the Mission contract is persisted. No scheduler
 state, provider state or private module state.
 
-## Mission-level verification (fail-closed, typed)
+## Mission-level verification (fail-closed, typed, provenance-bound)
 
 `MissionVerifier` (engine default) verifies only the executive level:
 do the capability results satisfy the Mission's objective/acceptance?
@@ -225,16 +234,56 @@ plannerSuggestion       = "looks good"
 → Mission MUST NOT become completed
 ```
 
-Completion is **not** derived from text heuristics. The default verifier
-fails closed unless, for every acceptance criterion, there is an explicit
-typed `CriterionVerification` record (`satisfied: true`) recorded through
-the engine's authorized path (`recordCriterionVerification`). A missing
-mandatory lower-layer verification (per `CapabilityContract.
-requiresOwnerVerification`) is never implicit success — the invocation must
-carry a positive module-owner verification.
+Completion is **not** derived from text heuristics, and typed booleans are
+not trusted merely because a caller supplied them:
+
+- `OwnerVerification` is accepted only when its `invocationId` matches the
+  real invocation and its `owner` matches the capability's `moduleOwner`
+  from the catalog. A caller-supplied `{ owner: "katherine", verified: true }`
+  for a Runstead capability is rejected fail-closed.
+- `CriterionVerification` counts toward completion only when its `source`
+  is a module owner that has positively verified an invocation of this
+  Mission (recorded via the engine's authorized path). A fabricated textual
+  `source = "module-owner:runstead"` without a real positive owner
+  verification cannot complete a Mission.
+- A missing mandatory lower-layer verification (per
+  `CapabilityContract.requiresOwnerVerification`) is never implicit success.
 
 Domain/technical verification (Runstead, Tecer, LifeOS, device modules)
 stays with the respective module owner (#66/#67 follow-ups).
+
+## Terminal state machine
+
+`completed`, `cancelled` and `failed_terminal` are terminal: **no normal
+operation may mutate a terminal Mission**. `MissionEngine` applies a single
+deterministic guard (`guardNotTerminal`) on every mutating method —
+`acceptPlan`, `recordApproval`, `recordCriterionVerification`,
+`completeMission`, `setWaiting`, `blockMission`, `cancelMission`,
+`failMission`. Examples that fail:
+
+```text
+completed → waiting_for_context
+completed → cancelled
+cancelled → completed
+cancelled → ready
+failed_terminal → blocked
+failed_terminal → completed
+```
+
+Future exceptional recovery must be a distinct, explicit operation, never a
+side effect of these methods.
+
+## Secret sanitization (persisted free-form text)
+
+Raw secrets must never reach durable storage. `sanitizeText()` is a
+deterministic redaction boundary applied before persistence to every
+free-form text field that receives external data: `originalIntent`,
+constraints, acceptance criteria, context ref labels/external refs,
+approval reasons, `plannerNote` / revision reason, and step
+`desiredOutcome`/`expectedAcceptance`. It redacts the explicitly prohibited
+patterns (`Authorization: Bearer …`, Bearer tokens, `api_key`/`api-secret`/
+`client_secret`/`access_token`/`refresh_token`/`credentials`/`token` values)
+into `[REDACTED]`, preserving the key structure.
 
 ## Files
 
@@ -245,6 +294,7 @@ stays with the respective module owner (#66/#67 follow-ups).
 | `cli/src/mission/policy.ts` | Deterministic PlanPolicyValidator |
 | `cli/src/mission/mission-engine.ts` | MissionEngine (creation, proposal, acceptance, dispatch refs, verification) |
 | `cli/src/mission/sqlite-mission-store.ts` | Durable SQLite store |
+| `cli/src/mission/sanitize.ts` | Deterministic secret redaction boundary |
 | `cli/src/mission/testing.ts` | Injectable fakes (test-only) |
 | `cli/src/mission/*.test.ts` | Contract/policy/persistence tests |
 

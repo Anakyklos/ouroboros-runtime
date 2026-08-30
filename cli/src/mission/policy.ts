@@ -222,6 +222,27 @@ export class PlanPolicyValidator {
             );
         }
 
+        // When a step references an existing approval requirement by
+        // approvalId, the step's scope (capability + effect) must match
+        // the requirement's immutable scopeDescriptor. A grant tied to
+        // one scope cannot authorize a different step (hijack).
+        if (rawReq?.approvalId) {
+            const existingReq = mission.approvalRequirements.find(
+                (r) => r.approvalId === rawReq.approvalId,
+            );
+            if (existingReq) {
+                const scopeOk =
+                    existingReq.scopeDescriptor.capabilityId === step.capabilityRequirement &&
+                    existingReq.scopeDescriptor.effectClass === step.effectClass;
+                if (!scopeOk) {
+                    decision.reject(
+                        PolicyRejectionCode.APPROVAL_SCOPE_MISMATCH,
+                        `Step "${step.stepId}" references approval requirement "${rawReq.approvalId}" with scope "${existingReq.scopeDescriptor.capabilityId}/${existingReq.scopeDescriptor.effectClass}" but the step targets "${step.capabilityRequirement}/${step.effectClass}"; the planner cannot re-purpose a granted approval for a different scope.`,
+                    );
+                }
+            }
+        }
+
         // Mandatory approval: fail-closed when required but not attached.
         // An attached approval that is not yet granted is acceptable for
         // proposal — the Mission Engine will transition to WAITING_FOR_APPROVAL.

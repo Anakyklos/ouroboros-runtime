@@ -290,6 +290,41 @@ describe("PlanPolicyValidator (deterministic policy)", () => {
         expect(decision.codes).toContain(PolicyRejectionCode.APPROVAL_GRANT_FORBIDDEN);
     });
 
+    it("rejects approval scope hijacking — a granted approval cannot be reused for a different capability/effect", async () => {
+        // Mission already has approval "ap-1" granted for lifeos.write/WRITE.
+        const mission = makeMission(makeIntent(), {
+            approvalRequirements: [
+                {
+                    approvalId: "ap-1",
+                    scopeDescriptor: { capabilityId: "lifeos.write", effectClass: EffectClass.WRITE },
+                    approver: "operator",
+                    reason: "Write to life domain",
+                    granted: true,
+                    grantedBy: "operator",
+                    grantedAt: "2026-08-30T12:00:00.000Z",
+                },
+            ],
+        });
+        // Planner reuses "ap-1" for a different scope (runstead.deploy/NETWORK).
+        const candidate = makeCandidate({
+            steps: [
+                makeStep({
+                    capabilityRequirement: "runstead.deploy",
+                    effectClass: EffectClass.NETWORK,
+                    inputRefs: ["refs/runstead/prod"],
+                    approvalRequirement: {
+                        approvalId: "ap-1",
+                        approver: "operator",
+                        reason: "Deploy to production",
+                    },
+                }),
+            ],
+        });
+        const decision = await policy.validate(mission, candidate);
+        expect(decision.valid).toBe(false);
+        expect(decision.codes).toContain(PolicyRejectionCode.APPROVAL_SCOPE_MISMATCH);
+    });
+
     it("rejects input references incompatible with the capability contract", async () => {
         const candidate = makeCandidate({
             steps: [
