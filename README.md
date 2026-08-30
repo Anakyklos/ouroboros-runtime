@@ -1,158 +1,245 @@
-<!-- ╔══════════════════════════════════════════════════════════════════╗ -->
-<!-- ║              OUROBOROS RUNTIME — SELF-MODIFYING AGENT            ║ -->
-<!-- ╚══════════════════════════════════════════════════════════════════╝ -->
+# 🐍 Ouroboros Runtime
 
-<div align="center">
+> **Executive runtime / sistema nervoso do Anakyklos**
 
-<!-- ▓▓▓ HEADER ▓▓▓ -->
-<img width="100%" src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=0,2,2,30&height=280&section=header&text=OUROBOROS&fontSize=90&fontColor=50fa7b&animation=fadeIn&fontAlignY=35&desc=Self-Modifying%20AI%20Runtime%20%7C%20Isolated%20Python%20Environment%20%7C%20Persistent%20Memory&descAlignY=58&descSize=18&descColor=f1fa8c"/>
+Ouroboros é o runtime executivo do Anakyklos: ele recebe intenções, cria e
+persiste **Missions**, propõe/decompõe trabalho com planning advisory, aplica
+**policy determinística**, descobre capabilities e coordena **module owners**
+(Runstead, LifeOS, Tecer, device modules, etc.), coletando evidência e fazendo
+**mission-level verification**.
 
-<!-- ▓▓▓ TYPING ANIMATION ▓▓▓ -->
-<a href="https://github.com/RenyEnnos/ouroboros-runtime">
-  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=22&duration=3000&pause=1000&color=50FA7B&center=true&vCenter=true&repeat=true&width=620&height=45&lines=%3E+The+snake+eats+its+own+tail.;%3E+Agents+that+write+their+own+code.;%3E+Anti-Vibe+Protocol%3A+Strict+Validation.;%3E+Persistent+Memory.+Parallel+Waves." alt="Typing SVG" />
-</a>
+> ⚠️ **Realinhamento arquitetural (epic #60)**: esta documentação foi
+> realinhada. Conteúdo histórico sobre "self-modifying agent", Council/personas,
+> Python sandbox como capacidade central, waves, Ralph e Electron **não
+> representa a direção futura** e está marcado como `Legacy`.
+> Ver [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) e
+> [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
+>
+> **Fonte arquitetural primária**: `Anakyklos/architecture` (privado) —
+> [`README.md`](https://github.com/Anakyklos/architecture),
+> [`SYSTEM-MAP.md`](https://github.com/Anakyklos/architecture/blob/main/SYSTEM-MAP.md),
+> [`VISION.md`](https://github.com/Anakyklos/architecture/blob/main/VISION.md),
+> [policies](https://github.com/Anakyklos/architecture/tree/main/policies),
+> [RFC 0001](https://github.com/Anakyklos/architecture/blob/main/rfcs/0001-system-boundaries.md),
+> [Technology Palette](https://github.com/Anakyklos/architecture/tree/main/languages).
+> **Hierarquia de autoridade**:
+> - **Para comportamento/current reality**: `code + tests + observation > documentação`
+> - **Para direção/boundaries**: `Anakyklos/architecture + decisões aprovadas > documentação legada do produto`
+> - **Current ≠ Direction ≠ Legacy ≠ Hypothesis** — nunca apresentar Direction como implementada, nem Hypothesis como compromisso.
+> (Fonte: `Anakyklos/architecture/README.md`.)
 
-<br/>
+---
 
-<!-- ▓▓▓ TECH STACK BADGES ▓▓▓ -->
-<img src="https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript"/>
-<img src="https://img.shields.io/badge/Bun-000000?style=for-the-badge&logo=bun&logoColor=white" alt="Bun"/>
-<img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
-<img src="https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite"/>
-<img src="https://img.shields.io/badge/React_TUI-61DAFB?style=for-the-badge&logo=react&logoColor=black" alt="React Ink"/>
-<img src="https://img.shields.io/badge/Groq_SDK-f55036?style=for-the-badge&logo=probot&logoColor=white" alt="Groq"/>
+## Fluxo autoritativo
 
-</div>
-
-<br/>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-## <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Animals/Snake.png" width="30"/> &nbsp; The Ouroboros System
-
-> **"A self-modifying agent runtime that evolves through disciplined execution."**
-
-Ouroboros is a multi-agent orchestration system designed to break the cycle of amnesiac AI. It features a **Daemon architecture**, **persistent SQLite memory**, and a strictly isolated **Python playground** where agents can write, test, and execute their own tools safely.
-
-It enforces the **Anti-Vibe Protocol** — a rigorous quality gate system that prevents "vibes-based coding" by requiring specifications, validation, and human promotion before any code becomes permanent.
-
-<br/>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-## <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Objects/Gear.png" width="30"/> &nbsp; Core Architecture
-
-<table>
-<tr>
-<td width="50%" valign="top">
-
-### <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Symbols/Radioactive.png" width="22"/> Isolated Python Sandbox
-Agents operate in a strict `.ouroboros/venv` environment. They can:
-- Write code to `.ouroboros/playground/`
-- Execute scripts safely via `SandboxRunner`
-- **CANNOT** modify core system files directly
-- **MUST** pass human review to promote scripts to `src/`
-
-</td>
-<td width="50%" valign="top">
-
-### <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Objects/Satellite%20Antenna.png" width="22"/> Gateway Daemon & RPC
-A persistent background service (`bun run daemon`) that:
-- Maintains agent state across sessions
-- Exposes RPC endpoints for tools/extensions
-- Coordinates **Wave Execution** (parallel tasks)
-- Orchestrates multi-agent handoffs
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-
-### <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Objects/Floppy%20Disk.png" width="22"/> Persistent Memory
-SQLite-based memory system (`better-sqlite3`) with WAL mode.
-- Context snapshots
-- Structured logs
-- Semantic search ready
-- **Hexagonal Architecture**: Storage ports & adapters
-
-</td>
-<td width="50%" valign="top">
-
-### <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Objects/Shield.png" width="22"/> Anti-Vibe Protocol
-**Strict Quality Gates:**
-1. **Spec Phase**: Design before code.
-2. **Validation**: Gate blocks execution without spec.
-3. **Implementation**: 2-stage (Review → Generate).
-4. **Verification**: Tests + Human Approval.
-
-</td>
-</tr>
-</table>
-
-<br/>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-## <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Objects/Laptop.png" width="30"/> &nbsp; TUI Interface
-
-Powered by **React Ink**, the Ouroboros TUI provides real-time visualization of the agent's thought process.
-
-```bash
-bun run tui
+```text
+Intent source
+(Katherine / Mission Control / CLI / API)
+        ↓
+MissionIntent
+        ↓
+Ouroboros interpretation + durable creation
+        ↓
+Mission
+        ↓
+Planner (agentic proposal)
+        ↓
+Deterministic validator/policy
+        ↓
+Capability Registry
+        ↓
+Capability Invocation (versioned Connector)
+        ↓
+Module Owner
+        ↓
+evidence + domain verification
+        ↓
+Ouroboros mission-level verification
+        ↓
+result / approval / next decision
 ```
 
-- **Emerald Theme**: Success & Stability
-- **Wave Visualization**: See parallel tasks executing
-- **Intent Classification**: Real-time concierge status
-- **System Health**: Daemon & Memory metrics
+### `MissionIntent != Mission`
 
-<br/>
+Katherine, Mission Control, CLI ou API fornecem **MissionIntent**. A Mission
+autoritativa nasce **dentro do Ouroboros** (interpretação + criação durável).
 
-<!-- ═══════════════════════════════════════════════════════════════════ -->
+### Planning é advisory; policy autoriza effects
 
-## <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Objects/Hammer%20and%20Wrench.png" width="30"/> &nbsp; Installation & Setup
+O modelo (LLM) propõe interpretação, decomposição e plano. Código/policy
+persistível decide capability, approvals, budgets, retries, dispatch, state
+transitions, cancellation e acceptance. O modelo não concede authority a si
+mesmo.
 
-### Prerequisites
-- **Bun** (Latest)
-- **Python 3.10+** (for isolated venv)
-- **Node.js 20+**
+---
 
-### Quick Start
+## O que Ouroboros é / não é
 
-```bash
-# 1. Install dependencies
-bun install
+**Ouroboros é:**
+- Preservador de intent original, constraints e acceptance
+- Criador/mantenedor de Missions duráveis
+- Compilador de contexto mínimo autorizado
+- Proponente/decompositor de trabalho (Planner advisory)
+- Descobridor de capabilities (Capability Registry)
+- Aplicador de policy determinística
+- Coordenador de module owners
+- Mantenedor de execução durável e checkpoints
+- Coletor de evidence e resultados
+- Verificador em nível de mission
 
-# 2. Run the Setup Wizard (Creates .ouroboros env)
-bun run setup
+**Ouroboros não é:**
+- Coding agent concorrente do Runstead
+- Capability factory concorrente do Cadinho
+- Self-modifying runtime (não altera/promove silenciosamente o próprio código)
+- Arquitetura de Council/personas
+- Executor irrestrito de Python/shell
+- Banco universal de memória
+- Dono de databases/invariants de outros módulos
+- Chatbot concorrente da Katherine
 
-# 3. Start the Daemon (Background Service)
-bun run daemon
+---
 
-# 4. Launch the TUI (Terminal Interface)
-bun run tui
+## Self-improving ≠ Self-modifying
+
+**Self-improving Anakyklos permanece válido** como ciclo governado:
+
+```text
+Ouroboros observes
+        ↓
+bounded adaptation OR CapabilityGap
+        ↓
+Cadinho candidate/trial
+        ↓
+Runstead implementation when needed
+        ↓
+verification
+        ↓
+explicit promotion
+        ↓
+Capability Registry
 ```
 
-<br/>
+**Self-edit / promoção silenciosa pelo Ouroboros não é permitida.**
+Detalhes em [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (#69).
 
-<!-- ═══════════════════════════════════════════════════════════════════ -->
+---
 
-## <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Objects/Japanese%20Dolls.png" width="30"/> &nbsp; The Council (Agents)
+## Forma do produto (#70)
 
-The system is composed of specialized agents:
+```text
+Mission Control desktop     CLI     Katherine
+             \                |       /
+              \               |      /
+               \              |     /
+                local/versioned IPC
+                          |
+                  +----------------+
+                  |  ouroborosd    |
+                  | headless core  |
+                  +-------+--------+
+                          |
+                capability contracts
+                          |
+          Runstead / LifeOS / Tecer / devices / ...
+```
 
-- **🐍 Ouroboros (Core)**: The runtime orchestrator.
-- **👁️ Vision**: Multi-modal analysis.
-- **🧠 Architect**: System design & spec generation.
-- **🛡️ Guardian**: Anti-Vibe protocol enforcement.
-- **⚡ Kinetic**: Wave execution & task running.
+- Daemon/headless runtime é autoridade
+- Fechar Mission Control **não** cancela Mission
+- Mission Control é operacional (não chatbot)
+- Katherine é interface humana **opcional**
+- CLI pequena permanece para admin/recovery
+- Electron **não** é default arquitetural
+- Web server local não é requisito
+- TUI completa não compete como segunda UI principal
+- Framework desktop decidido após contracts + POC/benchmark
 
-<br/>
+### `Create Mission in Mission Control: On | Off`
 
-<!-- ═══════════════════════════════════════════════════════════════════ -->
+Configuração de superfície: controla **somente a entrada de MissionIntent** na
+UI. Não cria duas máquinas de Mission. `On` adequa ao uso standalone; `Off`
+quando Katherine é a superfície preferida. Esconder a entrada não desativa o
+pipeline de criação do runtime.
 
-<div align="center">
+---
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=0,2,2,30&height=120&section=footer"/>
+## Quickstart (baseline)
 
-</div>
+```bash
+# Bun 1.3.9+ (CI pin: 1.3.9)
+bun install --frozen-lockfile
+cd web && bun install --frozen-lockfile && cd ..
+
+# Baseline completo: install integrity + runtime tsc + web build + tests
+bun run check
+```
+
+Baseline: [`docs/BASELINE.md`](docs/BASELINE.md) | CI:
+`.github/workflows/ci.yml` | Testes em quarentena: `scripts/quarantine-manifest.json` (#41).
+
+---
+
+## Arquitetura e direção
+
+| Documento | Conteúdo |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Identidade, fluxo, Current/Direction/Legacy/Hypothesis, #69, #70 |
+| [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md) | Classificação vinculante de subsistemas legados (#61) |
+| [AGENTS.md](AGENTS.md) | Guia para executores/agentes |
+| [docs/BASELINE.md](docs/BASELINE.md) | Gate de validação reproduzível (#35) |
+| [docs/MODEL_PROVIDER_CONTRACT.md](docs/MODEL_PROVIDER_CONTRACT.md) | Contract de provider (planejamento) |
+
+---
+
+## Current / Direction / Legacy / Hypothesis
+
+- **Current** — comportamento comprovado hoje: daemon/RPC, session manager,
+  event bus, SQLite storage, daemon controls, web frontend (Vite/React),
+  baseline CI, contracts de eventos/provider.
+- **Direction** — executive coordination: Mission durável (#62), Capability
+  Registry (#63), Context Compiler (#64), policy determinística, headless
+  daemon + Mission Control desktop + CLI (#70), self-improving governado (#69).
+- **Legacy** — código que não define mais a direção: SelfModifyingEngine,
+  Python sandbox, Council/personas, ArchitectClient, waves, Ralph,
+  MCP/SkillLoader, bridges diretas, TUI React/Ink, Council/Memory/Terminal UI.
+  Classificação completa em [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
+- **Hypothesis** — decisões pendentes de POC/benchmark: migração Go (#58),
+  boundaries Zig/Rust, framework desktop, IPC protocol, service lifecycle.
+
+---
+
+## Desenvolvimento
+
+Comandos operacionais corretos (baseline #35):
+
+```bash
+bun run check          # gate completo
+bun run check:install  # frozen installs + tree integrity
+bun run check:runtime  # tsc (runtime/CLI)
+bun run check:web      # web/ production build
+bun run check:tests    # testes obrigatórios
+```
+
+> ⚠️ Classificação dos entrypoints:
+>
+> - `bun run setup` → **workflow/setup legado** (BootWizard da fase
+>   "self-modifying runtime"; classificado na matriz de legado).
+> - `bun run tui` → **TUI legada** (React/Ink; classificada `RETIRE` na
+>   matriz de legado — não compete como segunda UI principal).
+> - `bun run daemon` → **entrypoint atual válido** do daemon/headless runtime.
+>   O daemon é parte da direção preservada (core `KEEP` na matriz). O entrypoint
+>   atual não deve ser confundido com a arquitetura-alvo `ouroborosd` do #70:
+>   o **daemon/headless core atual, incluindo o RPC gateway**, permanece
+>   `KEEP` (foundation da direção até sua boundary evoluir pelos contracts
+>   futuros). O **transporte atual (Fastify/WebSocket)** é classificado
+>   `ADAPT` na matriz — pode ser adaptado ou substituído por IPC local
+>   posteriormente, sem alterar a decisão `KEEP` do core.
+>
+> **Entrypoint atual ≠ arquitetura-alvo.** O daemon atual é comportamento
+> comprovado (`Current`); `ouroborosd` headless com Mission Engine, Capability
+> Registry e IPC local é a direção (`Direction`, #70) — não está implementado.
+
+---
+
+## Licença
+
+ISC (ver `package.json`).

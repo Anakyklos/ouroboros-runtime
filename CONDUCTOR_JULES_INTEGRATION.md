@@ -1,4 +1,10 @@
 # 🎻 Conductor + Jules: Orquestração para Ouroboros
+> **Status: Legacy** — Classificado em [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
+> Este guia descreve a orquestração Conductor/Jules via bridges diretas e
+> workflow de personas (classificação: ADAPT/MOVE, itens 10-12 da matriz).
+> Direção: capability/connector versionado (#63); software work pertence ao Runstead.
+>
+> **Current/Direction/Legacy**: ver [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 > **Guia de Integração para trabalho conjunto via Gemini CLI**
 

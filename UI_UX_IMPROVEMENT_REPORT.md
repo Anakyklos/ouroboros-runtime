@@ -1,4 +1,10 @@
 # Ouroboros UI/UX Improvement Report
+> **Status: Legacy** — Classificado em [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
+> Relatório sobre a UI legada (TUI React/Ink e web frontend).
+> A direção da UI é projection operacional: Mission Control desktop (#70);
+> frontend é projection, daemon é authority.
+>
+> **Current/Direction/Legacy**: ver [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## 1. Overview
 This report details the improvements made to the Ouroboros Mission Control interface, focusing on mobile responsiveness, visual consistency, and layout optimization using a new Design System based on Tailwind v4.

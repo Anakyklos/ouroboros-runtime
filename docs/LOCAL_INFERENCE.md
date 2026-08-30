@@ -124,3 +124,9 @@ bun test
 - JSON: taxa de JSON válido depende do modelo e prompt
 - Embedding: dimensão fixa (384), não comparável com modelos maiores
 - Sem GPU: performance otimizada mas limitada a CPU
+
+---
+> **Status: Legacy/experimental** — Classificado em [docs/LEGACY_MATRIX.md](LEGACY_MATRIX.md)
+> (item 13, local inference: ADAPT/DEFER — planner backend opcional, não é
+> identidade do produto). Provider/modelo não define roadmap do core (#60).
+> Ver [docs/ARCHITECTURE.md](ARCHITECTURE.md).

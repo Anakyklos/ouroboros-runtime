@@ -1,4 +1,10 @@
 # 🐍 Ouroboros Web Frontend — Implementation Plan
+> **Status: Legacy** — Classificado em [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
+> Plano do web frontend legado (Vite/React, classificação: ADAPT/DEFER,
+> item 25 da matriz). Componentes podem ser reutilizados no Mission Control
+> desktop leve, mas deployment web não é obrigação e Electron não é default (#70).
+>
+> **Current/Direction/Legacy**: ver [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## 1. Overview
 A modern, dark-themed Web Dashboard for the Ouroboros runtime, designed to visualize agent states, tasks, and memory in real-time. It communicates with the existing Daemon via WebSocket (for events) and JSON-RPC (for actions).

@@ -1,4 +1,11 @@
 # SPEC: Ouroboros Isolated Environment Architecture
+> **Status: Legacy (Draft histórico)** — Classificado em [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
+> Esta spec descreve o sandbox Python legado (SandboxRunner/SandboxTool/
+> PersistentPythonREPL, classificação: RETIRE, itens 2-4 da matriz).
+> Ouroboros não é executor irrestrito de Python/shell (#60).
+> A direção usa capability contracts e module owners (#63).
+>
+> **Current/Direction/Legacy**: ver [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 > **Status:** Draft  
 > **Author:** DevOps & Security Engineering  

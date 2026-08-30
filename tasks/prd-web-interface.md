@@ -144,3 +144,9 @@ Complete the Ouroboros web interface with full daemon integration, real-time upd
 - Connection stays alive during typical 1-hour session
 - Zero console errors during normal operation
 - All keyboard shortcuts work correctly
+
+---
+> **Status: Legacy** — Classificado em [docs/LEGACY_MATRIX.md](../docs/LEGACY_MATRIX.md)
+> (web frontend: ADAPT/DEFER, item 25). PRD da web UI legada. A direção é
+> Mission Control desktop leve; frontend é projection (#70).
+> Ver [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).
