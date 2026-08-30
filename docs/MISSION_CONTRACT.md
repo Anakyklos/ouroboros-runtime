@@ -64,7 +64,9 @@ Mission (`schemaVersion`), so mixed versions can coexist during migration.
 | `missionId` | Stable id, generated inside Ouroboros |
 | `schemaVersion` | Contract version |
 | `source` | Source/interface (provenance only) |
-| `originalIntent` | Original user intent, preserved verbatim |
+| `originalIntent` | Original user intent, preserved verbatim (raw, in-memory) |
+| `sanitizedOriginalIntent` | Sanitized snapshot of originalIntent, safe for persistence |
+| `originalIntentRef` | Immutable sha256 reference to the raw original intent |
 | `interpretedObjective` | Objective interpreted by Ouroboros |
 | `constraints` | Explicit constraints (immutable by planner) |
 | `acceptanceCriteria` | Acceptance (immutable by planner) |
@@ -131,11 +133,12 @@ reason based on event/evidence** (no chain of thought).
   and changed **only** through the explicit `MissionEngine.recordApproval()`
   path.
 - Each `ApprovalRequirement` carries an **immutable `scopeDescriptor`**
-  (`capabilityId` + `effectClass`). A grant is bound to exactly that scope.
-  A step may reference an existing requirement **only when its
-  capability+effect matches** the requirement's scope — otherwise the
-  policy rejects it (`APPROVAL_SCOPE_MISMATCH`) and the planner cannot
-  hijack a granted approval for a different step/effect. New requirements
+  (`capabilityId` + `effectClass` + `targetDescriptor`). A grant is bound to
+  exactly that capability+effect+target. A step may reference an existing
+  requirement **only when its capability+effect+target matches** — otherwise
+  the policy rejects it (`APPROVAL_SCOPE_MISMATCH`). Two steps with the same
+  capability+effect but different input refs produce different
+  `targetDescriptor` values and cannot share a grant. New requirements
   proposed by a plan start **un-granted** and derive their immutable scope
   from the step.
 - A candidate that smuggles grant fields inside an approval requirement is
@@ -237,15 +240,17 @@ plannerSuggestion       = "looks good"
 Completion is **not** derived from text heuristics, and typed booleans are
 not trusted merely because a caller supplied them:
 
-- `OwnerVerification` is accepted only when its `invocationId` matches the
-  real invocation and its `owner` matches the capability's `moduleOwner`
-  from the catalog. A caller-supplied `{ owner: "katherine", verified: true }`
-  for a Runstead capability is rejected fail-closed.
-- `CriterionVerification` counts toward completion only when its `source`
-  is a module owner that has positively verified an invocation of this
-  Mission (recorded via the engine's authorized path). A fabricated textual
-  `source = "module-owner:runstead"` without a real positive owner
-  verification cannot complete a Mission.
+- `OwnerVerification` is accepted only through the `VerificationAuthority`
+  port (injectable attestation boundary). The default fails closed: without
+  an injected authority, no owner verdict is accepted (`FailClosed-
+  VerificationAuthority`). The authority validates that the owner matches
+  the capability's `moduleOwner` and that the invocationId matches the real
+  invocation.
+- `CriterionVerification` is similarly attested by the authority; the
+  default fails closed. The authority requires the criterion to be one of
+  the Mission's acceptance criteria and the source to be a positively
+  verified module owner. A fabricated textual `source = "module-owner:runstead"`
+  without a real positive owner verification cannot complete a Mission.
 - A missing mandatory lower-layer verification (per
   `CapabilityContract.requiresOwnerVerification`) is never implicit success.
 
@@ -276,14 +281,27 @@ side effect of these methods.
 ## Secret sanitization (persisted free-form text)
 
 Raw secrets must never reach durable storage. `sanitizeText()` is a
-deterministic redaction boundary applied before persistence to every
-free-form text field that receives external data: `originalIntent`,
-constraints, acceptance criteria, context ref labels/external refs,
-approval reasons, `plannerNote` / revision reason, and step
-`desiredOutcome`/`expectedAcceptance`. It redacts the explicitly prohibited
-patterns (`Authorization: Bearer …`, Bearer tokens, `api_key`/`api-secret`/
-`client_secret`/`access_token`/`refresh_token`/`credentials`/`token` values)
-into `[REDACTED]`, preserving the key structure.
+deterministic redaction boundary applied to **every** free-form text field
+that receives external data, across all persisted paths: `originalIntent`
+(sanitized snapshot), constraints, acceptance criteria, context ref
+labels/external refs, approval reasons/approvers, `plannerNote` / revision
+reason, step `desiredOutcome`/`expectedAcceptance`, `InvocationResult.summary`,
+evidence `label`/`externalRef`, owner-verification reason, and the reasons
+of `setWaiting`/`blockMission`/`cancelMission`/`failMission`/`rejectPlan`.
+It redacts the explicitly prohibited patterns (`Authorization: Bearer/Basic …`,
+Bearer tokens, `api_key`/`api_secret`/`client_secret`/`access_token`/
+`refresh_token`/`password`/`private_key`/`credentials`/`token` values) into
+`[REDACTED]`, preserving the key structure.
+
+### Intent preservation vs persisted representation
+
+- `Mission.originalIntent` is the **raw** user intent, preserved verbatim
+  (in-memory, immutable).
+- `Mission.sanitizedOriginalIntent` is the redacted snapshot, which is what
+  durable storage holds.
+- `Mission.originalIntentRef` is an immutable sha256 reference to the raw
+  original, so the original is never lost or silently rewritten, while the
+  raw secret value is never written to the database.
 
 ## Files
 
