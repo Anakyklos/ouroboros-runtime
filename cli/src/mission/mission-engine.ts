@@ -19,6 +19,7 @@ import {
     AllowedCapabilityScope,
     ApprovalRequirement,
     BudgetPolicy,
+    CapabilityContract,
     CapabilityInvocationRef,
     CriterionVerification,
     EvidenceRef,
@@ -36,6 +37,7 @@ import {
     StepApprovalRequirement,
     WAITING_STATES,
     TERMINAL_STATES,
+    computeTargetDescriptor,
 } from "./contracts.js";
 import {
     CapabilityResolver,
@@ -43,9 +45,11 @@ import {
     IdGenerator,
     MissionStore,
     MissionVerifier,
+    VerificationAuthority,
 } from "./ports.js";
 import { PlanPolicyValidator } from "./policy.js";
 import { sanitizeText, sanitizeStringArray } from "./sanitize.js";
+import { createHash } from "node:crypto";
 
 /** Default clock (real time). */
 class SystemClock implements ClockService {
@@ -75,6 +79,43 @@ export interface MissionEngineOptions {
     ids?: IdGenerator;
     interpreter?: IntentInterpreter;
     verifier?: MissionVerifier;
+    /**
+     * Attestation boundary for owner/criterion verification. When omitted,
+     * the engine FAILS CLOSED: no owner or criterion verdict is accepted.
+     * Real attestation (and connectors) belongs to #63/#66.
+     */
+    verificationAuthority?: VerificationAuthority;
+}
+
+/**
+ * Default verification authority: fails closed. Matching identity fields
+ * are NOT provenance — without an injected authority, no owner verdict and
+ * no criterion verdict can be recorded.
+ */
+class FailClosedVerificationAuthority implements VerificationAuthority {
+    async attestOwnerVerification(
+        _submitted: OwnerVerification,
+        _invocation: CapabilityInvocationRef,
+        _contract: CapabilityContract,
+    ): Promise<OwnerVerification> {
+        throw new Error(
+            "No verification authority configured: owner verifications are rejected by default (fail-closed)",
+        );
+    }
+
+    async attestCriterionVerification(
+        _submitted: {
+            criterionId: string;
+            satisfied: boolean;
+            source: string;
+            evidenceRefId?: string;
+        },
+        _mission: Mission,
+    ): Promise<CriterionVerification> {
+        throw new Error(
+            "No verification authority configured: criterion verifications are rejected by default (fail-closed)",
+        );
+    }
 }
 
 export interface CreateMissionInput {
@@ -290,6 +331,7 @@ export class MissionEngine {
     private readonly ids: IdGenerator;
     private readonly interpreter: IntentInterpreter;
     private readonly verifier: MissionVerifier;
+    private readonly verificationAuthority: VerificationAuthority;
 
     constructor(options: MissionEngineOptions) {
         this.store = options.store;
@@ -298,6 +340,8 @@ export class MissionEngine {
         this.ids = options.ids ?? new UuidGenerator();
         this.interpreter = options.interpreter ?? defaultInterpreter;
         this.verifier = options.verifier ?? new DefaultMissionVerifier(this.policy.resolver);
+        this.verificationAuthority =
+            options.verificationAuthority ?? new FailClosedVerificationAuthority();
     }
 
     /**
@@ -314,14 +358,21 @@ export class MissionEngine {
         // Free-form external text is sanitized before durable storage
         // (Authorization/Bearer/api-key/credentials/tokens are redacted).
         const sanitizedApprovals = (approvalRequirements ?? intent.approvals ?? []).map(
-            (req) => ({ ...req, reason: sanitizeText(req.reason) }),
+            (req) => ({ ...req, reason: sanitizeText(req.reason), approver: sanitizeText(req.approver) }),
         );
 
         const mission: Mission = {
             missionId,
             schemaVersion: MISSION_CONTRACT_VERSION,
             source: intent.source,
-            originalIntent: sanitizeText(intent.originalIntent),
+            // Original intent is preserved verbatim (raw). The persisted
+            // representation is the sanitized snapshot + immutable reference;
+            // the raw value itself is never written to durable storage.
+            originalIntent: intent.originalIntent,
+            sanitizedOriginalIntent: sanitizeText(intent.originalIntent),
+            originalIntentRef: createHash("sha256")
+                .update(intent.originalIntent)
+                .digest("hex"),
             interpretedObjective,
             constraints: sanitizeStringArray(intent.constraints),
             acceptanceCriteria: sanitizeStringArray(intent.acceptanceCriteria),
@@ -483,6 +534,7 @@ export class MissionEngine {
                         scopeDescriptor: {
                             capabilityId: step.capabilityRequirement,
                             effectClass: step.effectClass,
+                            targetDescriptor: computeTargetDescriptor(step.inputRefs),
                         },
                         approver: req.approver,
                         reason: req.reason,
@@ -510,7 +562,7 @@ export class MissionEngine {
     /** Reject a proposed revision (auditable rejection, no state regression). */
     async rejectPlan(missionId: string, revisionId: string, reason: string): Promise<Mission> {
         await this.requireMission(missionId);
-        await this.store.updatePlanRevisionStatus(revisionId, "rejected", reason);
+        await this.store.updatePlanRevisionStatus(revisionId, "rejected", sanitizeText(reason));
         return this.requireMission(missionId);
     }
 
@@ -531,7 +583,7 @@ export class MissionEngine {
             );
         }
         requirement.granted = true;
-        requirement.grantedBy = grantedBy;
+        requirement.grantedBy = sanitizeText(grantedBy);
         requirement.grantedAt = this.clock.isoNow();
 
         const allGranted = mission.approvalRequirements.every((req) => req.granted);
@@ -671,40 +723,55 @@ export class MissionEngine {
             throw new Error(`Invocation not found: ${invocationId}`);
         }
         const mission = await this.requireMission(invocation.missionId);
+        // Terminal missions cannot accept late results (consistency).
+        this.guardNotTerminal(mission, "recordInvocationResult");
 
-        // OwnerVerification must be bound to the real invocation and to the
-        // capability's module owner — a caller-supplied {owner, verified}
-        // string is never trusted on its own (fail-closed).
+        // OwnerVerification must be attested by the verification authority;
+        // identity field matching is NOT provenance (fail-closed).
+        let attestedOwnerVerification: OwnerVerification | undefined;
         if (ownerVerification) {
-            if (ownerVerification.invocationId !== invocationId) {
-                throw new Error(
-                    `OwnerVerification.invocationId "${ownerVerification.invocationId}" does not match invocation "${invocationId}"`,
-                );
-            }
             const contract = await this.policy.resolver.resolve(invocation.capabilityId);
             if (!contract) {
                 throw new Error(
                     `cannot verify invocation of unknown capability "${invocation.capabilityId}"`,
                 );
             }
-            if (ownerVerification.owner !== contract.moduleOwner) {
-                throw new Error(
-                    `OwnerVerification.owner "${ownerVerification.owner}" does not match module owner "${contract.moduleOwner}" for capability "${invocation.capabilityId}"`,
+            attestedOwnerVerification =
+                await this.verificationAuthority.attestOwnerVerification(
+                    ownerVerification,
+                    invocation,
+                    contract,
                 );
-            }
+            // Sanitize the attested reason (free-form) before storage.
+            attestedOwnerVerification = {
+                ...attestedOwnerVerification,
+                reason: sanitizeText(attestedOwnerVerification.reason),
+            };
         }
+
+        // Free-form text in result/evidence is sanitized before storage.
+        const sanitizedSummary = sanitizeText(result.summary);
+        const sanitizedEvidenceRefs = result.evidenceRefs.map((ref) => ({
+            ...ref,
+            label: sanitizeText(ref.label),
+            externalRef: sanitizeText(ref.externalRef),
+        }));
 
         const updated: CapabilityInvocationRef = {
             ...invocation,
             status: result.status,
             completedAt: result.completedAt,
-            resultRefs: result.evidenceRefs,
-            error: result.status === InvocationStatus.FAILED ? result.summary : invocation.error,
-            ownerVerification: ownerVerification ?? invocation.ownerVerification,
+            resultRefs: sanitizedEvidenceRefs,
+            error:
+                result.status === InvocationStatus.FAILED
+                    ? sanitizedSummary
+                    : invocation.error,
+            ownerVerification:
+                attestedOwnerVerification ?? invocation.ownerVerification,
         };
 
         const newEvidenceRefs = [...mission.evidenceRefs];
-        for (const ref of result.evidenceRefs) {
+        for (const ref of sanitizedEvidenceRefs) {
             if (!newEvidenceRefs.some((existing) => existing.refId === ref.refId)) {
                 newEvidenceRefs.push(ref);
             }
@@ -727,9 +794,9 @@ export class MissionEngine {
      * can be proven for completion — text labels are never completion
      * authority.
      *
-     * `source` is NOT free-form authority: it must be a module owner that
-     * has positively verified an invocation of this Mission. Without a
-     * trusted owner on record, criterion verification fails closed.
+     * `satisfied`/`source` are CLAIMS, not authority: the verdict is only
+     * stored when the verification authority attests it. Without an
+     * injected authority the engine fails closed.
      */
     async recordCriterionVerification(
         missionId: string,
@@ -741,26 +808,18 @@ export class MissionEngine {
         const mission = await this.requireMission(missionId);
         this.guardNotTerminal(mission, "recordCriterionVerification");
 
-        // A criterion can only be verified by a module owner that has
-        // positively verified an invocation of this Mission. A caller-supplied
-        // "module-owner:runstead" string is not authority on its own.
-        const trustedOwners = new Set(
-            mission.invocationRefs
-                .filter((inv) => inv.ownerVerification?.verified === true)
-                .map((inv) => inv.ownerVerification!.owner),
+        // The authority decides whether the criterion verdict is valid.
+        const attested = await this.verificationAuthority.attestCriterionVerification(
+            { criterionId, satisfied, source, evidenceRefId },
+            mission,
         );
-        if (satisfied && !trustedOwners.has(source)) {
-            throw new Error(
-                `CriterionVerification source "${source}" is not a positively verified module owner of this Mission`,
-            );
-        }
 
         const entry: CriterionVerification = {
-            criterionId,
-            satisfied,
-            source,
+            criterionId: attested.criterionId,
+            satisfied: attested.satisfied,
+            source: attested.source,
             verifiedAt: this.clock.isoNow(),
-            evidenceRefId,
+            evidenceRefId: attested.evidenceRefId,
         };
         const existing = mission.criterionVerifications.find(
             (cv) => cv.criterionId === criterionId,
@@ -843,7 +902,7 @@ export class MissionEngine {
         }
         const unresolvedQuestions = [...mission.unresolvedQuestions];
         if (unresolvedQuestion && !unresolvedQuestions.includes(unresolvedQuestion)) {
-            unresolvedQuestions.push(unresolvedQuestion);
+            unresolvedQuestions.push(sanitizeText(unresolvedQuestion));
         }
         await this.store.updateMission(missionId, {
             state,
@@ -862,7 +921,7 @@ export class MissionEngine {
         this.guardNotTerminal(mission, "blockMission");
         await this.store.updateMission(missionId, {
             state: MissionState.BLOCKED,
-            unresolvedQuestions: [...mission.unresolvedQuestions, `blocked: ${reason}`],
+            unresolvedQuestions: [...mission.unresolvedQuestions, `blocked: ${sanitizeText(reason)}`],
             updatedAt: this.clock.isoNow(),
         });
         return this.requireMission(missionId);
@@ -874,7 +933,7 @@ export class MissionEngine {
         this.guardNotTerminal(mission, "cancelMission");
         await this.store.updateMission(missionId, {
             state: MissionState.CANCELLED,
-            unresolvedQuestions: [...mission.unresolvedQuestions, `cancelled: ${reason}`],
+            unresolvedQuestions: [...mission.unresolvedQuestions, `cancelled: ${sanitizeText(reason)}`],
             updatedAt: this.clock.isoNow(),
         });
         return this.requireMission(missionId);
@@ -886,7 +945,7 @@ export class MissionEngine {
         this.guardNotTerminal(mission, "failMission");
         await this.store.updateMission(missionId, {
             state: MissionState.FAILED_TERMINAL,
-            unresolvedQuestions: [...mission.unresolvedQuestions, `failed: ${reason}`],
+            unresolvedQuestions: [...mission.unresolvedQuestions, `failed: ${sanitizeText(reason)}`],
             updatedAt: this.clock.isoNow(),
         });
         return this.requireMission(missionId);

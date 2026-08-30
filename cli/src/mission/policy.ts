@@ -26,6 +26,7 @@ import {
     PlanCandidate,
     PlanStep,
     CapabilityContract,
+    computeTargetDescriptor,
 } from "./contracts.js";
 import type { CapabilityResolver } from "./ports.js";
 
@@ -223,8 +224,8 @@ export class PlanPolicyValidator {
         }
 
         // When a step references an existing approval requirement by
-        // approvalId, the step's scope (capability + effect) must match
-        // the requirement's immutable scopeDescriptor. A grant tied to
+        // approvalId, the step's scope (capability + effect + target) must
+        // match the requirement's immutable scopeDescriptor. A grant tied to
         // one scope cannot authorize a different step (hijack).
         if (rawReq?.approvalId) {
             const existingReq = mission.approvalRequirements.find(
@@ -233,11 +234,13 @@ export class PlanPolicyValidator {
             if (existingReq) {
                 const scopeOk =
                     existingReq.scopeDescriptor.capabilityId === step.capabilityRequirement &&
-                    existingReq.scopeDescriptor.effectClass === step.effectClass;
+                    existingReq.scopeDescriptor.effectClass === step.effectClass &&
+                    existingReq.scopeDescriptor.targetDescriptor ===
+                        computeTargetDescriptor(step.inputRefs);
                 if (!scopeOk) {
                     decision.reject(
                         PolicyRejectionCode.APPROVAL_SCOPE_MISMATCH,
-                        `Step "${step.stepId}" references approval requirement "${rawReq.approvalId}" with scope "${existingReq.scopeDescriptor.capabilityId}/${existingReq.scopeDescriptor.effectClass}" but the step targets "${step.capabilityRequirement}/${step.effectClass}"; the planner cannot re-purpose a granted approval for a different scope.`,
+                        `Step "${step.stepId}" references approval requirement "${rawReq.approvalId}" with scope "${existingReq.scopeDescriptor.capabilityId}/${existingReq.scopeDescriptor.effectClass}/${existingReq.scopeDescriptor.targetDescriptor}" but the step targets "${step.capabilityRequirement}/${step.effectClass}/${computeTargetDescriptor(step.inputRefs)}"; the planner cannot re-purpose a granted approval for a different scope.`,
                     );
                 }
             }

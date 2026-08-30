@@ -12,7 +12,10 @@
 
 import type {
     CapabilityContract,
+    CapabilityInvocationRef,
+    CriterionVerification,
     Mission,
+    OwnerVerification,
     PlanCandidate,
     PlanStep,
 } from "./contracts.js";
@@ -22,6 +25,7 @@ import type {
     ClockService,
     IdGenerator,
     PlannerPort,
+    VerificationAuthority,
 } from "./ports.js";
 
 /** ------------------------------------------------------------------ */
@@ -225,4 +229,89 @@ export function makeDefaultCapabilityCatalog(): CapabilityContract[] {
             ownsStorage: true,
         },
     ];
+}
+/** ------------------------------------------------------------------ */
+/**  FakeVerificationAuthority — deterministic attestation for tests.  */
+/** ------------------------------------------------------------------ */
+/**
+ * Test authority that attests owner and criterion verdicts with explicit
+ * identity/provenance checks. It does NOT accept a verdict merely because
+ * the caller filled in the right strings:
+ *  - Owner verification: invocationId must match the invocation and owner
+ *    must match the capability's module owner; the attested verdict carries
+ *    a deterministic attestation marker.
+ *  - Criterion verification: the criterion must be one of the Mission's
+ *    acceptance criteria, the source must be a positively verified module
+ *    owner, and the optional evidenceRefId must reference existing evidence.
+ */
+export class FakeVerificationAuthority implements VerificationAuthority {
+    private counter = 0;
+
+    async attestOwnerVerification(
+        submitted: OwnerVerification,
+        invocation: CapabilityInvocationRef,
+        contract: CapabilityContract,
+    ): Promise<OwnerVerification> {
+        if (submitted.invocationId !== invocation.invocationId) {
+            throw new Error(
+                `OwnerVerification.invocationId "${submitted.invocationId}" does not match invocation "${invocation.invocationId}"`,
+            );
+        }
+        if (submitted.owner !== contract.moduleOwner) {
+            throw new Error(
+                `OwnerVerification.owner "${submitted.owner}" does not match module owner "${contract.moduleOwner}" for capability "${invocation.capabilityId}"`,
+            );
+        }
+        this.counter++;
+        return {
+            ...submitted,
+            // Deterministic attestation marker: the verdict was attested by
+            // the authority, not merely submitted with matching strings.
+            reason: `[attested:${this.counter}] ${submitted.reason ?? ""}`.trim(),
+        };
+    }
+
+    async attestCriterionVerification(
+        submitted: {
+            criterionId: string;
+            satisfied: boolean;
+            source: string;
+            evidenceRefId?: string;
+        },
+        mission: Mission,
+    ): Promise<CriterionVerification> {
+        if (!mission.acceptanceCriteria.includes(submitted.criterionId)) {
+            throw new Error(
+                `Criterion "${submitted.criterionId}" is not one of the Mission acceptance criteria`,
+            );
+        }
+        const trustedOwners = new Set(
+            mission.invocationRefs
+                .filter((inv) => inv.ownerVerification?.verified === true)
+                .map((inv) => inv.ownerVerification!.owner),
+        );
+        if (submitted.satisfied && !trustedOwners.has(submitted.source)) {
+            throw new Error(
+                `CriterionVerification source "${submitted.source}" is not a positively verified module owner of this Mission`,
+            );
+        }
+        if (submitted.evidenceRefId !== undefined) {
+            const evidenceExists = mission.evidenceRefs.some(
+                (ref) => ref.refId === submitted.evidenceRefId,
+            );
+            if (!evidenceExists) {
+                throw new Error(
+                    `CriterionVerification references unknown evidence ref "${submitted.evidenceRefId}"`,
+                );
+            }
+        }
+        this.counter++;
+        return {
+            criterionId: submitted.criterionId,
+            satisfied: submitted.satisfied,
+            source: submitted.source,
+            evidenceRefId: submitted.evidenceRefId,
+            verifiedAt: `attested:${this.counter}`,
+        };
+    }
 }

@@ -25,6 +25,7 @@ import {
     FakeClock,
     FakeIdGenerator,
     FakePlannerPort,
+    FakeVerificationAuthority,
     makeDefaultCapabilityCatalog,
 } from "./testing.js";
 import type { PlanCandidate } from "./contracts.js";
@@ -91,14 +92,26 @@ interface EngineHarness {
     close: () => Promise<void>;
 }
 
-function createHarness(clock = new FakeClock(BASE_TIME)): EngineHarness {
+function createHarness(
+    clock = new FakeClock(BASE_TIME),
+    opts: { withAuthority?: boolean } = {},
+): EngineHarness {
     const store = new SqliteMissionStore(":memory:");
     const resolver = new FakeCapabilityResolver();
     resolver.registerMany(makeDefaultCapabilityCatalog());
     const planner = new FakePlannerPort();
     const ids = new FakeIdGenerator("mission-id");
     const policy = new PlanPolicyValidator(resolver);
-    const engine = new MissionEngine({ store, policy, clock, ids, interpreter: (i) => i.originalIntent });
+    const engine = new MissionEngine({
+        store,
+        policy,
+        clock,
+        ids,
+        interpreter: (i) => i.originalIntent,
+        // Tests normally inject a deterministic attestation authority;
+        // opts.withAuthority=false exercises the fail-closed default.
+        verificationAuthority: opts.withAuthority === false ? undefined : new FakeVerificationAuthority(),
+    });
 
     return {
         engine,
@@ -201,7 +214,7 @@ describe("MissionEngine", () => {
                 approvals: [
                     {
                         approvalId: "ap-export",
-                        scopeDescriptor: { capabilityId: "runstead.code-review", effectClass: EffectClass.EXECUTION },
+                        scopeDescriptor: { capabilityId: "runstead.code-review", effectClass: EffectClass.EXECUTION, targetDescriptor: "default" },
                         approver: "operator",
                         reason: "Export explicitly authorized by operator",
                         granted: true,
@@ -452,7 +465,7 @@ describe("MissionEngine", () => {
                     {
                         approvalId: "ap-write",
                         // Granted approval is bound to lifeos.write / WRITE.
-                        scopeDescriptor: { capabilityId: "lifeos.write", effectClass: EffectClass.WRITE },
+                        scopeDescriptor: { capabilityId: "lifeos.write", effectClass: EffectClass.WRITE, targetDescriptor: "default" },
                         approver: "operator",
                         reason: "Approved for life-domain write",
                         granted: true,
@@ -530,7 +543,7 @@ describe("MissionEngine", () => {
                 approvalRequirements: [
                     {
                         approvalId: "ap-write",
-                        scopeDescriptor: { capabilityId: "lifeos.write", effectClass: EffectClass.WRITE },
+                        scopeDescriptor: { capabilityId: "lifeos.write", effectClass: EffectClass.WRITE, targetDescriptor: "refs/lifeos/journal" },
                         approver: "operator",
                         reason: "Write to life domain requires operator approval",
                         granted: false,
@@ -1248,6 +1261,178 @@ describe("MissionEngine", () => {
             expect(verification.satisfied).toBe(false);
             expect(verification.ownerBlocked).toBe(false);
             await expect(engine.completeMission(mission.missionId)).rejects.toThrow();
+        });
+
+        it("BLOCKER: owner verification is rejected without an attestation authority (fail-closed)", async () => {
+            // Engine WITHOUT an injected authority must fail closed even when
+            // the caller submits the correct owner and invocationId.
+            const noAuthority = createHarness(new FakeClock(BASE_TIME), { withAuthority: false });
+            await noAuthority.store.initialize();
+            const e = noAuthority.engine;
+            try {
+                const intent = makeIntent("cli");
+                const mission = await e.createMission({
+                    intent,
+                    allowedCapabilityScope: DEFAULT_SCOPE,
+                });
+                const proposal = await e.proposePlan(mission.missionId, makeCandidate(mission.missionId));
+                if (!proposal.ok) throw new Error("plan rejected");
+                await e.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+                const invocation = await e.dispatchStep(mission.missionId, "step-1");
+                await expect(
+                    e.recordInvocationResult(
+                        invocation.invocationId,
+                        {
+                            invocationId: invocation.invocationId,
+                            status: InvocationStatus.COMPLETED,
+                            summary: "done",
+                            evidenceRefs: [],
+                            completedAt: BASE_TIME,
+                        },
+                        {
+                            invocationId: invocation.invocationId,
+                            verified: true,
+                            reason: "looks good",
+                            owner: "runstead",
+                            verifiedAt: BASE_TIME,
+                        },
+                    ),
+                ).rejects.toThrow(/no verification authority/i);
+
+                const after = await e.getMission(mission.missionId);
+                expect(after.invocationRefs[0].ownerVerification).toBeUndefined();
+                expect(after.invocationRefs[0].status).toBe(InvocationStatus.DISPATCHED);
+            } finally {
+                await noAuthority.close();
+            }
+        });
+
+        it("BLOCKER: criterion verification is rejected without an attestation authority (fail-closed)", async () => {
+            const noAuthority = createHarness(new FakeClock(BASE_TIME), { withAuthority: false });
+            await noAuthority.store.initialize();
+            const e = noAuthority.engine;
+            try {
+                const intent = makeIntent("cli");
+                const mission = await e.createMission({
+                    intent,
+                    allowedCapabilityScope: DEFAULT_SCOPE,
+                });
+                await expect(
+                    e.recordCriterionVerification(mission.missionId, "PR merged", true, "runstead", "ev-1"),
+                ).rejects.toThrow(/no verification authority/i);
+            } finally {
+                await noAuthority.close();
+            }
+        });
+
+        it("BLOCKER: criterion verification cannot be fabricated for a non-acceptance criterion", async () => {
+            const intent = makeIntent("cli");
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            const proposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId));
+            if (!proposal.ok) throw new Error("plan rejected");
+            await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.recordInvocationResult(
+                invocation.invocationId,
+                {
+                    invocationId: invocation.invocationId,
+                    status: InvocationStatus.COMPLETED,
+                    summary: "Review completed",
+                    evidenceRefs: [
+                        { refId: "ev-1", owner: "runstead", externalRef: "runstead:review/1", label: "PR merged" },
+                        { refId: "ev-2", owner: "runstead", externalRef: "runstead:ci/1", label: "CI green" },
+                    ],
+                    completedAt: BASE_TIME,
+                },
+                {
+                    invocationId: invocation.invocationId,
+                    verified: true,
+                    reason: "Review verified",
+                    owner: "runstead",
+                    verifiedAt: BASE_TIME,
+                },
+            );
+
+            // Criterion "B" is not an acceptance criterion; the authority
+            // must reject it even though "runstead" is a trusted owner.
+            await expect(
+                engine.recordCriterionVerification(mission.missionId, "B", true, "runstead", "ev-1"),
+            ).rejects.toThrow(/not one of the Mission acceptance criteria/i);
+
+            const verification = await engine.verifyMission(mission.missionId);
+            expect(verification.satisfied).toBe(false);
+        });
+
+        it("BLOCKER: a terminal Mission rejects late invocation results (consistency)", async () => {
+            const intent = makeIntent("cli");
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            const proposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId));
+            if (!proposal.ok) throw new Error("plan rejected");
+            await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.recordInvocationResult(
+                invocation.invocationId,
+                {
+                    invocationId: invocation.invocationId,
+                    status: InvocationStatus.COMPLETED,
+                    summary: "done",
+                    evidenceRefs: [
+                        { refId: "ev-1", owner: "runstead", externalRef: "r:1", label: "PR merged" },
+                        { refId: "ev-2", owner: "runstead", externalRef: "r:2", label: "CI green" },
+                    ],
+                    completedAt: BASE_TIME,
+                },
+                {
+                    invocationId: invocation.invocationId,
+                    verified: true,
+                    reason: "ok",
+                    owner: "runstead",
+                    verifiedAt: BASE_TIME,
+                },
+            );
+            await engine.recordCriterionVerification(mission.missionId, "PR merged", true, "runstead", "ev-1");
+            await engine.recordCriterionVerification(mission.missionId, "CI green", true, "runstead", "ev-2");
+            const completed = await engine.completeMission(mission.missionId);
+            expect(completed.state).toBe(MissionState.COMPLETED);
+
+            // Late owner verification (negative) must be rejected — the
+            // terminal Mission cannot diverge from its canonical verification.
+            await expect(
+                engine.recordInvocationResult(
+                    invocation.invocationId,
+                    {
+                        invocationId: invocation.invocationId,
+                        status: InvocationStatus.COMPLETED,
+                        summary: "late change",
+                        evidenceRefs: [],
+                        completedAt: BASE_TIME,
+                    },
+                    {
+                        invocationId: invocation.invocationId,
+                        verified: false,
+                        reason: "late regression",
+                        owner: "runstead",
+                        verifiedAt: BASE_TIME,
+                    },
+                ),
+            ).rejects.toThrow(/terminal/i);
+
+            // Persisted Mission and invocation remain consistent.
+            const after = await engine.getMission(mission.missionId);
+            expect(after.state).toBe(MissionState.COMPLETED);
+            expect(after.invocationRefs[0].ownerVerification?.verified).toBe(true);
+            expect(after.invocationRefs[0].status).toBe(InvocationStatus.COMPLETED);
+            const stored = await harness.store.getInvocation(invocation.invocationId);
+            expect(stored!.ownerVerification?.verified).toBe(true);
         });
     });
 });

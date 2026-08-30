@@ -86,12 +86,19 @@ export interface ApprovalRequirement {
     approvalId: string;
     /**
      * Immutable scope of what was approved. A grant is bound to exactly this
-     * capability+effect; the planner cannot reuse a granted approval for a
-     * different step/capability/effect (APPROVAL_SCOPE_MISMATCH).
+     * capability+effect+target; the planner cannot reuse a granted approval
+     * for a different scope (APPROVAL_SCOPE_MISMATCH).
      */
     scopeDescriptor: {
         capabilityId: string;
         effectClass: EffectClass;
+        /**
+         * Deterministic fingerprint of the approved target (canonical input
+         * refs, computed by policy/code, never defined by the planner). Two
+         * steps with the same capability+effect but different targets do not
+         * share a grant.
+         */
+        targetDescriptor: string;
     };
     /** Who must approve (role/interface), not a free-form narrative. */
     approver: string;
@@ -127,6 +134,16 @@ export enum EffectClass {
     MODULE_OWNER_OPERATION = "module_owner_operation",
     APPROVAL = "approval",
     COMMUNICATION = "communication",
+}
+
+/**
+ * Deterministic fingerprint of a step's approved target, computed by
+ * policy/code (never defined by the planner): canonical (sorted) input refs.
+ * Two steps with the same capability+effect but different targets produce
+ * different descriptors and cannot share an approval grant.
+ */
+export function computeTargetDescriptor(inputRefs: string[]): string {
+    return [...inputRefs].sort().join("|");
 }
 
 /** A raw intent entry from an authorized interface. Not yet a Mission. */
@@ -346,8 +363,16 @@ export interface Mission {
     schemaVersion: number;
     /** Source/interface that supplied the intent (provenance only). */
     source: IntentSource;
-    /** Original user-visible intent, preserved verbatim. */
+    /** Original user-visible intent, preserved verbatim (raw, in-memory). */
     originalIntent: string;
+    /**
+     * Sanitized snapshot of the original intent, safe for persistence.
+     * For benign input this is identical to originalIntent; for secret-bearing
+     * input the prohibited patterns are redacted to [REDACTED].
+     */
+    sanitizedOriginalIntent: string;
+    /** Immutable reference (sha256 hex) to the raw original intent. */
+    originalIntentRef: string;
     /** Objective interpreted by Ouroboros (advisory input, durable). */
     interpretedObjective: string;
     /** Explicit constraints (immutable by planner). */

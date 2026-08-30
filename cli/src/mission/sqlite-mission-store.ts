@@ -27,7 +27,8 @@ interface MissionRow {
     mission_id: string;
     schema_version: number;
     source: string;
-    original_intent: string;
+    sanitized_original_intent: string;
+    original_intent_ref: string;
     interpreted_objective: string;
     constraints: string;
     acceptance_criteria: string;
@@ -113,7 +114,8 @@ export class SqliteMissionStore implements MissionStore {
                 mission_id TEXT PRIMARY KEY,
                 schema_version INTEGER NOT NULL,
                 source TEXT NOT NULL,
-                original_intent TEXT NOT NULL,
+                sanitized_original_intent TEXT NOT NULL,
+                original_intent_ref TEXT NOT NULL,
                 interpreted_objective TEXT NOT NULL,
                 constraints TEXT NOT NULL DEFAULT '[]',
                 acceptance_criteria TEXT NOT NULL DEFAULT '[]',
@@ -182,16 +184,17 @@ export class SqliteMissionStore implements MissionStore {
         this.stmt(
             "createMission",
             `INSERT INTO missions (
-                mission_id, schema_version, source, original_intent, interpreted_objective,
+                mission_id, schema_version, source, sanitized_original_intent, original_intent_ref, interpreted_objective,
                 constraints, acceptance_criteria, budget_policy, allowed_capability_scope,
                 approval_requirements, context_refs, state, current_plan_revision_id,
                 evidence_refs, criterion_verifications, unresolved_questions, created_at, updated_at,
                 recovery_metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(mission_id) DO UPDATE SET
                 schema_version = excluded.schema_version,
                 source = excluded.source,
-                original_intent = excluded.original_intent,
+                sanitized_original_intent = excluded.sanitized_original_intent,
+                original_intent_ref = excluded.original_intent_ref,
                 interpreted_objective = excluded.interpreted_objective,
                 constraints = excluded.constraints,
                 acceptance_criteria = excluded.acceptance_criteria,
@@ -211,7 +214,8 @@ export class SqliteMissionStore implements MissionStore {
             mission.missionId,
             mission.schemaVersion,
             mission.source,
-            mission.originalIntent,
+            mission.sanitizedOriginalIntent,
+            mission.originalIntentRef,
             mission.interpretedObjective,
             JSON.stringify(mission.constraints),
             JSON.stringify(mission.acceptanceCriteria),
@@ -426,7 +430,11 @@ export class SqliteMissionStore implements MissionStore {
             missionId: row.mission_id,
             schemaVersion: row.schema_version,
             source: row.source as Mission["source"],
-            originalIntent: row.original_intent,
+            // The persisted sanitized snapshot + immutable ref are what
+            // survive; the raw original intent is never written to storage.
+            originalIntent: row.sanitized_original_intent,
+            sanitizedOriginalIntent: row.sanitized_original_intent,
+            originalIntentRef: row.original_intent_ref,
             interpretedObjective: row.interpreted_objective,
             constraints: parseJson<string[]>(row.constraints, []),
             acceptanceCriteria: parseJson<string[]>(row.acceptance_criteria, []),

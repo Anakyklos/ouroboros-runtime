@@ -33,6 +33,7 @@ import {
     FakeCapabilityResolver,
     FakeClock,
     FakeIdGenerator,
+    FakeVerificationAuthority,
     makeDefaultCapabilityCatalog,
 } from "./testing.js";
 
@@ -100,6 +101,7 @@ function makeEngineFactory(): EngineFactory {
             clock,
             ids,
             interpreter: (i) => i.originalIntent,
+            verificationAuthority: new FakeVerificationAuthority(),
         });
     };
 }
@@ -617,5 +619,132 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         expect(persistedBlob).toContain("api_key");
 
         await store2.close();
+    });
+
+    it("BLOCKER: secrets in ALL free-form persisted paths are redacted (result, evidence, owner reason, wait, block, reject, approval)", async () => {
+        const dir = track(makeTempDir("mission-secrets-all-"));
+        const dbPath = join(dir.path, "missions.db");
+
+        const store = new SqliteMissionStore(dbPath);
+        await store.initialize();
+        const engine = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-a"), store);
+
+        const mission = await engine.createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+        const proposal = await engine.proposePlan(mission.missionId, {
+            planId: "plan-1",
+            missionId: mission.missionId,
+            plannerNote: "ok",
+            steps: [makeStep()],
+        });
+        if (!proposal.ok) throw new Error("plan rejected");
+        await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+        // Inject secrets through every free-form persisted path.
+        const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+        await engine.recordInvocationResult(
+            invocation.invocationId,
+            {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.COMPLETED,
+                summary: "Authorization: Bearer result-secret-xyz",
+                evidenceRefs: [
+                    { refId: "ev-secret", owner: "runstead", externalRef: "token=evidence-secret-abc", label: "PR merged api_key=evidence-secret-abc" },
+                ],
+                completedAt: BASE_TIME,
+            },
+            {
+                invocationId: invocation.invocationId,
+                verified: true,
+                reason: "ok Authorization: Basic owner-secret-xyz",
+                owner: "runstead",
+                verifiedAt: BASE_TIME,
+            },
+        );
+        await engine.setWaiting(
+            mission.missionId,
+            MissionState.WAITING_FOR_CONTEXT,
+            "need token=wait-secret-abc",
+        );
+        await engine.blockMission(mission.missionId, "blocked: Authorization: Bearer block-secret-xyz");
+        await engine.rejectPlan(mission.missionId, proposal.revision.revisionId, "reject: api_key=reject-secret-abc");
+
+        await store.close();
+
+        // Reopen and inspect the full persisted blob.
+        const store2 = new SqliteMissionStore(dbPath);
+        await store2.initialize();
+        const recovered = await store2.getMission(mission.missionId);
+        const invocations = await store2.listInvocations(mission.missionId);
+        const revisions = await store2.getPlanRevisions(mission.missionId);
+
+        const blob = JSON.stringify({
+            mission: recovered,
+            invocations,
+            revisions,
+        });
+
+        for (const secret of [
+            "result-secret-xyz",
+            "evidence-secret-abc",
+            "owner-secret-xyz",
+            "wait-secret-abc",
+            "block-secret-xyz",
+            "reject-secret-abc",
+        ]) {
+            expect(blob).not.toContain(secret);
+        }
+
+        await store2.close();
+    });
+
+    it("BLOCKER: benign originalIntent is preserved exactly; secret-bearing intent keeps raw value + immutable ref while only sanitized payload persists", async () => {
+        const dir = track(makeTempDir("mission-intent-preserve-"));
+        const dbPath = join(dir.path, "missions.db");
+
+        // Benign intent: raw originalIntent is preserved verbatim.
+        const store1 = new SqliteMissionStore(dbPath);
+        await store1.initialize();
+        const engine1 = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-a"), store1);
+        const benign = await engine1.createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+        expect(benign.originalIntent).toBe(makeIntent().originalIntent);
+        expect(benign.sanitizedOriginalIntent).toBe(makeIntent().originalIntent);
+        expect(benign.originalIntentRef).toMatch(/^[0-9a-f]{64}$/);
+        await store1.close();
+
+        // Secret-bearing intent: raw value kept on the returned Mission,
+        // persisted representation is sanitized, immutable ref preserved.
+        const store2 = new SqliteMissionStore(dbPath);
+        await store2.initialize();
+        const engine2 = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-b"), store2);
+        const secretIntent = makeIntent();
+        secretIntent.originalIntent = "use Authorization: Bearer real-secret-token to fetch";
+        const secretMission = await engine2.createMission({
+            intent: secretIntent,
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+        // Raw original preserved on the in-memory/returned Mission.
+        expect(secretMission.originalIntent).toBe(secretIntent.originalIntent);
+        expect(secretMission.sanitizedOriginalIntent).not.toContain("real-secret-token");
+        expect(secretMission.sanitizedOriginalIntent).toContain("[REDACTED]");
+        // Immutable reference to the raw original survives.
+        expect(secretMission.originalIntentRef).toMatch(/^[0-9a-f]{64}$/);
+        await store2.close();
+
+        // After reopen: persisted representation is sanitized; the raw secret
+        // value is never present, and the ref is stable.
+        const store3 = new SqliteMissionStore(dbPath);
+        await store3.initialize();
+        const recoveredSecret = await store3.getMission(secretMission.missionId);
+        expect(recoveredSecret!.originalIntent).not.toContain("real-secret-token");
+        expect(recoveredSecret!.sanitizedOriginalIntent).not.toContain("real-secret-token");
+        expect(recoveredSecret!.sanitizedOriginalIntent).toContain("[REDACTED]");
+        expect(recoveredSecret!.originalIntentRef).toBe(secretMission.originalIntentRef);
+        await store3.close();
     });
 });

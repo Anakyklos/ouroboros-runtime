@@ -296,7 +296,7 @@ describe("PlanPolicyValidator (deterministic policy)", () => {
             approvalRequirements: [
                 {
                     approvalId: "ap-1",
-                    scopeDescriptor: { capabilityId: "lifeos.write", effectClass: EffectClass.WRITE },
+                    scopeDescriptor: { capabilityId: "lifeos.write", effectClass: EffectClass.WRITE, targetDescriptor: "default" },
                     approver: "operator",
                     reason: "Write to life domain",
                     granted: true,
@@ -316,6 +316,46 @@ describe("PlanPolicyValidator (deterministic policy)", () => {
                         approvalId: "ap-1",
                         approver: "operator",
                         reason: "Deploy to production",
+                    },
+                }),
+            ],
+        });
+        const decision = await policy.validate(mission, candidate);
+        expect(decision.valid).toBe(false);
+        expect(decision.codes).toContain(PolicyRejectionCode.APPROVAL_SCOPE_MISMATCH);
+    });
+
+    it("rejects approval reuse within the same capability/effect but a different target (input refs)", async () => {
+        // Mission has approval "ap-1" granted for lifeos.write/WRITE on a
+        // specific target (entry-1).
+        const mission = makeMission(makeIntent(), {
+            approvalRequirements: [
+                {
+                    approvalId: "ap-1",
+                    scopeDescriptor: {
+                        capabilityId: "lifeos.write",
+                        effectClass: EffectClass.WRITE,
+                        targetDescriptor: "refs/lifeos/journal/entry-1",
+                    },
+                    approver: "operator",
+                    reason: "Write to life journal entry-1",
+                    granted: true,
+                    grantedBy: "operator",
+                    grantedAt: "2026-08-30T12:00:00.000Z",
+                },
+            ],
+        });
+        // Same capability + same effect class, but a DIFFERENT target.
+        const candidate = makeCandidate({
+            steps: [
+                makeStep({
+                    capabilityRequirement: "lifeos.write",
+                    effectClass: EffectClass.WRITE,
+                    inputRefs: ["refs/lifeos/users"],
+                    approvalRequirement: {
+                        approvalId: "ap-1",
+                        approver: "operator",
+                        reason: "Write to users instead",
                     },
                 }),
             ],

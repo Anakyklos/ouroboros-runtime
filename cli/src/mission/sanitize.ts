@@ -15,18 +15,37 @@
 // and replaces the value with [REDACTED] so the structure is still readable.
 const REDACTORS: Array<{ pattern: RegExp; replace: (match: string) => string }> = [
     {
-        // Authorization: Bearer <token>
-        pattern: /\b(Authorization\s*:\s*Bearer\s+)\S+\s*/gi,
+        // Authorization: Bearer <token> or Authorization: Basic <credential>
+        pattern: /\b(Authorization\s*:\s*)(Bearer|Basic)\s+\S+\s*/gi,
         replace: (m) => {
             const idx = m.indexOf(":");
             if (idx === -1) return "[REDACTED]";
-            return `${m.slice(0, idx + 1).trim()} Bearer [REDACTED] `;
+            const scheme = m.includes("Basic") ? "Basic" : "Bearer";
+            return `${m.slice(0, idx + 1).trim()} ${scheme} [REDACTED] `;
         },
     },
     {
         // Standalone Bearer token (long-ish base64)
         pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]{6,}\b/g,
         replace: () => "Bearer [REDACTED]",
+    },
+    {
+        // password=... / password:...
+        pattern: /\b(password\s*[=:]\s*)\S+/gi,
+        replace: (m) => {
+            const idx = m.search(/[=:]/);
+            if (idx === -1) return "[REDACTED]";
+            return `${m.slice(0, idx + 1).trim()} [REDACTED]`;
+        },
+    },
+    {
+        // private_key=... / privateKey=...
+        pattern: /\b(private[_-]?key\s*[=:]\s*)\S+/gi,
+        replace: (m) => {
+            const idx = m.search(/[=:]/);
+            if (idx === -1) return "[REDACTED]";
+            return `${m.slice(0, idx + 1).trim()} [REDACTED]`;
+        },
     },
     {
         // api_key=... / apiKey=...

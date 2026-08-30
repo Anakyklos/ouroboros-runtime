@@ -6,13 +6,15 @@
  */
 
 import type {
+    CapabilityContract,
+    CapabilityInvocationRef,
+    CriterionVerification,
     Mission,
+    MissionState,
+    OwnerVerification,
     PlanCandidate,
     PlanRevision,
     PlanRevisionStatus,
-    CapabilityContract,
-    CapabilityInvocationRef,
-    MissionState,
 } from "./contracts.js";
 
 /** ------------------------------------------------------------------ */
@@ -111,6 +113,45 @@ export interface MissionVerifier {
         ownerBlocked: boolean;
         reasons: string[];
     }>;
+}
+
+/** ------------------------------------------------------------------ */
+/**  VerificationAuthority — attestation boundary for lower-layer verdicts */
+/** ------------------------------------------------------------------ */
+/**
+ * Injectable authority that attests module-owner verification and criterion
+ * verification. Matching identity fields are NOT provenance: the caller
+ * cannot make an owner verdict sovereign by filling in the right strings.
+ * The default authority FAILS CLOSED (rejects everything) until a real
+ * authority (or a deterministic fake in tests) is injected. #63/#66 will
+ * provide the real implementation.
+ */
+export interface VerificationAuthority {
+    /**
+     * Attest that a module owner verified an invocation. The submitted
+     * OwnerVerification is a claim; the returned value is the attested
+     * verdict (or throws, fail-closed).
+     */
+    attestOwnerVerification(
+        submitted: OwnerVerification,
+        invocation: CapabilityInvocationRef,
+        contract: CapabilityContract,
+    ): Promise<OwnerVerification>;
+
+    /**
+     * Attest that an acceptance criterion was satisfied by a trusted source.
+     * `satisfied`/`source` are claims, not authority; the authority decides
+     * whether the criterion verdict is valid.
+     */
+    attestCriterionVerification(
+        submitted: {
+            criterionId: string;
+            satisfied: boolean;
+            source: string;
+            evidenceRefId?: string;
+        },
+        mission: Mission,
+    ): Promise<CriterionVerification>;
 }
 
 /** ------------------------------------------------------------------ */
