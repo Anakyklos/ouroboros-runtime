@@ -207,8 +207,10 @@ skip/todo/only/`|| true`/continue-on-error/remoção de testes.
 - `Anakyklos/architecture` (README.md/SYSTEM-MAP.md/VISION.md/policies/
   RFC 0001/languages/) acessado via GitHub autenticado (repositório privado);
   a direção autoritativa é reconciliada com essas fontes primárias e com
-  #60/#69/#70, conforme hierarquia `code + tests + observed behavior >
-  product documentation > architecture repository`.
+  #60/#69/#70, conforme hierarquia de autoridade: para comportamento/current
+  reality, `code + tests + observation > documentação`; para
+  direção/boundaries, `Anakyklos/architecture + decisões aprovadas >
+  documentação legada do produto`; Current ≠ Direction ≠ Legacy ≠ Hypothesis.
 - Issue #60/#61/#69/#70 e seus comentários são decisões vinculantes; a
   matriz não reabre decisões já tomadas (ex.: Electron rejeitado como default,
   SelfModifyingEngine RETIRE/MOVE/EXTRACT).

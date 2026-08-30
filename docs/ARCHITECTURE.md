@@ -7,8 +7,11 @@
 > Código existente que não representa mais a direção está em *Legacy*.
 > Decisões dependentes de POC/benchmark estão em *Hypothesis*.
 >
-> **Hierarquia de autoridade**: `code + tests + observed behavior > product
-> documentation > architecture repository` (fonte: `Anakyklos/architecture/README.md`).
+> **Hierarquia de autoridade**:
+> - **Para comportamento/current reality**: `code + tests + observation > documentação`
+> - **Para direção/boundaries**: `Anakyklos/architecture + decisões aprovadas > documentação legada do produto`
+> - **Current ≠ Direction ≠ Legacy ≠ Hypothesis** — nunca apresentar Direction como implementada, nem Hypothesis como compromisso.
+> (Fonte: `Anakyklos/architecture/README.md`.)
 
 ---
 
@@ -326,7 +329,15 @@ Este documento foi reconciliado com as seguintes fontes do repositório
 | [`STATUS.md`](https://github.com/Anakyklos/architecture/blob/main/STATUS.md) | Architectural maturity snapshot |
 
 **Regra de authority** (fonte: `Anakyklos/architecture/README.md`):
+> **Para comportamento/current reality**:
 > `code + tests + observed behavior > product documentation > architecture repository`
+>
+> **Para direção/boundaries**:
+> `Anakyklos/architecture + decisões aprovadas > documentação legada do produto`
+>
+> **Current ≠ Direction ≠ Legacy ≠ Hypothesis** — README antigo ou código
+> legado não definem a direção apenas por existirem; Architecture não prova
+> feature implementada.
 
 ---
 

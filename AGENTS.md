@@ -7,8 +7,10 @@
 > **Fonte arquitetural primária**: `Anakyklos/architecture` (privado) —
 > `README.md`, `SYSTEM-MAP.md`, `VISION.md`, `policies/`,
 > `rfcs/0001-system-boundaries.md`, `languages/` (Technology Palette).
-> Hierarquia de authority: `code + tests + observed behavior > product
-> documentation > architecture repository`.
+> **Hierarquia de autoridade**:
+> - **Para comportamento/current reality**: `code + tests + observation > documentação`
+> - **Para direção/boundaries**: `Anakyklos/architecture + decisões aprovadas > documentação legada do produto`
+> - **Current ≠ Direction ≠ Legacy ≠ Hypothesis** — nunca apresentar Direction como implementada, nem Hypothesis como compromisso.
 
 ---
 

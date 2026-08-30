@@ -25,8 +25,8 @@
 |---|---|
 | **Subsystem** | `cli/src/runtime/SelfModifyingEngine.ts` (+ `SelfModifyingEngine.test.ts`, `cli/benchmarks/SelfModifyingEngine.bench.ts`) |
 | **Current responsibility/evidence** | Engine que altera source files, cria backups, executa testes, faz rollback e opcionalmente cria git commit (`autoGitCommit`). Permite que o agente reescreva seus próprios módulos em runtime. |
-| **Decision** | **RETIRE** do runtime core. **MOVE/EXTRACT** somente de primitives realmente reutilizáveis (backup/rollback/test-run) para Cadinho/Runstead, se justificado por eles. |
-| **Future owner/boundary** | Cadinho (evolution de capabilities) e Runstead (software work). Ouroboros não possui `modifySelf()` nem authority equivalente. |
+| **Decision** | **RETIRE** do runtime core. |
+| **Future owner/boundary** | Cadinho (evolution de capabilities) e Runstead (software work). Ouroboros não possui `modifySelf()` nem authority equivalente. Primitives de backup/rollback/test-run podem ser extraídas para Cadinho/Runstead se houver necessidade comprovada. |
 | **Rationale** | #60: "sistema que altera/promove silenciosamente o próprio código" está na lista de "Ouroboros não deve ser". #69: proibido preservar `Ouroboros.modifySelf()` com authority de produção. Software work pertence ao Runstead; forging/evolution pertence ao Cadinho com promoção explícita. |
 | **Follow-up implication** | Abrir issue de remoção do SelfModifyingEngine do core + avaliação de extração de primitives (backup/rollback) para Cadinho/Runstead. `SelfModifyingEngine.test.ts` não está na quarentena (#41) — a decisão RETIRE não depende de quarentena para ser executada. |
 
@@ -80,8 +80,8 @@
 |---|---|
 | **Subsystem** | `cli/src/orchestration/ArchitectClient.ts` |
 | **Current responsibility/evidence** | Integração nativa com Gemini Architect via subprocess para design review e spec approval (modelo `flash`/`pro`). Persona fixa de "Architect". |
-| **Decision** | **RETIRE** como persona hardcoded. **ADAPT/MOVE/EXTRACT** da capacidade genérica de planner/consultation para planner contract (#62), se reutilizável. |
-| **Future owner/boundary** | Ouroboros possui planner capability genérica (advisory); providers/modelos ficam atrás de contracts comuns. A persona fixa "Architect" não permanece. |
+| **Decision** | **RETIRE** como persona hardcoded. |
+| **Future owner/boundary** | Nenhuma persona fixa permanece. Ouroboros pode vir a possuir planner capability genérica (advisory) via #62; a capacidade genérica de planner/consultation pode ser extraída como planner provider se reutilizável. Providers/modelos ficam atrás de contracts comuns. |
 | **Rationale** | #60: "ArchitectClient como persona fixa" é trabalho legado a classificar. #63: provider/model específico não define roadmap do core. |
 | **Follow-up implication** | Reavaliar como planner provider após #62/#63; não ampliar como persona. |
 
@@ -102,7 +102,7 @@
 |---|---|
 | **Subsystem** | `cli/src/orchestration/AntiVibeWorkflow.test.ts`, `cli/src/utils/anti-vibe.ts`, validators (`SpecValidator`, `TestCoverageValidator`), `ValidationReporter` |
 | **Current responsibility/evidence** | Quality gates fail-closed para workflow de código: spec → code → validate → approve → promote. Suite em quarentena (#41) por falhas parciais. |
-| **Decision** | **ADAPT/MOVE** — conceitos de fail-closed e evidence podem sobreviver como mission-level gates no Ouroboros. Technical software verification pertence ao Runstead; promotion/capability evolution pertence ao Cadinho. |
+| **Decision** | **ADAPT** — conceitos fail-closed/evidence sobrevivem como mission-level gates no Ouroboros. |
 | **Future owner/boundary** | Ouroboros: mission acceptance/approval gates. Runstead: verificação técnica de software. Cadinho: promoção/evolução de capabilities. |
 | **Rationale** | #61: "Preservar ideias úteis de gates fail-closed e evidência, mas revisão técnica de software deve permanecer no Runstead. Ouroboros pode manter mission acceptance/approval gates." |
 | **Follow-up implication** | Extrair mission-level gate semantics; resolver quarentena conforme decisão (#41); não ampliar como código-oriented protocol no core. |
@@ -113,7 +113,7 @@
 |---|---|
 | **Subsystem** | `cli/src/orchestration/PromotionManager.ts` (+ `PromotionManager.test.ts`, `promotion-types.ts`, `strategies/CommandValidationStrategy.ts`, `QualityGateRegistry.ts`), `ApprovalManager.ts` |
 | **Current responsibility/evidence** | Sistema de promoção playground → src com quality gates (test, type-check, lint), aprovação humana e state em `.agent/promotion/`. |
-| **Decision** | **ADAPT/MOVE** — approval/promotion state machine pode inspirar mission-level approval; code promotion gates pertencem ao Runstead (verificação técnica) e Cadinho (promotion de capability). |
+| **Decision** | **ADAPT** — approval/promotion state machine inspira mission-level approval no Ouroboros. |
 | **Future owner/boundary** | Ouroboros: approval workflow para missions (approval requests, state). Runstead: quality gates de software. Cadinho: candidate → trial → promotion. |
 | **Rationale** | #61/#69: promotion/capability evolution pertence ao Cadinho; Ouroboros mantém mission-level gates e approvals. |
 | **Follow-up implication** | Migration de approval/promotion para Mission approval contract (#62); resolver quarentenas (#41). |
@@ -124,8 +124,8 @@
 |---|---|
 | **Subsystem** | `cli/src/bridges/AntigravityBridge.ts` (+ `PersistentAntigravityBridge.ts`) |
 | **Current responsibility/evidence** | Bridge direta para Antigravity, usada pelo GatewayOrchestrator. |
-| **Decision** | **ADAPT/MOVE** — não permanece como API central do orchestrator; vira connector/capability versionado (#63) ou é retirado se sem owner. |
-| **Future owner/boundary** | Capability/connector versionado com owner externo (Antigravity), atrás do Capability Registry e policy. |
+| **Decision** | **ADAPT** — vira connector/capability versionado (#63), não API central do orchestrator. |
+| **Future owner/boundary** | Capability/connector versionado com owner externo (Antigravity), atrás do Capability Registry e policy. Se não houver owner, pode ser retirado em follow-up. |
 | **Rationale** | #60: "GatewayOrchestrator conhece diretamente Antigravity... O alvo é capability discovery + versioned connector contracts." |
 | **Follow-up implication** | Migration map do GatewayOrchestrator (#63) remove bridges hardcoded; não ampliar bridge como método público. |
 
@@ -135,7 +135,7 @@
 |---|---|
 | **Subsystem** | `cli/src/bridges/GeminiCliBridge.ts` (+ `GeminiCliBridge` usado no GatewayOrchestrator) |
 | **Current responsibility/evidence** | Bridge para Gemini CLI via subprocess (modelos flash/pro). |
-| **Decision** | **ADAPT/MOVE** — provider/model específico não define o roadmap do core; vira planner provider atrás de contract comum ou connector versionado. |
+| **Decision** | **ADAPT** — provider/model específico não define o roadmap do core; vira planner provider atrás de contract comum. |
 | **Future owner/boundary** | Ouroboros: planner provider opcional sob policy/config. Gemini: provider externo atrás de contracts. |
 | **Rationale** | #60: "nenhum adapter específico define o roadmap do core; model result é proposta/input, não authority." |
 | **Follow-up implication** | Reavaliar como provider do planner (#62) atrás de contracts; não manter como método público do gateway. |
@@ -146,7 +146,7 @@
 |---|---|
 | **Subsystem** | `cli/src/bridges/JulesBridge.ts` (+ `jules-types.ts`, `test-persistent-bridge.ts`) |
 | **Current responsibility/evidence** | Bridge para Jules (implementador assíncrono via Gemini CLI extension). |
-| **Decision** | **ADAPT/MOVE** — software work pertence ao Runstead; se Jules for ferramenta de implementação, o uso é via capability/connector versionado, não bridge hardcoded no core. |
+| **Decision** | **ADAPT** — uso via capability/connector versionado, não bridge hardcoded no core. |
 | **Future owner/boundary** | Runstead (software work) ou connector versionado; Ouroboros apenas formula objetivo/acceptance e recebe evidence. |
 | **Rationale** | #60: "Ouroboros não deve editar repo em paralelo ao Runstead; substituir tool policy/evidence/verifier do Runstead." |
 | **Follow-up implication** | Migration para connector/capability após #63; não ampliar bridge. |
@@ -157,7 +157,7 @@
 |---|---|
 | **Subsystem** | `cli/src/inference/` (InferenceSubsystem, ModelProvider, ModelRouter, EmbeddingEngine, LocalInferenceProvider, SemanticCache, etc.) |
 | **Current responsibility/evidence** | Subsistema de inferência local com 3 modelos especializados, routing, embedding e cache semântico. |
-| **Decision** | **ADAPT/DEFER** — planner backend opcional; não é identidade do produto. Pode permanecer como provider opcional sob policy, mas não define roadmap. |
+| **Decision** | **ADAPT** — planner backend opcional atrás de contracts comuns; não é identidade do produto. |
 | **Future owner/boundary** | Ouroboros: provider/planner opcional atrás de contracts (#62/#44/#47). |
 | **Rationale** | #60: "Ouroboros ainda pode precisar de LLM para planning/interpretation. Portanto #44/#47 continuam úteis. Mas provider não é a identidade do produto." |
 | **Follow-up implication** | Manter sob contracts comuns; não expandir como subsystem first-class antes de #62. |
@@ -190,8 +190,8 @@
 |---|---|
 | **Subsystem** | `scripts/ralph/` (ralph.sh, prd.json, OPENCODE.md, progress.txt) |
 | **Current responsibility/evidence** | Loop autônomo que roda opencode repetidamente até completar itens de PRD. |
-| **Decision** | **RETIRE** do runtime/product. **MOVE/EXTRACT** como dev tooling separado, se útil, fora do core. |
-| **Future owner/boundary** | Dev tooling (fora do runtime). Software work em loop pertence ao Runstead com verificação própria. |
+| **Decision** | **RETIRE** do runtime/product. |
+| **Future owner/boundary** | Dev tooling fora do runtime; se útil, pode ser extraído como ferramenta de desenvolvimento separada. Software work em loop pertence ao Runstead. |
 | **Rationale** | #60: "Ralph autonomous loop" está na auditoria como identidade documental desalinhada; execução autônoma de código em loop contradiz a boundary do Runstead. |
 | **Follow-up implication** | Remover do core ou mover para dev-tools; documentar como Legacy até disposição. |
 
@@ -223,7 +223,7 @@
 |---|---|
 | **Subsystem** | `web/src/components/memory-panel.tsx` |
 | **Current responsibility/evidence** | Painel de memória com busca/filtro no web frontend. |
-| **Decision** | **ADAPT/DEFER** — re-apresentar como Mission state/context projection após #62/#64; não como "agent memory" universal. |
+| **Decision** | **ADAPT** — re-apresentar como Mission state/context projection após #62/#64; não como "agent memory" universal. |
 | **Future owner/boundary** | Ouroboros: projeção de Mission/contexto autorizado (frontend é projection). |
 | **Rationale** | #64: context ownership/provenance; UI não é source of truth. |
 | **Follow-up implication** | Redesenhar após contracts; não ampliar como memória pessoal. |
@@ -234,7 +234,7 @@
 |---|---|
 | **Subsystem** | `cli/src/tui/` (React/Ink TUI completa) |
 | **Current responsibility/evidence** | TUI Ink/React com tema Emerald, visualization de waves/intent/health. |
-| **Decision** | **RETIRE/DEFER** como produto principal — não compete como segunda UI principal. CLI pequena scriptable permanece para recovery/debug (#70). |
+| **Decision** | **RETIRE** como produto principal — não compete como segunda UI principal. |
 | **Future owner/boundary** | Ouroboros: CLI pequena (`ouroboros status/missions/mission show|pause|resume|cancel/capabilities`). |
 | **Rationale** | #70: "A TUI completa não deve permanecer como segunda experiência principal competindo com o desktop." |
 | **Follow-up implication** | Substituir por CLI pequena; reter somente componentes com valor real para recovery/debug. |
@@ -256,7 +256,7 @@
 |---|---|
 | **Subsystem** | `cli/src/daemon/server.ts` (Fastify + WebSocket, port 7777), `cli/src/daemon/` (rpc-gateway, session-manager) |
 | **Current responsibility/evidence** | Daemon expõe JSON-RPC 2.0 sobre Fastify/WebSocket; usada pelo web frontend e tests. |
-| **Decision** | **ADAPT/DEFER** — transporte local versionado (#70: IPC local/Unix socket preferido). Fastify/WebSocket mantido para compatibilidade até contracts; HTTP/WebSocket remoto só com caso real. |
+| **Decision** | **ADAPT** — transporte local versionado (#70: IPC local/Unix socket preferido). |
 | **Future owner/boundary** | Ouroboros: daemon headless (ouroborosd) com contract versionado independente de transporte. |
 | **Rationale** | #70: "IPC local em vez de web server como default"; transport não contamina Mission/Capability semantics. |
 | **Follow-up implication** | Avaliar IPC local após contracts; manter server existente enquanto web frontend usa. |
@@ -267,7 +267,7 @@
 |---|---|
 | **Subsystem** | `@fastify/websocket` + Fastify em `cli/src/daemon/server.ts` |
 | **Current responsibility/evidence** | Transporte WebSocket para projeção de eventos do daemon (daemon-event-contract, daemon-event-stream). |
-| **Decision** | **ADAPT/DEFER** — o contract de eventos/projeção permanece útil (#38); o transporte pode mudar para IPC local quando decidido. |
+| **Decision** | **ADAPT** — o contract de eventos/projeção permanece útil (#38); o transporte pode mudar para IPC local quando decidido. |
 | **Future owner/boundary** | Ouroboros: contract versionado de eventos/projeção; transporte substituível. |
 | **Rationale** | #70: IPC local preferido; #38: eventos/reconexão normalizados permanecem válidos. |
 | **Follow-up implication** | Manter contract; avaliar transporte após benchmark. |
@@ -278,7 +278,7 @@
 |---|---|
 | **Subsystem** | `cli/src/tui/` (entry.tsx, components, store, adapter) |
 | **Current responsibility/evidence** | TUI React/Ink com LogViewer, StatusPanel, CouncilPanel, InputBar. |
-| **Decision** | **RETIRE/DEFER** — mesma decisão da Terminal UI (#20): não é segunda UI principal. |
+| **Decision** | **RETIRE** — mesma decisão da Terminal UI: não é segunda UI principal. |
 | **Future owner/boundary** | Ouroboros: CLI pequena para admin/recovery. |
 | **Rationale** | #70: TUI não compete como segunda experiência principal. |
 | **Follow-up implication** | Substituir por CLI; componentes com valor real para debug podem ser retidos. |
@@ -333,11 +333,11 @@
 
 | Decisão | Subsistemas |
 |---|---|
-| **RETIRE** | SelfModifyingEngine (do core), PersistentPythonREPL, SandboxRunner, SandboxTool, Council/personas, ArchitectClient (como persona), Ralph loop, Council UI, Electron shell (direção), React/Ink TUI, Terminal UI |
-| **ADAPT** | WaveExecutor (scheduling), Anti-Vibe (mission gates), PromotionManager (approval), Antigravity/Gemini/Jules bridges (connectors), local inference (provider opcional), MemoryManager (mission state), MemoryRetriever (context provenance), Memory UI, local web server, Fastify/WebSocket transport, web frontend, terminal pane, direct daemon/UI coupling, duplicated stores |
-| **MOVE/EXTRACT** | Primitives de SelfModifyingEngine (backup/rollback) → Cadinho/Runstead; code-review/technical verification → Runstead; promotion/capability evolution → Cadinho |
-| **DEFER** | MCP/SkillLoader (capability protocol candidate), local web server/Fastify (até contracts), Electron (POC) |
+| **RETIRE** | SelfModifyingEngine, PersistentPythonREPL, SandboxRunner, SandboxTool, Council/personas, ArchitectClient (persona hardcoded), Ralph loop, Council UI, Terminal UI, React/Ink TUI, Electron (como direção) |
+| **ADAPT** | WaveExecutor (scheduling), Anti-Vibe (mission gates), PromotionManager (approval), Antigravity/Gemini/Jules bridges (connectors), local inference (planner backend), MemoryManager (mission state), MemoryRetriever (context provenance), Memory UI, local web server, Fastify/WebSocket transport, web frontend, terminal pane, direct daemon/UI coupling, duplicated stores |
+| **DEFER** | MCP/SkillLoader (capability protocol candidate) |
 | **KEEP** | Daemon/headless core (server, rpc-gateway, session-manager, event-bus), SQLite storage, daemon controls, event contract, baseline CI (#35) |
+| **MOVE/EXTRACT** | Nenhuma row tem MOVE/EXTRACT como decisão primária. Extrações possíveis estão registradas em `Future owner/boundary` e `Follow-up implication` das rows relevantes (ex.: primitives de SelfModifyingEngine → Cadinho/Runstead; mission gates → Ouroboros; technical verification → Runstead; promotion/capability evolution → Cadinho). |
 
 ## Follow-ups recomendados (para o mantenedor criar após merge)
 

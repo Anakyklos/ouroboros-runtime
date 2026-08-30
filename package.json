@@ -1,7 +1,7 @@
 {
   "name": "ouroboros",
   "version": "1.0.0",
-  "description": "🐍 Self-modifying AI agent with isolated Python environment",
+  "description": "🐍 Executive runtime / nervous system of the Anakyklos",
   "main": "index.js",
   "bin": {
     "ouroboros": "./bin/ouroboros.js"

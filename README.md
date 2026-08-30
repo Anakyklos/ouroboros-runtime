@@ -22,8 +22,11 @@ persiste **Missions**, propõe/decompõe trabalho com planning advisory, aplica
 > [policies](https://github.com/Anakyklos/architecture/tree/main/policies),
 > [RFC 0001](https://github.com/Anakyklos/architecture/blob/main/rfcs/0001-system-boundaries.md),
 > [Technology Palette](https://github.com/Anakyklos/architecture/tree/main/languages).
-> Hierarquia de authority: `code + tests + observed behavior > product
-> documentation > architecture repository`.
+> **Hierarquia de autoridade**:
+> - **Para comportamento/current reality**: `code + tests + observation > documentação`
+> - **Para direção/boundaries**: `Anakyklos/architecture + decisões aprovadas > documentação legada do produto`
+> - **Current ≠ Direction ≠ Legacy ≠ Hypothesis** — nunca apresentar Direction como implementada, nem Hypothesis como compromisso.
+> (Fonte: `Anakyklos/architecture/README.md`.)
 
 ---
 
@@ -216,9 +219,22 @@ bun run check:web      # web/ production build
 bun run check:tests    # testes obrigatórios
 ```
 
-> ⚠️ Comandos legados (`bun run setup`, `bun run daemon`, `bun run tui`)
-> referem-se a componentes classificados na matriz de legado. Não os use como
-> referência de direção do produto.
+> ⚠️ Classificação dos entrypoints:
+>
+> - `bun run setup` → **workflow/setup legado** (BootWizard da fase
+>   "self-modifying runtime"; classificado na matriz de legado).
+> - `bun run tui` → **TUI legada** (React/Ink; classificada `RETIRE` na
+>   matriz de legado — não compete como segunda UI principal).
+> - `bun run daemon` → **entrypoint atual válido** do daemon/headless runtime.
+>   O daemon é parte da direção preservada (core `KEEP` na matriz). O entrypoint
+>   atual não deve ser confundido com a arquitetura-alvo `ouroborosd` do #70:
+>   as semânticas internas atuais (Fastify/WebSocket, RPC gateway) estão
+>   classificadas `ADAPT`/`DEFER` na matriz até os contracts centrais
+>   estabilizarem.
+>
+> **Entrypoint atual ≠ arquitetura-alvo.** O daemon atual é comportamento
+> comprovado (`Current`); `ouroborosd` headless com Mission Engine, Capability
+> Registry e IPC local é a direção (`Direction`, #70) — não está implementado.
 
 ---
 
