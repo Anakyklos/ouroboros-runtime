@@ -184,6 +184,8 @@ Baseline: [`docs/BASELINE.md`](docs/BASELINE.md) | CI:
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Identidade, fluxo, Current/Direction/Legacy/Hypothesis, #69, #70 |
 | [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md) | Classificação vinculante de subsistemas legados (#61) |
+| [docs/MISSION_CONTRACT.md](docs/MISSION_CONTRACT.md) | Contrato first-class de Mission, policy determinística e persistência (#62) |
+| [docs/ORCHESTRATOR_MIGRATION_MAP.md](docs/ORCHESTRATOR_MIGRATION_MAP.md) | Mapa de migração do Orchestrator legado para Mission/Invocation (#62) |
 | [AGENTS.md](AGENTS.md) | Guia para executores/agentes |
 | [docs/BASELINE.md](docs/BASELINE.md) | Gate de validação reproduzível (#35) |
 | [docs/MODEL_PROVIDER_CONTRACT.md](docs/MODEL_PROVIDER_CONTRACT.md) | Contract de provider (planejamento) |
