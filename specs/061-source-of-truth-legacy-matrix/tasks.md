@@ -153,7 +153,7 @@ description: "Task list for issue #61 — source of truth + legacy classificatio
 - [x] T042 Commit AGENTS.md + .agent/rules.md rewrite
 - [x] T043 Commit legacy doc markers
 - [x] T044 Open PR #71 against `main` with `Closes #61`, full description, validation results, follow-ups
-- [ ] T045 Apply review corrections: reconcile with Anakyklos/architecture, fix quarantine facts, remove Spec Kit scaffold, update PR description
+- [x] T045 Apply review corrections: reconcile with Anakyklos/architecture, fix quarantine facts, remove Spec Kit scaffold, update PR description
 
 ---
 
