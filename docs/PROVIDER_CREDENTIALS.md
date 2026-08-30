@@ -43,3 +43,9 @@ Esta camada não implementa NVIDIA NIM, quota global, retry novo, circuit breake
 ## Regras de uso
 
 Não coloque chaves brutas em arquivos de configuração, SQLite, traces, datasets, eventos, logs, métricas ou payloads de frontend. Não use `credentialRef` como header. Não faça fallback silencioso para outra credencial quando a resolução falhar ou o scope não corresponder. Em testes, use somente valores sintéticos e asserte explicitamente que logs, eventos, erros, estado serializado e exportações não contêm o valor original.
+
+---
+> **Nota de realinhamento (#60)**: esta documentação permanece válida para a
+> base de segurança de credenciais, mas provider não é a identidade do produto.
+> Providers servem o planning advisory; code/policy autoriza effects.
+> Ver [docs/ARCHITECTURE.md](ARCHITECTURE.md).

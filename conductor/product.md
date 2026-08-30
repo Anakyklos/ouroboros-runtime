@@ -1,4 +1,7 @@
 # Product Definition
+> **Status: Legacy** — Classificado em [docs/LEGACY_MATRIX.md](../docs/LEGACY_MATRIX.md).
+> A direção do produto é executive coordination (#60).
+> Ver [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).
 
 ## Initial Concept
 Ouroboros is a self-modifying AI agent ecosystem designed to run safely within an isolated environment. It bridges high-level agent orchestration with secure, sandboxed code execution, providing a reactive terminal user interface for real-time monitoring and interaction.

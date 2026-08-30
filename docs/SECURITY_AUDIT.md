@@ -1,4 +1,8 @@
 # SECURITY AUDIT: Ouroboros Sandbox Code Execution
+> **Status: Legacy** — Classificado em [docs/LEGACY_MATRIX.md](LEGACY_MATRIX.md)
+> (SandboxRunner/SandboxTool/PersistentPythonREPL: RETIRE, itens 2-4).
+> Auditoria de segurança do sandbox Python legado. Ouroboros não é executor
+> irrestrito de Python/shell (#60). Ver [docs/ARCHITECTURE.md](ARCHITECTURE.md).
 
 > **Status:** v1.0 - Production Ready
 > **Author:** Security Engineering

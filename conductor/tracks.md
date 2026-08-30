@@ -1,4 +1,7 @@
 # Project Tracks
+> **Status: Legacy** — Classificado em [docs/LEGACY_MATRIX.md](../docs/LEGACY_MATRIX.md).
+> A direção do produto é executive coordination (#60).
+> Ver [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).
 
 This file tracks all major tracks for the project. Each track has its own detailed plan in its respective folder.
 

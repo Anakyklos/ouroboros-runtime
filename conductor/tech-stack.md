@@ -1,4 +1,7 @@
 # Technology Stack
+> **Status: Legacy** — Classificado em [docs/LEGACY_MATRIX.md](../docs/LEGACY_MATRIX.md).
+> A direção do produto é executive coordination (#60).
+> Ver [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).
 
 ## Core Runtime
 - **Runtime Environment:** Bun

@@ -1,4 +1,10 @@
 # 🐍 Ouroboros Design System
+> **Status: Legacy** — Classificado em [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
+> Este design system pertence à TUI React/Ink legada (classificação: RETIRE/DEFER,
+> itens 20/24 da matriz). A direção do produto é daemon headless + Mission Control
+> desktop + CLI (#70). Não use este documento como guia de identidade visual vigente.
+>
+> **Current/Direction/Legacy**: ver [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 > **"Elegant, Sophisticated, Serpentine"**
 

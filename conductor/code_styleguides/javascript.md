@@ -1,4 +1,7 @@
 # Google JavaScript Style Guide Summary
+> **Status: Legacy** — Classificado em [docs/LEGACY_MATRIX.md](../docs/LEGACY_MATRIX.md).
+> A direção do produto é executive coordination (#60).
+> Ver [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).
 
 This document summarizes key rules and best practices from the Google JavaScript Style Guide.
 

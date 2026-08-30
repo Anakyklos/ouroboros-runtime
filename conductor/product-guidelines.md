@@ -1,4 +1,7 @@
 # Product Guidelines
+> **Status: Legacy** — Classificado em [docs/LEGACY_MATRIX.md](../docs/LEGACY_MATRIX.md).
+> A direção do produto é executive coordination (#60).
+> Ver [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).
 
 ## Brand & Personality
 - **Tone:** Cyberpunk/Sci-Fi. The interface and agent personas should evoke a futuristic, high-tech atmosphere consistent with the "Ouroboros," "Antigravity," and "Quantum Shuttle" nomenclature.
