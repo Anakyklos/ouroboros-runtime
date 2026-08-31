@@ -80,6 +80,33 @@ export interface CapabilityRegistryApi {
 export class CapabilityRegistry implements CapabilityResolver, CapabilityRegistryApi {
     private readonly descriptors = new Map<string, CapabilityDescriptor>();
 
+    /**
+     * Defensive deep copy. Descriptors carry authorize-relevant nested
+     * structures (`allowedInputRefPrefixes`, retry/idempotency policy) that
+     * the #62 policy consumes; a shallow spread would share those objects
+     * with every caller of `register`/`resolve`/`requireDescriptor`/
+     * `listDescriptors`, letting discovery-side mutation silently change
+     * authorization inputs. Functions (the schema `validate` predicates)
+     * are copied by reference: they are inert deterministic checks with no
+     * observable state, so sharing them cannot leak mutation.
+     */
+    private cloneDescriptor(descriptor: CapabilityDescriptor): CapabilityDescriptor {
+        const clone = (value: unknown): unknown => {
+            if (typeof value === "function" || value === null || typeof value !== "object") {
+                return value;
+            }
+            if (Array.isArray(value)) {
+                return value.map(clone);
+            }
+            const out: Record<string, unknown> = {};
+            for (const [key, member] of Object.entries(value as Record<string, unknown>)) {
+                out[key] = clone(member);
+            }
+            return out;
+        };
+        return clone(descriptor) as CapabilityDescriptor;
+    }
+
     /** Authorization-shaped projection consumed by the #62 policy. */
     private toContract(descriptor: CapabilityDescriptor): CapabilityContract {
         return {
@@ -96,7 +123,7 @@ export class CapabilityRegistry implements CapabilityResolver, CapabilityRegistr
     /** Validate + register. Throws `DuplicateCapabilityError` on conflicts. */
     register(descriptor: CapabilityDescriptor): void {
         this.validateAndCheck(descriptor);
-        this.descriptors.set(descriptor.capabilityId, { ...descriptor });
+        this.descriptors.set(descriptor.capabilityId, this.cloneDescriptor(descriptor));
     }
 
     /**
@@ -115,7 +142,7 @@ export class CapabilityRegistry implements CapabilityResolver, CapabilityRegistr
             );
         }
         this.validateDescriptorOrFailClosed(descriptor);
-        this.descriptors.set(descriptor.capabilityId, { ...descriptor });
+        this.descriptors.set(descriptor.capabilityId, this.cloneDescriptor(descriptor));
     }
 
     /** Fail-closed lookup used by dispatch-time gates. */
@@ -124,7 +151,7 @@ export class CapabilityRegistry implements CapabilityResolver, CapabilityRegistr
         if (!descriptor) {
             throw new UnknownCapabilityError(capabilityId);
         }
-        return { ...descriptor };
+        return this.cloneDescriptor(descriptor);
     }
 
     /** #62 resolver API: null when unknown (discovery != authorization). */
@@ -141,7 +168,7 @@ export class CapabilityRegistry implements CapabilityResolver, CapabilityRegistr
     /** List full descriptors (discovery surface). */
     listDescriptors(): CapabilityDescriptor[] {
         return [...this.descriptors.values()]
-            .map((d) => ({ ...d }))
+            .map((d) => this.cloneDescriptor(d))
             .sort((a, b) => a.capabilityId.localeCompare(b.capabilityId));
     }
 

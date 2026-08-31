@@ -706,4 +706,34 @@ describe("Validation hardening (adversarial audit II — nested strings)", () =>
         expect(result.valid).toBe(false);
         expect(result.errors.join(" ")).toContain("raw secret");
     });
+
+    test("descriptor copies are deep: nested object tampering never reaches the registry", () => {
+        const registry = new CapabilityRegistry();
+        const descriptor = defineCapabilityDescriptor({
+            capabilityId: "lifeos.query_commitments",
+            moduleOwner: "lifeos",
+            purpose: "Query open commitments",
+            effectClass: EffectClass.READ,
+            allowedInputRefPrefixes: ["refs/lifeos/"],
+        });
+        registry.register(descriptor);
+
+        // Tamper through every accessor path: authorize-relevant nested
+        // structures (ref prefixes feed the #62 policy scope check) must be
+        // copied, not shared by reference.
+        const fromList = registry.listDescriptors()[0];
+        fromList.allowedInputRefPrefixes.push("refs/evil/");
+        fromList.retry.maxAttempts = 99999;
+        const fromRequire = registry.requireDescriptor("lifeos.query_commitments");
+        fromRequire.allowedInputRefPrefixes.length = 0;
+        const fromResolvePromise = registry.resolve("lifeos.query_commitments");
+
+        const stored = registry.requireDescriptor("lifeos.query_commitments");
+        expect(stored.allowedInputRefPrefixes).toEqual(["refs/lifeos/"]);
+        expect(stored.retry.maxAttempts).not.toBe(99999);
+        // The resolver projection consumed by policy is unaffected too.
+        return fromResolvePromise.then((contract) => {
+            expect(contract!.allowedInputRefPrefixes).toEqual(["refs/lifeos/"]);
+        });
+    });
 });
