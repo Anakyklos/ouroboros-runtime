@@ -17,7 +17,7 @@
 
 import type { CapabilityContract } from "../mission/contracts.js";
 import { EffectClass } from "../mission/contracts.js";
-import { containsRawSecret } from "../mission/sanitize.js";
+import { assertNoRawSecrets, containsRawSecret } from "../mission/sanitize.js";
 
 /** EffectClass re-export: #63 never forks the #62 enum into a parallel one. */
 export { EffectClass };
@@ -279,6 +279,15 @@ export function validateCapabilityDescriptor(
         if (value !== undefined && containsRawSecret(value)) {
             errors.push(`${field} must not contain a raw secret`);
         }
+    }
+
+    // Defense in depth: recursively scan EVERY remaining string leaf of the
+    // descriptor (idempotency.keyScope, nested schema fields, future
+    // additions) so a secret cannot hide in a field the list above forgot.
+    try {
+        assertNoRawSecrets(descriptor, "descriptor");
+    } catch (error) {
+        errors.push(error instanceof Error ? error.message : "descriptor must not contain a raw secret");
     }
 
     return { valid: errors.length === 0, errors };

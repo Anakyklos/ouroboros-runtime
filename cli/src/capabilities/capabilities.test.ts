@@ -673,3 +673,37 @@ describe("Validation hardening (adversarial audit)", () => {
         expect(result.errors.join(" ")).toContain("effectClass");
     });
 });
+
+describe("Validation hardening (adversarial audit II — nested strings)", () => {
+    test("secret hidden in ANY nested descriptor string fails registration", () => {
+        const registry = new CapabilityRegistry();
+        const descriptor = defineCapabilityDescriptor({
+            capabilityId: "x.y",
+            moduleOwner: "x",
+            purpose: "p",
+            effectClass: EffectClass.READ,
+        });
+        const tampered = {
+            ...descriptor,
+            idempotency: { ...descriptor.idempotency, keyScope: "token=abc123" },
+        } as CapabilityDescriptor;
+        expect(() => registry.register(tampered)).toThrow();
+    });
+
+    test("nested secret inside characteristics/degradation also fails closed", () => {
+        const descriptor = defineCapabilityDescriptor({
+            capabilityId: "x.y",
+            moduleOwner: "x",
+            purpose: "p",
+            effectClass: EffectClass.READ,
+        });
+        const tampered = {
+            ...descriptor,
+            characteristics: { network: false, estimatedDurationMs: 5 },
+            degradation: { behavior: "reject" as const, unsupportedSemantics: "api_key=zzz" },
+        } as CapabilityDescriptor;
+        const result = validateCapabilityDescriptor(tampered);
+        expect(result.valid).toBe(false);
+        expect(result.errors.join(" ")).toContain("raw secret");
+    });
+});
