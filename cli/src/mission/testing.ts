@@ -235,17 +235,26 @@ export function makeDefaultCapabilityCatalog(): CapabilityContract[] {
 /** ------------------------------------------------------------------ */
 /**
  * Test authority that attests owner and criterion verdicts with explicit
- * identity/provenance checks. It does NOT accept a verdict merely because
- * the caller filled in the right strings:
+ * identity/provenance checks AND an explicit attestation registry.
+ *
  *  - Owner verification: invocationId must match the invocation and owner
  *    must match the capability's module owner; the attested verdict carries
  *    a deterministic attestation marker.
- *  - Criterion verification: the criterion must be one of the Mission's
- *    acceptance criteria, the source must be a positively verified module
- *    owner, and the optional evidenceRefId must reference existing evidence.
+ *  - Criterion verification: the criterion MUST be explicitly registered
+ *    for this authority (`registerCriterionAttestation(missionId,
+ *    criterionId, source)`). An owner having some positive invocation is
+ *    NOT enough to attest arbitrary criteria — the authority only emits
+ *    the verdicts it is explicitly authorized to emit.
  */
 export class FakeVerificationAuthority implements VerificationAuthority {
     private counter = 0;
+    /** Explicit registry: `missionId|criterionId|source` -> true. */
+    private readonly criterionAttestations = new Map<string, boolean>();
+
+    /** Register a criterion attestation the authority is authorized to emit. */
+    registerCriterionAttestation(missionId: string, criterionId: string, source: string): void {
+        this.criterionAttestations.set(`${missionId}|${criterionId}|${source}`, true);
+    }
 
     async attestOwnerVerification(
         submitted: OwnerVerification,
@@ -285,15 +294,26 @@ export class FakeVerificationAuthority implements VerificationAuthority {
                 `Criterion "${submitted.criterionId}" is not one of the Mission acceptance criteria`,
             );
         }
-        const trustedOwners = new Set(
-            mission.invocationRefs
-                .filter((inv) => inv.ownerVerification?.verified === true)
-                .map((inv) => inv.ownerVerification!.owner),
-        );
-        if (submitted.satisfied && !trustedOwners.has(submitted.source)) {
+        // The authority must be EXPLICITLY authorized to emit this specific
+        // (mission, criterion, source) verdict. An owner having some positive
+        // invocation is not enough to attest arbitrary criteria.
+        const key = `${mission.missionId}|${submitted.criterionId}|${submitted.source}`;
+        if (!this.criterionAttestations.get(key)) {
             throw new Error(
-                `CriterionVerification source "${submitted.source}" is not a positively verified module owner of this Mission`,
+                `No attestation registered for criterion "${submitted.criterionId}" by source "${submitted.source}" on mission ${mission.missionId}`,
             );
+        }
+        if (submitted.satisfied) {
+            const trustedOwners = new Set(
+                mission.invocationRefs
+                    .filter((inv) => inv.ownerVerification?.verified === true)
+                    .map((inv) => inv.ownerVerification!.owner),
+            );
+            if (!trustedOwners.has(submitted.source)) {
+                throw new Error(
+                    `CriterionVerification source "${submitted.source}" is not a positively verified module owner of this Mission`,
+                );
+            }
         }
         if (submitted.evidenceRefId !== undefined) {
             const evidenceExists = mission.evidenceRefs.some(

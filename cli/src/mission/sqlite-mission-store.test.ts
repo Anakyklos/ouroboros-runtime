@@ -747,4 +747,63 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         expect(recoveredSecret!.originalIntentRef).toBe(secretMission.originalIntentRef);
         await store3.close();
     });
+
+    it("BLOCKER: nested PlanStep free-form fields are structurally sanitized before persistence (approval reason/approver, fallback reasons)", async () => {
+        const dir = track(makeTempDir("mission-nested-step-secrets-"));
+        const dbPath = join(dir.path, "missions.db");
+
+        const store = new SqliteMissionStore(dbPath);
+        await store.initialize();
+        const engine = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-a"), store);
+
+        const mission = await engine.createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: {
+                capabilityIds: ["lifeos.write"],
+                allowedEffectClasses: [EffectClass.WRITE],
+                allowedRefPrefixes: ["refs/lifeos/"],
+            },
+        });
+
+        // A valid candidate whose nested free-form fields contain secrets:
+        // approvalRequirement.reason/approver and fallbacks[].reason.
+        const proposal = await engine.proposePlan(mission.missionId, {
+            planId: "plan-secrets",
+            missionId: mission.missionId,
+            plannerNote: "ok",
+            steps: [
+                makeStep({
+                    capabilityRequirement: "lifeos.write",
+                    effectClass: EffectClass.WRITE,
+                    inputRefs: ["refs/lifeos/journal"],
+                    desiredOutcome: "append note",
+                    approvalRequirement: {
+                        approvalId: "ap-nested",
+                        approver: "operator Authorization: Bearer test-approver-secret",
+                        reason: "Authorization: Bearer test-approval-secret",
+                    },
+                    fallbacks: [
+                        { capabilityRequirement: "lifeos.write", reason: "api_key=test-fallback-secret" },
+                    ],
+                }),
+            ],
+        });
+        if (!proposal.ok) throw new Error("plan rejected");
+
+        await store.close();
+
+        // Reopen and inspect the persisted revision steps.
+        const store2 = new SqliteMissionStore(dbPath);
+        await store2.initialize();
+        const revisions = await store2.getPlanRevisions(mission.missionId);
+        const stepsBlob = JSON.stringify(revisions[0].steps);
+
+        for (const secret of ["test-approval-secret", "test-approver-secret", "test-fallback-secret"]) {
+            expect(stepsBlob).not.toContain(secret);
+        }
+        // Redaction markers are present in the nested fields.
+        expect(stepsBlob).toContain("[REDACTED]");
+
+        await store2.close();
+    });
 });

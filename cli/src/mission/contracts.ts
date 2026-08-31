@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /**
  * 🎯 Mission Contracts (Issue #62)
  *
@@ -93,12 +95,14 @@ export interface ApprovalRequirement {
         capabilityId: string;
         effectClass: EffectClass;
         /**
-         * Deterministic fingerprint of the approved target (canonical input
-         * refs, computed by policy/code, never defined by the planner). Two
-         * steps with the same capability+effect but different targets do not
-         * share a grant.
+         * Deterministic, unambiguous fingerprint of the AUTHORIZED EFFECT
+         * (computed by policy/code, never provided by the planner): a sha256
+         * of the canonical structural serialization of capability, effect
+         * class, sorted input refs and the semantic operation/outcome.
+         * Two steps with different targets OR different operations/outcomes
+         * produce different fingerprints and cannot share a grant.
          */
-        targetDescriptor: string;
+        effectFingerprint: string;
     };
     /** Who must approve (role/interface), not a free-form narrative. */
     approver: string;
@@ -137,13 +141,32 @@ export enum EffectClass {
 }
 
 /**
- * Deterministic fingerprint of a step's approved target, computed by
- * policy/code (never defined by the planner): canonical (sorted) input refs.
- * Two steps with the same capability+effect but different targets produce
- * different descriptors and cannot share an approval grant.
+ * Deterministic, unambiguous fingerprint of the AUTHORIZED EFFECT, computed
+ * by policy/code (never provided by the planner): a sha256 of the canonical
+ * structural serialization (stable key order, sorted arrays) of capability
+ * id, effect class, canonical input refs and the semantic operation/outcome.
+ *
+ * Two steps with different targets OR different operations/outcomes produce
+ * different fingerprints and cannot share an approval grant. JSON structural
+ * serialization (not `join("|")`) makes collisions impossible for distinct
+ * input-ref arrays.
  */
-export function computeTargetDescriptor(inputRefs: string[]): string {
-    return [...inputRefs].sort().join("|");
+export interface EffectFingerprintInput {
+    capabilityId: string;
+    effectClass: EffectClass;
+    inputRefs: string[];
+    /** Semantic identity of the operation/outcome that changes authorization. */
+    outcome: string;
+}
+
+export function computeEffectFingerprint(input: EffectFingerprintInput): string {
+    const canonical = JSON.stringify({
+        capabilityId: input.capabilityId,
+        effectClass: input.effectClass,
+        inputRefs: [...input.inputRefs].sort(),
+        outcome: input.outcome,
+    });
+    return createHash("sha256").update(canonical).digest("hex");
 }
 
 /** A raw intent entry from an authorized interface. Not yet a Mission. */

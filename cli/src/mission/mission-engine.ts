@@ -37,7 +37,7 @@ import {
     StepApprovalRequirement,
     WAITING_STATES,
     TERMINAL_STATES,
-    computeTargetDescriptor,
+    computeEffectFingerprint,
 } from "./contracts.js";
 import {
     CapabilityResolver,
@@ -48,7 +48,7 @@ import {
     VerificationAuthority,
 } from "./ports.js";
 import { PlanPolicyValidator } from "./policy.js";
-import { sanitizeText, sanitizeStringArray } from "./sanitize.js";
+import { sanitizeText, sanitizeStringArray, sanitizePlanStep } from "./sanitize.js";
 import { createHash } from "node:crypto";
 
 /** Default clock (real time). */
@@ -441,11 +441,8 @@ export class MissionEngine {
             planId: candidate.planId,
             missionId,
             // Free-form planner text is sanitized before durable storage.
-            steps: candidate.steps.map((step) => ({
-                ...step,
-                desiredOutcome: sanitizeText(step.desiredOutcome),
-                expectedAcceptance: sanitizeStringArray(step.expectedAcceptance),
-            })),
+            // sanitizePlanStep structurally sanitizes ALL nested text fields.
+            steps: candidate.steps.map(sanitizePlanStep),
             status: "proposed",
             reason: sanitizeText(candidate.plannerNote) || "Proposed by planner",
             createdAt: this.clock.isoNow(),
@@ -514,30 +511,43 @@ export class MissionEngine {
                     // authoritative metadata (scopeDescriptor, approver,
                     // reason, granted state) is IMMUTABLE: the planner can
                     // never rewrite it. Scope was already validated by policy;
-                    // this is the defensive, authoritative double-check.
+                    // this is the defensive, authoritative double-check using
+                    // the SAME authoritative effect fingerprint function.
                     const scopeOk =
                         existing.scopeDescriptor.capabilityId === step.capabilityRequirement &&
-                        existing.scopeDescriptor.effectClass === step.effectClass;
+                        existing.scopeDescriptor.effectClass === step.effectClass &&
+                        existing.scopeDescriptor.effectFingerprint ===
+                            computeEffectFingerprint({
+                                capabilityId: step.capabilityRequirement,
+                                effectClass: step.effectClass,
+                                inputRefs: step.inputRefs,
+                                outcome: step.desiredOutcome,
+                            });
                     if (!scopeOk) {
                         throw new Error(
-                            `Approval requirement "${req.approvalId}" scope mismatch: planner cannot re-purpose a granted approval for "${step.capabilityRequirement}/${step.effectClass}"`,
+                            `Approval requirement "${req.approvalId}" effect mismatch: planner cannot re-purpose a granted approval for a different effect`,
                         );
                     }
                     // Deliberately do NOT touch existing.approver /
                     // existing.reason / existing.scopeDescriptor.
                 } else {
                     // New requirement proposed by the planner: authoritative
-                    // state starts UN-GRANTED with an immutable scope derived
-                    // from the step itself.
+                    // state starts UN-GRANTED with an immutable effect scope
+                    // derived from the step itself. Only sanitized values enter.
                     mergedApprovals.push({
                         approvalId: req.approvalId,
                         scopeDescriptor: {
                             capabilityId: step.capabilityRequirement,
                             effectClass: step.effectClass,
-                            targetDescriptor: computeTargetDescriptor(step.inputRefs),
+                            effectFingerprint: computeEffectFingerprint({
+                                capabilityId: step.capabilityRequirement,
+                                effectClass: step.effectClass,
+                                inputRefs: step.inputRefs,
+                                outcome: step.desiredOutcome,
+                            }),
                         },
-                        approver: req.approver,
-                        reason: req.reason,
+                        approver: sanitizeText(req.approver),
+                        reason: sanitizeText(req.reason),
                         granted: false,
                     });
                 }

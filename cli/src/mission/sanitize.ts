@@ -11,6 +11,8 @@
  * and any other free-form text that receives external data.
  */
 
+import type { PlanStep } from "./contracts.js";
+
 // Pattern → replacement function. The replacement preserves the key name
 // and replaces the value with [REDACTED] so the structure is still readable.
 const REDACTORS: Array<{ pattern: RegExp; replace: (match: string) => string }> = [
@@ -129,4 +131,33 @@ export function sanitizeText(text: string): string {
  */
 export function sanitizeStringArray(arr: string[]): string[] {
     return arr.map((s) => sanitizeText(s));
+}
+/** ------------------------------------------------------------------ */
+/**  PlanStep structural sanitization (nested free-form fields)         */
+/** ------------------------------------------------------------------ */
+
+/**
+ * Structurally sanitize EVERY free-form/nested text field of a PlanStep
+ * before it is persisted. This is the explicit durable-boundary helper for
+ * plan steps: it never relies on `...step` followed by partial sanitization.
+ */
+export function sanitizePlanStep(
+    step: PlanStep,
+): PlanStep {
+    return {
+        ...step,
+        desiredOutcome: sanitizeText(step.desiredOutcome),
+        expectedAcceptance: sanitizeStringArray(step.expectedAcceptance),
+        approvalRequirement: step.approvalRequirement
+            ? {
+                  ...step.approvalRequirement,
+                  reason: sanitizeText(step.approvalRequirement.reason),
+                  approver: sanitizeText(step.approvalRequirement.approver),
+              }
+            : undefined,
+        fallbacks: step.fallbacks?.map((fb) => ({
+            ...fb,
+            reason: sanitizeText(fb.reason),
+        })),
+    };
 }

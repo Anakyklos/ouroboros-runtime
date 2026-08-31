@@ -26,7 +26,7 @@ import {
     PlanCandidate,
     PlanStep,
     CapabilityContract,
-    computeTargetDescriptor,
+    computeEffectFingerprint,
 } from "./contracts.js";
 import type { CapabilityResolver } from "./ports.js";
 
@@ -224,9 +224,10 @@ export class PlanPolicyValidator {
         }
 
         // When a step references an existing approval requirement by
-        // approvalId, the step's scope (capability + effect + target) must
-        // match the requirement's immutable scopeDescriptor. A grant tied to
-        // one scope cannot authorize a different step (hijack).
+        // approvalId, the step's authorized effect (capability + effect +
+        // target + operation/outcome) must match the requirement's immutable
+        // scopeDescriptor. A grant tied to one effect cannot authorize a
+        // different step (hijack).
         if (rawReq?.approvalId) {
             const existingReq = mission.approvalRequirements.find(
                 (r) => r.approvalId === rawReq.approvalId,
@@ -235,12 +236,17 @@ export class PlanPolicyValidator {
                 const scopeOk =
                     existingReq.scopeDescriptor.capabilityId === step.capabilityRequirement &&
                     existingReq.scopeDescriptor.effectClass === step.effectClass &&
-                    existingReq.scopeDescriptor.targetDescriptor ===
-                        computeTargetDescriptor(step.inputRefs);
+                    existingReq.scopeDescriptor.effectFingerprint ===
+                        computeEffectFingerprint({
+                            capabilityId: step.capabilityRequirement,
+                            effectClass: step.effectClass,
+                            inputRefs: step.inputRefs,
+                            outcome: step.desiredOutcome,
+                        });
                 if (!scopeOk) {
                     decision.reject(
                         PolicyRejectionCode.APPROVAL_SCOPE_MISMATCH,
-                        `Step "${step.stepId}" references approval requirement "${rawReq.approvalId}" with scope "${existingReq.scopeDescriptor.capabilityId}/${existingReq.scopeDescriptor.effectClass}/${existingReq.scopeDescriptor.targetDescriptor}" but the step targets "${step.capabilityRequirement}/${step.effectClass}/${computeTargetDescriptor(step.inputRefs)}"; the planner cannot re-purpose a granted approval for a different scope.`,
+                        `Step "${step.stepId}" references approval requirement "${rawReq.approvalId}" with effect fingerprint "${existingReq.scopeDescriptor.effectFingerprint}" but the step's authorized effect is "${computeEffectFingerprint({ capabilityId: step.capabilityRequirement, effectClass: step.effectClass, inputRefs: step.inputRefs, outcome: step.desiredOutcome })}"; the planner cannot re-purpose a granted approval for a different effect.`,
                     );
                 }
             }

@@ -8,6 +8,7 @@
 
 import { describe, it, expect, beforeEach } from "bun:test";
 import {
+    computeEffectFingerprint,
     EffectClass,
     MISSION_CONTRACT_VERSION,
     Mission,
@@ -296,7 +297,7 @@ describe("PlanPolicyValidator (deterministic policy)", () => {
             approvalRequirements: [
                 {
                     approvalId: "ap-1",
-                    scopeDescriptor: { capabilityId: "lifeos.write", effectClass: EffectClass.WRITE, targetDescriptor: "default" },
+                    scopeDescriptor: { capabilityId: "lifeos.write", effectClass: EffectClass.WRITE, effectFingerprint: "0000000000000000000000000000000000000000000000000000000000000000" },
                     approver: "operator",
                     reason: "Write to life domain",
                     granted: true,
@@ -335,7 +336,7 @@ describe("PlanPolicyValidator (deterministic policy)", () => {
                     scopeDescriptor: {
                         capabilityId: "lifeos.write",
                         effectClass: EffectClass.WRITE,
-                        targetDescriptor: "refs/lifeos/journal/entry-1",
+                        effectFingerprint: "1e005a67b3634baaffc0fe6522f216461e4a29baaf63d1ed8d48dbfc62e1cc1e",
                     },
                     approver: "operator",
                     reason: "Write to life journal entry-1",
@@ -363,6 +364,81 @@ describe("PlanPolicyValidator (deterministic policy)", () => {
         const decision = await policy.validate(mission, candidate);
         expect(decision.valid).toBe(false);
         expect(decision.codes).toContain(PolicyRejectionCode.APPROVAL_SCOPE_MISMATCH);
+    });
+
+    it("rejects approval reuse with the same capability/effect/target but a DIFFERENT semantic operation (desiredOutcome)", async () => {
+        // Approval granted for lifeos.write/WRITE on entry-1 with outcome
+        // "append approved note".
+        const grantedFingerprint = computeEffectFingerprint({
+            capabilityId: "lifeos.write",
+            effectClass: EffectClass.WRITE,
+            inputRefs: ["refs/lifeos/journal/entry-1"],
+            outcome: "append approved note",
+        });
+        const mission = makeMission(makeIntent(), {
+            approvalRequirements: [
+                {
+                    approvalId: "ap-1",
+                    scopeDescriptor: {
+                        capabilityId: "lifeos.write",
+                        effectClass: EffectClass.WRITE,
+                        effectFingerprint: grantedFingerprint,
+                    },
+                    approver: "operator",
+                    reason: "Append approved note to entry-1",
+                    granted: true,
+                    grantedBy: "operator",
+                    grantedAt: "2026-08-30T12:00:00.000Z",
+                },
+            ],
+        });
+        // SAME capability, SAME effect class, SAME target, but the planner
+        // changes the semantic operation to delete/replace.
+        const candidate = makeCandidate({
+            steps: [
+                makeStep({
+                    capabilityRequirement: "lifeos.write",
+                    effectClass: EffectClass.WRITE,
+                    inputRefs: ["refs/lifeos/journal/entry-1"],
+                    desiredOutcome: "delete/replace entry",
+                    approvalRequirement: {
+                        approvalId: "ap-1",
+                        approver: "operator",
+                        reason: "Delete entry",
+                    },
+                }),
+            ],
+        });
+        const decision = await policy.validate(mission, candidate);
+        expect(decision.valid).toBe(false);
+        expect(decision.codes).toContain(PolicyRejectionCode.APPROVAL_SCOPE_MISMATCH);
+    });
+
+    it("produces unambiguous fingerprints — distinct input-ref arrays never collide", async () => {
+        // ["a","b"] vs ["a|b"] collide under naive join("|") but must NOT
+        // collide under the canonical structural fingerprint.
+        const ab = computeEffectFingerprint({
+            capabilityId: "cap",
+            effectClass: EffectClass.READ,
+            inputRefs: ["a", "b"],
+            outcome: "o",
+        });
+        const pipe = computeEffectFingerprint({
+            capabilityId: "cap",
+            effectClass: EffectClass.READ,
+            inputRefs: ["a|b"],
+            outcome: "o",
+        });
+        const ba = computeEffectFingerprint({
+            capabilityId: "cap",
+            effectClass: EffectClass.READ,
+            inputRefs: ["b", "a"],
+            outcome: "o",
+        });
+        expect(ab).not.toBe(pipe);
+        // Order-insensitive but structurally canonical.
+        expect(ab).toBe(ba);
+        expect(ab).toMatch(/^[0-9a-f]{64}$/);
     });
 
     it("rejects input references incompatible with the capability contract", async () => {

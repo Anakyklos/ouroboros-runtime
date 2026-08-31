@@ -89,6 +89,7 @@ interface EngineHarness {
     planner: FakePlannerPort;
     clock: FakeClock;
     ids: FakeIdGenerator;
+    authority: FakeVerificationAuthority;
     close: () => Promise<void>;
 }
 
@@ -102,6 +103,7 @@ function createHarness(
     const planner = new FakePlannerPort();
     const ids = new FakeIdGenerator("mission-id");
     const policy = new PlanPolicyValidator(resolver);
+    const authority = new FakeVerificationAuthority();
     const engine = new MissionEngine({
         store,
         policy,
@@ -110,7 +112,7 @@ function createHarness(
         interpreter: (i) => i.originalIntent,
         // Tests normally inject a deterministic attestation authority;
         // opts.withAuthority=false exercises the fail-closed default.
-        verificationAuthority: opts.withAuthority === false ? undefined : new FakeVerificationAuthority(),
+        verificationAuthority: opts.withAuthority === false ? undefined : authority,
     });
 
     return {
@@ -120,6 +122,7 @@ function createHarness(
         planner,
         clock,
         ids,
+        authority,
         close: async () => {
             await store.close();
         },
@@ -214,7 +217,7 @@ describe("MissionEngine", () => {
                 approvals: [
                     {
                         approvalId: "ap-export",
-                        scopeDescriptor: { capabilityId: "runstead.code-review", effectClass: EffectClass.EXECUTION, targetDescriptor: "default" },
+                        scopeDescriptor: { capabilityId: "runstead.code-review", effectClass: EffectClass.EXECUTION, effectFingerprint: "0000000000000000000000000000000000000000000000000000000000000000" },
                         approver: "operator",
                         reason: "Export explicitly authorized by operator",
                         granted: true,
@@ -465,7 +468,7 @@ describe("MissionEngine", () => {
                     {
                         approvalId: "ap-write",
                         // Granted approval is bound to lifeos.write / WRITE.
-                        scopeDescriptor: { capabilityId: "lifeos.write", effectClass: EffectClass.WRITE, targetDescriptor: "default" },
+                        scopeDescriptor: { capabilityId: "lifeos.write", effectClass: EffectClass.WRITE, effectFingerprint: "0000000000000000000000000000000000000000000000000000000000000000" },
                         approver: "operator",
                         reason: "Approved for life-domain write",
                         granted: true,
@@ -543,7 +546,7 @@ describe("MissionEngine", () => {
                 approvalRequirements: [
                     {
                         approvalId: "ap-write",
-                        scopeDescriptor: { capabilityId: "lifeos.write", effectClass: EffectClass.WRITE, targetDescriptor: "refs/lifeos/journal" },
+                        scopeDescriptor: { capabilityId: "lifeos.write", effectClass: EffectClass.WRITE, effectFingerprint: "5852233e708b3de925eef53f1742bbc38dd0f93d80db8e1b4751151675e7f38d" },
                         approver: "operator",
                         reason: "Write to life domain requires operator approval",
                         granted: false,
@@ -770,6 +773,10 @@ describe("MissionEngine", () => {
                     verifiedAt: BASE_TIME,
                 },
             );
+            harness.authority.registerCriterionAttestation(mission.missionId, "PR merged", "runstead");
+            harness.authority.registerCriterionAttestation(mission.missionId, "CI green", "runstead");
+            harness.authority.registerCriterionAttestation(mission.missionId, "PR merged", "runstead");
+            harness.authority.registerCriterionAttestation(mission.missionId, "CI green", "runstead");
             await engine.recordCriterionVerification(mission.missionId, "PR merged", true, "runstead", "ev-1");
             await engine.recordCriterionVerification(mission.missionId, "CI green", true, "runstead", "ev-2");
             const completed = await engine.completeMission(mission.missionId);
@@ -1126,7 +1133,7 @@ describe("MissionEngine", () => {
             );
 
             // The caller tries to fabricate criterion verification with a
-            // textual source that is NOT a positively verified module owner.
+            // textual source that is NOT registered on the authority.
             await expect(
                 engine.recordCriterionVerification(
                     mission.missionId,
@@ -1135,7 +1142,7 @@ describe("MissionEngine", () => {
                     "module-owner:runstead", // forged string, not the real owner "runstead"
                     "ev-1",
                 ),
-            ).rejects.toThrow(/not a positively verified module owner/i);
+            ).rejects.toThrow(/attestation|verified module owner/i);
 
             const verification = await engine.verifyMission(mission.missionId);
             expect(verification.satisfied).toBe(false);
@@ -1181,6 +1188,8 @@ describe("MissionEngine", () => {
             expect(beforeTyped.ownerBlocked).toBe(false);
 
             // Explicit deterministic typed verification per acceptance criterion.
+            harness.authority.registerCriterionAttestation(mission.missionId, "PR merged", "runstead");
+            harness.authority.registerCriterionAttestation(mission.missionId, "CI green", "runstead");
             await engine.recordCriterionVerification(
                 mission.missionId,
                 "PR merged",
@@ -1368,6 +1377,66 @@ describe("MissionEngine", () => {
             expect(verification.satisfied).toBe(false);
         });
 
+        it("BLOCKER: criterion verification requires a specific attestation — A attested, B rejected until attested", async () => {
+            // Acceptance criteria: A="PR merged", B="CI green".
+            const intent = makeIntent("cli");
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            const proposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId));
+            if (!proposal.ok) throw new Error("plan rejected");
+            await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.recordInvocationResult(
+                invocation.invocationId,
+                {
+                    invocationId: invocation.invocationId,
+                    status: InvocationStatus.COMPLETED,
+                    summary: "Review completed",
+                    evidenceRefs: [
+                        { refId: "ev-1", owner: "runstead", externalRef: "runstead:review/1", label: "PR merged" },
+                        { refId: "ev-2", owner: "runstead", externalRef: "runstead:ci/1", label: "CI green" },
+                    ],
+                    completedAt: BASE_TIME,
+                },
+                {
+                    invocationId: invocation.invocationId,
+                    verified: true,
+                    reason: "Review verified",
+                    owner: "runstead",
+                    verifiedAt: BASE_TIME,
+                },
+            );
+
+            // Register attestation ONLY for criterion A ("PR merged").
+            harness.authority.registerCriterionAttestation(mission.missionId, "PR merged", "runstead");
+
+            // A is attested and can be recorded.
+            await engine.recordCriterionVerification(mission.missionId, "PR merged", true, "runstead", "ev-1");
+
+            // B is a VALID acceptance criterion but NOT attested — must be rejected.
+            await expect(
+                engine.recordCriterionVerification(mission.missionId, "CI green", true, "runstead", "ev-2"),
+            ).rejects.toThrow(/no attestation registered/i);
+
+            // Mission cannot complete without B verified.
+            const verifyAOnly = await engine.verifyMission(mission.missionId);
+            expect(verifyAOnly.satisfied).toBe(false);
+
+            // Register attestation for B — now it can be recorded.
+            harness.authority.registerCriterionAttestation(mission.missionId, "CI green", "runstead");
+            await engine.recordCriterionVerification(mission.missionId, "CI green", true, "runstead", "ev-2");
+
+            // Both criteria verified → completion can proceed.
+            const verifyBoth = await engine.verifyMission(mission.missionId);
+            expect(verifyBoth.satisfied).toBe(true);
+            expect(verifyBoth.ownerBlocked).toBe(false);
+            const completed = await engine.completeMission(mission.missionId);
+            expect(completed.state).toBe(MissionState.COMPLETED);
+        });
+
         it("BLOCKER: a terminal Mission rejects late invocation results (consistency)", async () => {
             const intent = makeIntent("cli");
             const mission = await engine.createMission({
@@ -1399,6 +1468,8 @@ describe("MissionEngine", () => {
                     verifiedAt: BASE_TIME,
                 },
             );
+            harness.authority.registerCriterionAttestation(mission.missionId, "PR merged", "runstead");
+            harness.authority.registerCriterionAttestation(mission.missionId, "CI green", "runstead");
             await engine.recordCriterionVerification(mission.missionId, "PR merged", true, "runstead", "ev-1");
             await engine.recordCriterionVerification(mission.missionId, "CI green", true, "runstead", "ev-2");
             const completed = await engine.completeMission(mission.missionId);
