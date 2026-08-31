@@ -133,14 +133,17 @@ reason based on event/evidence** (no chain of thought).
   and changed **only** through the explicit `MissionEngine.recordApproval()`
   path.
 - Each `ApprovalRequirement` carries an **immutable `scopeDescriptor`**
-  (`capabilityId` + `effectClass` + `targetDescriptor`). A grant is bound to
-  exactly that capability+effect+target. A step may reference an existing
-  requirement **only when its capability+effect+target matches** — otherwise
-  the policy rejects it (`APPROVAL_SCOPE_MISMATCH`). Two steps with the same
-  capability+effect but different input refs produce different
-  `targetDescriptor` values and cannot share a grant. New requirements
-  proposed by a plan start **un-granted** and derive their immutable scope
-  from the step.
+  (`capabilityId` + `effectClass` + `effectFingerprint`). `effectFingerprint`
+  is a sha256 of the canonical structural serialization of capability,
+  effect class, sorted input refs **and** the semantic operation/outcome
+  (`computeEffectFingerprint`). A grant is bound to exactly that authorized
+  effect. A step may reference an existing requirement **only when its full
+  effect fingerprint matches** — otherwise the policy rejects it
+  (`APPROVAL_SCOPE_MISMATCH`). Two steps with different targets OR different
+  operations/outcomes produce different fingerprints and cannot share a
+  grant; `join("|")` collisions are impossible. New requirements proposed
+  by a plan start **un-granted** and derive their immutable fingerprint
+  from the step via the same authoritative function.
 - A candidate that smuggles grant fields inside an approval requirement is
   deterministically rejected (`APPROVAL_GRANT_FORBIDDEN`). The planner cannot
   concede its own approval, and cannot rewrite the authoritative metadata
@@ -246,11 +249,12 @@ not trusted merely because a caller supplied them:
   VerificationAuthority`). The authority validates that the owner matches
   the capability's `moduleOwner` and that the invocationId matches the real
   invocation.
-- `CriterionVerification` is similarly attested by the authority; the
-  default fails closed. The authority requires the criterion to be one of
-  the Mission's acceptance criteria and the source to be a positively
-  verified module owner. A fabricated textual `source = "module-owner:runstead"`
-  without a real positive owner verification cannot complete a Mission.
+- `CriterionVerification` is attested by the authority and is **specific to
+  the criterion**: the authority only emits verdicts it is explicitly
+  configured to emit for `(mission, criterion, source)`. An owner having
+  some positive invocation does NOT attest arbitrary acceptance criteria.
+  A fabricated textual `source = "module-owner:runstead"` without a real
+  positive owner verification cannot complete a Mission.
 - A missing mandatory lower-layer verification (per
   `CapabilityContract.requiresOwnerVerification`) is never implicit success.
 
