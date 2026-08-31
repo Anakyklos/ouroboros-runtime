@@ -256,6 +256,22 @@ export function validateCapabilityDescriptor(
         ["credentialRequirement.metadata", descriptor.credentialRequirement?.metadata],
         ["degradation.unsupportedSemantics", descriptor.degradation?.unsupportedSemantics],
     ];
+    // Identity/reference arrays are part of the declared surface too:
+    // capability id, owner, allowed input prefixes and schema descriptions
+    // are scanned so a secret cannot hide in any registered string.
+    stringFields.push(
+        ["capabilityId", descriptor.capabilityId],
+        ["moduleOwner", descriptor.moduleOwner],
+    );
+    descriptor.allowedInputRefPrefixes.forEach((prefix, i) => {
+        stringFields.push([`allowedInputRefPrefixes[${i}]`, prefix]);
+    });
+    if (descriptor.inputSchema?.description !== undefined) {
+        stringFields.push(["inputSchema.description", descriptor.inputSchema.description]);
+    }
+    if (descriptor.resultSchema?.description !== undefined) {
+        stringFields.push(["resultSchema.description", descriptor.resultSchema.description]);
+    }
     for (const [field, value] of stringFields) {
         if (value !== undefined && containsRawSecret(value)) {
             errors.push(`${field} must not contain a raw secret`);

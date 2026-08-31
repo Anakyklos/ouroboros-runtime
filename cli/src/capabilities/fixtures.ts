@@ -23,7 +23,6 @@ import {
     validateCapabilityDescriptor,
     type CapabilityDescriptor,
 } from "./contracts.js";
-import type { ConnectorContractVersion } from "./connector.js";
 
 /** Deterministic descriptor factory with full declared semantics. */
 export function defineCapabilityDescriptor(input: {

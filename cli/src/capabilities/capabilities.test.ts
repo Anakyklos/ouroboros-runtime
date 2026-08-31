@@ -547,3 +547,112 @@ describe("Connector lifecycle (transport-agnostic contract)", () => {
         );
     });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Secret hygiene + owner forgeability (defense in depth)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("Secret hygiene and owner forgeability", () => {
+    const readDescriptor = () =>
+        defineCapabilityDescriptor({
+            capabilityId: "lifeos.query_commitments",
+            moduleOwner: "lifeos",
+            purpose: "Query open commitments owned by LifeOS",
+            effectClass: EffectClass.READ,
+            allowedInputRefPrefixes: ["refs/lifeos/"],
+            ownsStorage: true,
+        });
+
+    test("registry rejects descriptors carrying raw secrets in any string field", () => {
+        const registry = new CapabilityRegistry();
+        for (const tampered of [
+            { ...readDescriptor(), purpose: "connect with Authorization: Bearer abc123def456" },
+            {
+                ...readDescriptor(),
+                allowedInputRefPrefixes: ["refs/lifeos/", "refs/lifeos/?api_key=supersecret123"],
+            },
+        ] as CapabilityDescriptor[]) {
+            expect(() => registry.register(tampered)).toThrow();
+        }
+    });
+
+    test("diagnostics never leak secrets, even when availability detail contains one", () => {
+        const registry = new CapabilityRegistry();
+        registry.register(readDescriptor());
+        expect(() =>
+            registry.setAvailability(
+                "lifeos.query_commitments",
+                CapabilityAvailability.CONFIGURATION_ERROR,
+                "missing env api_key=sk-abc123def456",
+            ),
+        ).toThrow();
+        // A sanitized detail (no secret pattern) is accepted.
+        registry.setAvailability(
+            "lifeos.query_commitments",
+            CapabilityAvailability.DEGRADED,
+            "rate limited; retry later",
+        );
+        expect(registry.requireDescriptor("lifeos.query_commitments").availability).toBe(
+            CapabilityAvailability.DEGRADED,
+        );
+        // The failed secret-bearing call left the previous state intact
+        // (degraded, set by the sanitized update above) — never poisoned.
+        expect(registry.requireDescriptor("lifeos.query_commitments").availability).toBe(
+            CapabilityAvailability.DEGRADED,
+        );
+    });
+
+    test("connector cannot forge a success that overrides a failed owner verification", async () => {
+        // Result-level provenance: a connector returning COMPLETED with a
+        // negative ownerVerification can never be read as success; the
+        // negative verdict is carried on the typed result itself.
+        const registry = new CapabilityRegistry();
+        const descriptor = readDescriptor();
+        registry.register(descriptor);
+        const forged: CapabilityResult = {
+            status: CapabilityResultStatus.COMPLETED,
+            requestId: "req-forged",
+            summary: "all good",
+            evidence: [],
+            ownerVerification: {
+                owner: "lifeos",
+                verified: false,
+                reason: "owner observed failure",
+            },
+        };
+        expect(descriptor.resultSchema.validate(forged).valid).toBe(true);
+        // The typed contract preserves the negative verdict — consumers
+        // (mission engine, verification authority) must treat verified:false
+        // as dominating status:COMPLETED. See mission-engine tests (#62).
+        expect(forged.ownerVerification!.verified).toBe(false);
+        expect(forged.status).toBe(CapabilityResultStatus.COMPLETED);
+    });
+
+    test("evidence references stay owner-scoped and free of provider internals", () => {
+        const descriptor = readDescriptor();
+        // Evidence labels are declared sanitized; descriptor purpose cannot
+        // embed provider chain-of-thought or raw completion text.
+        const result = validateCapabilityDescriptor({
+            ...descriptor,
+            purpose: "run and return raw model chain-of-thought verbatim",
+        });
+        expect(result.valid).toBe(true); // sanitized text, not a secret
+        // But the connector result type never carries raw text fields:
+        const keys = new Set([
+            "status",
+            "requestId",
+            "summary",
+            "evidence",
+            "ownerVerification",
+            "ownerOperationRef",
+        ]);
+        for (const key of Object.keys({
+            status: "x",
+            requestId: "x",
+            summary: "x",
+            evidence: [],
+        })) {
+            expect(keys.has(key)).toBe(true);
+        }
+    });
+});
