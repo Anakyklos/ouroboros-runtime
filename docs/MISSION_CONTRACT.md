@@ -307,6 +307,24 @@ Bearer tokens, `api_key`/`api_secret`/`client_secret`/`access_token`/
   original, so the original is never lost or silently rewritten, while the
   raw secret value is never written to the database.
 
+### Fail-closed durable boundary (all persisted strings)
+
+The invariant **"no raw secret is persisted"** is a structural property of
+the durable boundary, not a manual field-by-field checklist:
+
+- Free-form text is redacted deterministically (`sanitizeText` /
+  `sanitizePlanStep`).
+- IDs, capability ids, references and any other unclassified string field
+  are **never silently redacted** (that would change identity/target). If
+  they contain a known secret pattern, the write is **rejected fail-closed**
+  by `assertNoRawSecrets`, applied recursively at the store boundary in
+  `createMission`, `savePlanRevision`, `saveInvocation` and
+  `updatePlanRevisionStatus`. The raw `originalIntent` (in-memory only) is
+  excluded from the assertion; only the persisted projection is checked.
+- `containsRawSecret` uses the same detectors as the sanitizer but excludes
+  already-redacted `[REDACTED]` tokens, so previously-sanitized fields never
+  false-positive.
+
 ## Files
 
 | File | Responsibility |
