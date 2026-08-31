@@ -197,6 +197,9 @@ export function validateCapabilityDescriptor(
     if (!Array.isArray(descriptor.allowedInputRefPrefixes)) {
         errors.push("allowedInputRefPrefixes must be an array");
     }
+    if (!Object.values(EffectClass).includes(descriptor.effectClass)) {
+        errors.push(`effectClass "${String(descriptor.effectClass)}" is not a declared EffectClass`);
+    }
     if (
         !descriptor.availability ||
         !Object.values(CapabilityAvailability).includes(descriptor.availability)

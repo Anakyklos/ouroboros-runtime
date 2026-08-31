@@ -656,3 +656,20 @@ describe("Secret hygiene and owner forgeability", () => {
         }
     });
 });
+
+describe("Validation hardening (adversarial audit)", () => {
+    test("effectClass must be a declared EffectClass value (fail closed)", () => {
+        const base = defineCapabilityDescriptor({
+            capabilityId: "x.y",
+            moduleOwner: "x",
+            purpose: "p",
+            effectClass: EffectClass.READ,
+        });
+        const result = validateCapabilityDescriptor({
+            ...base,
+            effectClass: "explode" as EffectClass,
+        });
+        expect(result.valid).toBe(false);
+        expect(result.errors.join(" ")).toContain("effectClass");
+    });
+});
