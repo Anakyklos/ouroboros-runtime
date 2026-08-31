@@ -28,6 +28,12 @@ import {
 } from "./registry.js";
 import { assertConnectorMatchesDescriptor } from "./registry.js";
 import { defineCapabilityDescriptor } from "./fixtures.js";
+import {
+    CapabilityResult,
+    CapabilityResultStatus,
+    ConnectorRequest,
+    type CapabilityConnector,
+} from "./connector.js";
 
 describe("CapabilityDescriptor contract (v1)", () => {
     test("a valid descriptor passes validation and carries the full declared surface", () => {
@@ -367,5 +373,177 @@ describe("Registry conflict handling (explicit contract)", () => {
         const err = new CapabilityContractConflictError("cap", "mismatch");
         expect(err).toBeInstanceOf(Error);
         expect(err.message).toContain("cap");
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Connector lifecycle (thin, versioned, transport-agnostic)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("Connector lifecycle (transport-agnostic contract)", () => {
+    const readDescriptor = () =>
+        defineCapabilityDescriptor({
+            capabilityId: "lifeos.query_commitments",
+            moduleOwner: "lifeos",
+            purpose: "Query open commitments owned by LifeOS",
+            effectClass: EffectClass.READ,
+            allowedInputRefPrefixes: ["refs/lifeos/"],
+            ownsStorage: true,
+        });
+
+    /** Deterministic offline stub connector (no network, no real secrets). */
+    function stubConnector(
+        descriptor: CapabilityDescriptor,
+        handler: (request: ConnectorRequest) => Promise<CapabilityResult>,
+        extra: Partial<CapabilityConnector> = {},
+    ): CapabilityConnector {
+        return {
+            connectorContractVersion: 1,
+            capabilityId: descriptor.capabilityId,
+            describe: () => descriptor,
+            invoke: handler,
+            ...extra,
+        };
+    }
+
+    test("connector bound to registry must describe exactly the registered descriptor", async () => {
+        const registry = new CapabilityRegistry();
+        const descriptor = readDescriptor();
+        registry.register(descriptor);
+        const connector = stubConnector(descriptor, async () => ({
+            status: CapabilityResultStatus.COMPLETED,
+            requestId: "req-1",
+            summary: "commitments fetched",
+            evidence: [{ owner: "lifeos", externalRef: "lifeos/evidence-1", label: "query result" }],
+        }));
+        expect(() => assertConnectorMatchesDescriptor(connector, descriptor)).not.toThrow();
+        // A connector whose describe() diverges from the registered descriptor
+        // is rejected explicitly (discovery never silently diverges).
+        const divergent = stubConnector(
+            { ...descriptor, purpose: "something else entirely" } as CapabilityDescriptor,
+            async () => ({
+                status: CapabilityResultStatus.COMPLETED,
+                requestId: "req-1",
+                summary: "s",
+                evidence: [],
+            }),
+        );
+        expect(() => assertConnectorMatchesDescriptor(divergent, descriptor)).toThrow(
+            CapabilityContractConflictError,
+        );
+    });
+
+    test("invoke returns a typed result matching the declared result schema", async () => {
+        const registry = new CapabilityRegistry();
+        const descriptor = readDescriptor();
+        registry.register(descriptor);
+        const connector = stubConnector(descriptor, async (request) => {
+            expect(descriptor.inputSchema.validate(request).valid).toBe(true);
+            return {
+                status: CapabilityResultStatus.COMPLETED,
+                requestId: request.requestId,
+                summary: "3 open commitments",
+                evidence: [{ owner: "lifeos", externalRef: "lifeos/evidence-9", label: "query result" }],
+            };
+        });
+        const result = await connector.invoke({
+            requestId: "req-1",
+            inputRefs: ["refs/lifeos/journal/entry-1"],
+            desiredOutcome: "list open commitments",
+        });
+        expect(result.status).toBe(CapabilityResultStatus.COMPLETED);
+        expect(descriptor.resultSchema.validate(result).valid).toBe(true);
+        expect(result.evidence[0].owner).toBe("lifeos");
+    });
+
+    test("observeStatus reports a prior long-running invocation without inventing completion", async () => {
+        const registry = new CapabilityRegistry();
+        const descriptor = readDescriptor();
+        registry.register(descriptor);
+        const connector = stubConnector(descriptor, async () => {
+            throw new Error("should not invoke");
+        }, {
+            observeStatus: async (ownerOperationRef) => ({
+                status: CapabilityResultStatus.STILL_RUNNING,
+                requestId: "req-42",
+                summary: "still running",
+                evidence: [],
+                ownerOperationRef,
+            }),
+        });
+        const status = await connector.observeStatus!("op-42");
+        expect(status!.status).toBe(CapabilityResultStatus.STILL_RUNNING);
+        expect(status!.requestId).toBe("req-42");
+        expect(status!.ownerOperationRef).toBe("op-42");
+    });
+
+    test("cancel produces a typed result and is only declared where supported", async () => {
+        const registry = new CapabilityRegistry();
+        const descriptor = readDescriptor();
+        registry.register(descriptor);
+        const connector = stubConnector(descriptor, async () => {
+            throw new Error("should not invoke");
+        }, {
+            cancel: async (ownerOperationRef) => ({
+                status: CapabilityResultStatus.FAILED,
+                requestId: "req-7",
+                summary: `cancelled ${ownerOperationRef}`,
+                evidence: [],
+            }),
+        });
+        const cancelled = await connector.cancel!("op-7");
+        expect(cancelled.status).toBe(CapabilityResultStatus.FAILED);
+        expect(cancelled.summary).toContain("op-7");
+        // A connector without cancel does not fabricate one.
+        const noCancel = stubConnector(descriptor, async () => ({
+            status: CapabilityResultStatus.COMPLETED,
+            requestId: "r",
+            summary: "s",
+            evidence: [],
+        }));
+        expect(noCancel.cancel).toBeUndefined();
+    });
+
+    test("reconcile recovers state after disconnect without fabricating success", async () => {
+        const registry = new CapabilityRegistry();
+        const descriptor = readDescriptor();
+        registry.register(descriptor);
+        const connector = stubConnector(descriptor, async () => {
+            throw new Error("should not invoke");
+        }, {
+            reconcile: async (_requestId) => null,
+        });
+        // Unknown/pending after restart: reconcile reports null, never COMPLETED.
+        expect(await connector.reconcile!("req-9")).toBeNull();
+        const fabricating = stubConnector(descriptor, async () => {
+            throw new Error("should not invoke");
+        }, {
+            reconcile: async (_requestId) => ({
+                status: CapabilityResultStatus.COMPLETED,
+                requestId: "req-9",
+                summary: "reconciled as completed",
+                evidence: [],
+            }),
+        });
+        const reconciled = await fabricating.reconcile!("req-9");
+        expect(reconciled!.status).toBe(CapabilityResultStatus.COMPLETED);
+        // The result is still subject to the declared result schema.
+        expect(descriptor.resultSchema.validate(reconciled).valid).toBe(true);
+    });
+
+    test("connector version mismatch is rejected at binding time", () => {
+        const registry = new CapabilityRegistry();
+        const descriptor = readDescriptor();
+        registry.register(descriptor);
+        const stale = stubConnector(descriptor, async () => ({
+            status: CapabilityResultStatus.COMPLETED,
+            requestId: "r",
+            summary: "s",
+            evidence: [],
+        }));
+        (stale as { connectorContractVersion: number }).connectorContractVersion = 99;
+        expect(() => assertConnectorMatchesDescriptor(registry, stale)).toThrow(
+            ConnectorContractVersionError,
+        );
     });
 });

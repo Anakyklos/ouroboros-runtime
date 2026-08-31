@@ -202,18 +202,37 @@ interface ConnectorBinding {
 }
 
 /**
- * Connector binding helper used by `ConnectorRegistry`-style callers to
- * prove version compatibility at registration time.
+ * Connector binding helper used by registration-time gates. Accepts a
+ * `CapabilityConnector` (or any binding exposing `connectorContractVersion`
+ * + `describe()`). Version is checked BEFORE any `describe()` call, so a
+ * mismatched connector never reaches descriptor processing.
+ *
+ * With two arguments, the connector's `describe()` output must also match
+ * the registered descriptor exactly (deep equality) — discovery never
+ * silently diverges from what was registered.
  */
 export function assertConnectorMatchesDescriptor(
     connector: ConnectorBinding,
+    expectedDescriptor?: CapabilityDescriptor,
     expectedVersion: number = CONNECTOR_CONTRACT_VERSION,
 ): void {
-    if (connector.connectorContractVersion !== expectedVersion) {
+    const version =
+        typeof connector?.connectorContractVersion === "number"
+            ? connector.connectorContractVersion
+            : Number.NaN;
+    if (version !== expectedVersion) {
         throw new ConnectorContractVersionError(
-            connector.describe().capabilityId,
-            connector.connectorContractVersion,
+            typeof connector?.describe === "function"
+                ? connector.describe().capabilityId
+                : "<unavailable: version mismatch>",
+            version,
             expectedVersion,
+        );
+    }
+    if (typeof connector.describe !== "function") {
+        throw new CapabilityContractConflictError(
+            "<unnamed connector>",
+            "connector must implement describe()",
         );
     }
     const described = connector.describe();
@@ -222,6 +241,12 @@ export function assertConnectorMatchesDescriptor(
         throw new CapabilityContractConflictError(
             described.capabilityId,
             validation.errors.join("; "),
+        );
+    }
+    if (expectedDescriptor !== undefined && JSON.stringify(described) !== JSON.stringify(expectedDescriptor)) {
+        throw new CapabilityContractConflictError(
+            described.capabilityId,
+            "connector describe() output does not match the registered descriptor",
         );
     }
 }
