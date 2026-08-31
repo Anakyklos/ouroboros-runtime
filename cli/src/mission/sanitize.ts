@@ -161,3 +161,60 @@ export function sanitizePlanStep(
         })),
     };
 }
+
+/** ------------------------------------------------------------------ */
+/**  Fail-closed durable-boundary guarantee                             */
+/** ------------------------------------------------------------------ */
+
+/**
+ * Detect a RAW secret pattern in a string, using the same detectors as the
+ * sanitizer but WITHOUT matching already-redacted `[REDACTED]` tokens.
+ * Used to reject (fail-closed) identifiers/refs/capability-ids that contain
+ * a secret — silently redacting those would change identity/target.
+ */
+export function containsRawSecret(value: string): boolean {
+    // Authorization: Bearer/Basic <token> (token not already redacted)
+    if (/\bAuthorization\s*:\s*(Bearer|Basic)\s+(?!\[REDACTED\])\S+/i.test(value)) {
+        return true;
+    }
+    // key=value / key:value for known secret keys (value not already redacted)
+    if (
+        /\b(api[_-]?key|api[_-]?secret|client[_-]?secret|access[_-]?token|refresh[_-]?token|password|private[_-]?key|credentials?|token)\s*[=:]\s*(?!\[REDACTED\])\S+/i.test(
+            value,
+        )
+    ) {
+        return true;
+    }
+    // Standalone Bearer token (long-ish base64)
+    if (/\bBearer\s+(?!\[REDACTED\])[A-Za-z0-9._~+/=-]{6,}\b/i.test(value)) {
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Recursively assert that no string in a value (object/array/string tree)
+ * contains a raw secret pattern. Applied at the durable boundary before a
+ * Mission, PlanRevision or Invocation is written: any field — including
+ * identifiers, capability ids and references — that carries a known secret
+ * pattern is rejected fail-closed instead of being silently redacted.
+ */
+export function assertNoRawSecrets(value: unknown, path = "value"): void {
+    if (typeof value === "string") {
+        if (containsRawSecret(value)) {
+            throw new Error(
+                `Raw secret detected in persisted field "${path}"; fail-closed before durable write (identifiers/refs are never silently redacted)`,
+            );
+        }
+        return;
+    }
+    if (Array.isArray(value)) {
+        value.forEach((item, index) => assertNoRawSecrets(item, `${path}[${index}]`));
+        return;
+    }
+    if (value !== null && typeof value === "object") {
+        for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+            assertNoRawSecrets(item, `${path}.${key}`);
+        }
+    }
+}

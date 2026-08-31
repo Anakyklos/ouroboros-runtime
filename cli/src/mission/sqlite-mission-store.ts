@@ -22,6 +22,7 @@ import type {
     MissionState,
 } from "./contracts.js";
 import type { MissionStore } from "./ports.js";
+import { assertNoRawSecrets } from "./sanitize.js";
 
 interface MissionRow {
     mission_id: string;
@@ -181,6 +182,14 @@ export class SqliteMissionStore implements MissionStore {
     // ------------------------------------------------------------------
 
     async createMission(mission: Mission): Promise<Mission> {
+        // Fail-closed durable boundary: the persisted payload must not
+        // contain any raw secret pattern. The raw originalIntent is an
+        // in-memory value that is NEVER written; only the sanitized snapshot
+        // is persisted, so we assert on the persisted projection.
+        assertNoRawSecrets(
+            { ...mission, originalIntent: mission.sanitizedOriginalIntent },
+            "mission",
+        );
         this.stmt(
             "createMission",
             `INSERT INTO missions (
@@ -293,6 +302,9 @@ export class SqliteMissionStore implements MissionStore {
     // ------------------------------------------------------------------
 
     async savePlanRevision(revision: PlanRevision): Promise<PlanRevision> {
+        // Fail-closed durable boundary: any persisted string (including IDs
+        // and refs) containing a raw secret pattern is rejected.
+        assertNoRawSecrets(revision, "plan_revision");
         this.stmt(
             "savePlanRevision",
             `INSERT INTO mission_plan_revisions (
@@ -340,6 +352,10 @@ export class SqliteMissionStore implements MissionStore {
         if (!revision) {
             throw new Error(`Plan revision not found: ${revisionId}`);
         }
+        // Fail-closed durable boundary for the rejection reason string.
+        if (reason !== undefined) {
+            assertNoRawSecrets({ reason }, "plan_revision_status");
+        }
         this.stmt(
             "updatePlanRevisionStatus",
             `UPDATE mission_plan_revisions
@@ -358,6 +374,9 @@ export class SqliteMissionStore implements MissionStore {
     // ------------------------------------------------------------------
 
     async saveInvocation(invocation: CapabilityInvocationRef): Promise<CapabilityInvocationRef> {
+        // Fail-closed durable boundary: any persisted string (including IDs
+        // and refs) containing a raw secret pattern is rejected.
+        assertNoRawSecrets(invocation, "invocation");
         this.stmt(
             "saveInvocation",
             `INSERT INTO mission_invocations (

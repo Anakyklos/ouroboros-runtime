@@ -806,4 +806,133 @@ describe("SqliteMissionStore (durability + recovery)", () => {
 
         await store2.close();
     });
+
+    it("BLOCKER: raw secrets in non-free-form ID/ref fields are rejected fail-closed before any durable write", async () => {
+        const dir = track(makeTempDir("mission-id-secrets-"));
+        const dbPath = join(dir.path, "missions.db");
+
+        const store = new SqliteMissionStore(dbPath);
+        await store.initialize();
+        const engine = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-a"), store);
+
+        const mission = await engine.createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+
+        // 1. Secret in planId.
+        await expect(
+            engine.proposePlan(mission.missionId, {
+                planId: "api_key=test-plan-id-secret",
+                missionId: mission.missionId,
+                plannerNote: "ok",
+                steps: [makeStep()],
+            }),
+        ).rejects.toThrow(/raw secret/i);
+        expect(await store.getPlanRevisions(mission.missionId)).toHaveLength(0);
+
+        // 2. Secret in stepId.
+        await expect(
+            engine.proposePlan(mission.missionId, {
+                planId: "plan-ok",
+                missionId: mission.missionId,
+                plannerNote: "ok",
+                steps: [makeStep({ stepId: "step-token=test-step-secret" })],
+            }),
+        ).rejects.toThrow(/raw secret/i);
+        expect(await store.getPlanRevisions(mission.missionId)).toHaveLength(0);
+
+        // 3. Secret inside an inputRef that passes the authorized prefix check.
+        await expect(
+            engine.proposePlan(mission.missionId, {
+                planId: "plan-ok",
+                missionId: mission.missionId,
+                plannerNote: "ok",
+                steps: [makeStep({ inputRefs: ["refs/runstead/pr/42?api_key=test-ref-secret"] })],
+            }),
+        ).rejects.toThrow(/raw secret/i);
+        expect(await store.getPlanRevisions(mission.missionId)).toHaveLength(0);
+
+        // 4. Secret in approvalId.
+        await expect(
+            engine.proposePlan(mission.missionId, {
+                planId: "plan-ok",
+                missionId: mission.missionId,
+                plannerNote: "ok",
+                steps: [
+                    makeStep({
+                        approvalRequirement: {
+                            approvalId: "ap-token=test-approval-secret",
+                            approver: "operator",
+                            reason: "ok",
+                        },
+                    }),
+                ],
+            }),
+        ).rejects.toThrow(/raw secret/i);
+        expect(await store.getPlanRevisions(mission.missionId)).toHaveLength(0);
+
+        // 5. Secret in a fallback capability/ref.
+        await expect(
+            engine.proposePlan(mission.missionId, {
+                planId: "plan-ok",
+                missionId: mission.missionId,
+                plannerNote: "ok",
+                steps: [
+                    makeStep({
+                        fallbacks: [
+                            { capabilityRequirement: "runstead.code-review?api_key=test-fallback-cap-secret", reason: "ok" },
+                        ],
+                    }),
+                ],
+            }),
+        ).rejects.toThrow(/raw secret/i);
+        expect(await store.getPlanRevisions(mission.missionId)).toHaveLength(0);
+
+        await store.close();
+    });
+
+    it("BLOCKER: benign IDs/refs are persisted byte-for-byte (identity is never redacted)", async () => {
+        const dir = track(makeTempDir("mission-benign-ids-"));
+        const dbPath = join(dir.path, "missions.db");
+
+        const store = new SqliteMissionStore(dbPath);
+        await store.initialize();
+        const engine = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-a"), store);
+
+        const mission = await engine.createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+
+        const planId = "plan-custom-1";
+        const stepId = "step-custom-1";
+        const inputRefs = ["refs/runstead/pr/42"];
+        const approvalId = "ap-custom-1";
+        const fallbackCap = "runstead.code-review";
+
+        const proposal = await engine.proposePlan(mission.missionId, {
+            planId,
+            missionId: mission.missionId,
+            plannerNote: "benign",
+            steps: [
+                makeStep({
+                    stepId,
+                    inputRefs,
+                    approvalRequirement: { approvalId, approver: "operator", reason: "ok" },
+                    fallbacks: [{ capabilityRequirement: fallbackCap, reason: "fallback" }],
+                }),
+            ],
+        });
+        if (!proposal.ok) throw new Error("plan rejected");
+
+        const revisions = await store.getPlanRevisions(mission.missionId);
+        expect(revisions[0].planId).toBe(planId);
+        expect(revisions[0].steps[0].stepId).toBe(stepId);
+        expect(revisions[0].steps[0].inputRefs).toEqual(inputRefs);
+        expect(revisions[0].steps[0].approvalRequirement?.approvalId).toBe(approvalId);
+        expect(revisions[0].steps[0].fallbacks?.[0].capabilityRequirement).toBe(fallbackCap);
+
+        await store.close();
+    });
 });
