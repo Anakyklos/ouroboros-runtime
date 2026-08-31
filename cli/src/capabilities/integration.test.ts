@@ -20,7 +20,13 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { EffectClass, MissionState, PolicyRejectionCode, PlanStep } from "../mission/contracts.js";
+import {
+    computeEffectFingerprint,
+    EffectClass,
+    MissionState,
+    PolicyRejectionCode,
+    PlanStep,
+} from "../mission/contracts.js";
 import type { PlanCandidate } from "../mission/contracts.js";
 import { MissionEngine } from "../mission/mission-engine.js";
 import { SqliteMissionStore } from "../mission/sqlite-mission-store.js";
@@ -326,5 +332,124 @@ describe("capabilities × Mission authorization gate (Issue #63)", () => {
         expect(ref!.status).toBe("failed");
         // Mission is not completed by a failed invocation.
         expect(updated.state).not.toBe(MissionState.COMPLETED);
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fixture scenario 2: write capability requiring approval, driven through the
+// registry-backed catalog (descriptor declared with requiresApproval: true).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("capabilities × Mission: write + approval path", () => {
+    test("write capability waits for approval and dispatches only after explicit grant", async () => {
+        const registry = new CapabilityRegistry();
+        const descriptor = defineCapabilityDescriptor({
+            capabilityId: "lifeos.record_entry",
+            moduleOwner: "lifeos",
+            purpose: "Record a new entry in the LifeOS journal",
+            effectClass: EffectClass.WRITE,
+            allowedInputRefPrefixes: ["refs/lifeos/"],
+            ownsStorage: true,
+            requiresApproval: true,
+            requiresOwnerVerification: true,
+        });
+        registry.register(descriptor);
+        expect(descriptor.requiresApproval).toBe(true);
+
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const policy = new PlanPolicyValidator(new RegistryCapabilityResolver(registry));
+        const engine = new MissionEngine({
+            store,
+            policy,
+            clock: new FakeClock(BASE_TIME),
+            ids: new FakeIdGenerator("mission-id"),
+            interpreter: (i) => i.originalIntent,
+            verificationAuthority: new FakeVerificationAuthority(),
+        });
+
+        const intent = {
+            requestId: "req-cli",
+            source: "cli" as const,
+            originalIntent: "Record a LifeOS journal entry",
+            constraints: [],
+            acceptanceCriteria: ["entry recorded"],
+            contextRefs: [],
+        };
+        const mission = await engine.createMission({
+            intent,
+            allowedCapabilityScope: {
+                capabilityIds: ["lifeos.record_entry"],
+                allowedEffectClasses: [EffectClass.READ, EffectClass.WRITE],
+                allowedRefPrefixes: ["refs/lifeos/"],
+            },
+            approvalRequirements: [
+                {
+                    approvalId: "ap-record",
+                    scopeDescriptor: {
+                        capabilityId: "lifeos.record_entry",
+                        effectClass: EffectClass.WRITE,
+                        effectFingerprint: computeEffectFingerprint({
+                            capabilityId: "lifeos.record_entry",
+                            effectClass: EffectClass.WRITE,
+                            inputRefs: ["refs/lifeos/journal"],
+                            outcome: "Record the journal entry",
+                        }),
+                    },
+                    approver: "operator",
+                    reason: "Write to life domain requires operator approval",
+                    granted: false,
+                },
+            ],
+        });
+
+        const candidate: PlanCandidate = {
+            planId: "plan-1",
+            missionId: mission.missionId,
+            plannerNote: "Record an entry (advisory proposal)",
+            steps: [
+                {
+                    stepId: "step-record",
+                    desiredOutcome: "Record the journal entry",
+                    dependencyIds: [],
+                    capabilityRequirement: "lifeos.record_entry",
+                    inputRefs: ["refs/lifeos/journal"],
+                    expectedAcceptance: ["entry recorded"],
+                    effectClass: EffectClass.WRITE,
+                    approvalRequirement: {
+                        approvalId: "ap-record",
+                        approver: "operator",
+                        reason: "Write to life domain requires operator approval",
+                    },
+                },
+            ],
+        };
+        const proposal = await engine.proposePlan(mission.missionId, candidate);
+        if (!proposal.ok) throw new Error(`plan rejected: ${proposal.decision.reasons.join("; ")}`);
+
+        // Approval pending: Mission waits (never fails).
+        const waiting = await engine.acceptPlan(
+            mission.missionId,
+            proposal.revision.revisionId,
+        );
+        expect(waiting.state).toBe(MissionState.WAITING_FOR_APPROVAL);
+
+        // Dispatch before grant is rejected fail-closed.
+        await expect(
+            engine.dispatchStep(mission.missionId, "step-record"),
+        ).rejects.toThrow(/approval/i);
+
+        // Operator grants; Mission becomes ready.
+        const approved = await engine.recordApproval(
+            mission.missionId,
+            "ap-record",
+            "operator",
+        );
+        expect(approved.state).toBe(MissionState.READY);
+
+        // After the explicit grant the dispatch seam opens.
+        const invocation = await engine.dispatchStep(mission.missionId, "step-record");
+        expect(invocation.capabilityId).toBe("lifeos.record_entry");
+        expect(invocation.status).toBe("dispatched");
     });
 });
