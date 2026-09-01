@@ -711,7 +711,7 @@ describe("ConnectorDispatchSeam", () => {
         expect(stored?.ownerVerification).toBeUndefined();
     });
 
-    it("keeps the honest status but records NO verdict when the fail-closed authority refuses to attest", async () => {
+    it("does NOT consume a verdict when the fail-closed authority refuses to attest", async () => {
         const store = new SqliteMissionStore(":memory:");
         const resolver = new FakeCapabilityResolver();
         resolver.registerMany(makeDefaultCapabilityCatalog());
@@ -773,6 +773,187 @@ describe("ConnectorDispatchSeam", () => {
             const recorded = (await store.listInvocations(missionId)).find(
                 (i) => i.invocationId === outcome.invocation.invocationId,
             );
+            expect(recorded?.ownerVerification).toBeUndefined();
+        } finally {
+            await store.close();
+        }
+    });
+
+    // ── Round 3: hostile / pending values at the untrusted boundary ──
+
+    it("schema-gates the RAW result BEFORE any property access: null adapter return never TypeErrors, never completes (blocker 1)", async () => {
+        const missionId = await acceptTwoStepMission(harness);
+        const counters = { describe: 0, invoke: 0 };
+        harness.seam.registerConnector(
+            REVIEW_DESCRIPTOR.capabilityId,
+            makeSeamConnector(REVIEW_DESCRIPTOR, counters, {
+                invoke: async () => {
+                    counters.invoke++;
+                    return null as unknown as CapabilityResult;
+                },
+            }),
+        );
+
+        await expect(harness.seam.dispatchThroughSeam(missionId, "step-good")).rejects.toThrow(
+            ConnectorResultSchemaError,
+        );
+        expect(counters.invoke).toBe(1); // the effect MAY have happened
+        const stored = await harness.store.getInvocation(
+            (await harness.store.listInvocations(missionId))[0].invocationId,
+        );
+        // No raw TypeError escaped; the invocation is durably uncertain.
+        expect(stored?.status).toBe(InvocationStatus.BLOCKED);
+        expect(stored?.completedAt).toBeUndefined();
+    });
+
+    it("schema-gates primitive adapter returns before any property access (blocker 1)", async () => {
+        const missionId = await acceptTwoStepMission(harness);
+        const counters = { describe: 0, invoke: 0 };
+        harness.seam.registerConnector(
+            REVIEW_DESCRIPTOR.capabilityId,
+            makeSeamConnector(REVIEW_DESCRIPTOR, counters, {
+                invoke: async () => {
+                    counters.invoke++;
+                    return 42 as unknown as CapabilityResult;
+                },
+            }),
+        );
+
+        await expect(harness.seam.dispatchThroughSeam(missionId, "step-good")).rejects.toThrow(
+            ConnectorResultSchemaError,
+        );
+        const stored = await harness.store.getInvocation(
+            (await harness.store.listInvocations(missionId))[0].invocationId,
+        );
+        expect(stored?.status).toBe(InvocationStatus.BLOCKED);
+        expect(stored?.completedAt).toBeUndefined();
+    });
+
+    it("rejects a structurally-invalid object missing requestId BEFORE the echo check dereferences it (blocker 1)", async () => {
+        const missionId = await acceptTwoStepMission(harness);
+        const counters = { describe: 0, invoke: 0 };
+        harness.seam.registerConnector(
+            REVIEW_DESCRIPTOR.capabilityId,
+            makeSeamConnector(REVIEW_DESCRIPTOR, counters, {
+                invoke: async () => {
+                    counters.invoke++;
+                    return {
+                        status: "completed",
+                        summary: "no requestId",
+                        evidence: [],
+                    } as unknown as CapabilityResult;
+                },
+            }),
+        );
+
+        await expect(harness.seam.dispatchThroughSeam(missionId, "step-good")).rejects.toThrow(
+            ConnectorResultSchemaError,
+        );
+        const stored = await harness.store.getInvocation(
+            (await harness.store.listInvocations(missionId))[0].invocationId,
+        );
+        expect(stored?.status).toBe(InvocationStatus.BLOCKED);
+        expect(stored?.completedAt).toBeUndefined();
+    });
+
+    it("treats verified:null as PENDING — never an artificial negative, never completed (blocker 2)", async () => {
+        const missionId = await acceptTwoStepMission(harness);
+        const counters = { describe: 0, invoke: 0 };
+        harness.seam.registerConnector(
+            REVIEW_DESCRIPTOR.capabilityId,
+            makeSeamConnector(REVIEW_DESCRIPTOR, counters, {
+                invoke: async (request) => {
+                    counters.invoke++;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId: request.requestId,
+                        summary: "owner has not examined the outcome yet",
+                        evidence: [],
+                        ownerVerification: {
+                            owner: "runstead",
+                            verified: null,
+                            reason: "pending owner review",
+                        },
+                    };
+                },
+            }),
+        );
+
+        const outcome = await harness.seam.dispatchThroughSeam(missionId, "step-good");
+        // Pending stays pending: BLOCKED, non-terminal, no verdict stored.
+        expect(outcome.recordedStatus).toBe(InvocationStatus.BLOCKED);
+        const stored = await harness.store.getInvocation(outcome.invocation.invocationId);
+        expect(stored?.status).toBe(InvocationStatus.BLOCKED);
+        expect(stored?.completedAt).toBeUndefined();
+        expect(stored?.ownerVerification).toBeUndefined();
+    });
+
+    it("degrades verified:false to BLOCKED (no verdict persisted) when the authority refuses attestation (blocker 2)", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        const resolver = new FakeCapabilityResolver();
+        resolver.registerMany(makeDefaultCapabilityCatalog());
+        const engine = new MissionEngine({
+            store,
+            policy: new PlanPolicyValidator(resolver),
+            clock: new FakeClock(BASE_TIME),
+            ids: new FakeIdGenerator("inv"),
+            interpreter: (i) => i.originalIntent,
+            // verificationAuthority omitted: default fail-closed authority
+            // refuses every verdict (simulates wrong-owner provenance).
+        });
+        try {
+            await store.initialize();
+            const registry = new CapabilityRegistry();
+            registry.register(REVIEW_DESCRIPTOR);
+            const seam = new ConnectorDispatchSeam(engine, registry, new FakeClock(BASE_TIME));
+            const bareHarness: Harness = {
+                engine,
+                store,
+                registry,
+                resolver,
+                seam,
+                clock: new FakeClock(BASE_TIME),
+                authority: new FakeVerificationAuthority(),
+                close: () => store.close(),
+            };
+            const missionId = await acceptMission(bareHarness, [
+                makeStep({
+                    stepId: "step-good",
+                    capabilityRequirement: "runstead.code-review",
+                    inputRefs: ["refs/runstead/pr/42"],
+                }),
+            ]);
+            const counters = { describe: 0, invoke: 0 };
+            seam.registerConnector(
+                REVIEW_DESCRIPTOR.capabilityId,
+                makeSeamConnector(REVIEW_DESCRIPTOR, counters, {
+                    invoke: async (request) => {
+                        counters.invoke++;
+                        return {
+                            status: CapabilityResultStatus.COMPLETED,
+                            requestId: request.requestId,
+                            summary: "reviewed",
+                            evidence: [],
+                            ownerVerification: {
+                                owner: "runstead",
+                                verified: false,
+                                reason: "findings contradict the report",
+                            },
+                        };
+                    },
+                }),
+            );
+
+            const outcome = await seam.dispatchThroughSeam(missionId, "step-good");
+            // Attestation refused => conservative pending form: BLOCKED with
+            // NO verdict persisted (not FAILED-with-unattested-verdict, not
+            // success, not a stale DISPATCHED state).
+            expect(outcome.recordedStatus).toBe(InvocationStatus.BLOCKED);
+            const recorded = (await store.listInvocations(missionId)).find(
+                (i) => i.invocationId === outcome.invocation.invocationId,
+            );
+            expect(recorded?.status).toBe(InvocationStatus.BLOCKED);
+            expect(recorded?.completedAt).toBeUndefined();
             expect(recorded?.ownerVerification).toBeUndefined();
         } finally {
             await store.close();

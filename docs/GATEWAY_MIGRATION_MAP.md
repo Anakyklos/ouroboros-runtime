@@ -60,7 +60,7 @@ invariant is proven in `cli/src/capabilities/integration.test.ts`.
 | Piece | File | Notes |
 |---|---|---|
 | `CAPABILITY_REGISTRY_CONTRACT_VERSION = 1`, `CONNECTOR_CONTRACT_VERSION = 1` | `contracts.ts` | Versioned, provider-independent |
-| `CapabilityDescriptor` (extends #62 `CapabilityContract`) | `contracts.ts` | Adds availability (8 states), idempotency, retry/backoff, cancellation, reconciliation, credential requirement, characteristics, degradation, typed input/result schema validators, expected owner-verification mode |
+| `CapabilityDescriptor` (extends #62 `CapabilityContract`) | `contracts.ts` | Adds availability (8 states), idempotency, retry/backoff, cancellation, reconciliation, credential requirement, characteristics, degradation, declarative data-only input/result schemas (validated by the runtime-controlled interpreter at the dispatch seam), expected owner-verification mode |
 | `validateCapabilityDescriptor` | `contracts.ts` | Fail-closed; scans every declared string for raw secrets using the #62 detectors |
 | `CapabilityRegistry` | `registry.ts` | register/replace/requireDescriptor/resolve/listRegistered/listDescriptors/setAvailability/describeForDiagnostics; duplicate registration rejected; availability never mutates authorization fields |
 | `CapabilityResolver` compatibility | `registry.ts` | A `CapabilityRegistry` satisfies the #62 `CapabilityResolver` interface consumed by `PlanPolicyValidator` — no #62 change needed |

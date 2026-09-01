@@ -90,7 +90,13 @@ export function defineCapabilityDescriptor(input: {
         resultSchema: input.resultSchema ?? {
             kind: "declarative",
             fields: [
+                // Everything the seam consumes after invoke() is required by
+                // the default schema: a result missing any of these is
+                // rejected BEFORE the seam touches it (hostile adapter:
+                // null/primitive/missing requestId — round 3, blocker 1).
                 { path: "status", types: ["string"] },
+                { path: "requestId", types: ["string"], minLength: 1 },
+                { path: "summary", types: ["string"] },
                 { path: "evidence", types: ["array"] },
             ],
         },

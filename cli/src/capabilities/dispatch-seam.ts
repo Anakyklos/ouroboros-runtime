@@ -26,13 +26,18 @@
  *     7. invoke() — the only effectful connector call;
  *   POST-EFFECT (the effect may or may not have happened; the seam never
  *   invents terminality or attributability):
- *     8. requestId echo must match (reconciliation key) — otherwise the
+ *     8. CapabilityResult is validated against resultSchema on the RAW
+ *        value BEFORE any property access (the contract is transport-
+ *        agnostic; a hostile adapter returning null/primitive/missing
+ *        fields must never cause a raw TypeError) — a malformed result is
+ *        never consumed nor recorded as completed;
+ *     9. requestId echo must match (reconciliation key) — otherwise the
  *        invocation is UNCERTAIN, never "failed";
- *     9. CapabilityResult is validated against resultSchema — a malformed
- *        result is never consumed nor recorded as completed;
- *    10. ownerVerification verdicts are propagated to the engine's
- *        VerificationAuthority; verified:false never coexists with a
- *        successful invocation; missing mandatory verification blocks;
+ *    10. ownerVerification verdicts: verified:false is FAILED (never
+ *        success); verified:null is PENDING (never an artificial
+ *        negative); missing mandatory verification blocks; authority
+ *        refusal to attest degrades to BLOCKED with no verdict — nothing
+ *        persists an unattested claim or a stale DISPATCHED state;
  *    11. recordInvocationResult() — the engine's single atomic write path,
  *        with a status mapping that preserves non-terminality:
  *        COMPLETED→COMPLETED, FAILED→FAILED, STILL_RUNNING→RUNNING,
@@ -333,9 +338,13 @@ export class ConnectorDispatchSeam {
         }
 
         // (7) The authorized handoff — the ONLY effectful connector call.
-        let result: CapabilityResult;
+        // rawResult is kept untouched: the schema gate below must run on the
+        // RAW value BEFORE the seam dereferences anything (hostile adapter
+        // may return null/primitive; property access on it must never
+        // produce a raw TypeError that bypasses fail-closed handling).
+        let rawResult: unknown;
         try {
-            result = await connector.invoke(request);
+            rawResult = await connector.invoke(request);
         } catch (error) {
             // The effect MAY have happened (request may have been sent
             // before the exception). The seam never asserts a definitive
@@ -350,7 +359,35 @@ export class ConnectorDispatchSeam {
             );
         }
 
-        // (8) requestId echo: the reconciliation key. A connector that
+        // (8) Result schema enforcement BEFORE consuming anything. The
+        // connector contract is transport-agnostic and the runtime cannot
+        // assume an external adapter respected the TS types: a hostile or
+        // broken adapter may return null, a primitive, or a structurally
+        // invalid object. The schema gate on the RAW value must run before
+        // any property access, so no TypeError can bypass fail-closed
+        // handling and strand the invocation unreconciled.
+        const resultSchema = descriptor.resultSchema;
+        if (!isDeclarativeSchema(resultSchema)) {
+            await this.recordUncertain(invocation, "descriptor resultSchema is not declarative; result not consumed");
+            throw new DispatchSeamError(
+                `descriptor resultSchema for "${capabilityId}" is not a declarative schema; dispatch fails closed`,
+            );
+        }
+        const resultCheck = evaluateDeclarativeSchema(resultSchema, rawResult);
+        if (!resultCheck.valid) {
+            // Effect already happened; a malformed result must never be
+            // recorded as completed. Uncertain, reconciliation territory.
+            await this.recordUncertain(
+                invocation,
+                `CapabilityResult violates the capability resultSchema (effect outcome uncertain): ${resultCheck.errors.join("; ")}`,
+            );
+            throw new ConnectorResultSchemaError(capabilityId, resultCheck.errors);
+        }
+
+        // Schema gate passed: the raw value is structurally a CapabilityResult.
+        const result = rawResult as CapabilityResult;
+
+        // (9) requestId echo: the reconciliation key. A connector that
         // returns a result under a different key leaves OUR invocation
         // unattributable → UNCERTAIN, never "failed".
         if (result.requestId !== invocation.invocationId) {
@@ -363,42 +400,58 @@ export class ConnectorDispatchSeam {
             );
         }
 
-        // (9) Result schema enforcement BEFORE consuming/recording.
-        const resultSchema = descriptor.resultSchema;
-        if (!isDeclarativeSchema(resultSchema)) {
-            await this.recordUncertain(invocation, "descriptor resultSchema is not declarative; result not consumed");
-            throw new DispatchSeamError(
-                `descriptor resultSchema for "${capabilityId}" is not a declarative schema; dispatch fails closed`,
-            );
-        }
-        const resultCheck = evaluateDeclarativeSchema(resultSchema, result);
-        if (!resultCheck.valid) {
-            // Effect already happened; a malformed result must never be
-            // recorded as completed. Uncertain, reconciliation territory.
-            await this.recordUncertain(
-                invocation,
-                `CapabilityResult violates the capability resultSchema (effect outcome uncertain): ${resultCheck.errors.join("; ")}`,
-            );
-            throw new ConnectorResultSchemaError(capabilityId, resultCheck.errors);
-        }
-
         // (10) Owner verification verdicts are evidence, not decoration.
+        // The connector contract types `verified: boolean | null` where
+        // null means unknown/pending. Only `verified === false` is a
+        // NEGATIVE verdict; `null` is NEVER rewritten into one (no
+        // artificial negative), and a capability that requires owner
+        // verification can never complete while its verdict is pending or
+        // unattested.
         if (result.ownerVerification && result.ownerVerification.verified === false) {
             // Evidence-backed negative verdict: the owner examined the
-            // outcome and rejected it. This is the one post-effect state
-            // with a definitive, evidenced answer: FAILED (never success).
-            await this.engine.recordInvocationResult(
-                invocation.invocationId,
-                {
-                    invocationId: invocation.invocationId,
-                    status: InvocationStatus.FAILED,
-                    summary: `owner verification failed: ${sanitizeText(result.ownerVerification.reason || "owner reported the outcome as not verified")}`,
-                    evidenceRefs: this.evidenceRefsOf(result),
-                    completedAt: this.isoNow(),
-                },
-                this.ownerVerificationOf(invocation, result),
+            // outcome and rejected it. The one post-effect state with a
+            // definitive, evidenced answer: FAILED (never success). If the
+            // authority refuses to attest the verdict (provenance/owner
+            // mismatch), the state degrades to the conservative pending
+            // form: BLOCKED, no verdict, no completion claim — never a
+            // stale DISPATCHED invocation, never an unattested failure
+            // claim, never success.
+            try {
+                await this.engine.recordInvocationResult(
+                    invocation.invocationId,
+                    {
+                        invocationId: invocation.invocationId,
+                        status: InvocationStatus.FAILED,
+                        summary: `owner verification failed: ${sanitizeText(result.ownerVerification.reason || "owner reported the outcome as not verified")}`,
+                        evidenceRefs: this.evidenceRefsOf(result),
+                        completedAt: this.isoNow(),
+                    },
+                    this.ownerVerificationOf(invocation, result),
+                );
+                return { invocation, result, recordedStatus: InvocationStatus.FAILED };
+            } catch {
+                await this.recordUncertain(
+                    invocation,
+                    "owner verification was negative but the verification authority refused to attest it (provenance mismatch); invocation blocked pending a re-attested verdict",
+                );
+                return { invocation, result, recordedStatus: InvocationStatus.BLOCKED };
+            }
+        }
+
+        // `verified: null` is an explicit PENDING verdict from the
+        // connector: unknown — not negative, not positive. A capability
+        // that requires owner verification blocks until an attested
+        // verdict arrives; no completion is fabricated from an unknown.
+        if (
+            descriptor.requiresOwnerVerification &&
+            result.ownerVerification &&
+            result.ownerVerification.verified === null
+        ) {
+            await this.recordUncertain(
+                invocation,
+                "capability requires owner verification but the connector reported the verdict as pending (verified: null); invocation blocked pending an attested owner verdict",
             );
-            return { invocation, result, recordedStatus: InvocationStatus.FAILED };
+            return { invocation, result, recordedStatus: InvocationStatus.BLOCKED };
         }
 
         // Missing MANDATORY owner verification is never implicit success:
@@ -413,15 +466,19 @@ export class ConnectorDispatchSeam {
         }
 
         // (11) Engine-owned result recording (status + evidence, atomic).
-        // OwnerVerification (when present, verified/unknown) is attested by
-        // the engine's VerificationAuthority — the fail-closed default
-        // authority rejects it, in which case the invocation is still
-        // recorded with the honest status but WITHOUT an attested verdict
-        // (completion gates elsewhere never accept unattested verdicts).
+        // A verdict is submitted to the engine's VerificationAuthority ONLY
+        // when it is a positive claim (`verified === true`): negative
+        // verdicts were handled above, and `null` pending verdicts are not
+        // attestation material — they never become artificial negatives or
+        // positives. If the authority refuses attestation (fail-closed
+        // default or provenance mismatch), the invocation is still recorded
+        // with the honest connector status but WITHOUT a verdict —
+        // completion gates elsewhere never accept unattested verdicts.
         const mapped = invocationStatusFor(result);
-        const ownerVerification = result.ownerVerification
-            ? this.ownerVerificationOf(invocation, result)
-            : undefined;
+        const pendingVerdict =
+            result.ownerVerification && result.ownerVerification.verified === true
+                ? this.ownerVerificationOf(invocation, result)
+                : undefined;
         try {
             await this.engine.recordInvocationResult(
                 invocation.invocationId,
@@ -432,13 +489,13 @@ export class ConnectorDispatchSeam {
                     evidenceRefs: this.evidenceRefsOf(result),
                     completedAt: isTerminalInvocationStatus(mapped) ? this.isoNow() : undefined,
                 },
-                ownerVerification,
+                pendingVerdict,
             );
         } catch (error) {
-            if (ownerVerification) {
-                // Authority refused to attest (fail-closed default or
-                // provenance mismatch). Record WITHOUT the verdict; the
-                // verdict is never silently self-attested.
+            if (pendingVerdict) {
+                // Authority refused to attest the positive verdict. Record
+                // WITHOUT the verdict; the verdict is never silently
+                // self-attested.
                 await this.engine.recordInvocationResult(invocation.invocationId, {
                     invocationId: invocation.invocationId,
                     status: mapped,
