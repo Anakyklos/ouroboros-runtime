@@ -772,6 +772,7 @@ function compareContracts(a: unknown, b: unknown): string[] {
         "requiresApproval",
         "requiresOwnerVerification",
         "ownsStorage",
+        "factRowsOnly",
         "allowedInputRefPrefixes",
     ] as const) {
         if (JSON.stringify(recordA[field]) !== JSON.stringify(recordB[field])) {

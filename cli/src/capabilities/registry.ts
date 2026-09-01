@@ -377,6 +377,7 @@ export function authorizationProjection(descriptor: CapabilityDescriptor): Capab
         requiresOwnerVerification: descriptor.requiresOwnerVerification,
         allowedInputRefPrefixes: [...descriptor.allowedInputRefPrefixes],
         ownsStorage: descriptor.ownsStorage,
+        factRowsOnly: descriptor.factRowsOnly,
     };
 }
 

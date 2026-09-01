@@ -36,6 +36,8 @@ export function defineCapabilityDescriptor(input: {
     requiresOwnerVerification?: boolean;
     allowedInputRefPrefixes?: string[];
     ownsStorage?: boolean;
+    /** Owner guarantee that every row this capability produces is a fact. */
+    factRowsOnly?: boolean;
     idempotency?: CapabilityDescriptor["idempotency"];
     retry?: CapabilityDescriptor["retry"];
     cancellationSupport?: CancellationSupport;
@@ -62,6 +64,10 @@ export function defineCapabilityDescriptor(input: {
         requiresOwnerVerification: input.requiresOwnerVerification ?? false,
         allowedInputRefPrefixes: input.allowedInputRefPrefixes ?? [],
         ownsStorage: input.ownsStorage ?? false,
+        // Declared ONLY when the fact-only license is claimed (true):
+        // absent otherwise, so the split-brain guard bites exactly when a
+        // descriptor starts claiming unclassified rows as FACT.
+        factRowsOnly: input.factRowsOnly === true ? true : undefined,
         availability: input.availability ?? CapabilityAvailability.AVAILABLE,
         availabilityDetail: input.availabilityDetail,
         idempotency: input.idempotency ?? {
