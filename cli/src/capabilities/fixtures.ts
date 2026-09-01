@@ -63,6 +63,7 @@ export function defineCapabilityDescriptor(input: {
         allowedInputRefPrefixes: input.allowedInputRefPrefixes ?? [],
         ownsStorage: input.ownsStorage ?? false,
         availability: input.availability ?? CapabilityAvailability.AVAILABLE,
+        availabilityDetail: input.availabilityDetail,
         idempotency: input.idempotency ?? {
             mode: IdempotencyMode.IDEMPOTENT,
             keyScope: "request",

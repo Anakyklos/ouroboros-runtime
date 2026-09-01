@@ -966,6 +966,11 @@ export class MissionEngine {
         return this.requireMission(missionId);
     }
 
+    /** Read a single plan revision (read-only; dispatch seam input source). */
+    async getPlanRevision(revisionId: string): Promise<PlanRevision | null> {
+        return this.store.getPlanRevision(revisionId);
+    }
+
     async listMissions(filter?: { state?: MissionState }): Promise<Mission[]> {
         return this.store.listMissions(filter);
     }
