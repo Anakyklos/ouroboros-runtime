@@ -16,6 +16,8 @@ import {
     IdempotencyMode,
     ReconciliationSupport,
     RetryBackoff,
+    evaluateDeclarativeSchema,
+    isDeclarativeSchema,
     validateCapabilityDescriptor,
     type CapabilityDescriptor,
 } from "./contracts.js";
@@ -61,10 +63,11 @@ describe("CapabilityDescriptor contract (v1)", () => {
         expect(descriptor.cancellationSupport).toBe(CancellationSupport.NONE);
         expect(descriptor.reconciliationSupport).toBe(ReconciliationSupport.NONE);
         expect(descriptor.expectedEvidence.ownerVerification).toBe("module_owner");
-        // Typed input/result schemas are declared as validators (objects with
-        // deterministic check functions), not free-form text.
-        expect(typeof descriptor.inputSchema.validate).toBe("function");
-        expect(typeof descriptor.resultSchema.validate).toBe("function");
+        // Schemas are data-only declarative declarations (JSON-serializable
+        // data, interpreted by the runtime validator) — never executable code.
+        expect(isDeclarativeSchema(descriptor.inputSchema)).toBe(true);
+        expect(isDeclarativeSchema(descriptor.resultSchema)).toBe(true);
+        expect(JSON.parse(JSON.stringify(descriptor.inputSchema)).kind).toBe("declarative");
     });
 
     test("descriptor satisfies the #62 CapabilityContract shape consumed by policy", () => {
@@ -438,7 +441,7 @@ describe("Connector lifecycle (transport-agnostic contract)", () => {
         const descriptor = readDescriptor();
         registry.register(descriptor);
         const connector = stubConnector(descriptor, async (request) => {
-            expect(descriptor.inputSchema.validate(request).valid).toBe(true);
+            expect(evaluateDeclarativeSchema(descriptor.inputSchema, request).valid).toBe(true);
             return {
                 status: CapabilityResultStatus.COMPLETED,
                 requestId: request.requestId,
@@ -452,7 +455,7 @@ describe("Connector lifecycle (transport-agnostic contract)", () => {
             desiredOutcome: "list open commitments",
         });
         expect(result.status).toBe(CapabilityResultStatus.COMPLETED);
-        expect(descriptor.resultSchema.validate(result).valid).toBe(true);
+        expect(evaluateDeclarativeSchema(descriptor.resultSchema, result).valid).toBe(true);
         expect(result.evidence[0].owner).toBe("lifeos");
     });
 
@@ -528,7 +531,7 @@ describe("Connector lifecycle (transport-agnostic contract)", () => {
         const reconciled = await fabricating.reconcile!("req-9");
         expect(reconciled!.status).toBe(CapabilityResultStatus.COMPLETED);
         // The result is still subject to the declared result schema.
-        expect(descriptor.resultSchema.validate(reconciled).valid).toBe(true);
+        expect(evaluateDeclarativeSchema(descriptor.resultSchema, reconciled).valid).toBe(true);
     });
 
     test("connector version mismatch is rejected at binding time", () => {
@@ -620,7 +623,7 @@ describe("Secret hygiene and owner forgeability", () => {
                 reason: "owner observed failure",
             },
         };
-        expect(descriptor.resultSchema.validate(forged).valid).toBe(true);
+        expect(evaluateDeclarativeSchema(descriptor.resultSchema, forged).valid).toBe(true);
         // The typed contract preserves the negative verdict — consumers
         // (mission engine, verification authority) must treat verified:false
         // as dominating status:COMPLETED. See mission-engine tests (#62).
@@ -735,5 +738,68 @@ describe("Validation hardening (adversarial audit II — nested strings)", () =>
         return fromResolvePromise.then((contract) => {
             expect(contract!.allowedInputRefPrefixes).toEqual(["refs/lifeos/"]);
         });
+    });
+});
+
+/**
+ * Issue #63 review blocker 3: descriptor schemas must be DATA-ONLY.
+ * Declarative + serializable + runtime-controlled validation; the registrant
+ * never ships executable validation code across the public boundary.
+ */
+describe("Data-only declarative schemas (blocker 3)", () => {
+    const readDescriptor = () =>
+        defineCapabilityDescriptor({
+            capabilityId: "lifeos.query_commitments",
+            moduleOwner: "lifeos",
+            purpose: "Query open commitments owned by LifeOS",
+            effectClass: EffectClass.READ,
+            allowedInputRefPrefixes: ["refs/lifeos/"],
+            ownsStorage: true,
+        });
+
+    test("schemas survive a JSON round-trip unchanged (serializable by construction)", () => {
+        const descriptor = readDescriptor();
+        const roundTripped = JSON.parse(JSON.stringify(descriptor)) as CapabilityDescriptor;
+        expect(roundTripped.inputSchema).toEqual(descriptor.inputSchema);
+        expect(roundTripped.resultSchema).toEqual(descriptor.resultSchema);
+        expect(isDeclarativeSchema(roundTripped.inputSchema)).toBe(true);
+        expect(isDeclarativeSchema(roundTripped.resultSchema)).toBe(true);
+    });
+
+    test("runtime interpreter enforces the declared shape deterministically", () => {
+        const descriptor = readDescriptor();
+        const good = evaluateDeclarativeSchema(descriptor.inputSchema, {
+            requestId: "req-1",
+            inputRefs: ["refs/lifeos/journal/entry-1"],
+        });
+        expect(good.valid).toBe(true);
+
+        const missing = evaluateDeclarativeSchema(descriptor.inputSchema, {
+            inputRefs: [],
+        });
+        expect(missing.valid).toBe(false);
+        expect(missing.errors.some((e) => e.includes("requestId"))).toBe(true);
+
+        const wrongType = evaluateDeclarativeSchema(descriptor.inputSchema, {
+            requestId: 42,
+            inputRefs: "not-an-array",
+        });
+        expect(wrongType.valid).toBe(false);
+        expect(wrongType.errors.length).toBe(2);
+    });
+
+    test("executable (function-bearing) schemas are rejected fail-closed", () => {
+        const descriptor = readDescriptor();
+        const hostile = {
+            ...descriptor,
+            inputSchema: {
+                kind: "declarative",
+                fields: [],
+                validate: () => ({ valid: true, errors: [] }),
+            },
+        } as unknown as CapabilityDescriptor;
+        const verdict = validateCapabilityDescriptor(hostile);
+        expect(verdict.valid).toBe(false);
+        expect(verdict.errors.some((e) => e.includes("data-only declarative schema"))).toBe(true);
     });
 });

@@ -47,6 +47,10 @@ export function defineCapabilityDescriptor(input: {
     inputSchema?: CapabilityDescriptor["inputSchema"];
     /** Deterministic result validator (defaults to accepting typed results). */
     resultSchema?: CapabilityDescriptor["resultSchema"];
+    /** Sanitized input shape description. */
+    inputSchemaDescription?: string;
+    /** Sanitized result shape description. */
+    resultSchemaDescription?: string;
 }): CapabilityDescriptor {
     const descriptor: CapabilityDescriptor = {
         capabilityId: input.capabilityId,
@@ -69,33 +73,25 @@ export function defineCapabilityDescriptor(input: {
         expectedEvidence: {
             ownerVerification: input.requiresOwnerVerification ? "module_owner" : "none",
         },
+        inputSchemaDescription:
+            input.inputSchemaDescription ??
+            "ConnectorRequest: requestId + authorized inputRefs + declarative outcome",
+        resultSchemaDescription:
+            input.resultSchemaDescription ??
+            "CapabilityResult: typed status + evidence refs, no raw provider text",
         inputSchema: input.inputSchema ?? {
-            description: "ConnectorRequest: requestId + authorized inputRefs + declarative outcome",
-            validate(value: unknown): { valid: boolean; errors: string[] } {
-                const req = value as { requestId?: unknown; inputRefs?: unknown };
-                const errors: string[] = [];
-                if (typeof req.requestId !== "string" || req.requestId.trim() === "") {
-                    errors.push("requestId is required");
-                }
-                if (!Array.isArray(req.inputRefs)) {
-                    errors.push("inputRefs must be an array");
-                }
-                return { valid: errors.length === 0, errors };
-            },
+            kind: "declarative",
+            fields: [
+                { path: "requestId", types: ["string"], minLength: 1 },
+                { path: "inputRefs", types: ["array"] },
+            ],
         },
         resultSchema: input.resultSchema ?? {
-            description: "CapabilityResult: typed status + evidence refs, no raw provider text",
-            validate(value: unknown): { valid: boolean; errors: string[] } {
-                const res = value as { status?: unknown; evidence?: unknown };
-                const errors: string[] = [];
-                if (typeof res.status !== "string") {
-                    errors.push("status is required");
-                }
-                if (!Array.isArray(res.evidence)) {
-                    errors.push("evidence must be an array");
-                }
-                return { valid: errors.length === 0, errors };
-            },
+            kind: "declarative",
+            fields: [
+                { path: "status", types: ["string"] },
+                { path: "evidence", types: ["array"] },
+            ],
         },
         credentialRequirement: input.credentialRequirement,
         characteristics: input.characteristics,

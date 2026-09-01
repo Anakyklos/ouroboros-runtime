@@ -83,16 +83,132 @@ export enum ReconciliationSupport {
 export type OwnerVerificationMode = "module_owner" | "none";
 
 /**
- * Typed schema/validator declaration. Deterministic validation functions,
- * never free-form text and never implementation internals.
+ * Declarative, DATA-ONLY schema validation (Issue #63 review blocker 3).
+ *
+ * The public/versioned descriptor must be transportable (JSON-serializable
+ * over IPC/CLI/HTTP) and must never carry executable code supplied by the
+ * registrant. Schemas are therefore declared as inert DATA (an operator +
+ * a declarative shape assertion); the deterministic `validate` behavior is
+ * implemented ONLY by this runtime-controlled interpreter — the registry
+ * never executes registrant-supplied functions, and no dynamic code/plugin
+ * surface exists anywhere on this boundary.
  */
-export interface TypedSchema<T = unknown> {
-    /** Deterministic validator: returns typed errors (empty when valid). */
+
+/** Declarative field requirement inside a schema shape. */
+export interface SchemaFieldSpec {
+    /** Field path inside the validated object (e.g. "requestId", "evidence"). */
+    path: string;
+    /** Required JSON value types for the field at `path`. */
+    types: Array<
+        | "string"
+        | "number"
+        | "boolean"
+        | "object"
+        | "array"
+        | "null"
+    >;
+    /** When set on a string/array field: minimum length/size. */
+    minLength?: number;
+    /** When set: every array element must itself satisfy this spec. */
+    items?: SchemaFieldSpec;
+}
+
+/**
+ * Declarative schema: an ordered list of field requirements evaluated by
+ * `evaluateDeclarativeSchema`. Pure data — survives JSON round-trips.
+ */
+export interface DeclarativeSchema {
+    kind: "declarative";
+    /** Ordered field requirements. */
+    fields: SchemaFieldSpec[];
+}
+
+/** @deprecated Legacy executable schema shape — rejected fail-closed. */
+export interface ExecutableSchemaShape {
     validate(value: unknown): { valid: boolean; errors: string[] };
-    /** Sanitized, human-readable description of the expected shape. */
-    description: string;
-    /** Phantom marker so different schemas stay structurally distinct. */
-    readonly __type?: T;
+    description?: string;
+}
+
+/**
+ * Public schema declaration on a descriptor: data-only. A legacy
+ * function-carrying object is assignable to `unknown` here only so the
+ * validator can DETECT and REJECT it fail-closed; no API accepts or runs it.
+ */
+export type SchemaDeclaration = DeclarativeSchema;
+
+/**
+ * Runtime-controlled deterministic evaluation of a declarative schema.
+ * This is the ONLY schema validator on the capability boundary: it reads
+ * plain data, performs no dynamic dispatch, and can never execute
+ * registrant code.
+ */
+export function evaluateDeclarativeSchema(
+    schema: DeclarativeSchema,
+    value: unknown,
+): { valid: boolean; errors: string[] } {
+    const errors: string[] = [];
+    if (!value || typeof value !== "object") {
+        return { valid: false, errors: ["value must be an object"] };
+    }
+    const root = value as Record<string, unknown>;
+    const walk = (spec: SchemaFieldSpec, container: Record<string, unknown>, prefix: string): void => {
+        const fullPath = prefix === "" ? spec.path : `${prefix}.${spec.path}`;
+        const current = container?.[spec.path];
+        if (current === undefined) {
+            errors.push(`${fullPath} is required`);
+            return;
+        }
+        if (current === null) {
+            if (!spec.types.includes("null")) {
+                errors.push(`${fullPath} must be one of: ${spec.types.join(", ")}`);
+            }
+            return;
+        }
+        const actualType = Array.isArray(current) ? "array" : typeof current;
+        if (!spec.types.includes(actualType as (typeof spec.types)[number])) {
+            errors.push(`${fullPath} must be one of: ${spec.types.join(", ")}`);
+            return;
+        }
+        if (actualType === "string" && spec.minLength !== undefined && (current as string).length < spec.minLength) {
+            errors.push(`${fullPath} must have length >= ${spec.minLength}`);
+        }
+        if (actualType === "array") {
+            const arr = current as unknown[];
+            if (spec.minLength !== undefined && arr.length < spec.minLength) {
+                errors.push(`${fullPath} must have at least ${spec.minLength} items`);
+            }
+            if (spec.items) {
+                for (const [index, item] of arr.entries()) {
+                    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+                        errors.push(`${fullPath}[${index}] must be an object`);
+                        continue;
+                    }
+                    walk(spec.items, item as Record<string, unknown>, `${fullPath}[${index}]`);
+                }
+            }
+        }
+    };
+    for (const field of schema.fields) {
+        walk(field, root, "");
+    }
+    return { valid: errors.length === 0, errors };
+}
+
+/** Deterministic helper: is this value a data-only declarative schema? */
+export function isDeclarativeSchema(value: unknown): value is DeclarativeSchema {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const candidate = value as Record<string, unknown>;
+    if (typeof value === "object" && "validate" in candidate) return false;
+    if (candidate.kind !== "declarative") return false;
+    if (!Array.isArray(candidate.fields)) return false;
+    for (const field of candidate.fields) {
+        if (!field || typeof field !== "object") return false;
+        const f = field as Record<string, unknown>;
+        if (typeof f.path !== "string" || f.path === "") return false;
+        if (!Array.isArray(f.types) || f.types.length === 0) return false;
+        if (typeof f.validate === "function") return false;
+    }
+    return true;
 }
 
 /** Credential/auth requirement: by reference or metadata — never a raw secret. */
@@ -136,10 +252,15 @@ export interface CapabilityDescriptor extends CapabilityContract {
     /** How owner verification verdicts are produced for this capability. */
     expectedEvidence: { ownerVerification: OwnerVerificationMode };
 
-    /** Typed input validator declared by the owner. */
-    inputSchema: TypedSchema;
-    /** Typed result validator declared by the owner. */
-    resultSchema: TypedSchema;
+    /** Sanitized, human-readable description of the expected input shape. */
+    inputSchemaDescription: string;
+    /** Sanitized, human-readable description of the expected result shape. */
+    resultSchemaDescription: string;
+
+    /** Data-only input schema (validated by the runtime interpreter, never code). */
+    inputSchema: SchemaDeclaration;
+    /** Data-only result schema (validated by the runtime interpreter, never code). */
+    resultSchema: SchemaDeclaration;
 
     /** Credential/auth requirement (reference/metadata only). */
     credentialRequirement?: CredentialRequirement;
@@ -234,17 +355,59 @@ export function validateCapabilityDescriptor(
     ) {
         errors.push("expectedEvidence.ownerVerification must be 'module_owner' or 'none'");
     }
-    if (
-        !descriptor.inputSchema ||
-        typeof descriptor.inputSchema.validate !== "function"
-    ) {
-        errors.push("inputSchema must declare a typed validator");
+    if (descriptor.inputSchema === undefined) {
+        errors.push("inputSchema must declare a data-only declarative schema");
+    } else if (!isDeclarativeSchema(descriptor.inputSchema)) {
+        // Fail closed on ANY executable/function-bearing schema: the public
+        // descriptor is data-only and never accepts registrant-supplied code.
+        errors.push(
+            "inputSchema must be a data-only declarative schema; executable validators are not part of the discovery contract",
+        );
     }
-    if (
-        !descriptor.resultSchema ||
-        typeof descriptor.resultSchema.validate !== "function"
-    ) {
-        errors.push("resultSchema must declare a typed validator");
+    if (descriptor.resultSchema === undefined) {
+        errors.push("resultSchema must declare a data-only declarative schema");
+    } else if (!isDeclarativeSchema(descriptor.resultSchema)) {
+        errors.push(
+            "resultSchema must be a data-only declarative schema; executable validators are not part of the discovery contract",
+        );
+    }
+    if (typeof descriptor.inputSchemaDescription !== "string" || descriptor.inputSchemaDescription.trim() === "") {
+        errors.push("inputSchemaDescription is required (sanitized shape description)");
+    }
+    if (typeof descriptor.resultSchemaDescription !== "string" || descriptor.resultSchemaDescription.trim() === "") {
+        errors.push("resultSchemaDescription is required (sanitized shape description)");
+    }
+
+    // The descriptor must be a transportable, data-only value: a round-trip
+    // through JSON must preserve it exactly. Functions cannot survive a
+    // round-trip — their presence makes the descriptor non-executable and is
+    // therefore rejected here as well (fail-closed, defense in depth).
+    try {
+        const roundTripped = JSON.parse(JSON.stringify(descriptor)) as CapabilityDescriptor;
+        const surface = (a: unknown, b: unknown, path: string): void => {
+            if (typeof a === "function" || typeof b === "function") {
+                errors.push(`${path || "descriptor"} must not carry executable code (data-only descriptor)`);
+                return;
+            }
+            if (a === undefined && b === undefined) return;
+            if (a === null || b === null || typeof a !== "object" || typeof b !== "object") {
+                if (a !== b) {
+                    errors.push(`descriptor is not JSON-round-trip stable at "${path || "<root>"}"`);
+                }
+                return;
+            }
+            const keys = new Set([...Object.keys(a as object), ...Object.keys(b as object)]);
+            for (const key of keys) {
+                surface(
+                    (a as Record<string, unknown>)[key],
+                    (b as Record<string, unknown>)[key],
+                    path === "" ? key : `${path}.${key}`,
+                );
+            }
+        };
+        surface(descriptor, roundTripped, "");
+    } catch {
+        errors.push("descriptor must be JSON-serializable (data-only contract)");
     }
 
     // Secret hygiene: any declared string field carrying a raw secret fails
@@ -269,11 +432,11 @@ export function validateCapabilityDescriptor(
     descriptor.allowedInputRefPrefixes.forEach((prefix, i) => {
         stringFields.push([`allowedInputRefPrefixes[${i}]`, prefix]);
     });
-    if (descriptor.inputSchema?.description !== undefined) {
-        stringFields.push(["inputSchema.description", descriptor.inputSchema.description]);
+    if (descriptor.inputSchemaDescription !== undefined) {
+        stringFields.push(["inputSchemaDescription", descriptor.inputSchemaDescription]);
     }
-    if (descriptor.resultSchema?.description !== undefined) {
-        stringFields.push(["resultSchema.description", descriptor.resultSchema.description]);
+    if (descriptor.resultSchemaDescription !== undefined) {
+        stringFields.push(["resultSchemaDescription", descriptor.resultSchemaDescription]);
     }
     for (const [field, value] of stringFields) {
         if (value !== undefined && containsRawSecret(value)) {
