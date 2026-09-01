@@ -93,11 +93,24 @@ export function defineCapabilityDescriptor(input: {
                 // Everything the seam consumes after invoke() is required by
                 // the default schema: a result missing any of these is
                 // rejected BEFORE the seam touches it (hostile adapter:
-                // null/primitive/missing requestId — round 3, blocker 1).
+                // null/primitive/missing requestId — round 3, blocker 1;
+                // malformed EVIDENCE ITEMS — round 4, blocker 1).
                 { path: "status", types: ["string"] },
                 { path: "requestId", types: ["string"], minLength: 1 },
                 { path: "summary", types: ["string"] },
-                { path: "evidence", types: ["array"] },
+                {
+                    path: "evidence",
+                    types: ["array"],
+                    items: [
+                        // Each evidence item must carry every field the seam
+                        // dereferences in evidenceRefsOf() — a shape-less
+                        // `[null]`/`[42]`/partial-item array is rejected at
+                        // the gate, never post-handoff (round 4, blocker 1).
+                        { path: "owner", types: ["string"], minLength: 1 },
+                        { path: "externalRef", types: ["string"], minLength: 1 },
+                        { path: "label", types: ["string"] },
+                    ],
+                },
             ],
         },
         credentialRequirement: input.credentialRequirement,

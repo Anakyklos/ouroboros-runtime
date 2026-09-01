@@ -31,14 +31,21 @@
  *        agnostic; a hostile adapter returning null/primitive/missing
  *        fields must never cause a raw TypeError) — a malformed result is
  *        never consumed nor recorded as completed;
- *     9. requestId echo must match (reconciliation key) — otherwise the
+ *     9. evidence items are structurally re-gated by a runtime-controlled
+ *        guard BEFORE any dereference (round 4, blocker 1) — independent
+ *        of the descriptor's own schema, so a weaker descriptor cannot
+ *        reintroduce a post-handoff TypeError;
+ *    10. requestId echo must match (reconciliation key) — otherwise the
  *        invocation is UNCERTAIN, never "failed";
- *    10. ownerVerification verdicts: verified:false is FAILED (never
+ *    11. ownerVerification verdicts: verified:false is FAILED (never
  *        success); verified:null is PENDING (never an artificial
  *        negative); missing mandatory verification blocks; authority
- *        refusal to attest degrades to BLOCKED with no verdict — nothing
- *        persists an unattested claim or a stale DISPATCHED state;
- *    11. recordInvocationResult() — the engine's single atomic write path,
+ *        refusal to attest degrades to BLOCKED with no verdict — and for
+ *        a capability that REQUIRES owner verification, a refused
+ *        POSITIVE attestation is also BLOCKED, never COMPLETED (round 4,
+ *        blocker 2) — nothing persists an unattested claim or a stale
+ *        DISPATCHED state;
+ *    12. recordInvocationResult() — the engine's single atomic write path,
  *        with a status mapping that preserves non-terminality:
  *        COMPLETED→COMPLETED, FAILED→FAILED, STILL_RUNNING→RUNNING,
  *        UNKNOWN→BLOCKED. An invoke() exception is recorded as uncertain
@@ -387,7 +394,27 @@ export class ConnectorDispatchSeam {
         // Schema gate passed: the raw value is structurally a CapabilityResult.
         const result = rawResult as CapabilityResult;
 
-        // (9) requestId echo: the reconciliation key. A connector that
+        // (9) Evidence items are structurally re-gated before ANY dereference
+        // (round 4, blocker 1). The default resultSchema now constrains the
+        // items, but a descriptor that ships a weaker schema must not be able
+        // to reintroduce a post-handoff TypeError: this runtime-controlled
+        // guard is independent of the descriptor's own schema and defends
+        // exactly the fields evidenceRefsOf() consumes (owner, externalRef,
+        // label). A malformed item means the result cannot be consumed —
+        // the effect may have happened, so the state is UNCERTAIN (BLOCKED,
+        // non-terminal), never COMPLETED, never a raw TypeError.
+        const evidenceProblem = this.guardEvidenceItems(result.evidence);
+        if (evidenceProblem) {
+            await this.recordUncertain(
+                invocation,
+                `connector returned malformed evidence items that cannot be consumed: ${evidenceProblem}`,
+            );
+            throw new DispatchSeamError(
+                `connector result evidence for capability "${capabilityId}" violates the EvidenceReference contract: ${evidenceProblem}`,
+            );
+        }
+
+        // (10) requestId echo: the reconciliation key. A connector that
         // returns a result under a different key leaves OUR invocation
         // unattributable → UNCERTAIN, never "failed".
         if (result.requestId !== invocation.invocationId) {
@@ -400,7 +427,7 @@ export class ConnectorDispatchSeam {
             );
         }
 
-        // (10) Owner verification verdicts are evidence, not decoration.
+        // (11) Owner verification verdicts are evidence, not decoration.
         // The connector contract types `verified: boolean | null` where
         // null means unknown/pending. Only `verified === false` is a
         // NEGATIVE verdict; `null` is NEVER rewritten into one (no
@@ -465,15 +492,12 @@ export class ConnectorDispatchSeam {
             return { invocation, result, recordedStatus: InvocationStatus.BLOCKED };
         }
 
-        // (11) Engine-owned result recording (status + evidence, atomic).
+        // (12) Engine-owned result recording (status + evidence, atomic).
         // A verdict is submitted to the engine's VerificationAuthority ONLY
         // when it is a positive claim (`verified === true`): negative
         // verdicts were handled above, and `null` pending verdicts are not
         // attestation material — they never become artificial negatives or
-        // positives. If the authority refuses attestation (fail-closed
-        // default or provenance mismatch), the invocation is still recorded
-        // with the honest connector status but WITHOUT a verdict —
-        // completion gates elsewhere never accept unattested verdicts.
+        // positives.
         const mapped = invocationStatusFor(result);
         const pendingVerdict =
             result.ownerVerification && result.ownerVerification.verified === true
@@ -493,9 +517,26 @@ export class ConnectorDispatchSeam {
             );
         } catch (error) {
             if (pendingVerdict) {
-                // Authority refused to attest the positive verdict. Record
-                // WITHOUT the verdict; the verdict is never silently
-                // self-attested.
+                // Authority refused to attest the positive verdict. The
+                // verdict is never silently self-attested — and for a
+                // capability that REQUIRES owner verification, a refused
+                // attestation is missing provenance/authority: the honest
+                // connector status is never promoted to a terminal claim
+                // (round 4, blocker 2). Conservative pending form, exactly
+                // like a refused negative verdict: BLOCKED, no verdict, no
+                // completion claim — reconciliation territory.
+                if (descriptor.requiresOwnerVerification) {
+                    await this.recordUncertain(
+                        invocation,
+                        `capability requires owner verification but the verification authority refused to attest the positive verdict (provenance/authority mismatch): ${sanitizeText(
+                            error instanceof Error ? error.message : String(error),
+                        )}`,
+                    );
+                    return { invocation, result, recordedStatus: InvocationStatus.BLOCKED };
+                }
+                // Capability does NOT require owner verification: the
+                // verdict is supplementary there, so keep the honest
+                // connector status WITHOUT the unattested verdict.
                 await this.engine.recordInvocationResult(invocation.invocationId, {
                     invocationId: invocation.invocationId,
                     status: mapped,
@@ -521,6 +562,30 @@ export class ConnectorDispatchSeam {
             externalRef: ref.externalRef,
             label: ref.label,
         }));
+    }
+
+    /**
+     * Runtime-controlled evidence-item guard (round 4, blocker 1).
+     * Deterministic, data-only, independent of any descriptor schema: it
+     * defends exactly the fields `evidenceRefsOf()` dereferences. Returns a
+     * sanitized problem description, or undefined when every item is a
+     * structurally valid EvidenceReference. Never executes caller code.
+     */
+    private guardEvidenceItems(evidence: unknown): string | undefined {
+        if (!Array.isArray(evidence)) return "evidence is not an array";
+        for (const [index, item] of evidence.entries()) {
+            if (item === null || typeof item !== "object" || Array.isArray(item)) {
+                return `evidence[${index}] is not an object`;
+            }
+            const candidate = item as Record<string, unknown>;
+            for (const field of ["owner", "externalRef", "label"] as const) {
+                const value = candidate[field];
+                if (typeof value !== "string" || value.length === 0) {
+                    return `evidence[${index}].${field} must be a non-empty string`;
+                }
+            }
+        }
+        return undefined;
     }
 
     /** Typed OwnerVerification for the engine's attestation boundary. */

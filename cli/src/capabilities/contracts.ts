@@ -109,8 +109,13 @@ export interface SchemaFieldSpec {
     >;
     /** When set on a string/array field: minimum length/size. */
     minLength?: number;
-    /** When set: every array element must itself satisfy this spec. */
-    items?: SchemaFieldSpec;
+    /**
+     * When set: every array element must satisfy EACH listed spec
+     * (conjunction, round 4 blocker 1). A single spec is a one-element
+     * list. Still pure data — interpreted only by
+     * `evaluateDeclarativeSchema`.
+     */
+    items?: SchemaFieldSpec | SchemaFieldSpec[];
 }
 
 /**
@@ -178,12 +183,15 @@ export function evaluateDeclarativeSchema(
                 errors.push(`${fullPath} must have at least ${spec.minLength} items`);
             }
             if (spec.items) {
+                const itemSpecs = Array.isArray(spec.items) ? spec.items : [spec.items];
                 for (const [index, item] of arr.entries()) {
                     if (item === null || typeof item !== "object" || Array.isArray(item)) {
                         errors.push(`${fullPath}[${index}] must be an object`);
                         continue;
                     }
-                    walk(spec.items, item as Record<string, unknown>, `${fullPath}[${index}]`);
+                    for (const itemSpec of itemSpecs) {
+                        walk(itemSpec, item as Record<string, unknown>, `${fullPath}[${index}]`);
+                    }
                 }
             }
         }
@@ -201,12 +209,22 @@ export function isDeclarativeSchema(value: unknown): value is DeclarativeSchema 
     if (typeof value === "object" && "validate" in candidate) return false;
     if (candidate.kind !== "declarative") return false;
     if (!Array.isArray(candidate.fields)) return false;
+    const validSpec = (spec: unknown): boolean => {
+        if (!spec || typeof spec !== "object" || Array.isArray(spec)) return false;
+        const s = spec as Record<string, unknown>;
+        if (typeof s.path !== "string" || s.path === "") return false;
+        if (!Array.isArray(s.types) || s.types.length === 0) return false;
+        if (typeof s.validate === "function") return false;
+        if (s.items !== undefined && s.items !== null) {
+            const subs = Array.isArray(s.items) ? s.items : [s.items];
+            for (const sub of subs) {
+                if (!validSpec(sub)) return false;
+            }
+        }
+        return true;
+    };
     for (const field of candidate.fields) {
-        if (!field || typeof field !== "object") return false;
-        const f = field as Record<string, unknown>;
-        if (typeof f.path !== "string" || f.path === "") return false;
-        if (!Array.isArray(f.types) || f.types.length === 0) return false;
-        if (typeof f.validate === "function") return false;
+        if (!validSpec(field)) return false;
     }
     return true;
 }
