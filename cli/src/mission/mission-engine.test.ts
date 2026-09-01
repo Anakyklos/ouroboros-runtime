@@ -522,6 +522,38 @@ describe("MissionEngine", () => {
             return engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
         }
 
+        it("rejects an InvocationResult whose echoed invocationId does not match (fail-closed identity)", async () => {
+            const intent = makeIntent("cli");
+            const mission = await engine.createMission({
+                intent,
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            const proposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId));
+            if (!proposal.ok) throw new Error("plan rejected");
+            await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            expect(invocation.status).toBe(InvocationStatus.DISPATCHED);
+
+            // A result declaring a DIFFERENT invocationId is identity drift,
+            // never silently accepted for this invocation.
+            await expect(
+                engine.recordInvocationResult(invocation.invocationId, {
+                    invocationId: "inv-other",
+                    status: InvocationStatus.COMPLETED,
+                    summary: "done",
+                    evidenceRefs: [],
+                    completedAt: BASE_TIME,
+                }),
+            ).rejects.toThrow(/mismatched result/);
+
+            // The invocation was NOT updated by the rejected result.
+            const invocations = await harness.store.listInvocations(mission.missionId);
+            expect(invocations.find((i) => i.invocationId === invocation.invocationId)?.status).toBe(
+                InvocationStatus.DISPATCHED,
+            );
+        });
+
         it("keeps Mission state and invocation state as distinct entities", async () => {
             const mission = await acceptedMission();
             expect(mission.state).toBe(MissionState.READY);

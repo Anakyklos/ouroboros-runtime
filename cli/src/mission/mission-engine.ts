@@ -732,6 +732,14 @@ export class MissionEngine {
         if (!invocation) {
             throw new Error(`Invocation not found: ${invocationId}`);
         }
+        // Fail closed on identity drift: the result's echoed invocationId
+        // (when present) must match the invocation being updated. A result
+        // for a DIFFERENT invocation is never silently accepted for this one.
+        if (result.invocationId !== invocationId) {
+            throw new Error(
+                `InvocationResult declares invocationId "${result.invocationId}" but was submitted for "${invocationId}"; refusing to record a mismatched result`,
+            );
+        }
         const mission = await this.requireMission(invocation.missionId);
         // Terminal missions cannot accept late results (consistency).
         this.guardNotTerminal(mission, "recordInvocationResult");
@@ -770,6 +778,8 @@ export class MissionEngine {
         const updated: CapabilityInvocationRef = {
             ...invocation,
             status: result.status,
+            // Only terminal statuses carry a completion timestamp;
+            // non-terminal results leave it unset (no fabricated times).
             completedAt: result.completedAt,
             resultRefs: sanitizedEvidenceRefs,
             error:
@@ -964,6 +974,21 @@ export class MissionEngine {
     /** Read a Mission (works without any interface installed). */
     async getMission(missionId: string): Promise<Mission> {
         return this.requireMission(missionId);
+    }
+
+    /** Read a single plan revision (read-only; dispatch seam input source). */
+    async getPlanRevision(revisionId: string): Promise<PlanRevision | null> {
+        return this.store.getPlanRevision(revisionId);
+    }
+
+    /**
+     * Resolve the authorization-shaped contract the policy validator sees
+     * for a capability id (read-only). Exposed so the dispatch seam can
+     * prove policy and dispatch operate on the SAME authority source
+     * (split-brain guard) without reaching into private fields.
+     */
+    async getResolvedContract(capabilityId: string): Promise<CapabilityContract | null> {
+        return this.policy.resolver.resolve(capabilityId);
     }
 
     async listMissions(filter?: { state?: MissionState }): Promise<Mission[]> {

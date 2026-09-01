@@ -327,8 +327,13 @@ export interface InvocationResult {
     summary: string;
     /** Optional evidence refs produced by the invocation. */
     evidenceRefs: EvidenceRef[];
-    /** When the invocation completed. */
-    completedAt: string;
+    /**
+     * When the invocation reached a TERMINAL status. Required for
+     * COMPLETED/FAILED/CANCELLED; absent (undefined) for non-terminal
+     * states (RUNNING/BLOCKED) — a non-terminal invocation has not
+     * completed, and fabricating a completion timestamp would be a lie.
+     */
+    completedAt?: string;
 }
 
 /** A deterministic, typed criterion-level verification result. */

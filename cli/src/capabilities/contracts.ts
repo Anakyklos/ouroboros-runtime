@@ -1,0 +1,495 @@
+/**
+ * 📦 Capability Contracts (Issue #63)
+ *
+ * Versioned, provider-independent descriptor + connector contracts for
+ * sovereign Anakyklos modules. Evolves (does not replace) the #62 Mission
+ * foundation: a `CapabilityDescriptor` is a strict superset of the
+ * `CapabilityContract` the #62 deterministic policy consumes.
+ *
+ * Core rule (unchanged from #62): **discovery does not concede
+ * authorization.** The registry describes/resolves; `PlanPolicyValidator`
+ * authorizes; only authorized dispatch reaches a connector.
+ *
+ * NEVER exposed on this surface: internal tables, private DB paths/schemas,
+ * prompt templates, credentials/Authorization (by value), raw provider
+ * responses, chain-of-thought, module implementation details.
+ */
+
+import type { CapabilityContract } from "../mission/contracts.js";
+import { EffectClass } from "../mission/contracts.js";
+import { assertNoRawSecrets, containsRawSecret } from "../mission/sanitize.js";
+
+/** EffectClass re-export: #63 never forks the #62 enum into a parallel one. */
+export { EffectClass };
+
+/** Version of the capability descriptor/registry contract. */
+export const CAPABILITY_REGISTRY_CONTRACT_VERSION = 1 as const;
+
+/** Version of the connector lifecycle contract. */
+export const CONNECTOR_CONTRACT_VERSION = 1 as const;
+
+/** Availability states for a discovered capability (#63 requirement). */
+export enum CapabilityAvailability {
+    AVAILABLE = "available",
+    BUSY = "busy",
+    WAITING_DEPENDENCY = "waiting_dependency",
+    NEEDS_USER_ACTION = "needs_user_action",
+    DEGRADED = "degraded",
+    UNAVAILABLE = "unavailable",
+    UNSUPPORTED = "unsupported",
+    CONFIGURATION_ERROR = "configuration_error",
+}
+
+/** Declared idempotency semantics. */
+export enum IdempotencyMode {
+    /** Re-invoking the same request identity is safe and yields the same effect once. */
+    IDEMPOTENT = "idempotent",
+    /** Not safe to re-invoke; callers must never replay without explicit reconciliation. */
+    NON_IDEMPOTENT = "non_idempotent",
+    /** Semantics unknown: treated as non-idempotent by any deterministic policy. */
+    UNKNOWN = "unknown",
+}
+
+/** Declared retry backoff policy (executed by #50 scheduler, not here). */
+export enum RetryBackoff {
+    NONE = "none",
+    FIXED = "fixed",
+    EXPONENTIAL = "exponential",
+}
+
+/** Cancellation semantics declared by the capability. */
+export enum CancellationSupport {
+    /** No cancellation once dispatched. */
+    NONE = "none",
+    /** The owner accepts a cancel call and confirms asynchronously. */
+    COOPERATIVE = "cooperative",
+    /** Cancellation is guaranteed before the effect commits. */
+    HARD = "hard",
+    /** Cancellation is not supported by this capability/version. */
+    UNSUPPORTED = "unsupported",
+}
+
+/** Reconciliation semantics after disconnect/restart. */
+export enum ReconciliationSupport {
+    /** The owner cannot be queried about past invocations. */
+    NONE = "none",
+    /** The owner returns authoritative status for a request id. */
+    STATUS_REPLAY = "status_replay",
+    /** The owner replays status plus result/evidence references. */
+    FULL_REPLAY = "full_replay",
+}
+
+/** How the owner's verification verdict reaches the Mission boundary. */
+export type OwnerVerificationMode = "module_owner" | "none";
+
+/**
+ * Declarative, DATA-ONLY schema validation (Issue #63 review blocker 3).
+ *
+ * The public/versioned descriptor must be transportable (JSON-serializable
+ * over IPC/CLI/HTTP) and must never carry executable code supplied by the
+ * registrant. Schemas are therefore declared as inert DATA (an operator +
+ * a declarative shape assertion); the deterministic `validate` behavior is
+ * implemented ONLY by this runtime-controlled interpreter — the registry
+ * never executes registrant-supplied functions, and no dynamic code/plugin
+ * surface exists anywhere on this boundary.
+ */
+
+/** Declarative field requirement inside a schema shape. */
+export interface SchemaFieldSpec {
+    /** Field path inside the validated object (e.g. "requestId", "evidence"). */
+    path: string;
+    /** Required JSON value types for the field at `path`. */
+    types: Array<
+        | "string"
+        | "number"
+        | "boolean"
+        | "object"
+        | "array"
+        | "null"
+    >;
+    /** When set on a string/array field: minimum length/size. */
+    minLength?: number;
+    /**
+     * When true: the field may be ABSENT. When present it is still fully
+     * validated (round 5) — optionality never weakens the shape checks.
+     */
+    optional?: boolean;
+    /**
+     * When set: the sub-structure must satisfy EACH listed spec
+     * (conjunction, round 4 blocker 1). On an ARRAY field every element
+     * must satisfy them; on an OBJECT field the object itself must satisfy
+     * them (round 5 — e.g. the ownerVerification outcome). A single spec is
+     * a one-element list. Still pure data — interpreted only by
+     * `evaluateDeclarativeSchema`.
+     */
+    items?: SchemaFieldSpec | SchemaFieldSpec[];
+}
+
+/**
+ * Declarative schema: an ordered list of field requirements evaluated by
+ * `evaluateDeclarativeSchema`. Pure data — survives JSON round-trips.
+ */
+export interface DeclarativeSchema {
+    kind: "declarative";
+    /** Ordered field requirements. */
+    fields: SchemaFieldSpec[];
+}
+
+/** @deprecated Legacy executable schema shape — rejected fail-closed. */
+export interface ExecutableSchemaShape {
+    validate(value: unknown): { valid: boolean; errors: string[] };
+    description?: string;
+}
+
+/**
+ * Public schema declaration on a descriptor: data-only. A legacy
+ * function-carrying object is assignable to `unknown` here only so the
+ * validator can DETECT and REJECT it fail-closed; no API accepts or runs it.
+ */
+export type SchemaDeclaration = DeclarativeSchema;
+
+/**
+ * Runtime-controlled deterministic evaluation of a declarative schema.
+ * This is the ONLY schema validator on the capability boundary: it reads
+ * plain data, performs no dynamic dispatch, and can never execute
+ * registrant code.
+ */
+export function evaluateDeclarativeSchema(
+    schema: DeclarativeSchema,
+    value: unknown,
+): { valid: boolean; errors: string[] } {
+    const errors: string[] = [];
+    if (!value || typeof value !== "object") {
+        return { valid: false, errors: ["value must be an object"] };
+    }
+    const root = value as Record<string, unknown>;
+    const walk = (spec: SchemaFieldSpec, container: Record<string, unknown>, prefix: string): void => {
+        const fullPath = prefix === "" ? spec.path : `${prefix}.${spec.path}`;
+        const current = container?.[spec.path];
+        if (current === undefined) {
+            if (spec.optional) return;
+            errors.push(`${fullPath} is required`);
+            return;
+        }
+        if (current === null) {
+            if (!spec.types.includes("null")) {
+                errors.push(`${fullPath} must be one of: ${spec.types.join(", ")}`);
+            }
+            return;
+        }
+        const actualType = Array.isArray(current) ? "array" : typeof current;
+        if (!spec.types.includes(actualType as (typeof spec.types)[number])) {
+            errors.push(`${fullPath} must be one of: ${spec.types.join(", ")}`);
+            return;
+        }
+        if (actualType === "string" && spec.minLength !== undefined && (current as string).length < spec.minLength) {
+            errors.push(`${fullPath} must have length >= ${spec.minLength}`);
+        }
+        if (actualType === "array") {
+            const arr = current as unknown[];
+            if (spec.minLength !== undefined && arr.length < spec.minLength) {
+                errors.push(`${fullPath} must have at least ${spec.minLength} items`);
+            }
+            if (spec.items) {
+                const itemSpecs = Array.isArray(spec.items) ? spec.items : [spec.items];
+                for (const [index, item] of arr.entries()) {
+                    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+                        errors.push(`${fullPath}[${index}] must be an object`);
+                        continue;
+                    }
+                    for (const itemSpec of itemSpecs) {
+                        walk(itemSpec, item as Record<string, unknown>, `${fullPath}[${index}]`);
+                    }
+                }
+            }
+        }
+        if (actualType === "object") {
+            // Object sub-structure (round 5): when sub-specs are declared,
+            // the object itself must satisfy each one — a truthy-but-
+            // shapeless object (e.g. {}) is rejected at the gate.
+            if (spec.items) {
+                const itemSpecs = Array.isArray(spec.items) ? spec.items : [spec.items];
+                for (const itemSpec of itemSpecs) {
+                    walk(itemSpec, current as Record<string, unknown>, fullPath);
+                }
+            }
+        }
+    };
+    for (const field of schema.fields) {
+        walk(field, root, "");
+    }
+    return { valid: errors.length === 0, errors };
+}
+
+/** Deterministic helper: is this value a data-only declarative schema? */
+export function isDeclarativeSchema(value: unknown): value is DeclarativeSchema {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const candidate = value as Record<string, unknown>;
+    if (typeof value === "object" && "validate" in candidate) return false;
+    if (candidate.kind !== "declarative") return false;
+    if (!Array.isArray(candidate.fields)) return false;
+    const validSpec = (spec: unknown): boolean => {
+        if (!spec || typeof spec !== "object" || Array.isArray(spec)) return false;
+        const s = spec as Record<string, unknown>;
+        if (typeof s.path !== "string" || s.path === "") return false;
+        if (!Array.isArray(s.types) || s.types.length === 0) return false;
+        if (typeof s.validate === "function") return false;
+        if (s.optional !== undefined && typeof s.optional !== "boolean") return false;
+        if (s.items !== undefined && s.items !== null) {
+            const subs = Array.isArray(s.items) ? s.items : [s.items];
+            for (const sub of subs) {
+                if (!validSpec(sub)) return false;
+            }
+        }
+        return true;
+    };
+    for (const field of candidate.fields) {
+        if (!validSpec(field)) return false;
+    }
+    return true;
+}
+
+/** Credential/auth requirement: by reference or metadata — never a raw secret. */
+export interface CredentialRequirement {
+    kind: "reference" | "metadata";
+    /** Opaque pointer to credentials held by the owner or a secret store. */
+    credentialRef?: string;
+    /** Sanitized, non-secret metadata (e.g. "auth: oauth2", "scope: repo"). */
+    metadata?: string;
+}
+
+/**
+ * Versioned Capability Descriptor — the public declaration of a sovereign
+ * module capability. Superset of the #62 `CapabilityContract` (which the
+ * policy consumes); the extra fields are never read by authorization.
+ */
+export interface CapabilityDescriptor extends CapabilityContract {
+    capabilityId: string;
+    moduleOwner: string;
+    /** Contract version of this descriptor schema. */
+    contractVersion: number;
+    /** Sanitized, human-readable purpose. */
+    purpose: string;
+    effectClass: EffectClass;
+    requiresApproval: boolean;
+    requiresOwnerVerification: boolean;
+    allowedInputRefPrefixes: string[];
+    ownsStorage: boolean;
+
+    /** Current availability of the capability (discovery-only state). */
+    availability: CapabilityAvailability;
+    /** Optional sanitized detail (e.g. "module offline"). */
+    availabilityDetail?: string;
+
+    /** Declared idempotency/retry/cancellation/reconciliation semantics. */
+    idempotency: { mode: IdempotencyMode; keyScope: "request" | "effect" | "none" };
+    retry: { maxAttempts: number; backoff: RetryBackoff };
+    cancellationSupport: CancellationSupport;
+    reconciliationSupport: ReconciliationSupport;
+
+    /** How owner verification verdicts are produced for this capability. */
+    expectedEvidence: { ownerVerification: OwnerVerificationMode };
+
+    /** Sanitized, human-readable description of the expected input shape. */
+    inputSchemaDescription: string;
+    /** Sanitized, human-readable description of the expected result shape. */
+    resultSchemaDescription: string;
+
+    /** Data-only input schema (validated by the runtime interpreter, never code). */
+    inputSchema: SchemaDeclaration;
+    /** Data-only result schema (validated by the runtime interpreter, never code). */
+    resultSchema: SchemaDeclaration;
+
+    /** Credential/auth requirement (reference/metadata only). */
+    credentialRequirement?: CredentialRequirement;
+
+    /**
+     * Resource/network characteristics, only when material to authorization
+     * or scheduling decisions. Free of secrets; sanitized at registration.
+     */
+    characteristics?: {
+        network?: boolean;
+        longRunning?: boolean;
+        estimatedDurationMs?: number;
+        resourceIntensity?: "low" | "medium" | "high";
+    };
+
+    /** Degradation/unsupported semantics (sanitized, declarative). */
+    degradation?: {
+        /** What happens when the capability is degraded (declared, not free-form). */
+        behavior: "reject" | "queue" | "degraded_result";
+        /** Sanitized note about unsupported semantics. */
+        unsupportedSemantics?: string;
+    };
+}
+
+/** Deterministic validation result for descriptors. */
+export interface DescriptorValidation {
+    valid: boolean;
+    errors: string[];
+}
+
+/**
+ * Validate a `CapabilityDescriptor` fail-closed:
+ * version, identity, sanitized purpose, secret-free strings and declared
+ * semantics are all checked. Registry rejects invalid descriptors.
+ */
+export function validateCapabilityDescriptor(
+    descriptor: CapabilityDescriptor,
+): DescriptorValidation {
+    const errors: string[] = [];
+
+    if (descriptor.contractVersion !== CAPABILITY_REGISTRY_CONTRACT_VERSION) {
+        errors.push(
+            `unsupported contract version ${descriptor.contractVersion} (expected ${CAPABILITY_REGISTRY_CONTRACT_VERSION})`,
+        );
+    }
+    if (typeof descriptor.capabilityId !== "string" || descriptor.capabilityId.trim() === "") {
+        errors.push("capabilityId is required");
+    }
+    if (typeof descriptor.moduleOwner !== "string" || descriptor.moduleOwner.trim() === "") {
+        errors.push("moduleOwner is required");
+    }
+    if (typeof descriptor.purpose !== "string" || descriptor.purpose.trim() === "") {
+        errors.push("purpose is required");
+    }
+    if (!Array.isArray(descriptor.allowedInputRefPrefixes)) {
+        errors.push("allowedInputRefPrefixes must be an array");
+    }
+    if (!Object.values(EffectClass).includes(descriptor.effectClass)) {
+        errors.push(`effectClass "${String(descriptor.effectClass)}" is not a declared EffectClass`);
+    }
+    if (
+        !descriptor.availability ||
+        !Object.values(CapabilityAvailability).includes(descriptor.availability)
+    ) {
+        errors.push(`availability "${String(descriptor.availability)}" is not a declared state`);
+    }
+    if (
+        !descriptor.idempotency ||
+        !Object.values(IdempotencyMode).includes(descriptor.idempotency.mode)
+    ) {
+        errors.push("idempotency.mode must be a declared IdempotencyMode");
+    }
+    if (
+        !descriptor.retry ||
+        !Number.isInteger(descriptor.retry.maxAttempts) ||
+        descriptor.retry.maxAttempts < 0
+    ) {
+        errors.push("retry.maxAttempts must be a non-negative integer");
+    }
+    if (!descriptor.retry || !Object.values(RetryBackoff).includes(descriptor.retry.backoff)) {
+        errors.push("retry.backoff must be a declared RetryBackoff");
+    }
+    if (!Object.values(CancellationSupport).includes(descriptor.cancellationSupport)) {
+        errors.push("cancellationSupport must be a declared CancellationSupport");
+    }
+    if (!Object.values(ReconciliationSupport).includes(descriptor.reconciliationSupport)) {
+        errors.push("reconciliationSupport must be a declared ReconciliationSupport");
+    }
+    if (
+        descriptor.expectedEvidence?.ownerVerification !== "module_owner" &&
+        descriptor.expectedEvidence?.ownerVerification !== "none"
+    ) {
+        errors.push("expectedEvidence.ownerVerification must be 'module_owner' or 'none'");
+    }
+    if (descriptor.inputSchema === undefined) {
+        errors.push("inputSchema must declare a data-only declarative schema");
+    } else if (!isDeclarativeSchema(descriptor.inputSchema)) {
+        // Fail closed on ANY executable/function-bearing schema: the public
+        // descriptor is data-only and never accepts registrant-supplied code.
+        errors.push(
+            "inputSchema must be a data-only declarative schema; executable validators are not part of the discovery contract",
+        );
+    }
+    if (descriptor.resultSchema === undefined) {
+        errors.push("resultSchema must declare a data-only declarative schema");
+    } else if (!isDeclarativeSchema(descriptor.resultSchema)) {
+        errors.push(
+            "resultSchema must be a data-only declarative schema; executable validators are not part of the discovery contract",
+        );
+    }
+    if (typeof descriptor.inputSchemaDescription !== "string" || descriptor.inputSchemaDescription.trim() === "") {
+        errors.push("inputSchemaDescription is required (sanitized shape description)");
+    }
+    if (typeof descriptor.resultSchemaDescription !== "string" || descriptor.resultSchemaDescription.trim() === "") {
+        errors.push("resultSchemaDescription is required (sanitized shape description)");
+    }
+
+    // The descriptor must be a transportable, data-only value: a round-trip
+    // through JSON must preserve it exactly. Functions cannot survive a
+    // round-trip — their presence makes the descriptor non-executable and is
+    // therefore rejected here as well (fail-closed, defense in depth).
+    try {
+        const roundTripped = JSON.parse(JSON.stringify(descriptor)) as CapabilityDescriptor;
+        const surface = (a: unknown, b: unknown, path: string): void => {
+            if (typeof a === "function" || typeof b === "function") {
+                errors.push(`${path || "descriptor"} must not carry executable code (data-only descriptor)`);
+                return;
+            }
+            if (a === undefined && b === undefined) return;
+            if (a === null || b === null || typeof a !== "object" || typeof b !== "object") {
+                if (a !== b) {
+                    errors.push(`descriptor is not JSON-round-trip stable at "${path || "<root>"}"`);
+                }
+                return;
+            }
+            const keys = new Set([...Object.keys(a as object), ...Object.keys(b as object)]);
+            for (const key of keys) {
+                surface(
+                    (a as Record<string, unknown>)[key],
+                    (b as Record<string, unknown>)[key],
+                    path === "" ? key : `${path}.${key}`,
+                );
+            }
+        };
+        surface(descriptor, roundTripped, "");
+    } catch {
+        errors.push("descriptor must be JSON-serializable (data-only contract)");
+    }
+
+    // Secret hygiene: any declared string field carrying a raw secret fails
+    // closed. Uses the same deterministic detectors as the Mission sanitizer.
+    const stringFields: Array<[string, string | undefined]> = [
+        ["purpose", descriptor.purpose],
+        ["availabilityDetail", descriptor.availabilityDetail],
+        [
+            "credentialRequirement.credentialRef",
+            descriptor.credentialRequirement?.credentialRef,
+        ],
+        ["credentialRequirement.metadata", descriptor.credentialRequirement?.metadata],
+        ["degradation.unsupportedSemantics", descriptor.degradation?.unsupportedSemantics],
+    ];
+    // Identity/reference arrays are part of the declared surface too:
+    // capability id, owner, allowed input prefixes and schema descriptions
+    // are scanned so a secret cannot hide in any registered string.
+    stringFields.push(
+        ["capabilityId", descriptor.capabilityId],
+        ["moduleOwner", descriptor.moduleOwner],
+    );
+    descriptor.allowedInputRefPrefixes.forEach((prefix, i) => {
+        stringFields.push([`allowedInputRefPrefixes[${i}]`, prefix]);
+    });
+    if (descriptor.inputSchemaDescription !== undefined) {
+        stringFields.push(["inputSchemaDescription", descriptor.inputSchemaDescription]);
+    }
+    if (descriptor.resultSchemaDescription !== undefined) {
+        stringFields.push(["resultSchemaDescription", descriptor.resultSchemaDescription]);
+    }
+    for (const [field, value] of stringFields) {
+        if (value !== undefined && containsRawSecret(value)) {
+            errors.push(`${field} must not contain a raw secret`);
+        }
+    }
+
+    // Defense in depth: recursively scan EVERY remaining string leaf of the
+    // descriptor (idempotency.keyScope, nested schema fields, future
+    // additions) so a secret cannot hide in a field the list above forgot.
+    try {
+        assertNoRawSecrets(descriptor, "descriptor");
+    } catch (error) {
+        errors.push(error instanceof Error ? error.message : "descriptor must not contain a raw secret");
+    }
+
+    return { valid: errors.length === 0, errors };
+}
