@@ -110,9 +110,16 @@ export interface SchemaFieldSpec {
     /** When set on a string/array field: minimum length/size. */
     minLength?: number;
     /**
-     * When set: every array element must satisfy EACH listed spec
-     * (conjunction, round 4 blocker 1). A single spec is a one-element
-     * list. Still pure data — interpreted only by
+     * When true: the field may be ABSENT. When present it is still fully
+     * validated (round 5) — optionality never weakens the shape checks.
+     */
+    optional?: boolean;
+    /**
+     * When set: the sub-structure must satisfy EACH listed spec
+     * (conjunction, round 4 blocker 1). On an ARRAY field every element
+     * must satisfy them; on an OBJECT field the object itself must satisfy
+     * them (round 5 — e.g. the ownerVerification outcome). A single spec is
+     * a one-element list. Still pure data — interpreted only by
      * `evaluateDeclarativeSchema`.
      */
     items?: SchemaFieldSpec | SchemaFieldSpec[];
@@ -160,6 +167,7 @@ export function evaluateDeclarativeSchema(
         const fullPath = prefix === "" ? spec.path : `${prefix}.${spec.path}`;
         const current = container?.[spec.path];
         if (current === undefined) {
+            if (spec.optional) return;
             errors.push(`${fullPath} is required`);
             return;
         }
@@ -195,6 +203,17 @@ export function evaluateDeclarativeSchema(
                 }
             }
         }
+        if (actualType === "object") {
+            // Object sub-structure (round 5): when sub-specs are declared,
+            // the object itself must satisfy each one — a truthy-but-
+            // shapeless object (e.g. {}) is rejected at the gate.
+            if (spec.items) {
+                const itemSpecs = Array.isArray(spec.items) ? spec.items : [spec.items];
+                for (const itemSpec of itemSpecs) {
+                    walk(itemSpec, current as Record<string, unknown>, fullPath);
+                }
+            }
+        }
     };
     for (const field of schema.fields) {
         walk(field, root, "");
@@ -215,6 +234,7 @@ export function isDeclarativeSchema(value: unknown): value is DeclarativeSchema 
         if (typeof s.path !== "string" || s.path === "") return false;
         if (!Array.isArray(s.types) || s.types.length === 0) return false;
         if (typeof s.validate === "function") return false;
+        if (s.optional !== undefined && typeof s.optional !== "boolean") return false;
         if (s.items !== undefined && s.items !== null) {
             const subs = Array.isArray(s.items) ? s.items : [s.items];
             for (const sub of subs) {

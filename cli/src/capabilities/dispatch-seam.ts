@@ -32,9 +32,12 @@
  *        fields must never cause a raw TypeError) — a malformed result is
  *        never consumed nor recorded as completed;
  *     9. evidence items are structurally re-gated by a runtime-controlled
- *        guard BEFORE any dereference (round 4, blocker 1) — independent
- *        of the descriptor's own schema, so a weaker descriptor cannot
- *        reintroduce a post-handoff TypeError;
+ *        guard BEFORE any dereference (round 4, blocker 1) — and the
+ *        ownerVerification outcome, when PRESENT, is structurally gated
+ *        before any verdict consumption (round 5) — both independent of
+ *        the descriptor's own schema, so a weaker descriptor cannot
+ *        reintroduce a post-handoff TypeError or let a truthy-but-shapeless
+ *        verdict decide whether mandatory verification exists;
  *    10. requestId echo must match (reconciliation key) — otherwise the
  *        invocation is UNCERTAIN, never "failed";
  *    11. ownerVerification verdicts: verified:false is FAILED (never
@@ -392,7 +395,10 @@ export class ConnectorDispatchSeam {
         }
 
         // Schema gate passed: the raw value is structurally a CapabilityResult.
-        const result = rawResult as CapabilityResult;
+        // `let` (round 5): when a supplementary verdict is structurally
+        // malformed for a NON-verifying capability, the seam discards it —
+        // the honest status then flows without the unusable verdict.
+        let result = rawResult as CapabilityResult;
 
         // (9) Evidence items are structurally re-gated before ANY dereference
         // (round 4, blocker 1). The default resultSchema now constrains the
@@ -412,6 +418,41 @@ export class ConnectorDispatchSeam {
             throw new DispatchSeamError(
                 `connector result evidence for capability "${capabilityId}" violates the EvidenceReference contract: ${evidenceProblem}`,
             );
+        }
+
+        // (9b) ownerVerification is structurally re-gated BEFORE any verdict
+        // consumption (round 5). Runtime-controlled guard, independent of the
+        // descriptor's own schema: `verified === false`, `verified === null`,
+        // `verified === true` and `!result.ownerVerification` are all
+        // truthiness/shape-sensitive — a hostile truthy-but-shapeless value
+        // ({}, [], "yes", { verified: "true" }, missing owner, reason: 42)
+        // must NEVER decide whether mandatory verification exists.
+        if (result.ownerVerification !== undefined) {
+            const verificationProblem = this.guardOwnerVerificationOutcome(
+                result.ownerVerification,
+            );
+            if (verificationProblem) {
+                if (descriptor.requiresOwnerVerification) {
+                    // For a capability that REQUIRES owner verification a
+                    // malformed verdict is missing valid provenance — the
+                    // effect may have happened, so the invocation is UNCERTAIN
+                    // (BLOCKED, non-terminal): no completedAt, no verdict
+                    // persisted, never COMPLETED, never a fabricated FAILED.
+                    await this.recordUncertain(
+                        invocation,
+                        `capability requires owner verification but the connector returned a structurally malformed verdict (${verificationProblem}); outcome uncertain pending reconciliation`,
+                    );
+                    throw new DispatchSeamError(
+                        `owner verification outcome for capability "${capabilityId}" violates the OwnerVerificationOutcome contract: ${verificationProblem}`,
+                    );
+                }
+                // Capability does NOT require owner verification: the verdict
+                // is supplementary there. No runtime crash, no fabricated
+                // data: the malformed verdict is DISCARDED (never treated as
+                // authority, never persisted) and the honest connector status
+                // flows without it.
+                result = { ...result, ownerVerification: undefined };
+            }
         }
 
         // (10) requestId echo: the reconciliation key. A connector that
@@ -562,6 +603,34 @@ export class ConnectorDispatchSeam {
             externalRef: ref.externalRef,
             label: ref.label,
         }));
+    }
+
+    /**
+     * Runtime-controlled ownerVerification outcome guard (round 5).
+     * Deterministic, data-only, independent of any descriptor schema: when a
+     * verdict is PRESENT it must satisfy the full contract — `owner` a
+     * non-empty string, `verified` exactly `boolean | null`, `reason` a
+     * string — before the seam reads any of those fields. Returns a
+     * sanitized problem description, or undefined when the outcome is
+     * structurally valid. Never executes caller code.
+     */
+    private guardOwnerVerificationOutcome(outcome: unknown): string | undefined {
+        if (outcome === null || typeof outcome !== "object" || Array.isArray(outcome)) {
+            return "ownerVerification is present but not an object";
+        }
+        const candidate = outcome as Record<string, unknown>;
+        const owner = candidate["owner"];
+        if (typeof owner !== "string" || owner.length === 0) {
+            return "ownerVerification.owner must be a non-empty string";
+        }
+        const verified = candidate["verified"];
+        if (typeof verified !== "boolean" && verified !== null) {
+            return "ownerVerification.verified must be exactly true, false or null";
+        }
+        if (typeof candidate["reason"] !== "string") {
+            return "ownerVerification.reason must be a string";
+        }
+        return undefined;
     }
 
     /**

@@ -111,6 +111,21 @@ export function defineCapabilityDescriptor(input: {
                         { path: "label", types: ["string"] },
                     ],
                 },
+                {
+                    // ownerVerification is OPTIONAL (a result may carry no
+                    // verdict), but when PRESENT it must be structurally
+                    // valid before the seam consumes any field of it —
+                    // verified must be exactly boolean|null, owner a
+                    // non-empty string, reason a string (round 5).
+                    path: "ownerVerification",
+                    types: ["object"],
+                    optional: true,
+                    items: [
+                        { path: "owner", types: ["string"], minLength: 1 },
+                        { path: "verified", types: ["boolean", "null"] },
+                        { path: "reason", types: ["string"] },
+                    ],
+                },
             ],
         },
         credentialRequirement: input.credentialRequirement,

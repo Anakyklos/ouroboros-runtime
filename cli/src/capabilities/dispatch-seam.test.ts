@@ -1,5 +1,5 @@
 /**
- * 🎯 Dispatch Seam Tests (PR #73 review rounds 2-4)
+ * 🎯 Dispatch Seam Tests (PR #73 review rounds 2-5)
  *
  * Proves the ONE deterministic dispatch seam:
  *  - honest status mapping (no invented terminality);
@@ -10,7 +10,10 @@
  *  - invoke() exceptions leave UNCERTAIN (blocked) state, never "failed";
  *  - owner verification verdicts propagate; verified:false never succeeds;
  *  - a refused POSITIVE attestation on a verification-required capability
- *    is BLOCKED, never COMPLETED (round 4).
+ *    is BLOCKED, never COMPLETED (round 4);
+ *  - a PRESENT ownerVerification outcome is structurally gated before any
+ *    verdict consumption (round 5): malformed truthy values never decide
+ *    whether mandatory verification exists.
  *
  * Deterministic: in-memory SQLite, fake clock/ids, no network, no env.
  */
@@ -1150,6 +1153,337 @@ describe("ConnectorDispatchSeam", () => {
             // Supplementary verdict refused: the honest connector status is
             // kept, WITHOUT the unattested verdict (self-attestation never
             // happens). No BLOCKED promotion for non-verifying capabilities.
+            expect(outcome.recordedStatus).toBe(InvocationStatus.COMPLETED);
+            const recorded = (await store.listInvocations(missionId)).find(
+                (i) => i.invocationId === outcome.invocation.invocationId,
+            );
+            expect(recorded?.status).toBe(InvocationStatus.COMPLETED);
+            expect(recorded?.completedAt).toBeDefined();
+            expect(recorded?.ownerVerification).toBeUndefined();
+        } finally {
+            await store.close();
+        }
+    });
+
+    // ── Round 5: structural gate on ownerVerification itself ──
+
+    // Hostile truthy-but-shapeless verdicts (round 5 cases 1-7). For a
+    // capability that REQUIRES owner verification, every one of these must
+    // be BLOCKED (no completedAt, no verdict persisted, no TypeError,
+    // never COMPLETED): none of `verified === false`, `verified === null`,
+    // `verified === true` nor `!result.ownerVerification` may decide the
+    // mandatory-verification branches on a structurally invalid value.
+    const MALFORMED_OUTCOMES: Array<[string, unknown]> = [
+        ["empty object", {}],
+        ["array", []],
+        ["truthy string", "truthy"],
+        [
+            "verified typed as string",
+            { verified: "true", owner: "runstead", reason: "x" },
+        ],
+        ["missing owner", { verified: true, reason: "x" }],
+        ["empty owner", { verified: true, owner: "", reason: "x" }],
+        ["reason typed as number", { verified: true, owner: "runstead", reason: 42 }],
+    ];
+
+    for (const [label, malformed] of MALFORMED_OUTCOMES) {
+        it(`blocks a verification-required capability when ownerVerification is malformed: ${label} (round 5)`, async () => {
+            const missionId = await acceptTwoStepMission(harness);
+            const counters = { describe: 0, invoke: 0 };
+            harness.seam.registerConnector(
+                REVIEW_DESCRIPTOR.capabilityId,
+                makeSeamConnector(REVIEW_DESCRIPTOR, counters, {
+                    invoke: async (request) => {
+                        counters.invoke++;
+                        return {
+                            status: CapabilityResultStatus.COMPLETED,
+                            requestId: request.requestId,
+                            summary: "reviewed",
+                            evidence: [],
+                            // Hostile adapter: truthy-but-shapeless verdict.
+                            ownerVerification:
+                                malformed as unknown as CapabilityResult["ownerVerification"],
+                        };
+                    },
+                }),
+            );
+
+            await expect(
+                harness.seam.dispatchThroughSeam(missionId, "step-good"),
+            ).rejects.toThrow(DispatchSeamError);
+            expect(counters.invoke).toBe(1); // the effect MAY have happened
+            const stored = await harness.store.getInvocation(
+                (await harness.store.listInvocations(missionId))[0].invocationId,
+            );
+            expect(stored?.status).toBe(InvocationStatus.BLOCKED);
+            expect(stored?.completedAt).toBeUndefined();
+            expect(stored?.ownerVerification).toBeUndefined();
+        });
+    }
+
+    it("schema-gates malformed ownerVerification BEFORE the runtime guard consumes it (round 5)", async () => {
+        const missionId = await acceptTwoStepMission(harness);
+        const counters = { describe: 0, invoke: 0 };
+        harness.seam.registerConnector(
+            REVIEW_DESCRIPTOR.capabilityId,
+            makeSeamConnector(REVIEW_DESCRIPTOR, counters, {
+                invoke: async (request) => {
+                    counters.invoke++;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId: request.requestId,
+                        summary: "reviewed",
+                        evidence: [],
+                        ownerVerification: {} as unknown as CapabilityResult["ownerVerification"],
+                    };
+                },
+            }),
+        );
+
+        // The default resultSchema carries the ownerVerification spec, so
+        // the raw-result gate rejects the malformed verdict before the
+        // runtime guard would; the invocation is durably uncertain either way.
+        await expect(harness.seam.dispatchThroughSeam(missionId, "step-good")).rejects.toThrow(
+            ConnectorResultSchemaError,
+        );
+        const stored = await harness.store.getInvocation(
+            (await harness.store.listInvocations(missionId))[0].invocationId,
+        );
+        expect(stored?.status).toBe(InvocationStatus.BLOCKED);
+        expect(stored?.completedAt).toBeUndefined();
+    });
+
+    it("runtime ownerVerification guard rejects malformed verdicts even when the descriptor ships a weaker schema (round 5)", async () => {
+        const counters = { describe: 0, invoke: 0 };
+
+        // Weaker descriptor: resultSchema does NOT constrain ownerVerification
+        // (and only partially constrains evidence). Schemas are registration
+        // identity, so it registers under a NEW capability id with a mirrored
+        // catalog contract. Proves the runtime guard is independent of the
+        // descriptor's own schema: without it, `verified: "true"` would slip
+        // past every truthiness branch and a COMPLETED-without-attested-
+        // verdict could be persisted.
+        const looseDescriptor = defineCapabilityDescriptor({
+            capabilityId: "lifeos.query.loose-verification",
+            moduleOwner: "lifeos",
+            purpose: "Query the life domain (unconstrained owner verdict)",
+            effectClass: EffectClass.READ,
+            allowedInputRefPrefixes: ["refs/lifeos/"],
+            requiresOwnerVerification: true,
+            ownsStorage: true,
+            resultSchema: {
+                kind: "declarative",
+                fields: [
+                    { path: "status", types: ["string"] },
+                    { path: "requestId", types: ["string"], minLength: 1 },
+                    { path: "summary", types: ["string"] },
+                    { path: "evidence", types: ["array"] },
+                ],
+            },
+        });
+        harness.registry.register(looseDescriptor);
+        harness.resolver.registerMany([
+            ...makeDefaultCapabilityCatalog(),
+            {
+                capabilityId: "lifeos.query.loose-verification",
+                moduleOwner: "lifeos",
+                effectClass: EffectClass.READ,
+                requiresApproval: false,
+                requiresOwnerVerification: true,
+                allowedInputRefPrefixes: ["refs/lifeos/"],
+                ownsStorage: true,
+            },
+        ]);
+        const looseMission = await acceptMission(harness, [
+            makeStep({
+                stepId: "step-loose-verdict",
+                capabilityRequirement: "lifeos.query.loose-verification",
+                inputRefs: ["refs/lifeos/journal"],
+                effectClass: EffectClass.READ,
+            }),
+        ]);
+        harness.seam.registerConnector(
+            looseDescriptor.capabilityId,
+            makeSeamConnector(looseDescriptor, counters, {
+                invoke: async (request) => {
+                    counters.invoke++;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId: request.requestId,
+                        summary: "queried",
+                        evidence: [],
+                        // Truthy, typed-lookalike verdict: would slip past
+                        // every `verified === …` branch without the guard.
+                        ownerVerification: {
+                            verified: "true",
+                            owner: "lifeos",
+                            reason: "x",
+                        } as unknown as CapabilityResult["ownerVerification"],
+                    };
+                },
+            }),
+        );
+
+        await expect(
+            harness.seam.dispatchThroughSeam(looseMission, "step-loose-verdict"),
+        ).rejects.toThrow(DispatchSeamError);
+        expect(counters.invoke).toBe(1); // the effect MAY have happened
+        const stored = await harness.store.getInvocation(
+            (await harness.store.listInvocations(looseMission))[0].invocationId,
+        );
+        expect(stored?.status).toBe(InvocationStatus.BLOCKED);
+        expect(stored?.completedAt).toBeUndefined();
+        expect(stored?.ownerVerification).toBeUndefined();
+    });
+
+    it("discards a malformed supplementary verdict for a NON-verifying capability and keeps the honest status (round 5)", async () => {
+        const counters = { describe: 0, invoke: 0 };
+
+        // Loose NON-verifying descriptor: its resultSchema does not constrain
+        // the supplementary verdict, so the malformed value survives the raw
+        // gate and reaches the runtime guard — proving the no-crash /
+        // no-forged-persistence semantics are NOT carried by the schema gate
+        // alone. (With the default schema the raw gate rejects the value
+        // first, as the schema-gates test proves; either way the invocation
+        // is never completed WITH the malformed verdict attached.)
+        const looseDescriptor = defineCapabilityDescriptor({
+            capabilityId: "lifeos.query.loose-verdict",
+            moduleOwner: "lifeos",
+            purpose: "Query the life domain (unconstrained supplementary verdict)",
+            effectClass: EffectClass.READ,
+            allowedInputRefPrefixes: ["refs/lifeos/"],
+            requiresOwnerVerification: false,
+            ownsStorage: true,
+            resultSchema: {
+                kind: "declarative",
+                fields: [
+                    { path: "status", types: ["string"] },
+                    { path: "requestId", types: ["string"], minLength: 1 },
+                    { path: "summary", types: ["string"] },
+                    { path: "evidence", types: ["array"] },
+                ],
+            },
+        });
+        harness.registry.register(looseDescriptor);
+        harness.resolver.registerMany([
+            ...makeDefaultCapabilityCatalog(),
+            {
+                capabilityId: "lifeos.query.loose-verdict",
+                moduleOwner: "lifeos",
+                effectClass: EffectClass.READ,
+                requiresApproval: false,
+                requiresOwnerVerification: false,
+                allowedInputRefPrefixes: ["refs/lifeos/"],
+                ownsStorage: true,
+            },
+        ]);
+        const missionId = await acceptMission(harness, [
+            makeStep({
+                stepId: "step-loose-verdict",
+                capabilityRequirement: "lifeos.query.loose-verdict",
+                inputRefs: ["refs/lifeos/journal"],
+                effectClass: EffectClass.READ,
+            }),
+        ]);
+        harness.seam.registerConnector(
+            looseDescriptor.capabilityId,
+            makeSeamConnector(looseDescriptor, counters, {
+                invoke: async (request) => {
+                    counters.invoke++;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId: request.requestId,
+                        summary: "queried",
+                        evidence: [
+                            {
+                                owner: "lifeos",
+                                externalRef: "lifeos/evidence-1",
+                                label: "query result",
+                            },
+                        ],
+                        // Truthy garbage verdict on a capability that does
+                        // NOT require owner verification: no crash, no
+                        // forged persistence — the verdict is discarded.
+                        ownerVerification: {
+                            verified: "true",
+                        } as unknown as CapabilityResult["ownerVerification"],
+                    };
+                },
+            }),
+        );
+
+        const outcome = await harness.seam.dispatchThroughSeam(missionId, "step-loose-verdict");
+        expect(outcome.recordedStatus).toBe(InvocationStatus.COMPLETED);
+        const stored = await harness.store.getInvocation(outcome.invocation.invocationId);
+        expect(stored?.status).toBe(InvocationStatus.COMPLETED);
+        expect(stored?.completedAt).toBe(BASE_TIME);
+        // The malformed verdict was never treated as authority.
+        expect(stored?.ownerVerification).toBeUndefined();
+    });
+
+    it("keeps a structurally VALID verdict on a NON-verifying capability discarded by the authority but honest in status (round 5, control)", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        const resolver = new FakeCapabilityResolver();
+        resolver.registerMany(makeDefaultCapabilityCatalog());
+        const engine = new MissionEngine({
+            store,
+            policy: new PlanPolicyValidator(resolver),
+            clock: new FakeClock(BASE_TIME),
+            ids: new FakeIdGenerator("inv"),
+            interpreter: (i) => i.originalIntent,
+            // verificationAuthority omitted: default fail-closed authority.
+        });
+        try {
+            await store.initialize();
+            const registry = new CapabilityRegistry();
+            registry.register(QUERY_DESCRIPTOR);
+            const seam = new ConnectorDispatchSeam(engine, registry, new FakeClock(BASE_TIME));
+            const bareHarness: Harness = {
+                engine,
+                store,
+                registry,
+                resolver,
+                seam,
+                clock: new FakeClock(BASE_TIME),
+                authority: new FakeVerificationAuthority(),
+                close: () => store.close(),
+            };
+            const missionId = await acceptMission(bareHarness, [
+                makeStep({
+                    stepId: "step-query",
+                    capabilityRequirement: "lifeos.query",
+                    inputRefs: ["refs/lifeos/journal"],
+                    effectClass: EffectClass.READ,
+                }),
+            ]);
+            const counters = { describe: 0, invoke: 0 };
+            seam.registerConnector(
+                QUERY_DESCRIPTOR.capabilityId,
+                makeSeamConnector(QUERY_DESCRIPTOR, counters, {
+                    invoke: async (request) => {
+                        counters.invoke++;
+                        return {
+                            status: CapabilityResultStatus.COMPLETED,
+                            requestId: request.requestId,
+                            summary: "queried",
+                            evidence: [
+                                {
+                                    owner: "lifeos",
+                                    externalRef: "lifeos/evidence-1",
+                                    label: "query result",
+                                },
+                            ],
+                            ownerVerification: {
+                                owner: "lifeos",
+                                verified: true,
+                                reason: "checked",
+                            },
+                        };
+                    },
+                }),
+            );
+
+            const outcome = await seam.dispatchThroughSeam(missionId, "step-query");
             expect(outcome.recordedStatus).toBe(InvocationStatus.COMPLETED);
             const recorded = (await store.listInvocations(missionId)).find(
                 (i) => i.invocationId === outcome.invocation.invocationId,
