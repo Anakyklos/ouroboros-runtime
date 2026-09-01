@@ -90,8 +90,11 @@ invariant is proven in `cli/src/capabilities/integration.test.ts`.
 
 - No bridge file is deleted or rewired in the #63 PR.
 - No new dependency, transport, or network surface is introduced.
-- The #62 Mission engine, policy, and stores are untouched
-  (verified: `git diff origin/main...HEAD -- cli/src/mission/` is empty;
-  mission suite green).
+- The #62 Mission engine gained dispatch-facing additions only
+  (`MissionEngine.dispatchStep`, `getPlanRevision`,
+  `getResolvedContract`, `recordInvocationResult` attestation wiring);
+  policy and stores are untouched (verified:
+  `git diff origin/main...HEAD -- cli/src/mission/policy cli/src/mission/sqlite-mission-store`
+  is empty; mission + capabilities suites green).
 - Discovery/authorization separation is strengthened, not weakened: the
   registry-only path can resolve a capability that policy still rejects.
