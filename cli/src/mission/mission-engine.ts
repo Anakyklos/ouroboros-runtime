@@ -732,6 +732,14 @@ export class MissionEngine {
         if (!invocation) {
             throw new Error(`Invocation not found: ${invocationId}`);
         }
+        // Fail closed on identity drift: the result's echoed invocationId
+        // (when present) must match the invocation being updated. A result
+        // for a DIFFERENT invocation is never silently accepted for this one.
+        if (result.invocationId !== invocationId) {
+            throw new Error(
+                `InvocationResult declares invocationId "${result.invocationId}" but was submitted for "${invocationId}"; refusing to record a mismatched result`,
+            );
+        }
         const mission = await this.requireMission(invocation.missionId);
         // Terminal missions cannot accept late results (consistency).
         this.guardNotTerminal(mission, "recordInvocationResult");

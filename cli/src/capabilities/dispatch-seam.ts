@@ -32,7 +32,11 @@ import {
     assertConnectorMatchesDescriptor,
     type CapabilityRegistry,
 } from "./registry.js";
-import type { CapabilityConnector, ConnectorRequest } from "./connector.js";
+import type {
+    CapabilityConnector,
+    CapabilityResult,
+    ConnectorRequest,
+} from "./connector.js";
 import { sanitizeText } from "../mission/sanitize.js";
 import type { ClockService } from "../mission/ports.js";
 
@@ -103,15 +107,8 @@ export class CapabilityUnavailableError extends DispatchSeamError {
 export interface SeamDispatchOutcome {
     /** The invocation the engine minted (engine is the only id authority). */
     invocation: CapabilityInvocationRef;
-    /** The typed, sanitized result the ONE authorized connector produced. */
-    result: {
-        status: CapabilityResultStatus;
-        requestId: string;
-        summary: string;
-        evidence: { owner: string; externalRef: string; label: string }[];
-        ownerVerification?: { owner: string; verified: boolean | null; reason: string };
-        ownerOperationRef?: string;
-    };
+    /** The typed result the ONE authorized connector produced. */
+    result: CapabilityResult;
 }
 
 /**
@@ -228,6 +225,22 @@ export class ConnectorDispatchSeam {
             await this.recordFailure(invocation, `connector invoke failed: ${raw}`);
             throw new DispatchSeamError(
                 `invoke() of capability "${capabilityId}" failed: ${sanitizeText(raw)}`,
+            );
+        }
+
+        // The requestId is the reconciliation key; a connector that does
+        // not echo it back has violated the contract. Fail loudly, record
+        // FAILED, never fabricate a key on the connector's behalf.
+        if (result.requestId !== invocation.invocationId) {
+            await this.engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.FAILED,
+                summary: `connector returned result for requestId "${result.requestId}" while dispatching invocation "${invocation.invocationId}"`,
+                evidenceRefs: [],
+                completedAt: this.isoNow(),
+            });
+            throw new DispatchSeamError(
+                `connector requestId echo mismatch: expected "${invocation.invocationId}", got "${result.requestId}"`,
             );
         }
 

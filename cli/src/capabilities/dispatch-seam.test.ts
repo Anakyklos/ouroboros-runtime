@@ -34,6 +34,7 @@ import {
     ConnectorDispatchSeam,
     ConnectorIdentityMismatchError,
     ConnectorNotRegisteredError,
+    DispatchSeamError,
 } from "./dispatch-seam.js";
 import { CapabilityContractConflictError, ConnectorContractVersionError } from "./registry.js";
 
@@ -319,6 +320,37 @@ describe("ConnectorDispatchSeam", () => {
             expect(invocations.find((i) => i.stepId === goodStepId)?.status).toBe(
                 InvocationStatus.FAILED,
             );
+        });
+
+        it("fails closed when a connector echoes a different requestId (reconciliation key)", async () => {
+            const { missionId, goodStepId } = await acceptTwoStepMission(harness);
+            const counters = { describe: 0, invoke: 0, requests: [] as ConnectorRequest[] };
+            const wrongEcho = makeSeamConnector(REVIEW_DESCRIPTOR, counters, {
+                invoke: async () => {
+                    counters.invoke++;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId: "someone-elses-request",
+                        summary: "done",
+                        evidence: [],
+                    };
+                },
+            });
+            harness.seam.registerConnector(REVIEW_DESCRIPTOR.capabilityId, wrongEcho);
+
+            const err = await harness.seam
+                .dispatchThroughSeam(missionId, goodStepId)
+                .catch((e) => e);
+            expect(err).toBeInstanceOf(DispatchSeamError);
+            expect(err.message).toMatch(/requestId echo mismatch/);
+            expect(counters.invoke).toBe(1); // the connector WAS invoked...
+
+            // ...but its off-key result was never recorded as success: the
+            // invocation is FAILED and carries the mismatch reason.
+            const invocations = await harness.store.listInvocations(missionId);
+            const failed = invocations.find((i) => i.stepId === goodStepId);
+            expect(failed?.status).toBe(InvocationStatus.FAILED);
+            expect(failed?.error).toContain("requestId");
         });
 
         it("does not allow silent connector swaps", async () => {
