@@ -26,9 +26,10 @@ import {
     CapabilityContractConflictError,
     ConnectorContractVersionError,
     DuplicateCapabilityError,
+    DescriptorReplacementError,
     UnknownCapabilityError,
 } from "./registry.js";
-import { assertConnectorMatchesDescriptor } from "./registry.js";
+import { assertConnectorMatchesDescriptor, canonicalJson } from "./registry.js";
 import { defineCapabilityDescriptor } from "./fixtures.js";
 import {
     CapabilityResult,
@@ -257,20 +258,39 @@ describe("CapabilityRegistry", () => {
         expect(() => registry.register(conflicting)).toThrow(DuplicateCapabilityError);
     });
 
-    test("explicit replace() swaps the descriptor deterministically", () => {
+    test("explicit replace() swaps runtime metadata deterministically, but never contract identity without consent", () => {
         const registry = new CapabilityRegistry();
         registry.register(readDescriptor());
+        // Availability/runtime metadata is discovery state: replaceable.
+        const degraded = {
+            ...readDescriptor(),
+            availability: CapabilityAvailability.DEGRADED,
+        } as CapabilityDescriptor;
+        registry.replace(degraded);
+        expect(registry.requireDescriptor("lifeos.query_commitments").availability).toBe(
+            CapabilityAvailability.DEGRADED,
+        );
+
+        // A contract/owner change (purpose here) is a re-registration decision
+        // and is rejected without explicit consent (blocker 5).
         const upgraded = {
             ...readDescriptor(),
             purpose: "Query open commitments (v2 surface)",
             availability: CapabilityAvailability.DEGRADED,
         } as CapabilityDescriptor;
-        registry.replace(upgraded);
+        expect(() => registry.replace(upgraded)).toThrow(DescriptorReplacementError);
+        // Nothing was silently retargeted.
+        expect(registry.requireDescriptor("lifeos.query_commitments").purpose).toBe(
+            "Query open commitments owned by LifeOS",
+        );
+
+        // With explicit consent + sanitized reason, the change is allowed.
+        registry.replace(upgraded, {
+            allowContractChange: true,
+            changeReason: "descriptor surface v2 approved by owner",
+        });
         expect(registry.requireDescriptor("lifeos.query_commitments").purpose).toBe(
             "Query open commitments (v2 surface)",
-        );
-        expect(registry.requireDescriptor("lifeos.query_commitments").availability).toBe(
-            CapabilityAvailability.DEGRADED,
         );
     });
 
@@ -801,5 +821,225 @@ describe("Data-only declarative schemas (blocker 3)", () => {
         const verdict = validateCapabilityDescriptor(hostile);
         expect(verdict.valid).toBe(false);
         expect(verdict.errors.some((e) => e.includes("data-only declarative schema"))).toBe(true);
+    });
+});
+
+/**
+ * Issue #63 review blocker 4: the connector version gate is fail-closed with
+ * ZERO connector method calls before the check, and comparisons are canonical
+ * (key-order-insensitive, deep, cross-process stable).
+ */
+describe("Fail-closed connector version gate (blocker 4)", () => {
+    const readDescriptor = () =>
+        defineCapabilityDescriptor({
+            capabilityId: "lifeos.query_commitments",
+            moduleOwner: "lifeos",
+            purpose: "Query open commitments owned by LifeOS",
+            effectClass: EffectClass.READ,
+            allowedInputRefPrefixes: ["refs/lifeos/"],
+            ownsStorage: true,
+        });
+
+    /** Connector whose describe() betrays any call before the gate. */
+    function hostileConnector(
+        descriptor: CapabilityDescriptor,
+        version: number,
+        calls: { describe: number; invoke: number },
+    ): CapabilityConnector {
+        return {
+            connectorContractVersion: version,
+            capabilityId: descriptor.capabilityId,
+            describe: () => {
+                calls.describe++;
+                return descriptor;
+            },
+            invoke: async () => {
+                calls.invoke++;
+                throw new Error("invoke must never happen during binding");
+            },
+        };
+    }
+
+    test("stale connector: zero method calls before the version gate rejects it", () => {
+        const registry = new CapabilityRegistry();
+        const descriptor = readDescriptor();
+        registry.register(descriptor);
+        const calls = { describe: 0, invoke: 0 };
+        const stale = hostileConnector(descriptor, 99, calls);
+        expect(() => assertConnectorMatchesDescriptor(stale, descriptor)).toThrow(
+            ConnectorContractVersionError,
+        );
+        // The fix to the review blocker: NO connector method ran at all.
+        expect(calls.describe).toBe(0);
+        expect(calls.invoke).toBe(0);
+    });
+
+    test("compliant connector passes the gate; describe() diverging afterwards is rejected", () => {
+        const registry = new CapabilityRegistry();
+        const descriptor = readDescriptor();
+        registry.register(descriptor);
+        const calls = { describe: 0, invoke: 0 };
+        const compliant = hostileConnector(descriptor, 1, calls);
+        expect(() => assertConnectorMatchesDescriptor(compliant, descriptor)).not.toThrow();
+        expect(calls.describe).toBe(1);
+        expect(calls.invoke).toBe(0);
+
+        // Post-gate divergence (canonical compare, key order irrelevant):
+        const divergent = hostileConnector(
+            { ...descriptor, purpose: "diverged" },
+            1,
+            { describe: 0, invoke: 0 },
+        );
+        expect(() => assertConnectorMatchesDescriptor(divergent, descriptor)).toThrow(
+            CapabilityContractConflictError,
+        );
+    });
+
+    test("canonicalJson is key-order-insensitive and deterministic", () => {
+        const a = { b: 1, a: { d: 2, c: [3, { z: 4, y: 5 }] } };
+        const b = { a: { c: [3, { y: 5, z: 4 }], d: 2 }, b: 1 };
+        expect(canonicalJson(a)).toBe(canonicalJson(b));
+        expect(canonicalJson(a)).toBe(canonicalJson(JSON.parse(JSON.stringify(a))));
+        expect(canonicalJson(a)).not.toBe(canonicalJson({ ...a, b: 2 }));
+    });
+});
+
+/**
+ * Issue #63 review blocker 5: replace() classifies changes — availability /
+ * runtime metadata moves freely; contract/owner identity requires explicit
+ * consent + sanitized reason (never a silent retarget).
+ */
+describe("Classified replace(): metadata vs contract identity (blocker 5)", () => {
+    const readDescriptor = () =>
+        defineCapabilityDescriptor({
+            capabilityId: "lifeos.query_commitments",
+            moduleOwner: "lifeos",
+            purpose: "Query open commitments owned by LifeOS",
+            effectClass: EffectClass.READ,
+            allowedInputRefPrefixes: ["refs/lifeos/"],
+            ownsStorage: true,
+        });
+
+    test("runtime metadata (availability) replaces freely; contract change is rejected", () => {
+        const registry = new CapabilityRegistry();
+        registry.register(readDescriptor());
+
+        // Runtime metadata: availability change — always allowed.
+        const degraded = {
+            ...readDescriptor(),
+            availability: CapabilityAvailability.UNAVAILABLE,
+        } as CapabilityDescriptor;
+        expect(() => registry.replace(degraded)).not.toThrow();
+        expect(registry.requireDescriptor("lifeos.query_commitments").availability).toBe(
+            CapabilityAvailability.UNAVAILABLE,
+        );
+
+        // Contract identity: owner change — rejected without consent.
+        const retargeted = {
+            ...readDescriptor(),
+            moduleOwner: "not-lifeos",
+        } as CapabilityDescriptor;
+        expect(() => registry.replace(retargeted)).toThrow(DescriptorReplacementError);
+        // The registered owner was never silently retargeted.
+        expect(registry.requireDescriptor("lifeos.query_commitments").moduleOwner).toBe("lifeos");
+    });
+
+    test("explicit consent + sanitized reason unlocks a contract change; missing reason fails closed", () => {
+        const registry = new CapabilityRegistry();
+        registry.register(readDescriptor());
+
+        const ownerChanged = {
+            ...readDescriptor(),
+            moduleOwner: "lifeos-v2",
+        } as CapabilityDescriptor;
+
+        // Consent without a sanitized reason: fail closed.
+        expect(() =>
+            registry.replace(ownerChanged, { allowContractChange: true }),
+        ).toThrow(/changeReason/);
+
+        // Raw-secret reasons are rejected (secret hygiene applies to the
+        // replacement trail too).
+        expect(() =>
+            registry.replace(ownerChanged, {
+                allowContractChange: true,
+                changeReason: "token=super-secret-value",
+            }),
+        ).toThrow(/changeReason/);
+
+        // Explicit consent + sanitized reason: allowed.
+        registry.replace(ownerChanged, {
+            allowContractChange: true,
+            changeReason: "owner migration approved by module owner",
+        });
+        expect(registry.requireDescriptor("lifeos.query_commitments").moduleOwner).toBe("lifeos-v2");
+    });
+
+    test("every contract/owner identity field is guarded (canonical detection)", () => {
+        const registry = new CapabilityRegistry();
+        registry.register(readDescriptor());
+        for (const field of [
+            "purpose",
+            "moduleOwner",
+            "effectClass",
+            "requiresApproval",
+            "requiresOwnerVerification",
+            "ownsStorage",
+            "cancellationSupport",
+            "reconciliationSupport",
+            "inputSchemaDescription",
+            "resultSchemaDescription",
+            "idempotency",
+            "retry",
+        ] as const) {
+            const base = readDescriptor();
+            const candidate: Record<string, unknown> = { ...base };
+            switch (field) {
+                case "effectClass":
+                    candidate[field] = EffectClass.WRITE;
+                    break;
+                case "requiresApproval":
+                case "requiresOwnerVerification":
+                    candidate[field] = !base[field];
+                    break;
+                case "cancellationSupport":
+                    candidate[field] = CancellationSupport.COOPERATIVE;
+                    break;
+                case "reconciliationSupport":
+                    candidate[field] = ReconciliationSupport.FULL_REPLAY;
+                    break;
+                case "idempotency":
+                    candidate[field] = { mode: IdempotencyMode.NON_IDEMPOTENT, keyScope: "request" };
+                    break;
+                case "retry":
+                    candidate[field] = { maxAttempts: 3, backoff: RetryBackoff.FIXED };
+                    break;
+                default:
+                    candidate[field] = "changed-value";
+            }
+            expect(() => registry.replace(candidate as unknown as CapabilityDescriptor)).toThrow(
+                DescriptorReplacementError,
+            );
+        }
+
+        // Array/object identity fields (canonical detection on structure).
+        expect(() =>
+            registry.replace({
+                ...readDescriptor(),
+                allowedInputRefPrefixes: ["refs/other/"],
+            } as CapabilityDescriptor),
+        ).toThrow(DescriptorReplacementError);
+        expect(() =>
+            registry.replace({
+                ...readDescriptor(),
+                inputSchema: { kind: "declarative", fields: [] },
+            } as CapabilityDescriptor),
+        ).toThrow(DescriptorReplacementError);
+        expect(() =>
+            registry.replace({
+                ...readDescriptor(),
+                resultSchema: { kind: "declarative", fields: [] },
+            } as CapabilityDescriptor),
+        ).toThrow(DescriptorReplacementError);
     });
 });

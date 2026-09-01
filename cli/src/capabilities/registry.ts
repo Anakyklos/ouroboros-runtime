@@ -22,6 +22,7 @@
 
 import { CONNECTOR_CONTRACT_VERSION, validateCapabilityDescriptor } from "./contracts.js";
 import type { CapabilityDescriptor } from "./contracts.js";
+import type { CapabilityConnector } from "./connector.js";
 import { containsRawSecret } from "../mission/sanitize.js";
 import type { CapabilityContract } from "../mission/contracts.js";
 import type { CapabilityResolver } from "../mission/ports.js";
@@ -61,6 +62,79 @@ export class CapabilityContractConflictError extends Error {
 }
 
 /**
+ * replace() attempted to change contract/owner identity without explicit
+ * consent (Issue #63 review blocker 5). Registration identity is never
+ * silently retargeted — not even to "fix" it in place.
+ */
+export class DescriptorReplacementError extends Error {
+    constructor(capabilityId: string, contractChanges: string[]) {
+        super(
+            `replace() for "${capabilityId}" would change contract/owner fields ` +
+                `(${contractChanges.join(", ")}); registration identity is never ` +
+                `silently retargeted — re-state the change with { allowContractChange: true, reason } ` +
+                `or register a new capabilityId`,
+        );
+        this.name = "DescriptorReplacementError";
+    }
+}
+
+/**
+ * Canonical JSON: object keys recursively sorted, stable across processes.
+ * Deterministic equality/comparison for data-only descriptors (blocker 4).
+ */
+export function canonicalJson(value: unknown): string {
+    if (value === undefined) return "undefined";
+    if (value === null || typeof value !== "object") {
+        return JSON.stringify(value) ?? "undefined";
+    }
+    if (Array.isArray(value)) {
+        return `[${value.map(canonicalJson).join(",")}]`;
+    }
+    const entries = Object.entries(value as Record<string, unknown>)
+        .filter(([, member]) => member !== undefined)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+}
+
+/**
+ * Structural difference report between two descriptors (blockers 4 + 5):
+ * canonical, key-order-insensitive comparison yielding the differing paths.
+ */
+export function describeDescriptorDifferences(
+    a: CapabilityDescriptor,
+    b: CapabilityDescriptor,
+): string[] {
+    const diffs: string[] = [];
+    const walk = (x: unknown, y: unknown, path: string): void => {
+        if (canonicalJson(x) === canonicalJson(y)) return;
+        if (
+            typeof x === "object" &&
+            x !== null &&
+            !Array.isArray(x) &&
+            typeof y === "object" &&
+            y !== null &&
+            !Array.isArray(y)
+        ) {
+            const keys = new Set([
+                ...Object.keys(x as Record<string, unknown>),
+                ...Object.keys(y as Record<string, unknown>),
+            ]);
+            for (const key of [...keys].sort()) {
+                walk(
+                    (x as Record<string, unknown>)[key],
+                    (y as Record<string, unknown>)[key],
+                    path === "" ? key : `${path}.${key}`,
+                );
+            }
+            return;
+        }
+        diffs.push(path === "" ? "<root>" : path);
+    };
+    walk(a, b, "");
+    return diffs;
+}
+
+/**
  * Registry surface for descriptors. Deliberately does NOT extend the
  * resolver interface (which returns authorization-shaped contracts) to
  * avoid confusion between discovery and authorization.
@@ -86,9 +160,8 @@ export class CapabilityRegistry implements CapabilityResolver, CapabilityRegistr
      * the #62 policy consumes; a shallow spread would share those objects
      * with every caller of `register`/`resolve`/`requireDescriptor`/
      * `listDescriptors`, letting discovery-side mutation silently change
-     * authorization inputs. Functions (the schema `validate` predicates)
-     * are copied by reference: they are inert deterministic checks with no
-     * observable state, so sharing them cannot leak mutation.
+     * authorization inputs. Descriptors are data-only (blocker 3), so this
+     * is a pure structural copy with no code objects to preserve.
      */
     private cloneDescriptor(descriptor: CapabilityDescriptor): CapabilityDescriptor {
         const clone = (value: unknown): unknown => {
@@ -127,11 +200,23 @@ export class CapabilityRegistry implements CapabilityResolver, CapabilityRegistr
     }
 
     /**
-     * Explicit replacement of an already-registered descriptor. The new
-     * definition must itself be valid and, unlike `register`, is allowed to
-     * supersede the existing definition (tested contract).
+     * Explicit replacement of an already-registered descriptor (blocker 5).
+     *
+     * Classification is explicit — availability and runtime metadata may move
+     * freely; contract/owner identity never moves silently:
+     *  - availability / availabilityDetail / runtimeObservability:
+     *    always replaceable (discovery state, zero authority impact);
+     *  - contract/owner identity (moduleOwner, effectClass, approval,
+     *    verification, ref prefixes, storage, idempotency/retry policy,
+     *    schemas, credentials, characteristics, degradation, purpose,
+     *    contractVersion): requires `allowContractChange: true` + a
+     *    sanitized `changeReason`, and is rejected with
+     *    `DescriptorReplacementError` otherwise (no silent retarget).
      */
-    replace(descriptor: CapabilityDescriptor): void {
+    replace(
+        descriptor: CapabilityDescriptor,
+        options: { allowContractChange?: boolean; changeReason?: string } = {},
+    ): void {
         if (!this.descriptors.has(descriptor.capabilityId)) {
             throw new UnknownCapabilityError(descriptor.capabilityId);
         }
@@ -140,6 +225,19 @@ export class CapabilityRegistry implements CapabilityResolver, CapabilityRegistr
             throw new Error(
                 `Invalid capability descriptor for "${descriptor.capabilityId}": ${validation.errors.join("; ")}`,
             );
+        }
+        const current = this.descriptors.get(descriptor.capabilityId)!;
+        const contractChanges = contractFieldDifferences(current, descriptor);
+        if (contractChanges.length > 0) {
+            if (!options.allowContractChange) {
+                throw new DescriptorReplacementError(descriptor.capabilityId, contractChanges);
+            }
+            const reason = options.changeReason ?? "";
+            if (reason.trim() === "" || containsRawSecret(reason)) {
+                throw new Error(
+                    `allowContractChange for "${descriptor.capabilityId}" requires a sanitized, non-empty changeReason`,
+                );
+            }
         }
         this.validateDescriptorOrFailClosed(descriptor);
         this.descriptors.set(descriptor.capabilityId, this.cloneDescriptor(descriptor));
@@ -222,6 +320,53 @@ export class CapabilityRegistry implements CapabilityResolver, CapabilityRegistr
     }
 }
 
+/**
+ * Fields that define WHAT a capability is (contract/owner identity). A
+ * `replace()` that changes any of these is a re-registration decision, not a
+ * metadata refresh — it must be explicit (blocker 5).
+ */
+const CONTRACT_IDENTITY_FIELDS: ReadonlyArray<string> = [
+    "purpose",
+    "contractVersion",
+    "moduleOwner",
+    "effectClass",
+    "requiresApproval",
+    "requiresOwnerVerification",
+    "allowedInputRefPrefixes",
+    "ownsStorage",
+    "idempotency",
+    "retry",
+    "cancellationSupport",
+    "reconciliationSupport",
+    "expectedEvidence",
+    "inputSchema",
+    "resultSchema",
+    "inputSchemaDescription",
+    "resultSchemaDescription",
+    "credentialRequirement",
+    "characteristics",
+    "degradation",
+] as const;
+
+/**
+ * Canonical, order-insensitive comparison of the contract/owner identity
+ * fields between the registered descriptor and a replacement candidate.
+ * Returns the differing field paths (empty = no identity change).
+ */
+function contractFieldDifferences(
+    current: CapabilityDescriptor,
+    candidate: CapabilityDescriptor,
+): string[] {
+    const changes: string[] = [];
+    for (const field of CONTRACT_IDENTITY_FIELDS) {
+        if (canonicalJson((current as unknown as Record<string, unknown>)[field]) !==
+            canonicalJson((candidate as unknown as Record<string, unknown>)[field])) {
+            changes.push(field);
+        }
+    }
+    return changes;
+}
+
 /** Thin, deterministic function registry for connector binding checks. */
 interface ConnectorBinding {
     connectorContractVersion: number;
@@ -229,33 +374,42 @@ interface ConnectorBinding {
 }
 
 /**
- * Connector binding helper used by registration-time gates. Accepts a
- * `CapabilityConnector` (or any binding exposing `connectorContractVersion`
- * + `describe()`). Version is checked BEFORE any `describe()` call, so a
- * mismatched connector never reaches descriptor processing.
+ * Connector binding gate used at registration/dispatch time (blocker 4).
  *
- * With two arguments, the connector's `describe()` output must also match
- * the registered descriptor exactly (deep equality) — discovery never
- * silently diverges from what was registered.
+ * Fail-closed version check FIRST, against the CONNECTOR's own version
+ * declaration, and with ZERO calls into connector methods before the check
+ * completes: no `describe()`, no `invoke()`, nothing. A hostile or stale
+ * connector therefore cannot influence any registry processing, and cannot
+ * exfiltrate inputs, before the version gate passes.
+ *
+ * Only after the version gate passes may `describe()` be called; its output
+ * must match the registered descriptor exactly (canonical compare,
+ * key-order-insensitive, deep) — discovery never silently diverges from what
+ * was registered.
  */
 export function assertConnectorMatchesDescriptor(
-    connector: ConnectorBinding,
+    connector: CapabilityConnector | ConnectorBinding,
     expectedDescriptor?: CapabilityDescriptor,
     expectedVersion: number = CONNECTOR_CONTRACT_VERSION,
 ): void {
-    const version =
+    // ── Version gate: zero connector method calls happen before this. ──
+    // Note the version is read from the connector's own declared property —
+    // a plain data read on the adapter handle, not a method invocation.
+    const declaredVersion =
         typeof connector?.connectorContractVersion === "number"
             ? connector.connectorContractVersion
             : Number.NaN;
-    if (version !== expectedVersion) {
+    if (declaredVersion !== expectedVersion) {
+        // Deliberately NO describe() call here — capabilityId is unknown and
+        // must stay unknown until the connector proves its contract version.
         throw new ConnectorContractVersionError(
-            typeof connector?.describe === "function"
-                ? connector.describe().capabilityId
-                : "<unavailable: version mismatch>",
-            version,
+            "<withheld until version gate passes>",
+            declaredVersion,
             expectedVersion,
         );
     }
+
+    // ── Post-gate: the connector has proven its version; now describe. ──
     if (typeof connector.describe !== "function") {
         throw new CapabilityContractConflictError(
             "<unnamed connector>",
@@ -270,10 +424,14 @@ export function assertConnectorMatchesDescriptor(
             validation.errors.join("; "),
         );
     }
-    if (expectedDescriptor !== undefined && JSON.stringify(described) !== JSON.stringify(expectedDescriptor)) {
+    if (
+        expectedDescriptor !== undefined &&
+        canonicalJson(described) !== canonicalJson(expectedDescriptor)
+    ) {
         throw new CapabilityContractConflictError(
             described.capabilityId,
-            "connector describe() output does not match the registered descriptor",
+            `connector describe() output does not match the registered descriptor ` +
+                `(differences: ${describeDescriptorDifferences(described, expectedDescriptor).join(", ") || "<root>"})`,
         );
     }
 }
