@@ -89,6 +89,44 @@ export interface ContextBudget {
 }
 
 /**
+ * Runtime-owned ceiling policy for context budgets (review blocker 3).
+ * A requester's proposed budget is never authority: the deterministic
+ * boundary CLAMPS every limit to this policy before compiling.
+ */
+export interface RequestBudgetPolicy {
+    /** Highest item count any compiled package may carry. */
+    maxItemsCeiling: number;
+    /** Highest total item content (UTF-16 code units) allowed. */
+    maxTotalCharsCeiling: number;
+    /** Highest token-like estimate allowed. */
+    maxEstimatedTokensCeiling: number;
+}
+
+/**
+ * Deterministic runtime default (single source of truth for the clamp).
+ * Exported for explicit, versioned evolution of the ceiling policy.
+ */
+export const DEFAULT_REQUEST_BUDGET_POLICY: RequestBudgetPolicy = {
+    maxItemsCeiling: 32,
+    maxTotalCharsCeiling: 16000,
+    maxEstimatedTokensCeiling: 4000,
+};
+
+/** Clamp a proposed budget to a ceiling policy (NaN/undefined → 0). */
+export function clampBudget(
+    proposed: ContextBudget,
+    policy: RequestBudgetPolicy = DEFAULT_REQUEST_BUDGET_POLICY,
+): ContextBudget {
+    const min = (v: number, ceiling: number) =>
+        Number.isFinite(v) && v > 0 ? Math.min(Math.floor(v), ceiling) : 0;
+    return {
+        maxItems: min(proposed.maxItems, policy.maxItemsCeiling),
+        maxTotalChars: min(proposed.maxTotalChars, policy.maxTotalCharsCeiling),
+        maxEstimatedTokens: min(proposed.maxEstimatedTokens, policy.maxEstimatedTokensCeiling),
+    };
+}
+
+/**
  * Declarative need for context. Describes WHAT is needed — never HOW to
  * access storage. A planner may PROPOSE external reads via ownerHint; it
  * cannot choose databases, SQL, private filesystems or bypass policy.
@@ -215,6 +253,14 @@ export interface BoundedContextPackage {
             maxTotalChars: number;
             maxEstimatedTokens: number;
         };
+        /** The requester's proposed budget, as received (pre-clamp). */
+        proposed: {
+            maxItems: number;
+            maxTotalChars: number;
+            maxEstimatedTokens: number;
+        };
+        /** True when the runtime ceiling policy reduced the proposal. */
+        clamped: boolean;
         observed: {
             items: number;
             totalChars: number;
@@ -235,12 +281,20 @@ export function estimateTokens(chars: number): number {
     return Math.ceil(chars / CHARS_PER_ESTIMATED_TOKEN);
 }
 
-/** A row an owner-side context adapter may return (opaque, sanitized). */
+/** A row an owner-side context connector may return (opaque, sanitized). */
 export interface ContextRow {
     /** Opaque source reference inside the owner boundary. */
     sourceRef: string;
     /** Raw row content (sanitized + classified by the compiler). */
     content: string;
+    /**
+     * Source-carried epistemic class of this content. External content is
+     * NEVER silently promoted to FACT (review blocker 5): when the owner
+     * does not declare a class the compiler refuses the row (it cannot
+     * prove what it is), unless the descriptor contract explicitly
+     * guarantees fact-only output (see factOnlySource).
+     */
+    epistemicClass?: EpistemicClass;
     /** Source-carried timestamp for freshness, when available. */
     fetchedAt?: string;
     /** Evidence/reference identity, when the row backs evidence. */
@@ -254,11 +308,19 @@ export interface CompiledSourceReadDescriptor {
     capabilityId: string;
     moduleOwner: string;
     contractVersion: number;
+    /**
+     * Owner guarantee that every row this capability produces is a fact.
+     * When true, unclassified rows are stamped FACT by the compiler.
+     * NEVER inferred from connector output — declared ≠ implemented.
+     */
+    factRowsOnly?: boolean;
 }
 
-/** A successful pre-authorized read served through the #63 boundary. */
+/** A successful pre-authorized read served through the #63 seam boundary. */
 export interface CompiledSourceRead {
     /** The authorized descriptor that gated and labels the rows. */
     descriptor: CompiledSourceReadDescriptor;
     rows: ContextRow[];
+    /** Honest count of malformed sibling rows skipped by the reader. */
+    skippedInvalidRows?: number;
 }

@@ -7,24 +7,33 @@
  * Structural authority rules enforced HERE (not by prompts):
  *  1. Mission-owned refs are compiled ONLY from the requesting Mission's
  *     own contextRefs — cross-mission references are refused.
- *  2. External content reaches the package ONLY as pre-authorized
- *     `ContextReadOutcome`s produced by the RegistryBoundContextReader
- *     (sources.ts), which enforces the #62 deterministic policy scope and
- *     the #63 descriptor contract BEFORE any owner adapter runs. The
- *     compiler itself holds no registry and no policy: it cannot widen
- *     what the reader already authorized.
- *  3. Discovery does not concede authorization: the reader's gate order is
- *     fail-closed and availability is reported honestly (never hidden as
- *     an empty success).
- *  4. External content is DATA: rows are sanitized and never interpreted
- *     as instructions. The returned package is deeply frozen — structurally
- *     unable to mutate intent/constraints/etc.
- *  5. Budgets are deterministic and enforced BEFORE inclusion; provenance
- *     survives every reduction; exclusions are recorded, never silent.
- *  6. Honest degradation: one owner's failure never destroys items
- *     already compiled from other owners; failures become typed records.
+ *  2. External content reaches the package ONLY as seam-authorized
+ *     `ContextReadOutcome`s produced by the SeamBoundContextReader
+ *     (sources.ts) from results that ALREADY passed the #63
+ *     `ConnectorDispatchSeam` gates. The compiler itself holds no
+ *     registry, no seam and no policy: it cannot widen what the boundary
+ *     already authorized.
+ *  3. Budgets are NEVER taken from the requester as authority (review
+ *     blocker 3): the proposed `ContextRequest.budget` is deterministically
+ *     clamped to the runtime-owned `RequestBudgetPolicy` ceiling before
+ *     use, and EVERY mutation of a package (compile, deriveSummary,
+ *     addInference) re-runs the same class/dedup/budget pipeline and
+ *     updates the honest budgetReport. A package can never exceed its
+ *     effective budget — including after additions.
+ *  4. External content is DATA and stays epistemically honest (review
+ *     blocker 5): rows carry their source epistemic class; the compiler
+ *     never defaults external content to FACT. A row without a declared
+ *     class is refused (UNSUPPORTED) unless the capability contract
+ *     explicitly guarantees fact-only rows.
+ *  5. Freshness is honest (review blocker 4): with maxAgeMs, expiry is
+ *     anchored to the SOURCE's own fetchedAt (fetchedAt + maxAgeMs), never
+ *     to compilation time — recompiling does not renew validity. A source
+ *     that cannot prove its age is STALE, never silently fresh.
+ *  6. The package is deeply frozen inert data; provenance is
+ *     compiler-computed (forge-proof); exclusions are recorded, never
+ *     silent; one owner's failure never destroys other owners' items.
  *  7. Restart recomposition: compilation is a pure function of (durable
- *     Mission state, refs, pre-authorized reads, clock) — no prompt/output
+ *     Mission state, refs, seam-authorized reads, clock) — no prompt/output
  *     cache, no model calls, no network.
  *  8. No secrets/Authorization/CoT/raw provider responses are persisted:
  *     every string passes the shared sanitizers; unredactable secrets are
@@ -42,12 +51,16 @@ import {
     ContextItem,
     ContextRequest,
     CONTEXT_COMPILER_CONTRACT_VERSION,
+    DEFAULT_REQUEST_BUDGET_POLICY,
     EpistemicClass,
     estimateTokens,
     ItemProvenance,
+    RequestBudgetPolicy,
     SensitivityClass,
     SourceStatus,
     UnresolvedSource,
+    clampBudget,
+    type ContextRow,
 } from "./contracts.js";
 import { containsRawSecret, sanitizeText } from "../mission/sanitize.js";
 
@@ -106,23 +119,45 @@ function deepFreeze<T>(value: T): T {
 }
 
 /**
- * One outcome of the RegistryBoundContextReader (sources.ts): either a
- * successful pre-authorized read carrying the authorized descriptor
- * (provenance is computed by the compiler, never forged by adapters) or an
- * honest unresolved record. The compiler consumes this union verbatim.
+ * One outcome of the SeamBoundContextReader (sources.ts): either a
+ * successful seam-authorized read carrying the authorized descriptor
+ * (provenance is computed by the compiler, never forged by connectors) or
+ * an honest unresolved record. The compiler consumes this union verbatim.
  */
 export type ContextReadOutcome = CompiledSourceRead | UnresolvedSource;
 
 /**
+ * Deterministic package identity: hash of the FULL package content,
+ * including the honest budgetReport — a package whose accounting was
+ * tampered with is a different package.
+ */
+function computePackageId(pkg: Omit<BoundedContextPackage, "packageId">): string {
+    return `pkg-${sha256Json(pkg).slice(0, 24)}`;
+}
+
+/** Dedup identity of an item (owner + class + content). */
+function dedupKey(item: ContextItem): string {
+    return sha256Json({
+        owner: item.provenance.owner,
+        epistemicClass: item.epistemicClass,
+        content: item.content,
+    });
+}
+
+/**
  * 🧩 Context Compiler — the ONE entry point that turns (durable Mission
- * state, authorized refs, pre-authorized reads) into a bounded,
+ * state, authorized refs, seam-authorized reads) into a bounded,
  * provenance-carrying, deeply frozen context package.
  */
 export class ContextCompiler {
     private readonly clock: () => Date;
+    private readonly budgetPolicy: RequestBudgetPolicy;
 
-    constructor(options: { clock?: () => Date } = {}) {
+    constructor(
+        options: { clock?: () => Date; budgetPolicy?: RequestBudgetPolicy } = {},
+    ) {
         this.clock = options.clock ?? (() => new Date());
+        this.budgetPolicy = options.budgetPolicy ?? DEFAULT_REQUEST_BUDGET_POLICY;
     }
 
     private isoNow(): string {
@@ -130,8 +165,55 @@ export class ContextCompiler {
     }
 
     /**
+     * Effective (clamped) budget for a request — deterministic. A missing
+     * budget is INVALID (fail-closed): the compiler refuses to guess.
+     */
+    private effectiveBudget(request: ContextRequest): {
+        effective: ReturnType<typeof clampBudget>;
+        clamped: boolean;
+        budget: {
+            maxItems: number;
+            maxTotalChars: number;
+            maxEstimatedTokens: number;
+        };
+    } {
+        if (
+            request.budget === undefined ||
+            request.budget === null ||
+            typeof request.budget !== "object"
+        ) {
+            throw new ContextCompilerError(
+                "ContextRequest.budget is missing — the compiler never compiles unbounded (fail-closed)",
+            );
+        }
+        const b = request.budget as {
+            maxItems?: unknown;
+            maxTotalChars?: unknown;
+            maxEstimatedTokens?: unknown;
+        };
+        for (const key of ["maxItems", "maxTotalChars", "maxEstimatedTokens"] as const) {
+            if (typeof b[key] !== "number" || !Number.isFinite(b[key] as number)) {
+                throw new ContextCompilerError(
+                    `ContextRequest.budget.${key} is missing or not a finite number (fail-closed)`,
+                );
+            }
+        }
+        const budget = request.budget as {
+            maxItems: number;
+            maxTotalChars: number;
+            maxEstimatedTokens: number;
+        };
+        const effective = clampBudget(budget, this.budgetPolicy);
+        const clamped =
+            effective.maxItems !== budget.maxItems ||
+            effective.maxTotalChars !== budget.maxTotalChars ||
+            effective.maxEstimatedTokens !== budget.maxEstimatedTokens;
+        return { effective, clamped, budget };
+    }
+
+    /**
      * Compile the package. Deterministic and PURE with respect to its
-     * inputs (mission, request, pre-authorized reads, clock): the same
+     * inputs (mission, request, seam-authorized reads, clock): the same
      * durable Mission state + refs + reads always recompose the same
      * package. No caches, no model calls, no network.
      */
@@ -140,10 +222,21 @@ export class ContextCompiler {
         request: ContextRequest,
         reads: ContextReadOutcome[],
     ): BoundedContextPackage {
-        // Gate 0 — declarative request sanity.
+        // Gate 0 — declarative request sanity (fail-closed budgets: a
+        // missing/invalid budget never compiles an unbounded package).
         if (!request.subject.trim() || !request.purpose.trim()) {
             throw new ContextCompilerError(
                 "ContextRequest must declare a non-empty subject and purpose",
+            );
+        }
+        const { effective, clamped, budget } = this.effectiveBudget(request);
+        if (
+            effective.maxItems <= 0 ||
+            effective.maxTotalChars <= 0 ||
+            effective.maxEstimatedTokens <= 0
+        ) {
+            throw new ContextCompilerError(
+                "ContextRequest.budget is invalid or clamps to an empty budget (fail-closed)",
             );
         }
         // Gate 1 — the request must belong to THIS mission (fail-closed:
@@ -185,15 +278,22 @@ export class ContextCompiler {
             });
         }
 
-        // ── Phase B: pre-authorized external reads (#63 boundary) ─────
-        // `reads` are produced ONLY by the RegistryBoundContextReader
-        // (sources.ts), which enforces the #62 policy + #63 descriptor
-        // gates BEFORE any adapter call and returns honest per-source
-        // `UnresolvedSource` records for everything it refused.
+        // ── Phase B: seam-authorized external reads (#63 boundary) ────
+        // `reads` are produced ONLY by the SeamBoundContextReader
+        // (sources.ts) from ConnectorDispatchSeam-authorized results. The
+        // compiler never defaults external content to FACT (blocker 5).
         for (const outcome of reads) {
             if (!("rows" in outcome)) {
                 unresolved.push(outcome);
                 continue;
+            }
+            if (outcome.skippedInvalidRows !== undefined && outcome.skippedInvalidRows > 0) {
+                unresolved.push({
+                    requestedRef: sanitizeText(outcome.descriptor.capabilityId),
+                    owner: outcome.descriptor.moduleOwner,
+                    status: SourceStatus.UNSUPPORTED,
+                    detail: `${outcome.skippedInvalidRows} malformed row(s) skipped by structural validation`,
+                });
             }
             for (const row of outcome.rows) {
                 // Sanitize BEFORE classification. Unredactable secret-like
@@ -209,6 +309,22 @@ export class ContextCompiler {
                     continue;
                 }
 
+                // Epistemic class: the SOURCE declares it (blocker 5).
+                // No silent promotion to FACT, ever. A row without a class
+                // is refused unless the descriptor contract explicitly
+                // guarantees fact-only rows for this capability.
+                const itemClass = rowClassOf(row, outcome.descriptor);
+                if (itemClass === undefined) {
+                    unresolved.push({
+                        requestedRef: sanitizeText(row.sourceRef),
+                        owner: outcome.descriptor.moduleOwner,
+                        status: SourceStatus.UNSUPPORTED,
+                        detail:
+                            "row carried no epistemic classification and the capability does not declare fact-only rows",
+                    });
+                    continue;
+                }
+
                 const sensitivity = row.sensitivity ?? SensitivityClass.NORMAL;
                 if (sensitivity === SensitivityClass.RESTRICTED) {
                     // Owner-declared restricted: reference-only, no content.
@@ -216,11 +332,11 @@ export class ContextCompiler {
                         itemId: computeItemId({
                             owner: outcome.descriptor.moduleOwner,
                             sourceRef: row.sourceRef,
-                            epistemicClass: EpistemicClass.FACT,
+                            epistemicClass: itemClass,
                             content: "(restricted)",
                             missionId: mission.missionId,
                         }),
-                        epistemicClass: EpistemicClass.FACT,
+                        epistemicClass: itemClass,
                         content: `(restricted: reference-only ${row.sourceRef})`,
                         provenance: this.externalProvenance(
                             outcome.descriptor,
@@ -228,7 +344,7 @@ export class ContextCompiler {
                             request,
                             now,
                             sensitivity,
-                            undefined,
+                            expiryFor(row, request, now),
                         ),
                     });
                     continue;
@@ -236,7 +352,8 @@ export class ContextCompiler {
 
                 // Freshness: fail-closed. A freshness requirement with a
                 // source that cannot prove its age is STALE, not fresh.
-                let expiresAt: string | undefined;
+                // Expiry anchors to the SOURCE's fetchedAt (blocker 4):
+                // recompiling later never renews validity.
                 if (request.maxAgeMs !== undefined) {
                     const nowMs = Date.parse(now);
                     const fetchedMs =
@@ -253,18 +370,17 @@ export class ContextCompiler {
                         });
                         continue;
                     }
-                    expiresAt = new Date(nowMs + request.maxAgeMs).toISOString();
                 }
 
                 items.push({
                     itemId: computeItemId({
                         owner: outcome.descriptor.moduleOwner,
                         sourceRef: row.sourceRef,
-                        epistemicClass: EpistemicClass.FACT,
+                        epistemicClass: itemClass,
                         content,
                         missionId: mission.missionId,
                     }),
-                    epistemicClass: EpistemicClass.FACT,
+                    epistemicClass: itemClass,
                     content,
                     provenance: this.externalProvenance(
                         outcome.descriptor,
@@ -272,68 +388,41 @@ export class ContextCompiler {
                         request,
                         now,
                         sensitivity,
-                        expiresAt,
+                        expiryFor(row, request, now),
                     ),
                 });
             }
         }
 
         // ── Phase C: minimal disclosure + dedup + deterministic budget ─
-        let candidates = items;
-        if (request.requestedClasses) {
-            const allowed = new Set(request.requestedClasses);
-            candidates = items.filter((item) => {
-                if (allowed.has(item.epistemicClass)) return true;
-                excluded.push({ itemId: item.itemId, reason: "class_not_requested" });
-                return false;
-            });
-        }
+        const capped = this.capPipeline(items, request, effective, excluded);
 
-        const unique = new Map<string, ContextItem>();
-        for (const item of candidates) {
-            const key = sha256Json({
-                owner: item.provenance.owner,
-                epistemicClass: item.epistemicClass,
-                content: item.content,
-            });
-            if (unique.has(key)) {
-                excluded.push({ itemId: item.itemId, reason: "duplicate" });
-                continue;
-            }
-            unique.set(key, item);
-        }
+        const budgetReport = {
+            limits: {
+                maxItems: effective.maxItems,
+                maxTotalChars: effective.maxTotalChars,
+                maxEstimatedTokens: effective.maxEstimatedTokens,
+            },
+            proposed: {
+                maxItems: budget.maxItems,
+                maxTotalChars: budget.maxTotalChars,
+                maxEstimatedTokens: budget.maxEstimatedTokens,
+            },
+            clamped,
+            observed: {
+                items: capped.length,
+                totalChars: capped.reduce((sum, i) => sum + i.content.length, 0),
+                estimatedTokens: estimateTokens(
+                    capped.reduce((sum, i) => sum + i.content.length, 0),
+                ),
+            },
+            excluded,
+        };
 
-        const sorted = [...unique.values()].sort(
-            (a, b) =>
-                a.epistemicClass.localeCompare(b.epistemicClass) ||
-                a.provenance.owner.localeCompare(b.provenance.owner) ||
-                a.provenance.sourceRef.localeCompare(b.provenance.sourceRef) ||
-                a.itemId.localeCompare(b.itemId),
-        );
-
-        const capped: ContextItem[] = [];
-        let totalChars = 0;
-        for (const item of sorted) {
-            if (capped.length >= request.budget.maxItems) {
-                excluded.push({ itemId: item.itemId, reason: "scope_exceeded" });
-                continue;
-            }
-            const nextTotal = totalChars + item.content.length;
-            if (nextTotal > request.budget.maxTotalChars) {
-                excluded.push({ itemId: item.itemId, reason: "scope_exceeded" });
-                continue;
-            }
-            if (estimateTokens(nextTotal) > request.budget.maxEstimatedTokens) {
-                excluded.push({ itemId: item.itemId, reason: "scope_exceeded" });
-                continue;
-            }
-            capped.push(item);
-            totalChars = nextTotal;
-        }
-
-        // packageId is the deterministic hash of the full package content;
-        // it is set BEFORE deep-freeze (frozen objects reject assignment).
-        const unfrozen: BoundedContextPackage = {
+        // packageId is the deterministic hash of the full package content
+        // (including the honest report); it is set BEFORE deep-freeze
+        // (frozen objects reject assignment).
+        const unfrozen: Omit<BoundedContextPackage, "packageId"> & { packageId: string } = {
             packageId: "",
             contractVersion: CONTEXT_COMPILER_CONTRACT_VERSION,
             missionId: mission.missionId,
@@ -342,32 +431,20 @@ export class ContextCompiler {
             request: JSON.parse(JSON.stringify(request)) as ContextRequest,
             items: capped,
             unresolved,
-            budgetReport: {
-                limits: {
-                    maxItems: request.budget.maxItems,
-                    maxTotalChars: request.budget.maxTotalChars,
-                    maxEstimatedTokens: request.budget.maxEstimatedTokens,
-                },
-                observed: {
-                    items: capped.length,
-                    totalChars,
-                    estimatedTokens: estimateTokens(totalChars),
-                },
-                excluded,
-            },
+            budgetReport,
         };
-        (unfrozen as { packageId: string }).packageId = `pkg-${
-            sha256Json({ ...unfrozen, packageId: "" }).slice(0, 24)
-        }`;
-        return deepFreeze(unfrozen);
+        unfrozen.packageId = computePackageId(unfrozen);
+        return deepFreeze(unfrozen) as BoundedContextPackage;
     }
 
     /**
      * Derive a bounded summary over EXPLICITLY selected source items. The
      * summary is a NEW item of class derived_summary that KEEPS the source
      * item ids — reduction never destroys the reconstructible relation to
-     * facts. Deriving FROM an inference is refused: inferences may not
-     * masquerade as summaries-of-facts.
+     * facts. Deriving FROM an inference is refused (inferences may not
+     * masquerade as summaries-of-facts) and deriving FROM restricted
+     * (reference-only) sources is refused. The addition passes the SAME
+     * class/dedup/budget pipeline as compilation (blocker 3).
      */
     deriveSummary(
         pkg: BoundedContextPackage,
@@ -384,6 +461,14 @@ export class ContextCompiler {
             return {
                 ok: false,
                 reason: "cannot derive from an inference item (only facts/summaries)",
+            };
+        }
+        if (
+            sources.some((s) => s.provenance.sensitivity === SensitivityClass.RESTRICTED)
+        ) {
+            return {
+                ok: false,
+                reason: "cannot derive from restricted (reference-only) sources",
             };
         }
         if (sources.length === 0) {
@@ -422,20 +507,16 @@ export class ContextCompiler {
             derivedFrom: ordered.map((s) => s.itemId),
             derivationOp: `first:${ordered.length}`,
         };
-        const next: BoundedContextPackage = {
-            ...pkg,
-            items: [...pkg.items, summaryItem],
-        };
-        (next as { packageId: string }).packageId = `pkg-${
-            sha256Json({ ...next, packageId: "" }).slice(0, 24)
-        }`;
-        return { ok: true, item: summaryItem, package: deepFreeze(next) };
+        return this.appendItems(pkg, [summaryItem]);
     }
 
     /**
      * Add an EXPLICIT, provenance-carrying inference submitted by the
      * requester side (e.g. planner). Compiled as INFERENCE — never
      * promoted to fact, never silently blended into derived summaries.
+     * The addition passes the SAME class/dedup/budget pipeline as
+     * compilation (blocker 3): a FACT-only request refuses it, a full
+     * package refuses it, and the report stays honest.
      */
     addInference(
         pkg: BoundedContextPackage,
@@ -466,20 +547,150 @@ export class ContextCompiler {
                 origin: "external_owner",
             },
         };
-        const next: BoundedContextPackage = {
-            ...pkg,
-            items: [...pkg.items, item],
-        };
-        (next as { packageId: string }).packageId = `pkg-${
-            sha256Json({ ...next, packageId: "" }).slice(0, 24)
-        }`;
-        return { ok: true, item, package: deepFreeze(next) };
+        return this.appendItems(pkg, [item]);
     }
 
-    /** Compiler-computed provenance for an external row (adapter-proof). */
+    /**
+     * The ONE mutation pipeline (blocker 3): every package addition —
+     * compile, deriveSummary, addInference — passes the same gates in the
+     * same deterministic order: requestedClasses → dedup → budget. The
+     * budgetReport is recomputed honestly and the package identity is
+     * recomputed over the full content. A refusal is typed, never silent.
+     */
+    private appendItems(
+        pkg: BoundedContextPackage,
+        additions: ContextItem[],
+    ):
+        | { ok: true; item: ContextItem; package: BoundedContextPackage }
+        | { ok: false; reason: string } {
+        const item = additions[0];
+        const excluded: BudgetExclusion[] = [];
+
+        // Gate 1 — minimal disclosure (requestedClasses still authority).
+        const requested = pkg.request.requestedClasses;
+        if (requested && !requested.includes(item.epistemicClass)) {
+            return {
+                ok: false,
+                reason: `epistemic class "${item.epistemicClass}" is not requested by the original request (minimal disclosure)`,
+            };
+        }
+
+        // Gate 2 — dedup (identical owner+class+content already present).
+        const key = dedupKey(item);
+        if (pkg.items.some((existing) => dedupKey(existing) === key)) {
+            excluded.push({ itemId: item.itemId, reason: "duplicate" });
+            return { ok: false, reason: "identical item already in the package (duplicate)" };
+        }
+
+        // Gate 3 — effective budget (clamped, policy-owned, re-checked).
+        const { effective } = this.effectiveBudget(pkg.request);
+        const totalChars = pkg.items.reduce((sum, i) => sum + i.content.length, 0);
+        const nextChars = totalChars + item.content.length;
+        if (pkg.items.length + 1 > effective.maxItems) {
+            return { ok: false, reason: "package is at its maxItems budget (scope_exceeded)" };
+        }
+        if (nextChars > effective.maxTotalChars) {
+            return { ok: false, reason: "addition exceeds maxTotalChars budget (scope_exceeded)" };
+        }
+        if (estimateTokens(nextChars) > effective.maxEstimatedTokens) {
+            return {
+                ok: false,
+                reason: "addition exceeds maxEstimatedTokens budget (scope_exceeded)",
+            };
+        }
+
+        // Honest accounting: the new package's report reflects the addition.
+        const items = [...pkg.items, item];
+        const budgetReport = {
+            limits: { ...pkg.budgetReport.limits },
+            proposed: { ...pkg.budgetReport.proposed },
+            clamped: pkg.budgetReport.clamped,
+            observed: {
+                items: items.length,
+                totalChars: nextChars,
+                estimatedTokens: estimateTokens(nextChars),
+            },
+            excluded: [...pkg.budgetReport.excluded, ...excluded],
+        };
+        const unfrozen: Omit<BoundedContextPackage, "packageId"> & { packageId: string } = {
+            packageId: "",
+            contractVersion: pkg.contractVersion,
+            missionId: pkg.missionId,
+            stepId: pkg.stepId,
+            compiledAt: pkg.compiledAt,
+            request: JSON.parse(JSON.stringify(pkg.request)) as ContextRequest,
+            items,
+            unresolved: [...pkg.unresolved],
+            budgetReport,
+        };
+        unfrozen.packageId = computePackageId(unfrozen);
+        return { ok: true, item, package: deepFreeze(unfrozen) as BoundedContextPackage };
+    }
+
+    /**
+     * Shared Phase-C reduction: class filter, dedup, deterministic order,
+     * budget caps — every exclusion recorded, never silent.
+     */
+    private capPipeline(
+        items: ContextItem[],
+        request: ContextRequest,
+        effective: ReturnType<typeof clampBudget>,
+        excluded: BudgetExclusion[],
+    ): ContextItem[] {
+        let candidates = items;
+        if (request.requestedClasses) {
+            const allowed = new Set(request.requestedClasses);
+            candidates = items.filter((item) => {
+                if (allowed.has(item.epistemicClass)) return true;
+                excluded.push({ itemId: item.itemId, reason: "class_not_requested" });
+                return false;
+            });
+        }
+
+        const unique = new Map<string, ContextItem>();
+        for (const item of candidates) {
+            const key = dedupKey(item);
+            if (unique.has(key)) {
+                excluded.push({ itemId: item.itemId, reason: "duplicate" });
+                continue;
+            }
+            unique.set(key, item);
+        }
+
+        const sorted = [...unique.values()].sort(
+            (a, b) =>
+                a.epistemicClass.localeCompare(b.epistemicClass) ||
+                a.provenance.owner.localeCompare(b.provenance.owner) ||
+                a.provenance.sourceRef.localeCompare(b.provenance.sourceRef) ||
+                a.itemId.localeCompare(b.itemId),
+        );
+
+        const capped: ContextItem[] = [];
+        let totalChars = 0;
+        for (const item of sorted) {
+            if (capped.length >= effective.maxItems) {
+                excluded.push({ itemId: item.itemId, reason: "scope_exceeded" });
+                continue;
+            }
+            const nextTotal = totalChars + item.content.length;
+            if (nextTotal > effective.maxTotalChars) {
+                excluded.push({ itemId: item.itemId, reason: "scope_exceeded" });
+                continue;
+            }
+            if (estimateTokens(nextTotal) > effective.maxEstimatedTokens) {
+                excluded.push({ itemId: item.itemId, reason: "scope_exceeded" });
+                continue;
+            }
+            capped.push(item);
+            totalChars = nextTotal;
+        }
+        return capped;
+    }
+
+    /** Compiler-computed provenance for an external row (connector-proof). */
     private externalProvenance(
         descriptor: CompiledSourceReadDescriptor,
-        row: { sourceRef: string; fetchedAt?: string; evidenceRefId?: string },
+        row: Pick<ContextRow, "sourceRef" | "fetchedAt" | "evidenceRefId">,
         request: ContextRequest,
         now: string,
         sensitivity: SensitivityClass,
@@ -502,15 +713,46 @@ export class ContextCompiler {
 }
 
 /**
+ * Resolve a row's epistemic class. Returns undefined when the row carries
+ * no class and the capability does NOT declare fact-only rows — the caller
+ * must refuse it (never default to FACT).
+ */
+function rowClassOf(
+    row: Pick<ContextRow, "epistemicClass">,
+    descriptor: CompiledSourceReadDescriptor,
+): EpistemicClass | undefined {
+    if (row.epistemicClass !== undefined) return row.epistemicClass;
+    if (descriptor.factRowsOnly === true) return EpistemicClass.FACT;
+    return undefined;
+}
+
+/**
+ * Honest expiry (blocker 4): anchored to the SOURCE's own fetchedAt —
+ * fetchedAt + maxAgeMs — so recompiling never renews validity. When the
+ * request declares maxAgeMs but the row carries no usable timestamp the
+ * row is STALE (handled by the caller); expiry is simply undefined here.
+ */
+function expiryFor(
+    row: Pick<ContextRow, "fetchedAt">,
+    request: ContextRequest,
+    _now: string,
+): string | undefined {
+    if (request.maxAgeMs === undefined) return undefined;
+    const fetchedMs = row.fetchedAt !== undefined ? Date.parse(row.fetchedAt) : Number.NaN;
+    if (Number.isNaN(fetchedMs)) return undefined;
+    return new Date(fetchedMs + request.maxAgeMs).toISOString();
+}
+
+/**
  * Restart recomposition entry point. Recompiles the package from durable
- * Mission state + pre-authorized reads — no prompt/output cache, no replay
+ * Mission state + seam-authorized reads — no prompt/output cache, no replay
  * of model output. Pure: same inputs → same package (deterministic ids).
  */
 export function recompileAfterRestart(
     mission: Mission,
     request: ContextRequest,
     reads: ContextReadOutcome[],
-    options: { clock?: () => Date } = {},
+    options: { clock?: () => Date; budgetPolicy?: RequestBudgetPolicy } = {},
 ): BoundedContextPackage {
     return new ContextCompiler(options).compile(mission, request, reads);
 }
