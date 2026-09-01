@@ -284,13 +284,28 @@ describe("CapabilityRegistry", () => {
             "Query open commitments owned by LifeOS",
         );
 
-        // With explicit consent + sanitized reason, the change is allowed.
-        registry.replace(upgraded, {
-            allowContractChange: true,
-            changeReason: "descriptor surface v2 approved by owner",
-        });
+        // Blocker 6 (round 2): contract/owner identity is IMMUTABLE for the
+        // registration lifetime. A caller-supplied boolean + free-text reason
+        // is not authority/policy/version-pinning, so NO options object can
+        // unlock an identity change — the retarget is categorically rejected.
+        expect(() =>
+            registry.replace(upgraded, {
+                allowContractChange: true,
+                changeReason: "descriptor surface v2 approved by owner",
+            } as never),
+        ).toThrow(DescriptorReplacementError);
         expect(registry.requireDescriptor("lifeos.query_commitments").purpose).toBe(
-            "Query open commitments (v2 surface)",
+            "Query open commitments owned by LifeOS",
+        );
+
+        // Runtime/discovery metadata alone still replaces freely.
+        const availabilityOnly = {
+            ...readDescriptor(),
+            availability: CapabilityAvailability.DEGRADED,
+        } as CapabilityDescriptor;
+        registry.replace(availabilityOnly);
+        expect(registry.requireDescriptor("lifeos.query_commitments").availability).toBe(
+            CapabilityAvailability.DEGRADED,
         );
     });
 
@@ -944,7 +959,7 @@ describe("Classified replace(): metadata vs contract identity (blocker 5)", () =
         expect(registry.requireDescriptor("lifeos.query_commitments").moduleOwner).toBe("lifeos");
     });
 
-    test("explicit consent + sanitized reason unlocks a contract change; missing reason fails closed", () => {
+    test("owner migration via replace() is categorically impossible: no consent path exists (blocker 6, round 2)", () => {
         const registry = new CapabilityRegistry();
         registry.register(readDescriptor());
 
@@ -953,26 +968,38 @@ describe("Classified replace(): metadata vs contract identity (blocker 5)", () =
             moduleOwner: "lifeos-v2",
         } as CapabilityDescriptor;
 
-        // Consent without a sanitized reason: fail closed.
-        expect(() =>
-            registry.replace(ownerChanged, { allowContractChange: true }),
-        ).toThrow(/changeReason/);
-
-        // Raw-secret reasons are rejected (secret hygiene applies to the
-        // replacement trail too).
+        // A boolean + sanitized free-text reason is not authority, policy,
+        // or a version pin: the escape hatch no longer exists at all.
         expect(() =>
             registry.replace(ownerChanged, {
                 allowContractChange: true,
+                changeReason: "owner migration approved by module owner",
+            } as never),
+        ).toThrow(DescriptorReplacementError);
+        expect(() =>
+            registry.replace(ownerChanged, { allowContractChange: true } as never),
+        ).toThrow(DescriptorReplacementError);
+        expect(() =>
+            registry.replace(ownerChanged, {
                 changeReason: "token=super-secret-value",
-            }),
-        ).toThrow(/changeReason/);
+            } as never),
+        ).toThrow(DescriptorReplacementError);
 
-        // Explicit consent + sanitized reason: allowed.
-        registry.replace(ownerChanged, {
-            allowContractChange: true,
-            changeReason: "owner migration approved by module owner",
-        });
-        expect(registry.requireDescriptor("lifeos.query_commitments").moduleOwner).toBe("lifeos-v2");
+        // The registered owner was never retargeted.
+        expect(registry.requireDescriptor("lifeos.query_commitments").moduleOwner).toBe("lifeos");
+
+        // Correct migration path: a NEW versioned registration under a new
+        // identity — the old id keeps resolving to the OLD owner.
+        const migrated = {
+            ...readDescriptor(),
+            capabilityId: "lifeos.query_commitments.v2",
+            moduleOwner: "lifeos-v2",
+        } as CapabilityDescriptor;
+        expect(() => registry.register(migrated)).not.toThrow();
+        expect(registry.requireDescriptor("lifeos.query_commitments.v2").moduleOwner).toBe(
+            "lifeos-v2",
+        );
+        expect(registry.requireDescriptor("lifeos.query_commitments").moduleOwner).toBe("lifeos");
     });
 
     test("every contract/owner identity field is guarded (canonical detection)", () => {

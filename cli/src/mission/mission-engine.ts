@@ -778,6 +778,8 @@ export class MissionEngine {
         const updated: CapabilityInvocationRef = {
             ...invocation,
             status: result.status,
+            // Only terminal statuses carry a completion timestamp;
+            // non-terminal results leave it unset (no fabricated times).
             completedAt: result.completedAt,
             resultRefs: sanitizedEvidenceRefs,
             error:
@@ -977,6 +979,16 @@ export class MissionEngine {
     /** Read a single plan revision (read-only; dispatch seam input source). */
     async getPlanRevision(revisionId: string): Promise<PlanRevision | null> {
         return this.store.getPlanRevision(revisionId);
+    }
+
+    /**
+     * Resolve the authorization-shaped contract the policy validator sees
+     * for a capability id (read-only). Exposed so the dispatch seam can
+     * prove policy and dispatch operate on the SAME authority source
+     * (split-brain guard) without reaching into private fields.
+     */
+    async getResolvedContract(capabilityId: string): Promise<CapabilityContract | null> {
+        return this.policy.resolver.resolve(capabilityId);
     }
 
     async listMissions(filter?: { state?: MissionState }): Promise<Mission[]> {

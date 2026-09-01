@@ -62,17 +62,18 @@ export class CapabilityContractConflictError extends Error {
 }
 
 /**
- * replace() attempted to change contract/owner identity without explicit
- * consent (Issue #63 review blocker 5). Registration identity is never
- * silently retargeted — not even to "fix" it in place.
+ * replace() attempted to change contract/owner identity. Registration
+ * identity is immutable for the registration lifetime: there is NO consent
+ * path, no boolean-and-reason escape hatch. Owner/effect/schema migration
+ * requires a NEW versioned registration plus explicit policy work.
  */
 export class DescriptorReplacementError extends Error {
     constructor(capabilityId: string, contractChanges: string[]) {
         super(
-            `replace() for "${capabilityId}" would change contract/owner fields ` +
-                `(${contractChanges.join(", ")}); registration identity is never ` +
-                `silently retargeted — re-state the change with { allowContractChange: true, reason } ` +
-                `or register a new capabilityId`,
+            `replace() for "${capabilityId}" attempted to change contract/owner fields ` +
+                `(${contractChanges.join(", ")}); registration identity is immutable for the ` +
+                `registration lifetime — owner/effect/schema migration requires a NEW ` +
+                `versioned registration plus explicit policy, never an in-place retarget`,
         );
         this.name = "DescriptorReplacementError";
     }
@@ -200,23 +201,22 @@ export class CapabilityRegistry implements CapabilityResolver, CapabilityRegistr
     }
 
     /**
-     * Explicit replacement of an already-registered descriptor (blocker 5).
+     * Explicit replacement of an already-registered descriptor.
      *
-     * Classification is explicit — availability and runtime metadata may move
-     * freely; contract/owner identity never moves silently:
-     *  - availability / availabilityDetail / runtimeObservability:
-     *    always replaceable (discovery state, zero authority impact);
+     * Classification is absolute — there is NO consent escape hatch:
+     *  - availability / availabilityDetail are discovery/runtime state and
+     *    replace freely (zero authority impact);
      *  - contract/owner identity (moduleOwner, effectClass, approval,
      *    verification, ref prefixes, storage, idempotency/retry policy,
      *    schemas, credentials, characteristics, degradation, purpose,
-     *    contractVersion): requires `allowContractChange: true` + a
-     *    sanitized `changeReason`, and is rejected with
-     *    `DescriptorReplacementError` otherwise (no silent retarget).
+     *    contractVersion) is IMMUTABLE within a registration lifetime.
+     *    Any identity change throws `DescriptorReplacementError`. A local
+     *    boolean + free-text reason is not authority: owner/effect/schema/
+     *    approval migration requires a NEW identity (versioned
+     *    registration) plus explicit policy work in a future issue —
+     *    never an in-place retarget of the id everyone authorizes against.
      */
-    replace(
-        descriptor: CapabilityDescriptor,
-        options: { allowContractChange?: boolean; changeReason?: string } = {},
-    ): void {
+    replace(descriptor: CapabilityDescriptor): void {
         if (!this.descriptors.has(descriptor.capabilityId)) {
             throw new UnknownCapabilityError(descriptor.capabilityId);
         }
@@ -229,15 +229,9 @@ export class CapabilityRegistry implements CapabilityResolver, CapabilityRegistr
         const current = this.descriptors.get(descriptor.capabilityId)!;
         const contractChanges = contractFieldDifferences(current, descriptor);
         if (contractChanges.length > 0) {
-            if (!options.allowContractChange) {
-                throw new DescriptorReplacementError(descriptor.capabilityId, contractChanges);
-            }
-            const reason = options.changeReason ?? "";
-            if (reason.trim() === "" || containsRawSecret(reason)) {
-                throw new Error(
-                    `allowContractChange for "${descriptor.capabilityId}" requires a sanitized, non-empty changeReason`,
-                );
-            }
+            // Fail closed, categorically. No caller-supplied consent can
+            // retarget contract/owner identity in place.
+            throw new DescriptorReplacementError(descriptor.capabilityId, contractChanges);
         }
         this.validateDescriptorOrFailClosed(descriptor);
         this.descriptors.set(descriptor.capabilityId, this.cloneDescriptor(descriptor));
@@ -365,6 +359,25 @@ function contractFieldDifferences(
         }
     }
     return changes;
+}
+
+/**
+ * Authorization-relevant projection of a descriptor — EXACTLY the shape
+ * the #62 policy consumes (same mapping the registry uses for its own
+ * resolver surface). Exported so the dispatch seam can prove the policy
+ * resolver's contract and the descriptor selecting the connector agree
+ * (split-brain guard): one authority source, two convergent views.
+ */
+export function authorizationProjection(descriptor: CapabilityDescriptor): CapabilityContract {
+    return {
+        capabilityId: descriptor.capabilityId,
+        moduleOwner: descriptor.moduleOwner,
+        effectClass: descriptor.effectClass,
+        requiresApproval: descriptor.requiresApproval,
+        requiresOwnerVerification: descriptor.requiresOwnerVerification,
+        allowedInputRefPrefixes: [...descriptor.allowedInputRefPrefixes],
+        ownsStorage: descriptor.ownsStorage,
+    };
 }
 
 /** Thin, deterministic function registry for connector binding checks. */
