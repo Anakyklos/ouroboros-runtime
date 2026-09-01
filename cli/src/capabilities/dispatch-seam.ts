@@ -589,4 +589,3 @@ function compareContracts(a: unknown, b: unknown): string[] {
     }
     return differences;
 }
-
