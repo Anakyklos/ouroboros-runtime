@@ -38,6 +38,7 @@ type DurableInvocation = CapabilityInvocationRef & {
     descriptorVersion: string;
     moduleOwner: string;
     connectorRequestId: string;
+    error?: string;
     idempotency: {
         mode: "required" | "best_effort" | "none";
         key: string;
@@ -167,6 +168,11 @@ function durableEngine(store: SqliteMissionStore): MissionEngine {
     });
 }
 
+function isDue(invocation: DurableInvocation, now: string): boolean {
+    const nextEligibleAt = invocation.retry.nextEligibleAt;
+    return nextEligibleAt === null || Date.parse(now) >= Date.parse(nextEligibleAt);
+}
+
 describe("durable mission execution contract (Task 1 red phase)", () => {
     const cleanups: Array<() => void> = [];
 
@@ -216,14 +222,22 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
             ...( {
                 delivery: { state: "failed" },
                 retry: { maxAttempts: 3, attempt: 1, backoffMs: 30_000, nextEligibleAt: LATER },
-                attempts: [{
-                    attempt: 1,
-                    correlationId: "attempt-correlation-1",
-                    state: "failed",
-                    startedAt: LATER,
-                    finishedAt: LATER,
-                    error: "sanitized connector timeout",
-                }],
+                attempts: [
+                    {
+                        attempt: 0,
+                        correlationId: "attempt-correlation-0",
+                        state: "prepared",
+                        startedAt: NOW,
+                    },
+                    {
+                        attempt: 1,
+                        correlationId: "attempt-correlation-1",
+                        state: "failed",
+                        startedAt: LATER,
+                        finishedAt: LATER,
+                        error: "sanitized connector timeout",
+                    },
+                ],
             } as Partial<DurableInvocation>),
         } as Partial<CapabilityInvocationRef>);
 
@@ -231,7 +245,22 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
         expect(failed.delivery.state).toBe("failed");
         expect(failed.retry.attempt).toBe(1);
         expect(failed.retry.nextEligibleAt).toBe(LATER);
-        expect(failed.attempts[0].correlationId).toBe("attempt-correlation-1");
+        expect(failed.attempts).toEqual([
+            {
+                attempt: 0,
+                correlationId: "attempt-correlation-0",
+                state: "prepared",
+                startedAt: NOW,
+            },
+            {
+                attempt: 1,
+                correlationId: "attempt-correlation-1",
+                state: "failed",
+                startedAt: LATER,
+                finishedAt: LATER,
+                error: "sanitized connector timeout",
+            },
+        ]);
     });
 
     it("persists cancellation and conservative reconciliation metadata", async () => {
@@ -375,14 +404,17 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
         const persistedNextEligibleAt = recovered.retry.nextEligibleAt;
         expect(clock.isoNow()).toBe(NOW);
         expect(persistedNextEligibleAt).toBe("2026-09-03T18:00:00.000Z");
-        expect(Date.parse(persistedNextEligibleAt!)).toBeGreaterThan(Date.parse(clock.isoNow()));
+        expect(isDue(recovered, clock.isoNow())).toBe(false);
 
         clock.advance(86_399_999);
         expect(clock.isoNow()).toBe("2026-09-03T17:59:59.999Z");
-        expect(Date.parse(persistedNextEligibleAt!)).toBeGreaterThan(Date.parse(clock.isoNow()));
+        expect(isDue(recovered, clock.isoNow())).toBe(false);
 
         clock.advance(1);
         expect(clock.isoNow()).toBe(persistedNextEligibleAt);
-        expect(Date.parse(persistedNextEligibleAt!)).toBeLessThanOrEqual(Date.parse(clock.isoNow()));
+        expect(isDue(recovered, clock.isoNow())).toBe(true);
+
+        clock.advance(1);
+        expect(isDue(recovered, clock.isoNow())).toBe(true);
     });
 });
