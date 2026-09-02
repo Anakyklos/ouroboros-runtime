@@ -52,7 +52,7 @@ import { CapabilityUnavailableError, DispatchSeamError } from "../capabilities/d
 import type { MissionEngine } from "../mission/mission-engine.js";
 import type { Mission } from "../mission/contracts.js";
 import { EffectClass } from "../mission/contracts.js";
-import { containsRawSecret } from "../mission/sanitize.js";
+import { containsRawSecret, sanitizeText } from "../mission/sanitize.js";
 import type {
     CompiledSourceRead,
     ContextRequest,
@@ -568,7 +568,10 @@ export class SeamBoundContextReader {
                 ),
             };
         }
-        return this.packageOutcome(mission, request, step, outcome);
+        // The caller's Mission is only an input snapshot. Row-level
+        // authorization after dispatch must use the authoritative mission
+        // loaded above, never a stale or broadened caller snapshot.
+        return this.packageOutcome(current, request, step, outcome);
     }
 
     /** Package a seam outcome: honest status first, then validated rows. */
@@ -745,5 +748,6 @@ function scopeRefusal(
 
 /** Sanitize detail text (fail-closed against smuggling via error text). */
 function sanitizeDetail(text: string): string {
-    return text.replace(/[\r\n]+/g, " ").slice(0, 300);
+    const sanitized = sanitizeText(text).replace(/[\r\n]+/g, " ").slice(0, 300);
+    return containsRawSecret(sanitized) ? "[detail withheld: raw secret pattern detected]" : sanitized;
 }

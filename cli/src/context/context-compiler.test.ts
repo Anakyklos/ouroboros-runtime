@@ -34,6 +34,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { CapabilityResultStatus } from "../capabilities/connector.js";
+import { DispatchSeamError } from "../capabilities/dispatch-seam.js";
 import {
     ContextCompiler,
     recompileAfterRestart,
@@ -723,6 +724,56 @@ describe("ContextCompiler — authorization envelope binding (round 3)", () => {
 });
 
 describe("SeamBoundContextReader — one dispatch path (#63 seam)", () => {
+    it("uses CURRENT durable mission scope for returned rows, not a broad caller snapshot", async () => {
+        const descriptor = makeContextDescriptor("lifeos");
+        const harness = await createSeamHarness({ descriptors: [descriptor] });
+        const { mission } = await harness.acceptContextPlan(
+            descriptor,
+            "refs/lifeos/journal/2026-08",
+        );
+
+        // The subject remains authorized by the CURRENT scope, but a sibling
+        // row under the descriptor prefix is outside that narrower durable
+        // scope. The caller keeps its original broad snapshot.
+        await harness.updateMission(mission.missionId, {
+            allowedCapabilityScope: {
+                ...mission.allowedCapabilityScope,
+                allowedRefPrefixes: ["refs/lifeos/journal/2026-08"],
+            },
+        });
+        harness.seam.registerConnector(
+            descriptor.capabilityId,
+            makeContextConnector(descriptor, {
+                withOwnerVerification: true,
+                rows: [
+                    {
+                        ...journalRows()[0],
+                        sourceRef: "refs/lifeos/private/2026-08-30",
+                    },
+                ],
+            }),
+        );
+
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
+        const resolution = await reader.read(mission, request, {
+            dispatchStepId: "step-context-read",
+        });
+
+        expect(resolution).not.toBeNull();
+        expect(resolution!.reads).toHaveLength(0);
+        expect(unresolvedOf(resolution)).toEqual([
+            expect.objectContaining({
+                status: SourceStatus.REVOKED,
+                detail: "row sourceRef outside mission allowed ref prefixes",
+            }),
+        ]);
+        const pkg = new ContextCompiler({ clock: fixedClock() }).compile(mission, request, [resolution!]);
+        expect(pkg.items).toHaveLength(0);
+        expect(pkg.unresolved[0].status).toBe(SourceStatus.REVOKED);
+        await harness.close();
+    });
+
     it("refuses a subject outside CURRENT mission ref prefixes as REVOKED (pre-seam)", async () => {
         const descriptor = makeContextDescriptor("lifeos");
         const harness = await createSeamHarness({ descriptors: [descriptor] });
@@ -1578,6 +1629,44 @@ describe("ContextCompiler — secrets in metadata and identifiers (round 3)", ()
 });
 
 describe("ContextCompiler — reader failures reach package.unresolved (round 3)", () => {
+    it("sanitizes raw secrets in seam refusal detail before sealing and compiling", async () => {
+        const rawBearer = "Bearer liveBearerSecret";
+        const rawApiKey = "api_key=live-api-key";
+        const rawPassword = "password=live-password";
+        const descriptor = makeContextDescriptor("lifeos");
+        const harness = await createSeamHarness({ descriptors: [descriptor] });
+        const { mission } = await harness.acceptContextPlan(
+            descriptor,
+            "refs/lifeos/journal/2026-08",
+        );
+        const throwingSeam = {
+            dispatchThroughSeam: async () => {
+                throw new DispatchSeamError(
+                    `connector refused request: Authorization: ${rawBearer}; ${rawApiKey}; ${rawPassword}`,
+                );
+            },
+        } as ConstructorParameters<typeof SeamBoundContextReader>[1];
+        const reader = new SeamBoundContextReader(harness.engine, throwingSeam, harness.registry);
+        const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
+        const resolution = await reader.read(mission, request, { dispatchStepId: "step-context-read" });
+        expect(resolution).not.toBeNull();
+
+        const sealedJson = JSON.stringify(resolution);
+        expect(sealedJson).not.toContain(rawBearer);
+        expect(sealedJson).not.toContain(rawApiKey);
+        expect(sealedJson).not.toContain(rawPassword);
+        expect(resolution!.unresolved[0].detail).toContain("Bearer [REDACTED]");
+        expect(resolution!.unresolved[0].detail).toContain("api_key= [REDACTED]");
+        expect(resolution!.unresolved[0].detail).toContain("password= [REDACTED]");
+
+        const pkg = new ContextCompiler({ clock: fixedClock() }).compile(mission, request, [resolution!]);
+        const packageJson = JSON.stringify(pkg);
+        expect(packageJson).not.toContain(rawBearer);
+        expect(packageJson).not.toContain(rawApiKey);
+        expect(packageJson).not.toContain(rawPassword);
+        await harness.close();
+    });
+
     it("capability unavailable → the refusal appears in package.unresolved, not silently dropped", async () => {
         const descriptor = makeContextDescriptor("lifeos", {
             availability: "unavailable" as never,

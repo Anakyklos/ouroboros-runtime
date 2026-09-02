@@ -34,6 +34,8 @@ export interface SeamHarness {
     registry: CapabilityRegistry;
     seam: ConnectorDispatchSeam;
     resolver: FakeCapabilityResolver;
+    /** Update durable mission state for authorization-boundary tests. */
+    updateMission: (missionId: string, updates: Partial<Mission>) => Promise<void>;
     /** Create a mission + accepted READ plan; returns (mission, stepId). */
     acceptContextPlan: (
         descriptor: CapabilityDescriptor,
@@ -85,6 +87,7 @@ export async function createSeamHarness(options: {
         registry,
         seam,
         resolver,
+        updateMission: (missionId, updates) => store.updateMission(missionId, updates),
         acceptContextPlan: async (descriptor, subject, overrides = {}) => {
             const mission = await engine.createMission({
                 intent: {
