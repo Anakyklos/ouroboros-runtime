@@ -26,6 +26,10 @@ const LATER = "2026-09-02T18:05:00.000Z";
 const MISSION_ID = "mission-durable-1";
 const PLAN_REVISION_ID = "revision-accepted-1";
 const EFFECT_FINGERPRINT = "effect-fingerprint-sha256";
+// MissionState.PAUSED is part of the #50 contract but is not exported by the
+// pre-implementation contracts yet. Keep the assertion typed until Task 4
+// adds the enum member.
+const PAUSED_STATE = "paused" as MissionState;
 
 /** The complete #50 shape expected from the Task 2 contract. */
 type DurableInvocation = CapabilityInvocationRef & {
@@ -267,7 +271,7 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
         const engine = durableEngine(store) as unknown as DurableMissionEngine;
 
         const paused = await engine.pauseMission(MISSION_ID, "operator requested a hold");
-        expect(paused.state).toBe("paused");
+        expect(paused.state).toBe(PAUSED_STATE);
         expect((paused as Mission & { pauseMetadata: unknown }).pauseMetadata).toEqual(
             expect.objectContaining({ previousState: MissionState.READY, reason: "operator requested a hold" }),
         );
@@ -275,7 +279,7 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
 
         const reopened = await new SqliteMissionStore(db.path);
         await reopened.initialize();
-        expect((await reopened.getMission(MISSION_ID))?.state).toBe("paused");
+        expect((await reopened.getMission(MISSION_ID))?.state).toBe(PAUSED_STATE);
         const resumed = await engine.resumeMission(MISSION_ID);
         expect(resumed.state).toBe(MissionState.READY);
     });
@@ -341,8 +345,18 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
         ];
 
         for (const [field, updates] of secretCases) {
-            await expect(store.saveInvocation(durableInvocation(updates))).rejects.toThrow(/Raw secret detected/);
-            expect(field).toBeTruthy();
+            let rejection: unknown;
+            try {
+                await store.saveInvocation(durableInvocation(updates));
+            } catch (error) {
+                rejection = error;
+            }
+
+            expect(rejection, `secret case ${field} must be rejected`).toBeDefined();
+            expect(
+                rejection instanceof Error ? rejection.message : String(rejection),
+                `secret case ${field} must identify raw-secret rejection`,
+            ).toMatch(/Raw secret detected/);
         }
     });
 
@@ -357,10 +371,18 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
             retry: { maxAttempts: 3, attempt: 1, backoffMs: 86_400_000, nextEligibleAt: "2026-09-03T18:00:00.000Z" },
         }));
 
+        const recovered = await store.getInvocation("invocation-1") as DurableInvocation;
+        const persistedNextEligibleAt = recovered.retry.nextEligibleAt;
         expect(clock.isoNow()).toBe(NOW);
-        expect((await store.getInvocation("invocation-1") as DurableInvocation).retry.nextEligibleAt)
-            .toBe("2026-09-03T18:00:00.000Z");
+        expect(persistedNextEligibleAt).toBe("2026-09-03T18:00:00.000Z");
+        expect(Date.parse(persistedNextEligibleAt!)).toBeGreaterThan(Date.parse(clock.isoNow()));
+
         clock.advance(86_399_999);
         expect(clock.isoNow()).toBe("2026-09-03T17:59:59.999Z");
+        expect(Date.parse(persistedNextEligibleAt!)).toBeGreaterThan(Date.parse(clock.isoNow()));
+
+        clock.advance(1);
+        expect(clock.isoNow()).toBe(persistedNextEligibleAt);
+        expect(Date.parse(persistedNextEligibleAt!)).toBeLessThanOrEqual(Date.parse(clock.isoNow()));
     });
 });
