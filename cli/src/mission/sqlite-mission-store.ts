@@ -18,6 +18,7 @@ import type {
     Mission,
     PlanRevision,
     PlanRevisionStatus,
+    CapabilityInvocation,
     CapabilityInvocationRef,
     MissionState,
 } from "./contracts.js";
@@ -373,7 +374,7 @@ export class SqliteMissionStore implements MissionStore {
     // Invocation references
     // ------------------------------------------------------------------
 
-    async saveInvocation(invocation: CapabilityInvocationRef): Promise<CapabilityInvocationRef> {
+    async saveInvocation(invocation: CapabilityInvocation | CapabilityInvocationRef): Promise<CapabilityInvocation> {
         // Fail-closed durable boundary: any persisted string (including IDs
         // and refs) containing a raw secret pattern is rejected.
         assertNoRawSecrets(invocation, "invocation");
@@ -405,15 +406,15 @@ export class SqliteMissionStore implements MissionStore {
             invocation.ownerVerification ? JSON.stringify(invocation.ownerVerification) : null,
             invocation.error ?? null,
         );
-        return invocation;
+        return invocation as CapabilityInvocation;
     }
 
-    async getInvocation(invocationId: string): Promise<CapabilityInvocationRef | null> {
+    async getInvocation(invocationId: string): Promise<CapabilityInvocation | null> {
         const row = this.stmt(
             "getInvocation",
             "SELECT * FROM mission_invocations WHERE invocation_id = ?",
         ).get(invocationId) as InvocationRow | null;
-        return row ? this.rowToInvocation(row) : null;
+        return row ? this.rowToInvocation(row) as CapabilityInvocation : null;
     }
 
     /** Sync helper used by getMission and listMissions. */
@@ -424,13 +425,13 @@ export class SqliteMissionStore implements MissionStore {
         ).all(missionId) as unknown as InvocationRow[];
     }
 
-    async listInvocations(missionId: string): Promise<CapabilityInvocationRef[]> {
-        return this.listInvocationRows(missionId).map((row) => this.rowToInvocation(row));
+    async listInvocations(missionId: string): Promise<CapabilityInvocation[]> {
+        return this.listInvocationRows(missionId).map((row) => this.rowToInvocation(row) as CapabilityInvocation);
     }
 
     async updateInvocation(
         invocationId: string,
-        updates: Partial<CapabilityInvocationRef>,
+        updates: Partial<CapabilityInvocation> | Partial<CapabilityInvocationRef>,
     ): Promise<void> {
         const current = await this.getInvocation(invocationId);
         if (!current) {

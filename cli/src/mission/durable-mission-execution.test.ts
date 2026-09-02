@@ -7,9 +7,10 @@ import {
     EffectClass,
     InvocationStatus,
     MissionState,
-    type CapabilityInvocationRef,
+    type CapabilityInvocation,
     type Mission,
 } from "./contracts.js";
+import { CancellationSupport, IdempotencyMode, ReconciliationSupport, RetryBackoff } from "../capabilities/contracts.js";
 import { SqliteMissionStore } from "./sqlite-mission-store.js";
 import { MissionEngine } from "./mission-engine.js";
 import { PlanPolicyValidator } from "./policy.js";
@@ -26,59 +27,8 @@ const LATER = "2026-09-02T18:05:00.000Z";
 const MISSION_ID = "mission-durable-1";
 const PLAN_REVISION_ID = "revision-accepted-1";
 const EFFECT_FINGERPRINT = "effect-fingerprint-sha256";
-// MissionState.PAUSED is part of the #50 contract but is not exported by the
-// pre-implementation contracts yet. Keep the assertion typed until Task 4
-// adds the enum member.
-const PAUSED_STATE = "paused" as MissionState;
-
-/** The complete #50 shape expected from the Task 2 contract. */
-type DurableInvocation = CapabilityInvocationRef & {
-    acceptedPlanRevisionId: string;
-    effectFingerprint: string;
-    descriptorVersion: string;
-    moduleOwner: string;
-    connectorRequestId: string;
-    error?: string;
-    idempotency: {
-        mode: "required" | "best_effort" | "none";
-        key: string;
-    };
-    retry: {
-        maxAttempts: number;
-        attempt: number;
-        backoffMs: number;
-        nextEligibleAt: string | null;
-    };
-    attempts: Array<{
-        attempt: number;
-        correlationId: string;
-        state: "prepared" | "submitted" | "acknowledged" | "failed" | "uncertain";
-        startedAt: string;
-        finishedAt?: string;
-        error?: string;
-    }>;
-    delivery: {
-        state: "not_submitted" | "acknowledged" | "running" | "failed" | "uncertain";
-        acknowledgedAt?: string;
-    };
-    remoteOperationHandle?: string;
-    cancellation: {
-        requested: boolean;
-        requestedAt?: string;
-        requestedBy?: string;
-        state: "not_requested" | "requested" | "acknowledged" | "unsupported";
-        reason?: string;
-    };
-    reconciliation: {
-        state: "not_required" | "pending" | "resolved" | "unsupported";
-        lastCheckedAt?: string;
-        outcome?: "performed" | "not_performed" | "unknown";
-        nextAction?: string;
-    };
-    ownerVerificationState: "not_required" | "pending" | "verified" | "rejected";
-    createdAt: string;
-    updatedAt: string;
-};
+const PAUSED_STATE = MissionState.PAUSED;
+type DurableInvocation = CapabilityInvocation;
 
 interface DurableMissionEngine {
     pauseMission(missionId: string, reason: string): Promise<Mission>;
@@ -91,14 +41,15 @@ function durableInvocation(overrides: Partial<DurableInvocation> = {}): DurableI
         missionId: MISSION_ID,
         stepId: "step-1",
         capabilityId: "runstead.code-review",
-        acceptedPlanRevisionId: PLAN_REVISION_ID,
+        planRevisionId: PLAN_REVISION_ID,
         effectFingerprint: EFFECT_FINGERPRINT,
-        descriptorVersion: "2026-09-01",
+        contractVersion: 1,
         moduleOwner: "runstead",
         status: InvocationStatus.PENDING,
-        connectorRequestId: "connector-request-1",
-        idempotency: { mode: "required", key: "idempotency-key-1" },
-        retry: { maxAttempts: 3, attempt: 0, backoffMs: 30_000, nextEligibleAt: LATER },
+        requestId: "request-1",
+        inputRefs: [],
+        idempotency: { mode: IdempotencyMode.IDEMPOTENT, key: "idempotency-key-1" },
+        retry: { maxAttempts: 3, attempt: 0, backoff: RetryBackoff.FIXED, backoffMs: 30_000, nextEligibleAt: LATER },
         attempts: [{
             attempt: 0,
             correlationId: "attempt-correlation-0",
@@ -106,8 +57,8 @@ function durableInvocation(overrides: Partial<DurableInvocation> = {}): DurableI
             startedAt: NOW,
         }],
         delivery: { state: "not_submitted" },
-        cancellation: { requested: false, state: "not_requested" },
-        reconciliation: { state: "not_required" },
+        cancellation: { support: CancellationSupport.UNSUPPORTED, requested: false, state: "not_requested" },
+        reconciliation: { support: ReconciliationSupport.NONE, state: "not_required" },
         ownerVerificationState: "pending",
         resultRefs: [],
         createdAt: NOW,
@@ -221,7 +172,7 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
             updatedAt: LATER,
             ...( {
                 delivery: { state: "failed" },
-                retry: { maxAttempts: 3, attempt: 1, backoffMs: 30_000, nextEligibleAt: LATER },
+                retry: { maxAttempts: 3, attempt: 1, backoff: RetryBackoff.FIXED, backoffMs: 30_000, nextEligibleAt: LATER },
                 attempts: [
                     {
                         attempt: 0,
@@ -239,7 +190,7 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
                     },
                 ],
             } as Partial<DurableInvocation>),
-        } as Partial<CapabilityInvocationRef>);
+        });
 
         const failed = await store.getInvocation("invocation-1") as DurableInvocation;
         expect(failed.delivery.state).toBe("failed");
@@ -272,6 +223,7 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
         await store.saveInvocation(durableInvocation({
             delivery: { state: "uncertain" },
             cancellation: {
+                support: CancellationSupport.UNSUPPORTED,
                 requested: true,
                 requestedAt: LATER,
                 requestedBy: "operator-1",
@@ -279,6 +231,7 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
                 reason: "connector does not expose cancellation",
             },
             reconciliation: {
+                support: ReconciliationSupport.NONE,
                 state: "pending",
                 lastCheckedAt: LATER,
                 nextAction: "operator intervention",
@@ -367,7 +320,7 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
         await store.createMission(mission());
 
         const secretCases: Array<[string, Partial<DurableInvocation>]> = [
-            ["connector request identity", { connectorRequestId: "request-api_key=raw-secret" }],
+            ["request identity", { requestId: "request-api_key=raw-secret" }],
             ["error", { error: "provider failed: Authorization: Bearer raw-token-value" }],
             ["attempt correlation identity", { attempts: [{ attempt: 0, correlationId: "token=raw-secret", state: "prepared", startedAt: NOW }] }],
             ["result reference", { resultRefs: [{ refId: "ref-1", owner: "runstead", externalRef: "credentials=raw-secret", label: "result" }] }],
@@ -397,7 +350,7 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
         await store.initialize();
         await store.createMission(mission());
         await store.saveInvocation(durableInvocation({
-            retry: { maxAttempts: 3, attempt: 1, backoffMs: 86_400_000, nextEligibleAt: "2026-09-03T18:00:00.000Z" },
+            retry: { maxAttempts: 3, attempt: 1, backoff: RetryBackoff.FIXED, backoffMs: 86_400_000, nextEligibleAt: "2026-09-03T18:00:00.000Z" },
         }));
 
         const recovered = await store.getInvocation("invocation-1") as DurableInvocation;

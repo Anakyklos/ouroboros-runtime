@@ -7,6 +7,7 @@
 
 import type {
     CapabilityContract,
+    CapabilityInvocation,
     CapabilityInvocationRef,
     CriterionVerification,
     Mission,
@@ -50,13 +51,22 @@ export interface MissionStore {
     ): Promise<void>;
 
     // Invocation references
-    saveInvocation(invocation: CapabilityInvocationRef): Promise<CapabilityInvocationRef>;
-    getInvocation(invocationId: string): Promise<CapabilityInvocationRef | null>;
-    listInvocations(missionId: string): Promise<CapabilityInvocationRef[]>;
+    saveInvocation(invocation: CapabilityInvocation | CapabilityInvocationRef): Promise<CapabilityInvocation>;
+    getInvocation(invocationId: string): Promise<CapabilityInvocation | null>;
+    listInvocations(missionId: string): Promise<CapabilityInvocation[]>;
     updateInvocation(
         invocationId: string,
-        updates: Partial<CapabilityInvocationRef>,
+        updates: Partial<CapabilityInvocation> | Partial<CapabilityInvocationRef>,
     ): Promise<void>;
+
+    /** Invocations that may be resumed without replaying uncertain effects. */
+    listRecoverableInvocations?(): Promise<CapabilityInvocation[]>;
+    /** All invocations that have not reached an immutable terminal state. */
+    listNonTerminalInvocations?(): Promise<CapabilityInvocation[]>;
+    /** Due invocations ordered by eligibility, bounded by the caller. */
+    listDueInvocations?(now: string, limit: number): Promise<CapabilityInvocation[]>;
+    /** Preserve completed effects across plan revisions and duplicate requests. */
+    findInvocationByEffectFingerprint?(effectFingerprint: string): Promise<CapabilityInvocation | null>;
 }
 
 /** ------------------------------------------------------------------ */

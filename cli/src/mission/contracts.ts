@@ -1,4 +1,10 @@
 import { createHash } from "node:crypto";
+import type {
+    CancellationSupport,
+    IdempotencyMode,
+    ReconciliationSupport,
+    RetryBackoff,
+} from "../capabilities/contracts.js";
 
 /**
  * 🎯 Mission Contracts (Issue #62)
@@ -31,6 +37,7 @@ export enum MissionState {
     WAITING_FOR_PROVIDER = "waiting_for_provider",
     WAITING_FOR_BUDGET = "waiting_for_budget",
     VERIFYING = "verifying",
+    PAUSED = "paused",
     COMPLETED = "completed",
     BLOCKED = "blocked",
     FAILED_TERMINAL = "failed_terminal",
@@ -383,6 +390,144 @@ export interface CapabilityInvocationRef {
     error?: string;
 }
 
+/** A durable attempt made against a capability connector. */
+export interface CapabilityInvocationAttempt {
+    attempt: number;
+    correlationId: string;
+    state: "prepared" | "submitted" | "acknowledged" | "failed" | "uncertain";
+    startedAt: string;
+    finishedAt?: string;
+    error?: string;
+}
+
+/** Durable delivery state, kept separate from the logical invocation status. */
+export interface CapabilityInvocationDelivery {
+    state: "not_submitted" | "acknowledged" | "running" | "failed" | "uncertain";
+    acknowledgedAt?: string;
+    remoteOperationHandle?: string;
+}
+
+/** Connector idempotency identity and declared retry policy. */
+export interface CapabilityInvocationIdempotency {
+    mode: IdempotencyMode;
+    key?: string;
+}
+
+export interface CapabilityInvocationRetry {
+    maxAttempts: number;
+    attempt: number;
+    backoff: RetryBackoff;
+    backoffMs: number;
+    nextEligibleAt: string | null;
+}
+
+export interface CapabilityInvocationCancellation {
+    support: CancellationSupport;
+    requested: boolean;
+    requestedAt?: string;
+    requestedBy?: string;
+    state: "not_requested" | "requested" | "acknowledged" | "unsupported";
+    reason?: string;
+}
+
+export interface CapabilityInvocationReconciliation {
+    support: ReconciliationSupport;
+    state: "not_required" | "pending" | "resolved" | "unsupported";
+    lastCheckedAt?: string;
+    outcome?: "performed" | "not_performed" | "unknown";
+    nextAction?: string;
+}
+
+export type OwnerVerificationState = "not_required" | "pending" | "verified" | "rejected";
+
+/**
+ * Canonical durable invocation record. `CapabilityInvocationRef` intentionally
+ * remains the minimal Mission projection and is source-compatible with #62.
+ */
+export interface CapabilityInvocation extends CapabilityInvocationRef {
+    planRevisionId: string;
+    contractVersion: number;
+    moduleOwner: string;
+    requestId: string;
+    effectFingerprint: string;
+    inputRefs: string[];
+    idempotency: CapabilityInvocationIdempotency;
+    retry: CapabilityInvocationRetry;
+    attempts: CapabilityInvocationAttempt[];
+    delivery: CapabilityInvocationDelivery;
+    cancellation: CapabilityInvocationCancellation;
+    reconciliation: CapabilityInvocationReconciliation;
+    ownerVerificationState: OwnerVerificationState;
+    createdAt: string;
+    updatedAt: string;
+}
+
+/** Explicit pause information for a Mission that is not cancelled. */
+export interface MissionPauseMetadata {
+    previousState: MissionState;
+    reason: string;
+    pausedAt: string;
+    pausedBy?: string;
+}
+
+export function isInvocationTerminal(invocation: Pick<CapabilityInvocationRef, "status">): boolean {
+    return invocation.status === InvocationStatus.COMPLETED
+        || invocation.status === InvocationStatus.CANCELLED;
+}
+
+export function hasUncertainDelivery(invocation: Pick<CapabilityInvocation, "delivery" | "attempts">): boolean {
+    return invocation.delivery.state === "uncertain"
+        || invocation.attempts.some((attempt) => attempt.state === "uncertain");
+}
+
+export function isInvocationDue(
+    invocation: Pick<CapabilityInvocation, "retry">,
+    now: string | Date,
+): boolean {
+    const nextEligibleAt = invocation.retry.nextEligibleAt;
+    return nextEligibleAt === null || Date.parse(typeof now === "string" ? now : now.toISOString()) >= Date.parse(nextEligibleAt);
+}
+
+export function isSafeRetryEligible(
+    invocation: Pick<CapabilityInvocation, "status" | "retry" | "delivery" | "attempts" | "idempotency">,
+    now: string | Date,
+): boolean {
+    return invocation.status === InvocationStatus.FAILED
+        && invocation.retry.attempt < invocation.retry.maxAttempts
+        && invocation.idempotency.mode === "idempotent"
+        && !hasUncertainDelivery(invocation)
+        && isInvocationDue(invocation, now);
+}
+
+/** Terminal records are immutable, while non-terminal records may transition. */
+export function isInvocationUpdateAllowed(
+    current: Pick<CapabilityInvocationRef, "status">,
+    next: Pick<CapabilityInvocationRef, "status">,
+): boolean {
+    return !isInvocationTerminal(current) || current.status === next.status;
+}
+
+/** Merge a result without replacing an already terminal result or duplicating refs. */
+export function mergeInvocationResult(
+    invocation: CapabilityInvocation,
+    result: InvocationResult,
+): CapabilityInvocation {
+    if (isInvocationTerminal(invocation) && invocation.status !== result.status) return invocation;
+    const refs = new Map(invocation.resultRefs.map((ref) => [ref.refId, ref]));
+    for (const ref of result.evidenceRefs) refs.set(ref.refId, ref);
+    return {
+        ...invocation,
+        status: isInvocationTerminal(invocation) ? invocation.status : result.status,
+        completedAt: result.completedAt ?? invocation.completedAt,
+        resultRefs: [...refs.values()],
+        updatedAt: result.completedAt ?? invocation.updatedAt,
+    };
+}
+
+export function computeInvocationEffectFingerprint(input: EffectFingerprintInput): string {
+    return computeEffectFingerprint(input);
+}
+
 /** Durable Mission entity — the first-class contract of this issue. */
 export interface Mission {
     /** Stable Mission id, generated inside Ouroboros. */
@@ -438,6 +583,8 @@ export interface Mission {
         /** Last recovery timestamp (undefined until first recovery). */
         lastRecoveredAt?: string;
     };
+    /** Present only while a Mission is paused. */
+    pauseMetadata?: MissionPauseMetadata;
 }
 
 /** Result of deterministic plan validation. */
