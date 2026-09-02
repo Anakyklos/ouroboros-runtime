@@ -328,6 +328,52 @@ describe("ContextCompiler — external reads are non-forgeable (structural closu
         ).toThrow(ContextCompilerError);
     });
 
+    it("ADVERSARIAL: non-object inputs degrade to ContextCompilerError, never TypeError", async () => {
+        const mission = makeContextMission();
+        const request = makeContextRequest({ ownerHint: "lifeos" });
+        for (const impostor of [null, undefined, "not-a-read", 42, true]) {
+            expect(() =>
+                new ContextCompiler({ clock: fixedClock() }).compile(mission, request, [
+                    impostor as never,
+                ]),
+            ).toThrow(ContextCompilerError);
+        }
+    });
+
+    it("the sealed read itself is deep-frozen: rows and nested cells cannot be mutated into a different authorization", async () => {
+        const descriptor = makeContextDescriptor("lifeos");
+        const harness = await createSeamHarness({ descriptors: [descriptor] });
+        const { mission, stepId } = await harness.acceptContextPlan(
+            descriptor,
+            "refs/lifeos/journal/2026-08",
+        );
+        harness.seam.registerConnector(
+            descriptor.capabilityId,
+            makeContextConnector(descriptor, { rows: journalRows(), withOwnerVerification: true }),
+        );
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
+        const sealed = collectSealed(
+            await reader.read(mission, request, { dispatchStepId: stepId }),
+        );
+        expect(sealed).toHaveLength(1);
+        expect(Object.isFrozen(sealed[0])).toBe(true);
+        expect(Object.isFrozen(sealed[0].read)).toBe(true);
+        expect(Object.isFrozen(sealed[0].read.rows)).toBe(true);
+        expect(Object.isFrozen(sealed[0].read.rows[0])).toBe(true);
+        // A strict-mode mutation attempt on a frozen nested cell throws;
+        // even in sloppy mode it would silently no-op — either way the
+        // compiled content cannot differ from what the seam sealed.
+        const contentBefore = sealed[0].read.rows[0].content;
+        try {
+            (sealed[0].read.rows[0] as { content: string }).content = "TAMPERED";
+        } catch {
+            // frozen assignment throws in strict mode
+        }
+        expect((sealed[0].read.rows[0] as { content: string }).content).toBe(contentBefore);
+        await harness.close();
+    });
+
     it("ADVERSARIAL: a guessed Symbol.for token cannot construct a seal", async () => {
         // The module token is a unique Symbol(...) — Symbol.for returns a
         // DIFFERENT symbol from the global registry, so guessing the

@@ -129,9 +129,12 @@ export class SeamAuthorizedRead {
     /** Structural check: only genuinely sealed instances are authority.
      * Uses the private brand (`#sealed in value`), so a prototype-chain
      * forgery (Object.create of the class prototype) is refused — it has
-     * no private field and cannot install one. */
+     * no private field and cannot install one. Non-objects are refused
+     * outright so every non-sealed input degrades to the same
+     * ContextCompilerError (never a TypeError). */
     static isSealed(value: unknown): value is SeamAuthorizedRead {
-        return #sealed in (value as object);
+        if (typeof value !== "object" || value === null) return false;
+        return #sealed in value;
     }
 }
 
