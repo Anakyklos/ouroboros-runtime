@@ -165,7 +165,8 @@ export type BudgetExclusionReason =
     | "duplicate"
     | "class_not_requested"
     | "scope_exceeded"
-    | "secret_refused";
+    | "secret_refused"
+    | "secret_in_identity";
 
 /** A recorded exclusion (item id + deterministic reason). */
 export interface BudgetExclusion {
@@ -187,6 +188,10 @@ export interface ItemProvenance {
     authorization: string;
     /** Mission that justified the read. */
     missionId: string;
+    /** Step of the accepted plan that justified the read (when the item
+     * came from a seam-authorized external read). Mission-owned refs have
+     * no step: their authority is the Mission's own contextRefs. */
+    stepId?: string;
     /** Declared purpose/step, when applicable. */
     purpose?: string;
     /** Freshness/expiry, when the request declared maxAgeMs. */

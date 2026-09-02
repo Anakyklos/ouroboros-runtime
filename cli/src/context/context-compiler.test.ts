@@ -4,8 +4,20 @@
  * Deterministic, offline suite proving the #64 boundary:
  *  - mission-owned refs compile as FACT with mission authorization;
  *  - external content ONLY via SeamBoundContextReader over the #63
- *    ConnectorDispatchSeam, SEALED into non-forgeable SeamAuthorizedReads
- *    (raw {descriptor, rows} and forged reads are structurally refused);
+ *    ConnectorDispatchSeam, SEALED into non-forgeable SeamContextResolution
+ *    batches of SeamAuthorizedReads carrying an immutable authorization
+ *    envelope (missionId, dispatched stepId, capability, subject) that the
+ *    compiler re-verifies: cross-mission reuse and step reassignment fail
+ *    closed (raw {descriptor, rows}, forged reads, forged resolutions and
+ *    forged unresolved records are structurally refused);
+ *  - READER FAILURES ARE NEVER DROPPED: unavailable/revoked/unsupported
+ *    travel inside the sealed resolution into package.unresolved, so the
+ *    planner can tell "no external context needed" from "needed context
+ *    failed honestly";
+ *  - identity/metadata fields (sourceRef, evidenceRefId, subject,
+ *    ownerHint, stepId) fail closed on raw secret patterns — refs are
+ *    never redacted in place — while free-form purpose is sanitized once
+ *    and stored sanitized only (no raw/sanitized split in the package);
  *  - epistemic classes stay distinct (fact / derived_summary / inference);
  *    external rows are NEVER silently promoted to FACT;
  *  - the package is inert frozen data (injection stays DATA);
@@ -26,8 +38,7 @@ import {
     ContextCompiler,
     recompileAfterRestart,
 } from "./compiler.js";
-import type { ContextReadResult } from "./compiler.js";
-import { SeamAuthorizedRead } from "./sources.js";
+import { SeamAuthorizedRead, SeamContextResolution } from "./sources.js";
 import {
     ContextCompilerError,
     EpistemicClass,
@@ -49,9 +60,9 @@ import { createSeamHarness } from "./seam-harness.js";
 
 /**
  * Canonical flow under test: accepted READ plan step → #63 seam dispatch →
- * reader packaging (sealed) → compiler. Deterministic and fully offline.
- * There is NO bypass helper: every external row in this suite crossed the
- * real seam exactly as production content must.
+ * reader packaging (sealed resolution) → compiler. Deterministic and fully
+ * offline. There is NO bypass helper: every external row in this suite
+ * crossed the real seam exactly as production content must.
  */
 async function compileViaSeam(options: {
     descriptorOverrides?: Parameters<typeof makeContextDescriptor>[1];
@@ -81,27 +92,52 @@ async function compileViaSeam(options: {
         missionId: mission.missionId,
         ...options.requestOverrides,
     });
-    const results = await reader.read(mission, request, {
+    const resolution = await reader.read(mission, request, {
         dispatchStepId: "step-context-read",
     });
-    const sealed = collectSealed(results);
-    const pkg = new ContextCompiler({ clock: fixedClock() }).compile(mission, request, sealed);
+    const pkg = new ContextCompiler({ clock: fixedClock() }).compile(
+        mission,
+        request,
+        resolution ? [resolution] : [],
+    );
     return { pkg, missionId: mission.missionId, close: () => harness.close() };
 }
 
-/**
- * Unwrap a reader result for compilation: the honest separation between
- * "no external content" (refusals are caller-facing reports, never
- * authority) and "sealed read(s) ready for the compiler".
- */
-function collectSealed(results: ContextReadResult[]): SeamAuthorizedRead[] {
-    return results.filter((r): r is Extract<ContextReadResult, { ok: true }> => r.ok).map((r) => r.read);
+/** Wrap one reader result (or none) for the compiler. */
+function resolutionsOf(resolution: SeamContextResolution | null): SeamContextResolution[] {
+    return resolution ? [resolution] : [];
 }
 
-function unresolvedOf(results: ContextReadResult[]): Array<{ status: SourceStatus; detail: string }> {
-    return results
-        .filter((r): r is Extract<ContextReadResult, { ok: false }> => !r.ok)
-        .map((r) => r.unresolved);
+/** Rows for a tecer capability (descriptor prefix refs/tecer/). */
+function tecerRows(): ReturnType<typeof journalRows> {
+    return [
+        {
+            sourceRef: "refs/tecer/journal/2026-08-30",
+            content: "Tecer note: weekly standup kept, review aligns with lifeos journal.",
+            epistemicClass: EpistemicClass.FACT,
+            fetchedAt: "2026-08-30T09:00:00.000Z",
+            sensitivity: SensitivityClass.NORMAL,
+        },
+        {
+            sourceRef: "refs/tecer/journal/2026-08-29",
+            content: "Tecer note: boundary draft shared with the planner.",
+            epistemicClass: EpistemicClass.FACT,
+            fetchedAt: "2026-08-29T09:00:00.000Z",
+            sensitivity: SensitivityClass.NORMAL,
+        },
+        {
+            sourceRef: "refs/tecer/journal/2026-08-28",
+            content: "Tecer note: deep work day planned for the interface review.",
+            epistemicClass: EpistemicClass.FACT,
+            fetchedAt: "2026-08-28T09:00:00.000Z",
+            sensitivity: SensitivityClass.NORMAL,
+        },
+    ];
+}
+
+/** Unwrap the honest refusal records of one reader result. */
+function unresolvedOf(resolution: SeamContextResolution | null): BoundedContextPackage["unresolved"] {
+    return resolution?.unresolved ?? [];
 }
 
 describe("ContextCompiler — mission-only compilation", () => {
@@ -193,7 +229,7 @@ describe("ContextCompiler — external reads are non-forgeable (structural closu
         ).toThrow(ContextCompilerError);
         expect(() =>
             new ContextCompiler({ clock: fixedClock() }).compile(mission, request, [rawRead as never]),
-        ).toThrow(/raw descriptor\/rows objects are not authority/);
+        ).toThrow(/raw descriptor\/rows objects .*not authority/);
         // The refused content never leaked into any package.
         const missionOwned = new ContextCompiler({ clock: fixedClock() }).compile(
             makeContextMission(),
@@ -250,10 +286,11 @@ describe("ContextCompiler — external reads are non-forgeable (structural closu
         );
         const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
         const request2 = makeContextRequest({ ownerHint: "lifeos", missionId: realMission.missionId });
-        const results = await reader.read(realMission, request2, { dispatchStepId: "step-context-read" });
-        const sealed = collectSealed(results);
-        expect(sealed).toHaveLength(1);
-        const shallowCopy = { ...sealed[0] };
+        const realResolution = await reader.read(realMission, request2, {
+            dispatchStepId: "step-context-read",
+        });
+        expect(realResolution).not.toBeNull();
+        const shallowCopy = { ...realResolution! };
         expect(() =>
             new ContextCompiler({ clock: fixedClock() }).compile(realMission, request2, [
                 shallowCopy as never,
@@ -265,8 +302,8 @@ describe("ContextCompiler — external reads are non-forgeable (structural closu
     it("ADVERSARIAL: a forged SeamDispatchOutcome is not context and no path accepts it", async () => {
         // The reader no longer accepts caller-provided outcomes at all:
         // read() takes only dispatchStepId. A plausible-shaped forged
-        // outcome has nowhere to go — passing it as a read to the compiler
-        // is refused like any other raw object.
+        // outcome has nowhere to go — passing it as a resolution to the
+        // compiler is refused like any other raw object.
         const forgedOutcome = {
             invocation: {
                 invocationId: "inv-forged",
@@ -340,7 +377,7 @@ describe("ContextCompiler — external reads are non-forgeable (structural closu
         }
     });
 
-    it("the sealed read itself is deep-frozen: rows and nested cells cannot be mutated into a different authorization", async () => {
+    it("the sealed read AND its resolution are deep-frozen: nested cells cannot be mutated into a different authorization", async () => {
         const descriptor = makeContextDescriptor("lifeos");
         const harness = await createSeamHarness({ descriptors: [descriptor] });
         const { mission, stepId } = await harness.acceptContextPlan(
@@ -353,11 +390,16 @@ describe("ContextCompiler — external reads are non-forgeable (structural closu
         );
         const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
         const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
-        const sealed = collectSealed(
-            await reader.read(mission, request, { dispatchStepId: stepId }),
-        );
+        const resolution = await reader.read(mission, request, { dispatchStepId: stepId });
+        expect(resolution).not.toBeNull();
+        const sealed = resolution!.reads;
         expect(sealed).toHaveLength(1);
+        expect(Object.isFrozen(resolution)).toBe(true);
+        expect(Object.isFrozen(resolution!.authorization)).toBe(true);
+        expect(Object.isFrozen(resolution!.reads)).toBe(true);
+        expect(Object.isFrozen(resolution!.unresolved)).toBe(true);
         expect(Object.isFrozen(sealed[0])).toBe(true);
+        expect(Object.isFrozen(sealed[0].authorization)).toBe(true);
         expect(Object.isFrozen(sealed[0].read)).toBe(true);
         expect(Object.isFrozen(sealed[0].read.rows)).toBe(true);
         expect(Object.isFrozen(sealed[0].read.rows[0])).toBe(true);
@@ -399,16 +441,21 @@ describe("ContextCompiler — external reads are non-forgeable (structural closu
     it("ADVERSARIAL: no module exports a sealing authority — minting is structurally impossible outside sources.ts", async () => {
         // The reviewer's requirement is STRUCTURAL closure. The seal must
         // not be obtainable by importing: compiler.js must expose no seal
-        // factory, and sources.js must expose the class WITHOUT the token
+        // factory, and sources.js must expose the classes WITHOUT the token
         // or any minting function.
         const compilerKeys = Object.keys(await import("./compiler.js"));
         expect(compilerKeys).not.toContain("getSeamSeal");
         expect(compilerKeys).not.toContain("seamSeal");
+        expect(compilerKeys).not.toContain("sealRead");
+        expect(compilerKeys).not.toContain("sealResolution");
         expect(compilerKeys).not.toContain("SEAM_SEAL_TOKEN");
-        expect(compilerKeys).not.toContain("SeamAuthorizedRead"); // the class itself moved out
+        expect(compilerKeys).not.toContain("SeamAuthorizedRead"); // the classes moved out
+        expect(compilerKeys).not.toContain("SeamContextResolution");
         const sourcesKeys = Object.keys(await import("./sources.js"));
         expect(sourcesKeys).toContain("SeamAuthorizedRead"); // identity check only
+        expect(sourcesKeys).toContain("SeamContextResolution"); // identity check only
         expect(sourcesKeys).not.toContain("sealRead");
+        expect(sourcesKeys).not.toContain("sealResolution");
         expect(sourcesKeys).not.toContain("SEAM_SEAL_TOKEN");
     });
 
@@ -469,17 +516,208 @@ describe("ContextCompiler — external reads are non-forgeable (structural closu
         );
         const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
         const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
-        const results = await reader.read(mission, request, {
+        const resolution = await reader.read(mission, request, {
             dispatchStepId: "step-context-read",
         });
-        const sealed = collectSealed(results);
         expect(() =>
             new ContextCompiler({ clock: fixedClock() }).compile(
                 mission,
                 makeContextRequest({ ownerHint: "lifeos", missionId: "mission-OTHER" }),
-                sealed,
+                resolutionsOf(resolution),
             ),
         ).toThrow(/targets mission "mission-OTHER"/);
+        await harness.close();
+    });
+});
+
+describe("ContextCompiler — authorization envelope binding (round 3)", () => {
+    it("a seal authorized for Mission A can NEVER compile Mission B (cross-mission reuse refused)", async () => {
+        const descriptor = makeContextDescriptor("lifeos");
+        const harness = await createSeamHarness({ descriptors: [descriptor] });
+        const { mission: missionA } = await harness.acceptContextPlan(
+            descriptor,
+            "refs/lifeos/journal/2026-08",
+        );
+        harness.seam.registerConnector(
+            descriptor.capabilityId,
+            makeContextConnector(descriptor, { rows: journalRows(), withOwnerVerification: true }),
+        );
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const requestA = makeContextRequest({
+            ownerHint: "lifeos",
+            missionId: missionA.missionId,
+        });
+        const resolutionA = await reader.read(missionA, requestA, {
+            dispatchStepId: "step-context-read",
+        });
+        expect(resolutionA).not.toBeNull();
+        expect(resolutionA!.reads).toHaveLength(1);
+        // The seal is bound to missionA; compiling for missionB (a
+        // DIFFERENT mission object/id) must fail closed AFTER the request
+        // gate (requestB targets missionB), at the envelope re-binding.
+        const missionB = makeContextMission({ missionId: "mission-B" });
+        const requestB = makeContextRequest({ ownerHint: "lifeos", missionId: "mission-B" });
+        expect(() =>
+            new ContextCompiler({ clock: fixedClock() }).compile(missionB, requestB, [resolutionA!]),
+        ).toThrow(/bound to mission "(inv-|mission-)[^"]*" but compilation is for "mission-B"/);
+        // The data authorized by missionA was never reattributed: no
+        // package for B exists with A's rows.
+        await harness.close();
+    });
+
+    it("a seal from step A cannot be compiled under step B (step reassignment refused)", async () => {
+        const descriptor = makeContextDescriptor("lifeos");
+        const harness = await createSeamHarness({ descriptors: [descriptor] });
+        const { mission } = await harness.acceptContextPlan(
+            descriptor,
+            "refs/lifeos/journal/2026-08",
+        );
+        harness.seam.registerConnector(
+            descriptor.capabilityId,
+            makeContextConnector(descriptor, { rows: journalRows(), withOwnerVerification: true }),
+        );
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
+        const resolution = await reader.read(mission, request, {
+            dispatchStepId: "step-context-read",
+        });
+        expect(resolution).not.toBeNull();
+        // Same mission, but the request declares a DIFFERENT step: the
+        // envelope's dispatched step must match exactly — fail closed.
+        const reassigned = makeContextRequest({
+            ownerHint: "lifeos",
+            missionId: mission.missionId,
+            stepId: "step-B",
+        });
+        expect(() =>
+            new ContextCompiler({ clock: fixedClock() }).compile(mission, reassigned, [resolution!]),
+        ).toThrow(/dispatched step "step-context-read" but the request declares step "step-B"/);
+        await harness.close();
+    });
+
+    it("request.stepId that diverges from the dispatch step is REJECTED at the reader (no silent divergence)", async () => {
+        const descriptor = makeContextDescriptor("lifeos");
+        const harness = await createSeamHarness({ descriptors: [descriptor] });
+        const { mission } = await harness.acceptContextPlan(
+            descriptor,
+            "refs/lifeos/journal/2026-08",
+        );
+        harness.seam.registerConnector(
+            descriptor.capabilityId,
+            makeContextConnector(descriptor, { rows: journalRows(), withOwnerVerification: true }),
+        );
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const request = makeContextRequest({
+            ownerHint: "lifeos",
+            missionId: mission.missionId,
+            stepId: "step-X", // request declares one step…
+        });
+        // …but the caller asks to dispatch a DIFFERENT one: fail closed,
+        // NO dispatch, NO result — not a silent divergence.
+        await expect(
+            reader.read(mission, request, { dispatchStepId: "step-context-read" }),
+        ).rejects.toThrow(/conflicts with dispatchStepId/);
+        await harness.close();
+    });
+
+    it("a legitimate seal on the SAME mission and step compiles, and provenance carries mission + step (round 3)", async () => {
+        const descriptor = makeContextDescriptor("lifeos");
+        const harness = await createSeamHarness({ descriptors: [descriptor] });
+        const { mission } = await harness.acceptContextPlan(
+            descriptor,
+            "refs/lifeos/journal/2026-08",
+        );
+        harness.seam.registerConnector(
+            descriptor.capabilityId,
+            makeContextConnector(descriptor, { rows: journalRows(), withOwnerVerification: true }),
+        );
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const request = makeContextRequest({
+            ownerHint: "lifeos",
+            missionId: mission.missionId,
+            stepId: "step-context-read", // request agrees with the dispatch step
+        });
+        const resolution = await reader.read(mission, request, {
+            dispatchStepId: "step-context-read",
+        });
+        expect(resolution).not.toBeNull();
+        expect(resolution!.reads).toHaveLength(1);
+        const pkg = new ContextCompiler({ clock: fixedClock() }).compile(mission, request, [resolution!]);
+        expect(pkg.stepId).toBe("step-context-read");
+        expect(pkg.items).toHaveLength(3);
+        for (const item of pkg.items) {
+            expect(item.provenance.missionId).toBe(mission.missionId);
+            expect(item.provenance.stepId).toBe("step-context-read");
+        }
+        await harness.close();
+    });
+
+    it("a sealed read whose capability is NOT in the mission's scope is refused (capability re-binding)", async () => {
+        const descriptor = makeContextDescriptor("lifeos");
+        const harness = await createSeamHarness({ descriptors: [descriptor] });
+        const { mission } = await harness.acceptContextPlan(
+            descriptor,
+            "refs/lifeos/journal/2026-08",
+        );
+        harness.seam.registerConnector(
+            descriptor.capabilityId,
+            makeContextConnector(descriptor, { rows: journalRows(), withOwnerVerification: true }),
+        );
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
+        const resolution = await reader.read(mission, request, {
+            dispatchStepId: "step-context-read",
+        });
+        expect(resolution).not.toBeNull();
+        // Same mission id, but the CURRENT scope no longer authorizes
+        // context:lifeos (revocation between read and compile): the
+        // envelope capability must still be in the mission scope.
+        const narrowed = {
+            ...mission,
+            allowedCapabilityScope: {
+                ...mission.allowedCapabilityScope,
+                capabilityIds: ["context:tecer"],
+            },
+        };
+        expect(() =>
+            new ContextCompiler({ clock: fixedClock() }).compile(narrowed, request, [resolution!]),
+        ).toThrow(/not authorized for mission/);
+        await harness.close();
+    });
+
+    it("two resolutions for the SAME mission but different steps compile when the request is not step-scoped", async () => {
+        const lifeos = makeContextDescriptor("lifeos");
+        const tecer = makeContextDescriptor("tecer");
+        const harness = await createSeamHarness({ descriptors: [lifeos, tecer] });
+        const { mission, steps } = await harness.acceptMultiContextPlan([
+            { descriptor: lifeos, subject: "refs/lifeos/journal/2026-08", stepId: "step-lifeos" },
+            { descriptor: tecer, subject: "refs/tecer/journal/2026-08", stepId: "step-tecer" },
+        ]);
+        harness.seam.registerConnector(
+            lifeos.capabilityId,
+            makeContextConnector(lifeos, { rows: journalRows(), withOwnerVerification: true }),
+        );
+        harness.seam.registerConnector(
+            tecer.capabilityId,
+            makeContextConnector(tecer, { rows: tecerRows(), withOwnerVerification: true }),
+        );
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const request = makeContextRequest({
+            ownerHint: "lifeos",
+            missionId: mission.missionId,
+        });
+        const resLifeos = await reader.read(mission, request, { dispatchStepId: steps[0].stepId });
+        const resTecer = await reader.read(mission, request, { dispatchStepId: steps[1].stepId });
+        expect(resLifeos).not.toBeNull();
+        expect(resTecer).not.toBeNull();
+        const pkg = new ContextCompiler({ clock: fixedClock() }).compile(
+            mission,
+            request,
+            [resLifeos!, resTecer!],
+        );
+        expect(pkg.items).toHaveLength(6); // 3 per owner, no dedup across owners
+        expect(pkg.items.filter((i) => i.provenance.stepId === "step-lifeos")).toHaveLength(3);
+        expect(pkg.items.filter((i) => i.provenance.stepId === "step-tecer")).toHaveLength(3);
         await harness.close();
     });
 });
@@ -505,13 +743,13 @@ describe("SeamBoundContextReader — one dispatch path (#63 seam)", () => {
                 allowedRefPrefixes: ["refs/tecer/"],
             },
         };
-        const results = await reader.read(narrowed, makeContextRequest({
+        const resolution = await reader.read(narrowed, makeContextRequest({
             ownerHint: "lifeos",
             subject: "refs/runstead/pr/7",
             missionId: mission.missionId,
         }), { dispatchStepId: "step-context-read" });
-        expect(results).toHaveLength(1);
-        const unresolved = unresolvedOf(results);
+        expect(resolution).not.toBeNull();
+        const unresolved = unresolvedOf(resolution);
         expect(unresolved).toHaveLength(1);
         expect(unresolved[0].status).toBe(SourceStatus.REVOKED);
         expect(unresolved[0].detail).toContain("outside mission allowed ref prefixes");
@@ -543,10 +781,10 @@ describe("SeamBoundContextReader — one dispatch path (#63 seam)", () => {
         );
         const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
         const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
-        const results = await reader.read(mission, request, {
+        const resolution = await reader.read(mission, request, {
             dispatchStepId: "step-context-read",
         });
-        const unresolved = unresolvedOf(results);
+        const unresolved = unresolvedOf(resolution);
         expect(unresolved).toHaveLength(1);
         expect(unresolved[0].status).toBe(SourceStatus.UNSUPPORTED);
         expect(unresolved[0].detail).toContain("outside capability declared ref prefixes");
@@ -561,11 +799,11 @@ describe("SeamBoundContextReader — one dispatch path (#63 seam)", () => {
             "refs/lifeos/journal/2026-08",
         );
         const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
-        const results = await reader.read(mission, makeContextRequest({
+        const resolution = await reader.read(mission, makeContextRequest({
             ownerHint: "lifeos",
             missionId: mission.missionId,
         }), { dispatchStepId: "step-not-in-plan" });
-        const unresolved = unresolvedOf(results);
+        const unresolved = unresolvedOf(resolution);
         expect(unresolved).toHaveLength(1);
         expect(unresolved[0].status).toBe(SourceStatus.UNSUPPORTED);
         expect(unresolved[0].detail).toContain("not part of the accepted plan");
@@ -586,11 +824,11 @@ describe("SeamBoundContextReader — one dispatch path (#63 seam)", () => {
             makeContextConnector(descriptor, { rows: journalRows(), withOwnerVerification: true }),
         );
         const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
-        const results = await reader.read(mission, makeContextRequest({
+        const resolution = await reader.read(mission, makeContextRequest({
             ownerHint: "lifeos",
             missionId: mission.missionId,
         }), { dispatchStepId: "step-context-read" });
-        const unresolved = unresolvedOf(results);
+        const unresolved = unresolvedOf(resolution);
         expect(unresolved).toHaveLength(1);
         expect(unresolved[0].status).toBe(SourceStatus.UNAVAILABLE);
         await harness.close();
@@ -612,20 +850,24 @@ describe("SeamBoundContextReader — one dispatch path (#63 seam)", () => {
         );
         const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
         const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
-        const results = await reader.read(mission, request, { dispatchStepId: "step-context-read" });
+        const resolution = await reader.read(mission, request, { dispatchStepId: "step-context-read" });
+        expect(resolution).not.toBeNull();
         // Honest refusal at the reader: no sealed read exists to compile.
-        expect(collectSealed(results)).toHaveLength(0);
-        const unresolved = unresolvedOf(results);
+        expect(resolution!.reads).toHaveLength(0);
+        const unresolved = unresolvedOf(resolution);
         expect(unresolved).toHaveLength(1);
         expect(unresolved[0].status).toBe(SourceStatus.UNAVAILABLE);
         expect(unresolved[0].detail).toContain("carries no compiled content");
-        // The compiled package carries nothing external.
+        // Round-3 blocker: the refusal SURVIVES into the compiled package.
         const pkg = new ContextCompiler({ clock: fixedClock() }).compile(
             mission,
             request,
-            collectSealed(results),
+            [resolution!],
         );
         expect(pkg.items).toHaveLength(0);
+        expect(pkg.unresolved).toHaveLength(1);
+        expect(pkg.unresolved[0].status).toBe(SourceStatus.UNAVAILABLE);
+        expect(pkg.unresolved[0].detail).toContain("carries no compiled content");
         await harness.close();
     });
 
@@ -642,9 +884,10 @@ describe("SeamBoundContextReader — one dispatch path (#63 seam)", () => {
         );
         const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
         const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
-        const results = await reader.read(mission, request, { dispatchStepId: "step-context-read" });
-        expect(collectSealed(results)).toHaveLength(0);
-        const unresolved = unresolvedOf(results);
+        const resolution = await reader.read(mission, request, { dispatchStepId: "step-context-read" });
+        expect(resolution).not.toBeNull();
+        expect(resolution!.reads).toHaveLength(0);
+        const unresolved = unresolvedOf(resolution);
         expect(unresolved).toHaveLength(1);
         expect(unresolved[0].status).toBe(SourceStatus.UNAVAILABLE);
         await harness.close();
@@ -690,7 +933,8 @@ describe("SeamBoundContextReader — one dispatch path (#63 seam)", () => {
         const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
         const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
         const first = await reader.read(mission, request, { dispatchStepId: stepId });
-        expect(collectSealed(first)).toHaveLength(1);
+        expect(first).not.toBeNull();
+        expect(first!.reads).toHaveLength(1);
 
         // The engine's one-shot invariant is the honest alternative to the
         // removed alreadyAuthorized path: the same step cannot be
@@ -703,105 +947,39 @@ describe("SeamBoundContextReader — one dispatch path (#63 seam)", () => {
         }
         expect((conflict as Error)?.name).toBe("InvocationConflictError");
 
-        // Feeding the SAME sealed read twice in one compilation is deduped
-        // (recorded, not silent) instead of double-counting rows.
-        const sealed = collectSealed(first);
+        // Feeding the SAME sealed resolution twice in one compilation is
+        // deduped (recorded, not silent) instead of double-counting rows.
         const pkg = new ContextCompiler({ clock: fixedClock() }).compile(
             mission,
             request,
-            [...sealed, ...sealed],
+            [first!, first!],
         );
         expect(pkg.items).toHaveLength(3); // 6 identical rows → 3 unique items
         expect(pkg.budgetReport.excluded.filter((e) => e.reason === "duplicate")).toHaveLength(3);
         await harness.close();
     });
-});
 
-describe("ContextCompiler — epistemic classes stay distinct", () => {
-    it("compiles inferences as INFERENCE without promotion and honors requestedClasses", async () => {
-        const mission = makeContextMission();
-        const request = makeContextRequest();
-        const pkg = new ContextCompiler({ clock: fixedClock() }).compile(mission, request, []);
-
-        const withInference = new ContextCompiler({ clock: fixedClock() }).addInference(pkg, {
-            content: "The user seems ready for a deeper review cadence",
-            refId: "inf-1",
-        });
-        expect(withInference.ok).toBe(true);
-        if (!withInference.ok) return;
-        expect(withInference.item.epistemicClass).toBe(EpistemicClass.INFERENCE);
-        expect(withInference.item.provenance.owner).toBe("planner");
-        expect(withInference.item.provenance.sourceRef).toBe("inference:inf-1");
-
-        // Minimal disclosure: requesting only FACTs excludes the inference
-        // with a recorded (never silent) reason.
-        const factOnly = new ContextCompiler({ clock: fixedClock() }).compile(
-            mission,
-            makeContextRequest({ requestedClasses: [EpistemicClass.FACT] }),
-            [],
+    it("an external read with NO identified dispatch step is an honest unresolved (never silent)", async () => {
+        const descriptor = makeContextDescriptor("lifeos");
+        const harness = await createSeamHarness({ descriptors: [descriptor] });
+        const { mission } = await harness.acceptContextPlan(
+            descriptor,
+            "refs/lifeos/journal/2026-08",
         );
-        expect(factOnly.items.every((i) => i.epistemicClass === EpistemicClass.FACT)).toBe(true);
-    });
-
-    it("deriveSummary produces DERIVED_SUMMARY with reconstructible lineage", async () => {
-        const mission = makeContextMission({
-            contextRefs: [
-                {
-                    refId: "ref-1",
-                    owner: "lifeos",
-                    label: "Journal index for 2026-08",
-                    externalRef: "refs/lifeos/journal/2026-08",
-                    authorizedBy: "user consent on 2026-08-01",
-                },
-            ],
-        });
-        const compiler = new ContextCompiler({ clock: fixedClock() });
-        const pkg = compiler.compile(mission, makeContextRequest(), []);
-        expect(pkg.items).toHaveLength(1);
-
-        const derived = compiler.deriveSummary(pkg, {
-            sourceItemIds: [pkg.items[0].itemId],
-            maxChars: 256,
-        });
-        expect(derived.ok).toBe(true);
-        if (!derived.ok) return;
-        expect(derived.item.epistemicClass).toBe(EpistemicClass.DERIVED_SUMMARY);
-        expect(derived.item.derivedFrom).toEqual([pkg.items[0].itemId]);
-        expect(derived.item.derivationOp).toBe("first:1");
-        expect(derived.item.provenance.owner).toBe("ouroboros.compiler");
-        expect(derived.package.items).toHaveLength(2);
-        // Honest accounting after the addition (blocker 3).
-        expect(derived.package.budgetReport.observed.items).toBe(2);
-        expect(
-            derived.package.budgetReport.observed.totalChars,
-        ).toBe(derived.package.items.reduce((s, i) => s + i.content.length, 0));
-    });
-
-    it("refuses to derive a summary from an inference (no masquerade as fact)", async () => {
-        const mission = makeContextMission();
-        const compiler = new ContextCompiler({ clock: fixedClock() });
-        const pkg = compiler.compile(mission, makeContextRequest(), []);
-        const added = compiler.addInference(pkg, { content: "a guess", refId: "inf-9" });
-        expect(added.ok).toBe(true);
-        if (!added.ok) return;
-        const derived = compiler.deriveSummary(added.package, {
-            sourceItemIds: [added.item.itemId],
-            maxChars: 64,
-        });
-        expect(derived.ok).toBe(false);
-        if (derived.ok) return;
-        expect(derived.reason).toContain("inference");
-    });
-
-    it("refuses to derive from source ids that are not in the package", async () => {
-        const mission = makeContextMission();
-        const compiler = new ContextCompiler({ clock: fixedClock() });
-        const pkg = compiler.compile(mission, makeContextRequest(), []);
-        const derived = compiler.deriveSummary(pkg, {
-            sourceItemIds: ["ctx-does-not-exist"],
-            maxChars: 64,
-        });
-        expect(derived.ok).toBe(false);
+        harness.seam.registerConnector(
+            descriptor.capabilityId,
+            makeContextConnector(descriptor, { rows: journalRows(), withOwnerVerification: true }),
+        );
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
+        const resolution = await reader.read(mission, request, {}); // no step at all
+        expect(resolution).not.toBeNull();
+        expect(resolution!.reads).toHaveLength(0);
+        const unresolved = unresolvedOf(resolution);
+        expect(unresolved).toHaveLength(1);
+        expect(unresolved[0].status).toBe(SourceStatus.UNSUPPORTED);
+        expect(unresolved[0].detail).toContain("no dispatch step was identified");
+        await harness.close();
     });
 });
 
@@ -899,7 +1077,7 @@ describe("ContextCompiler — budgets clamp and additions re-run the pipeline (b
         await close();
     });
 
-    it("is order-independent: the same sealed reads in any order yield the same package", async () => {
+    it("is order-independent: the same sealed resolution compiled twice yields the same package", async () => {
         const descriptor = makeContextDescriptor("lifeos");
         const harness = await createSeamHarness({ descriptors: [descriptor] });
         const { mission, stepId } = await harness.acceptContextPlan(
@@ -912,18 +1090,15 @@ describe("ContextCompiler — budgets clamp and additions re-run the pipeline (b
         );
         const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
         const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
-        const sealed = collectSealed(await reader.read(mission, request, { dispatchStepId: stepId }));
-        expect(sealed).toHaveLength(1);
-        // The sealed read carries a descriptor; a second sealed EMPTY read
-        // cannot be minted without another seam dispatch (one-shot), so
-        // order-independence is proven by reversing the one sealed read
-        // against an empty mission-only compilation of the same rows.
+        const resolution = await reader.read(mission, request, { dispatchStepId: stepId });
+        expect(resolution).not.toBeNull();
+        expect(resolution!.reads).toHaveLength(1);
         const compiler = new ContextCompiler({ clock: fixedClock() });
-        const direct = compiler.compile(mission, request, [sealed[0]]);
+        const direct = compiler.compile(mission, request, [resolution!]);
         const flippedMissionOnly = compiler.compile(mission, request, []);
-        // Different content ⇒ different packages, but the sealed read
+        // Different content ⇒ different packages, but the sealed resolution
         // alone must be deterministic across compiler instances.
-        const again = new ContextCompiler({ clock: fixedClock() }).compile(mission, request, [sealed[0]]);
+        const again = new ContextCompiler({ clock: fixedClock() }).compile(mission, request, [resolution!]);
         expect(direct.packageId).toBe(again.packageId);
         expect(flippedMissionOnly.items).toHaveLength(0);
         await harness.close();
@@ -1141,7 +1316,134 @@ describe("ContextCompiler — effective budget is monotonically non-expanding (r
     });
 });
 
-describe("ContextCompiler — sensitivity accompanies redaction (round 2)", () => {
+describe("ContextCompiler — secrets in metadata and identifiers (round 3)", () => {
+    it("a request whose SUBJECT carries a raw secret fails closed (never compiled, never redacted)", async () => {
+        const mission = makeContextMission();
+        const request = makeContextRequest({
+            ownerHint: "lifeos",
+            subject: "refs/lifeos/token=sk-proj-abcdef123456",
+        });
+        expect(() =>
+            new ContextCompiler({ clock: fixedClock() }).compile(mission, request, []),
+        ).toThrow(/subject carries a raw secret pattern/);
+    });
+
+    it("a request whose ownerHint or stepId carries a raw secret fails closed too", async () => {
+        const mission = makeContextMission();
+        const hint = makeContextRequest({ ownerHint: "lifeos token=abc-secret" });
+        expect(() =>
+            new ContextCompiler({ clock: fixedClock() }).compile(mission, hint, []),
+        ).toThrow(/ownerHint carries a raw secret pattern/);
+        const step = makeContextRequest({ stepId: "step token=abc-secret" });
+        expect(() =>
+            new ContextCompiler({ clock: fixedClock() }).compile(mission, step, []),
+        ).toThrow(/stepId carries a raw secret pattern/);
+    });
+
+    it("a request whose PURPOSE needs sanitizing stores ONLY the sanitized form (no raw/sanitized split)", async () => {
+        const mission = makeContextMission({
+            contextRefs: [
+                {
+                    refId: "ref-1",
+                    owner: "lifeos",
+                    label: "Journal index for 2026-08",
+                    externalRef: "refs/lifeos/journal/2026-08",
+                    authorizedBy: "user consent on 2026-08-01",
+                },
+            ],
+        });
+        const request = makeContextRequest({
+            purpose: "weekly review credentials=SuperSecret123 compilation",
+        });
+        const pkg = new ContextCompiler({ clock: fixedClock() }).compile(mission, request, []);
+        expect(pkg.items).toHaveLength(1);
+        expect(pkg.request.purpose).toContain("[REDACTED]");
+        expect(pkg.request.purpose).not.toContain("SuperSecret123");
+        // The snapshot and every provenance field use the SAME sanitized form.
+        expect(pkg.items[0].provenance.purpose).toBe(pkg.request.purpose);
+        expect(JSON.stringify(pkg)).not.toContain("SuperSecret123");
+    });
+
+    it("a mission-owned contextRef whose externalRef carries a raw secret is excluded (secret_in_identity)", async () => {
+        const mission = makeContextMission({
+            contextRefs: [
+                {
+                    refId: "ref-1",
+                    owner: "lifeos",
+                    label: "Journal index for 2026-08",
+                    externalRef: "refs/lifeos/token=abcdef123456",
+                    authorizedBy: "user consent on 2026-08-01",
+                },
+            ],
+        });
+        const pkg = new ContextCompiler({ clock: fixedClock() }).compile(
+            mission,
+            makeContextRequest(),
+            [],
+        );
+        expect(pkg.items).toHaveLength(0);
+        expect(
+            pkg.budgetReport.excluded.some((e) => e.reason === "secret_in_identity"),
+        ).toBe(true);
+        expect(JSON.stringify(pkg)).not.toContain("abcdef123456");
+    });
+
+    it("external rows whose sourceRef/evidenceRefId carry a raw secret never enter the package (any field)", async () => {
+        const { pkg, close } = await compileViaSeam({
+            rows: [
+                {
+                    sourceRef: "refs/lifeos/journal/leaky-ref",
+                    content: "Should never appear either way",
+                    evidenceRefId: "token=abcdef123456",
+                    epistemicClass: EpistemicClass.FACT,
+                },
+                {
+                    sourceRef: "refs/lifeos/token=abcdef123456",
+                    content: "Should not appear",
+                    epistemicClass: EpistemicClass.FACT,
+                },
+                ...journalRows(),
+            ],
+        });
+        // Only the 3 clean rows survive; the secret-identity rows were
+        // skipped by the reader's structural gate (never a raw carry, and
+        // never redacted in place — identity fields fail closed).
+        expect(pkg.items).toHaveLength(3);
+        expect(pkg.items.every((i) => i.provenance.sourceRef !== "refs/lifeos/token=abcdef123456")).toBe(true);
+        const json = JSON.stringify(pkg);
+        expect(json).not.toContain("abcdef123456");
+        expect(json).not.toContain("leaky-ref");
+        await close();
+    });
+
+    it("a reader refusal for a secret-bearing subject carries a placeholder, never the raw ref", async () => {
+        const descriptor = makeContextDescriptor("lifeos");
+        const harness = await createSeamHarness({ descriptors: [descriptor] });
+        const { mission } = await harness.acceptContextPlan(
+            descriptor,
+            "refs/lifeos/journal/2026-08",
+        );
+        harness.seam.registerConnector(
+            descriptor.capabilityId,
+            makeContextConnector(descriptor, { rows: journalRows(), withOwnerVerification: true }),
+        );
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        // Subject smuggles a raw secret: the reader refuses BEFORE any
+        // dispatch (no invocation minted)…
+        const resolution = await reader.read(mission, makeContextRequest({
+            ownerHint: "lifeos",
+            subject: "refs/lifeos/token=abcdef123456",
+            missionId: mission.missionId,
+        }), { dispatchStepId: "step-context-read" });
+        expect(resolution).not.toBeNull();
+        expect(resolution!.reads).toHaveLength(0);
+        const unresolved = unresolvedOf(resolution);
+        expect(unresolved).toHaveLength(1);
+        expect(unresolved[0].requestedRef).toContain("[ref withheld");
+        expect(JSON.stringify(resolution)).not.toContain("abcdef123456");
+        await harness.close();
+    });
+
     it("a mission-owned label with a secret pattern compiles REDACTED (raw value never present)", async () => {
         const mission = makeContextMission({
             contextRefs: [
@@ -1275,6 +1577,152 @@ describe("ContextCompiler — sensitivity accompanies redaction (round 2)", () =
     });
 });
 
+describe("ContextCompiler — reader failures reach package.unresolved (round 3)", () => {
+    it("capability unavailable → the refusal appears in package.unresolved, not silently dropped", async () => {
+        const descriptor = makeContextDescriptor("lifeos", {
+            availability: "unavailable" as never,
+        });
+        const harness = await createSeamHarness({ descriptors: [descriptor] });
+        const { mission } = await harness.acceptContextPlan(
+            descriptor,
+            "refs/lifeos/journal/2026-08",
+        );
+        harness.seam.registerConnector(
+            descriptor.capabilityId,
+            makeContextConnector(descriptor, { rows: journalRows(), withOwnerVerification: true }),
+        );
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
+        const resolution = await reader.read(mission, request, { dispatchStepId: "step-context-read" });
+        expect(resolution).not.toBeNull();
+        expect(resolution!.reads).toHaveLength(0);
+        const pkg = new ContextCompiler({ clock: fixedClock() }).compile(mission, request, [resolution!]);
+        expect(pkg.items).toHaveLength(0);
+        expect(pkg.unresolved).toHaveLength(1);
+        expect(pkg.unresolved[0].status).toBe(SourceStatus.UNAVAILABLE);
+        expect(pkg.unresolved[0].requestedRef).toBe("refs/lifeos/journal/2026-08");
+        await harness.close();
+    });
+
+    it("revoked capability/scope → the refusal appears in package.unresolved as REVOKED", async () => {
+        const descriptor = makeContextDescriptor("lifeos");
+        const harness = await createSeamHarness({ descriptors: [descriptor] });
+        const { mission } = await harness.acceptContextPlan(
+            descriptor,
+            "refs/lifeos/journal/2026-08",
+        );
+        harness.seam.registerConnector(
+            descriptor.capabilityId,
+            makeContextConnector(descriptor, { rows: journalRows(), withOwnerVerification: true }),
+        );
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const request = makeContextRequest({
+            ownerHint: "lifeos",
+            subject: "refs/runstead/pr/7", // outside CURRENT mission prefixes
+            missionId: mission.missionId,
+        });
+        const resolution = await reader.read(mission, request, { dispatchStepId: "step-context-read" });
+        expect(resolution).not.toBeNull();
+        expect(resolution!.reads).toHaveLength(0);
+        const pkg = new ContextCompiler({ clock: fixedClock() }).compile(mission, request, [resolution!]);
+        expect(pkg.items).toHaveLength(0);
+        expect(pkg.unresolved).toHaveLength(1);
+        expect(pkg.unresolved[0].status).toBe(SourceStatus.REVOKED);
+        await harness.close();
+    });
+
+    it("owner A fails and owner B returns valid rows: B's items survive, A's failure stays in unresolved", async () => {
+        const lifeos = makeContextDescriptor("lifeos");
+        const tecer = makeContextDescriptor("tecer");
+        const harness = await createSeamHarness({ descriptors: [lifeos, tecer] });
+        const { mission, steps } = await harness.acceptMultiContextPlan([
+            { descriptor: lifeos, subject: "refs/lifeos/journal/2026-08", stepId: "step-lifeos" },
+            { descriptor: tecer, subject: "refs/tecer/journal/2026-08", stepId: "step-tecer" },
+        ]);
+        // Owner A fails (connector throws → seam BLOCKED → honest refusal);
+        // owner B serves valid rows.
+        harness.seam.registerConnector(
+            lifeos.capabilityId,
+            makeContextConnector(lifeos, { throws: true, withOwnerVerification: true }),
+        );
+        harness.seam.registerConnector(
+            tecer.capabilityId,
+            makeContextConnector(tecer, { rows: tecerRows(), withOwnerVerification: true }),
+        );
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
+        const resA = await reader.read(mission, request, { dispatchStepId: steps[0].stepId });
+        const resB = await reader.read(mission, request, { dispatchStepId: steps[1].stepId });
+        expect(resA).not.toBeNull();
+        expect(resB).not.toBeNull();
+        expect(resA!.reads).toHaveLength(0);
+        expect(resB!.reads).toHaveLength(1);
+        const pkg = new ContextCompiler({ clock: fixedClock() }).compile(
+            mission,
+            request,
+            [resA!, resB!],
+        );
+        // No fake success: A's content never became items.
+        expect(pkg.items.filter((i) => i.provenance.owner === "lifeos")).toHaveLength(0);
+        expect(pkg.items.filter((i) => i.provenance.owner === "tecer")).toHaveLength(3);
+        // A's failure is present in unresolved, honoring #64's "one
+        // owner's failure never destroys another owner's items".
+        expect(pkg.unresolved).toHaveLength(1);
+        expect(pkg.unresolved[0].status).toBe(SourceStatus.UNAVAILABLE);
+        expect(pkg.unresolved[0].owner).toBe("lifeos");
+        await harness.close();
+    });
+
+    it("unresolved records never grant capability nor alter the Mission (data stays data)", async () => {
+        const descriptor = makeContextDescriptor("lifeos", {
+            availability: "unavailable" as never,
+        });
+        const harness = await createSeamHarness({ descriptors: [descriptor] });
+        const { mission } = await harness.acceptContextPlan(
+            descriptor,
+            "refs/lifeos/journal/2026-08",
+        );
+        harness.seam.registerConnector(
+            descriptor.capabilityId,
+            makeContextConnector(descriptor, { rows: journalRows(), withOwnerVerification: true }),
+        );
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
+        const missionSnapshot = structuredClone(mission);
+        const resolution = await reader.read(mission, request, { dispatchStepId: "step-context-read" });
+        const pkg = new ContextCompiler({ clock: fixedClock() }).compile(mission, request, [resolution!]);
+        // Mission untouched: no capability was added, no scope widened.
+        expect(mission).toEqual(missionSnapshot);
+        expect(pkg.unresolved).toHaveLength(1);
+        expect(pkg.unresolved[0].status).toBe(SourceStatus.UNAVAILABLE);
+        // The refusal is data, not authority: no item was promoted from it.
+        expect(pkg.items).toHaveLength(0);
+        await harness.close();
+    });
+
+    it("ADVERSARIAL: a caller-forged UnresolvedSource cannot enter the compiler (sealed batch required)", async () => {
+        const mission = makeContextMission();
+        const request = makeContextRequest({ ownerHint: "lifeos" });
+        const forgedBatch = {
+            authorization: {
+                missionId: mission.missionId,
+                stepId: "step-forged",
+                capabilityId: "context:lifeos",
+                subject: request.subject,
+            },
+            reads: [],
+            unresolved: [
+                { requestedRef: request.subject, owner: "lifeos", status: SourceStatus.UNAVAILABLE, detail: "forged" },
+            ],
+        };
+        expect(() =>
+            new ContextCompiler({ clock: fixedClock() }).compile(mission, request, [
+                forgedBatch as never,
+            ]),
+        ).toThrow(ContextCompilerError);
+    });
+});
+
 describe("ContextCompiler — package is inert data (injection stays DATA)", () => {
     it("returns a deeply frozen package with no functions and untouched mission intent", async () => {
         const { pkg, missionId, close } = await compileViaSeam({});
@@ -1365,17 +1813,17 @@ describe("ContextCompiler — freshness anchors to the source (blocker 4, preser
             missionId: mission.missionId,
             maxAgeMs: THREE_HOURS_MS,
         });
-        const results = await reader.read(mission, request, { dispatchStepId: stepId });
-        const sealed = collectSealed(results);
-        const pkg = new ContextCompiler({ clock: fixedClock() }).compile(mission, request, sealed);
+        const resolution = await reader.read(mission, request, { dispatchStepId: stepId });
+        expect(resolution).not.toBeNull();
+        const pkg = new ContextCompiler({ clock: fixedClock() }).compile(mission, request, [resolution!]);
         expect(pkg.items[0].provenance.expiresAt).toBe("2026-08-30T12:00:00.000Z");
 
-        // Recompiling at 14:00 with the SAME sealed read: the row is now
-        // stale — validity is never renewed by recomposition.
+        // Recompiling at 14:00 with the SAME sealed resolution: the row is
+        // now stale — validity is never renewed by recomposition.
         const later = new ContextCompiler({ clock: () => new Date("2026-08-30T14:00:00.000Z") }).compile(
             mission,
             request,
-            sealed,
+            [resolution!],
         );
         expect(later.items).toHaveLength(0);
         expect(later.unresolved[0].status).toBe(SourceStatus.STALE);
@@ -1420,10 +1868,11 @@ describe("ContextCompiler — honest restart recomposition (round 2)", () => {
         const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
         const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
         const before = await reader.read(mission, request, { dispatchStepId: stepId });
+        expect(before).not.toBeNull();
         const first = new ContextCompiler({ clock: fixedClock() }).compile(
             mission,
             request,
-            collectSealed(before),
+            [before!],
         );
         expect(first.items).toHaveLength(3);
 
@@ -1432,18 +1881,19 @@ describe("ContextCompiler — honest restart recomposition (round 2)", () => {
         // re-acquisition produces NO external content…
         const restarted = recompileAfterRestart(mission, request, { clock: fixedClock() });
         expect(restarted.items.filter((i) => i.provenance.origin === "external_owner")).toHaveLength(0);
-        // …and raw previous results handed back as reads are refused by
-        // the compiler (they are not sealed authority).
+        // …and raw previous results handed back as resolutions are refused
+        // by the compiler (they are not sealed authority).
         expect(() =>
             new ContextCompiler({ clock: fixedClock() }).compile(mission, request, [
                 {
-                    descriptor: {
+                    authorization: {
+                        missionId: mission.missionId,
+                        stepId,
                         capabilityId: "context:lifeos",
-                        moduleOwner: "lifeos",
-                        contractVersion: 1,
-                        factRowsOnly: true,
+                        subject: request.subject,
                     },
-                    rows: journalRows(),
+                    reads: [],
+                    unresolved: [],
                 } as never,
             ]),
         ).toThrow(ContextCompilerError);

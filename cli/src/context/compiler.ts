@@ -8,18 +8,24 @@
  *  1. Mission-owned refs are compiled ONLY from the requesting Mission's
  *     own contextRefs — cross-mission references are refused.
  *  2. External content reaches the package ONLY through a non-forgeable
- *     `SeamAuthorizedRead`: a nominal class OWNED by the reader module
- *     (sources.ts), whose construction token is module-private and never
- *     exported. The compiler imports the class only for identity checks
- *     — it holds NO seal, NO token and NO minting function, so it cannot
- *     widen what the boundary already authorized. A plain
- *     `{descriptor, rows}` object is structurally refused, and a forged
- *     `CompiledSourceRead` can never be sealed. There is NO
- *     caller-provided outcome path (no `alreadyAuthorized`):
- *     the engine exposes no API that proves invocation/result identity for
- *     a dispatch that happened elsewhere, so caller-supplied shapes are
- *     never authority — reads must flow through the reader, which
- *     dispatches and seals them in the same call.
+ *     `SeamContextResolution` (a sealed batch of `SeamAuthorizedRead`s +
+ *     honest refusals) OWNED by the reader module (sources.ts), whose
+ *     construction token is module-private and never exported. EVERY seal
+ *     and refusal carries an immutable `SeamAuthorizationEnvelope`
+ *     (missionId, actual dispatched stepId, capability that ran, subject
+ *     scope); the compiler re-verifies the envelope against the mission
+ *     and request it is compiling (round-3 blocker): cross-mission reuse
+ *     and step reassignment fail closed. The compiler imports the classes
+ *     only for identity checks — it holds NO seal, NO token and NO
+ *     minting function, so it cannot widen what the boundary already
+ *     authorized. A plain `{descriptor, rows}` object, a forged
+ *     `CompiledSourceRead` or a caller-forged `UnresolvedSource` is
+ *     structurally refused. There is NO caller-provided outcome path (no
+ *     `alreadyAuthorized`): the engine exposes no API that proves
+ *     invocation/result identity for a dispatch that happened elsewhere,
+ *     so caller-supplied shapes are never authority — reads must flow
+ *     through the reader, which dispatches and seals them in the same
+ *     call.
  *  3. Budgets are NEVER taken from the requester as authority (review
  *     blocker 3): the proposed `ContextRequest.budget` is deterministically
  *     clamped to the runtime-owned `RequestBudgetPolicy` ceiling before
@@ -65,6 +71,16 @@
  *     package compiled before the restart is data, never authority, and
  *     blind redispatch of an already-dispatched step is refused by the
  *     engine (InvocationConflictError).
+ * 11. Reader failures are never dropped (round-3 blocker): resolution
+ *     batches carry honest `UnresolvedSource` records that the compiler
+ *     incorporates into `package.unresolved`, so the planner can
+distinguish
+ *     "no external context needed" from "needed context failed honestly".
+ * 12. Identity fields never carry raw secrets (round-3 blocker):
+ *     `sourceRef`/`evidenceRefId`/`subject`/`ownerHint`/`stepId` fail
+ *     closed on a raw secret pattern (refs are never redacted in place —
+ *     that would change identity); free-form text (`purpose`) is
+ *     sanitized once and stored sanitized only.
  */
 
 import { createHash } from "node:crypto";
@@ -92,7 +108,7 @@ import {
     type ContextRow,
 } from "./contracts.js";
 import { containsRawSecret, sanitizeText } from "../mission/sanitize.js";
-import { SeamAuthorizedRead } from "./sources.js";
+import { SeamAuthorizedRead, SeamContextResolution } from "./sources.js";
 
 
 
@@ -136,17 +152,6 @@ function computeItemId(input: {
     }).slice(0, 24)}`;
 }
 
-
-/**
- * What the SeamBoundContextReader reports for ONE requested source
- * (sources.ts): either a successful read SEALED as a non-forgeable
- * `SeamAuthorizedRead` (the ONLY form the compiler accepts), or an honest
- * refusal record. Honest refusals are surface data for the caller, never
- * compiler authority — a refused source can never contribute content.
- */
-export type ContextReadResult =
-    | { ok: true; read: SeamAuthorizedRead }
-    | { ok: false; unresolved: UnresolvedSource };
 
 /**
  * Deterministic package identity: hash of the FULL package content,
@@ -262,23 +267,13 @@ export class ContextCompiler {
     compile(
         mission: Mission,
         request: ContextRequest,
-        reads: SeamAuthorizedRead[],
+        resolutions: SeamContextResolution[],
     ): BoundedContextPackage {
         // Gate 0 — declarative request sanity (fail-closed budgets: a
         // missing/invalid budget never compiles an unbounded package).
         if (!request.subject.trim() || !request.purpose.trim()) {
             throw new ContextCompilerError(
                 "ContextRequest must declare a non-empty subject and purpose",
-            );
-        }
-        const { effective, clamped, budget } = this.effectiveBudget(request);
-        if (
-            effective.maxItems <= 0 ||
-            effective.maxTotalChars <= 0 ||
-            effective.maxEstimatedTokens <= 0
-        ) {
-            throw new ContextCompilerError(
-                "ContextRequest.budget is invalid or clamps to an empty budget (fail-closed)",
             );
         }
         // Gate 1 — the request must belong to THIS mission (fail-closed:
@@ -288,15 +283,41 @@ export class ContextCompiler {
                 `ContextRequest targets mission "${request.missionId}" but compilation was requested for "${mission.missionId}"`,
             );
         }
-        // Gate 1b — structural closure on external reads: every entry must
-        // be a genuinely sealed SeamAuthorizedRead. Plain objects are
+        // ONE normalization pass over the request (round-3 blocker):
+        // identity/ref fields (subject/ownerHint/stepId) fail closed on a
+        // raw secret pattern — refs are never redacted in place, that
+        // would change identity; free-form purpose is sanitized ONCE and
+        // ONLY the sanitized form is stored (package.request snapshot AND
+        // every provenance field), so no raw/sanitized split can leak.
+        const normalized = normalizeRequest(request);
+        const { effective, clamped, budget } = this.effectiveBudget(normalized);
+        if (
+            effective.maxItems <= 0 ||
+            effective.maxTotalChars <= 0 ||
+            effective.maxEstimatedTokens <= 0
+        ) {
+            throw new ContextCompilerError(
+                "ContextRequest.budget is invalid or clamps to an empty budget (fail-closed)",
+            );
+        }
+        // Gate 1b — structural closure on external input: every entry must
+        // be a genuinely sealed SeamContextResolution. Plain objects,
+        // forged resolutions and caller-forged UnresolvedSources are
         // refused, never silently coerced into authority.
-        for (const r of reads) {
-            if (!isSeamAuthorizedRead(r)) {
+        for (const resolution of resolutions) {
+            if (!SeamContextResolution.isSealed(resolution)) {
                 throw new ContextCompilerError(
-                    "external reads must be SeamAuthorizedRead values produced by the SeamBoundContextReader; raw descriptor/rows objects are not authority (fail-closed)",
+                    "external content must arrive as SeamContextResolution values produced by the SeamBoundContextReader; raw descriptor/rows objects or forged unresolved records are not authority (fail-closed)",
                 );
             }
+        }
+        // Gate 1c — authorization envelope re-binding (round-3 blocker):
+        // every sealed batch must belong to THIS mission/request. A seal
+        // authorized for Mission A can never be reattributed to Mission B;
+        // a seal from step A can never be compiled under step B; the
+        // subject scope and capability must match the request/mission.
+        for (const resolution of resolutions) {
+            this.assertResolutionBound(resolution, mission, normalized);
         }
 
         const now = this.isoNow();
@@ -309,8 +330,18 @@ export class ContextCompiler {
         // compiled WITHOUT any seam read (blocker 1 test contract).
         // Sensitivity accompanies redaction (review blocker, round 2): a
         // label that had to be sanitized is compiled as REDACTED, never
-        // as NORMAL.
+        // as NORMAL. Identity fields fail closed on raw secrets (round-3
+        // blocker): a contextRef whose externalRef smuggles a secret is
+        // excluded with an honest record — refs are never redacted in
+        // place.
         for (const owned of mission.contextRefs) {
+            if (containsRawSecret(owned.externalRef)) {
+                excluded.push({
+                    itemId: `secret:${sha256Json({ ref: owned.externalRef }).slice(0, 24)}`,
+                    reason: "secret_in_identity",
+                });
+                continue;
+            }
             const rawLabel = owned.label;
             const ownedContent = sanitizeText(rawLabel);
             const ownedRedacted = redactionSensitivity(rawLabel, ownedContent);
@@ -330,7 +361,7 @@ export class ContextCompiler {
                     fetchedAt: now,
                     authorization: `authorized by ${sanitizeText(owned.authorizedBy)} via MissionIntent.contextRefs`,
                     missionId: mission.missionId,
-                    purpose: sanitizeText(request.purpose),
+                    purpose: sanitizeText(normalized.purpose),
                     sensitivity: ownedRedacted,
                     origin: "mission_owned",
                 },
@@ -338,135 +369,165 @@ export class ContextCompiler {
         }
 
         // ── Phase B: seam-authorized external reads (#63 boundary) ────
-        // `reads` are non-forgeable SeamAuthorizedReads produced ONLY by
-        // the SeamBoundContextReader from ConnectorDispatchSeam-authorized
-        // results. The compiler never defaults external content to FACT
-        // (blocker 5).
-        for (const outcome of reads) {
-            const outcomeRead = outcome.read;
-            if (outcomeRead.skippedInvalidRows !== undefined && outcomeRead.skippedInvalidRows > 0) {
-                unresolved.push({
-                    requestedRef: sanitizeText(outcomeRead.descriptor.capabilityId),
-                    owner: outcomeRead.descriptor.moduleOwner,
-                    status: SourceStatus.UNSUPPORTED,
-                    detail: `${outcomeRead.skippedInvalidRows} malformed row(s) skipped by structural validation`,
-                });
+        // `resolutions` are sealed SeamContextResolution batches produced
+        // ONLY by the SeamBoundContextReader from ConnectorDispatchSeam-
+        // authorized results; reader failures (unavailable/revoked/
+        // unsupported) are carried inside and recorded in unresolved —
+        // never dropped (round-3 blocker). The compiler never defaults
+        // external content to FACT (blocker 5).
+        for (const resolution of resolutions) {
+            for (const refusal of resolution.unresolved) {
+                unresolved.push(refusal);
             }
-            for (const row of outcomeRead.rows) {
-                // Sanitize BEFORE classification. Unredactable secret-like
-                // content is EXCLUDED with an honest record — never a
-                // silent carry, never a silent drop.
-                const rawContent = row.content;
-                const content = sanitizeText(rawContent);
-                // Sensitivity accompanies redaction (review blocker,
-                // round 2): content that NEEDED sanitizing — or arrived
-                // pre-redacted — is carried with REDACTED sensitivity,
-                // never NORMAL next to redaction markers. An unredactable
-                // secret-like string is refused outright below.
-                const rowRedacted = redactionSensitivity(rawContent, content);
-                if (containsRawSecret(content)) {
-                    excluded.push({
-                        itemId: `secret:${sha256Json({ ref: row.sourceRef, content }).slice(0, 24)}`,
-                        reason: "secret_refused",
-                    });
-                    continue;
-                }
-
-                // Epistemic class: the SOURCE declares it (blocker 5).
-                // No silent promotion to FACT, ever. A row without a class
-                // is refused unless the descriptor contract explicitly
-                // guarantees fact-only rows for this capability.
-                const itemClass = rowClassOf(row, outcomeRead.descriptor);
-                if (itemClass === undefined) {
+            for (const outcome of resolution.reads) {
+                const envelope = outcome.authorization;
+                const outcomeRead = outcome.read;
+                if (outcomeRead.skippedInvalidRows !== undefined && outcomeRead.skippedInvalidRows > 0) {
                     unresolved.push({
-                        requestedRef: sanitizeText(row.sourceRef),
+                        requestedRef: sanitizeText(outcomeRead.descriptor.capabilityId),
                         owner: outcomeRead.descriptor.moduleOwner,
                         status: SourceStatus.UNSUPPORTED,
-                        detail:
-                            "row carried no epistemic classification and the capability does not declare fact-only rows",
+                        detail: `${outcomeRead.skippedInvalidRows} malformed row(s) skipped by structural validation`,
                     });
-                    continue;
                 }
+                for (const row of outcomeRead.rows) {
+                    // Identity secret gate FIRST (round-3 blocker): a row
+                    // whose sourceRef/evidenceRefId carries a raw secret
+                    // is excluded with an honest record — silently
+                    // redacting a ref would change its identity, so refs
+                    // fail closed (they never reach provenance.sourceRef,
+                    // item id sources, restricted reference-only text,
+                    // evidenceRefId or unresolved records).
+                    if (
+                        containsRawSecret(row.sourceRef) ||
+                        (row.evidenceRefId !== undefined && containsRawSecret(row.evidenceRefId))
+                    ) {
+                        excluded.push({
+                            itemId: `secret:${sha256Json({
+                                ref: row.sourceRef,
+                                evidenceRefId: row.evidenceRefId,
+                            }).slice(0, 24)}`,
+                            reason: "secret_in_identity",
+                        });
+                        continue;
+                    }
+                    // Sanitize BEFORE classification. Unredactable secret-like
+                    // content is EXCLUDED with an honest record — never a
+                    // silent carry, never a silent drop.
+                    const rawContent = row.content;
+                    const content = sanitizeText(rawContent);
+                    // Sensitivity accompanies redaction (review blocker,
+                    // round 2): content that NEEDED sanitizing — or arrived
+                    // pre-redacted — is carried with REDACTED sensitivity,
+                    // never NORMAL next to redaction markers. An unredactable
+                    // secret-like string is refused outright below.
+                    const rowRedacted = redactionSensitivity(rawContent, content);
+                    if (containsRawSecret(content)) {
+                        excluded.push({
+                            itemId: `secret:${sha256Json({ ref: row.sourceRef, content }).slice(0, 24)}`,
+                            reason: "secret_refused",
+                        });
+                        continue;
+                    }
 
-                // RESTRICTED stays RESTRICTED (the stricter class wins);
-                // redaction only ever upgrades NORMAL to REDACTED.
-                const declaredSensitivity = row.sensitivity ?? SensitivityClass.NORMAL;
-                const sensitivity =
-                    declaredSensitivity === SensitivityClass.RESTRICTED
-                        ? SensitivityClass.RESTRICTED
-                        : rowRedacted === SensitivityClass.REDACTED
-                          ? SensitivityClass.REDACTED
-                          : declaredSensitivity;
-                if (sensitivity === SensitivityClass.RESTRICTED) {
-                    // Owner-declared restricted: reference-only, no content.
+                    // Epistemic class: the SOURCE declares it (blocker 5).
+                    // No silent promotion to FACT, ever. A row without a class
+                    // is refused unless the descriptor contract explicitly
+                    // guarantees fact-only rows for this capability.
+                    const itemClass = rowClassOf(row, outcomeRead.descriptor);
+                    if (itemClass === undefined) {
+                        unresolved.push({
+                            requestedRef: sanitizeText(row.sourceRef),
+                            owner: outcomeRead.descriptor.moduleOwner,
+                            status: SourceStatus.UNSUPPORTED,
+                            detail:
+                                "row carried no epistemic classification and the capability does not declare fact-only rows",
+                        });
+                        continue;
+                    }
+
+                    // RESTRICTED stays RESTRICTED (the stricter class wins);
+                    // redaction only ever upgrades NORMAL to REDACTED.
+                    const declaredSensitivity = row.sensitivity ?? SensitivityClass.NORMAL;
+                    const sensitivity =
+                        declaredSensitivity === SensitivityClass.RESTRICTED
+                            ? SensitivityClass.RESTRICTED
+                            : rowRedacted === SensitivityClass.REDACTED
+                              ? SensitivityClass.REDACTED
+                              : declaredSensitivity;
+                    if (sensitivity === SensitivityClass.RESTRICTED) {
+                        // Owner-declared restricted: reference-only, no content.
+                        items.push({
+                            itemId: computeItemId({
+                                owner: outcomeRead.descriptor.moduleOwner,
+                                sourceRef: row.sourceRef,
+                                epistemicClass: itemClass,
+                                content: "(restricted)",
+                                missionId: mission.missionId,
+                            }),
+                            epistemicClass: itemClass,
+                            content: `(restricted: reference-only ${row.sourceRef})`,
+                            provenance: this.externalProvenance(
+                                outcomeRead.descriptor,
+                                row,
+                                normalized,
+                                now,
+                                sensitivity,
+                                expiryFor(row, normalized, now),
+                                envelope.stepId,
+                            ),
+                        });
+                        continue;
+                    }
+
+                    // Freshness: fail-closed. A freshness requirement with a
+                    // source that cannot prove its age is STALE, not fresh.
+                    // Expiry anchors to the SOURCE's fetchedAt (blocker 4):
+                    // recompiling later never renews validity.
+                    if (normalized.maxAgeMs !== undefined) {
+                        const nowMs = Date.parse(now);
+                        const fetchedMs =
+                            row.fetchedAt !== undefined ? Date.parse(row.fetchedAt) : Number.NaN;
+                        const age = Number.isNaN(fetchedMs) ? Number.NaN : nowMs - fetchedMs;
+                        if (Number.isNaN(age) || age > normalized.maxAgeMs) {
+                            unresolved.push({
+                                requestedRef: sanitizeText(row.sourceRef),
+                                owner: outcomeRead.descriptor.moduleOwner,
+                                status: SourceStatus.STALE,
+                                detail: Number.isNaN(age)
+                                    ? "freshness required but the source carried no valid timestamp"
+                                    : "row age exceeds the request's maxAgeMs",
+                            });
+                            continue;
+                        }
+                    }
+
                     items.push({
                         itemId: computeItemId({
                             owner: outcomeRead.descriptor.moduleOwner,
                             sourceRef: row.sourceRef,
                             epistemicClass: itemClass,
-                            content: "(restricted)",
+                            content,
                             missionId: mission.missionId,
                         }),
                         epistemicClass: itemClass,
-                        content: `(restricted: reference-only ${row.sourceRef})`,
+                        content,
                         provenance: this.externalProvenance(
                             outcomeRead.descriptor,
                             row,
-                            request,
+                            normalized,
                             now,
                             sensitivity,
-                            expiryFor(row, request, now),
+                            expiryFor(row, normalized, now),
+                            envelope.stepId,
                         ),
                     });
-                    continue;
                 }
-
-                // Freshness: fail-closed. A freshness requirement with a
-                // source that cannot prove its age is STALE, not fresh.
-                // Expiry anchors to the SOURCE's fetchedAt (blocker 4):
-                // recompiling later never renews validity.
-                if (request.maxAgeMs !== undefined) {
-                    const nowMs = Date.parse(now);
-                    const fetchedMs =
-                        row.fetchedAt !== undefined ? Date.parse(row.fetchedAt) : Number.NaN;
-                    const age = Number.isNaN(fetchedMs) ? Number.NaN : nowMs - fetchedMs;
-                    if (Number.isNaN(age) || age > request.maxAgeMs) {
-                        unresolved.push({
-                            requestedRef: sanitizeText(row.sourceRef),
-                            owner: outcomeRead.descriptor.moduleOwner,
-                            status: SourceStatus.STALE,
-                            detail: Number.isNaN(age)
-                                ? "freshness required but the source carried no valid timestamp"
-                                : "row age exceeds the request's maxAgeMs",
-                        });
-                        continue;
-                    }
-                }
-
-                items.push({
-                    itemId: computeItemId({
-                        owner: outcomeRead.descriptor.moduleOwner,
-                        sourceRef: row.sourceRef,
-                        epistemicClass: itemClass,
-                        content,
-                        missionId: mission.missionId,
-                    }),
-                    epistemicClass: itemClass,
-                    content,
-                        provenance: this.externalProvenance(
-                            outcomeRead.descriptor,
-                        row,
-                        request,
-                        now,
-                        sensitivity,
-                        expiryFor(row, request, now),
-                    ),
-                });
             }
         }
 
         // ── Phase C: minimal disclosure + dedup + deterministic budget ─
-        const capped = this.capPipeline(items, request, effective, excluded);
+        const capped = this.capPipeline(items, normalized, effective, excluded);
 
         const budgetReport = {
             limits: {
@@ -497,15 +558,76 @@ export class ContextCompiler {
             packageId: "",
             contractVersion: CONTEXT_COMPILER_CONTRACT_VERSION,
             missionId: mission.missionId,
-            stepId: request.stepId,
+            stepId: normalized.stepId,
             compiledAt: now,
-            request: JSON.parse(JSON.stringify(request)) as ContextRequest,
+            request: JSON.parse(JSON.stringify(normalized)) as ContextRequest,
             items: capped,
             unresolved,
             budgetReport,
         };
         unfrozen.packageId = computePackageId(unfrozen);
         return deepFreeze(unfrozen) as BoundedContextPackage;
+    }
+
+    /**
+     * Round-3 blocker: re-bind every sealed resolution to THIS mission and
+     * request. The seal proves "this payload crossed the seam FOR this
+     * mission, under this step, this capability, this subject scope" —
+     * the compiler refuses anything else: cross-mission reuse, step
+     * reassignment, subject divergence and capability drift all fail
+     * closed. Refused-only resolutions (honest reader failures) must still
+     * bind to the mission/request; sealed reads additionally must belong
+     * to a capability the mission actually authorizes.
+     */
+    private assertResolutionBound(
+        resolution: SeamContextResolution,
+        mission: Mission,
+        request: ContextRequest,
+    ): void {
+        const auth = resolution.authorization;
+        if (auth.missionId !== mission.missionId) {
+            throw new ContextCompilerError(
+                `sealed resolution is bound to mission "${auth.missionId}" but compilation is for "${mission.missionId}" (cross-mission reuse refused)`,
+            );
+        }
+        if (request.stepId !== undefined && auth.stepId !== request.stepId) {
+            throw new ContextCompilerError(
+                `sealed resolution dispatched step "${auth.stepId}" but the request declares step "${request.stepId}" (step reassignment refused)`,
+            );
+        }
+        if (auth.subject !== request.subject) {
+            throw new ContextCompilerError(
+                `sealed resolution subject "${auth.subject}" diverges from request subject "${request.subject}" (scope divergence refused)`,
+            );
+        }
+        for (const read of resolution.reads) {
+            if (!SeamAuthorizedRead.isSealed(read)) {
+                throw new ContextCompilerError(
+                    "resolution wraps a non-sealed read (fail-closed)",
+                );
+            }
+            const readAuth = read.authorization;
+            if (
+                readAuth.missionId !== auth.missionId ||
+                readAuth.stepId !== auth.stepId ||
+                readAuth.capabilityId !== auth.capabilityId ||
+                readAuth.subject !== auth.subject
+            ) {
+                throw new ContextCompilerError(
+                    "sealed read envelope drifts from its resolution (fail-closed)",
+                );
+            }
+            if (read.read.descriptor.capabilityId !== auth.capabilityId) {
+                throw new ContextCompilerError(
+                    `sealed read descriptor capability "${read.read.descriptor.capabilityId}" drifts from envelope capability "${auth.capabilityId}" (fail-closed)`,
+                );
+            }
+            if (!mission.allowedCapabilityScope.capabilityIds.includes(auth.capabilityId)) {
+                throw new ContextCompilerError(
+                    `sealed read capability "${auth.capabilityId}" is not authorized for mission "${mission.missionId}" (fail-closed)`,
+                );
+            }
+        }
     }
 
     /**
@@ -811,6 +933,7 @@ export class ContextCompiler {
         now: string,
         sensitivity: SensitivityClass,
         expiresAt: string | undefined,
+        stepId: string,
     ): ItemProvenance {
         return {
             owner: descriptor.moduleOwner,
@@ -819,6 +942,7 @@ export class ContextCompiler {
             fetchedAt: row.fetchedAt ?? now,
             authorization: `capability:${descriptor.capabilityId}`,
             missionId: request.missionId,
+            stepId,
             purpose: sanitizeText(request.purpose),
             expiresAt,
             sensitivity,
@@ -857,6 +981,31 @@ function expiryFor(
     const fetchedMs = row.fetchedAt !== undefined ? Date.parse(row.fetchedAt) : Number.NaN;
     if (Number.isNaN(fetchedMs)) return undefined;
     return new Date(fetchedMs + request.maxAgeMs).toISOString();
+}
+
+/**
+ * ONE normalization pass over the request (round-3 blocker): identity/ref
+ * fields (subject, ownerHint, stepId) FAIL CLOSED when they carry a raw
+ * secret pattern — silently redacting a ref would change its identity, so
+ * refs are never redacted in place. Free-form `purpose` is sanitized
+ * deterministically ONCE; the returned request (and ONLY it) is what the
+ * package snapshot and every provenance field use, so no raw/sanitized
+ * split can exist between package.request and provenance.
+ */
+function normalizeRequest(request: ContextRequest): ContextRequest {
+    const identityFields: Array<[string, string | undefined]> = [
+        ["subject", request.subject],
+        ["ownerHint", request.ownerHint],
+        ["stepId", request.stepId],
+    ];
+    for (const [field, value] of identityFields) {
+        if (value !== undefined && containsRawSecret(value)) {
+            throw new ContextCompilerError(
+                `ContextRequest.${field} carries a raw secret pattern; identity/ref fields are never silently redacted (fail-closed)`,
+            );
+        }
+    }
+    return { ...request, purpose: sanitizeText(request.purpose) };
 }
 
 /**
