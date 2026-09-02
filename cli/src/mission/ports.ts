@@ -50,16 +50,17 @@ export interface MissionStore {
         reason?: string,
     ): Promise<void>;
 
-    // Invocation references
-    saveInvocation(invocation: CapabilityInvocation | CapabilityInvocationRef): Promise<CapabilityInvocation>;
-    getInvocation(invocationId: string): Promise<CapabilityInvocation | null>;
-    listInvocations(missionId: string): Promise<CapabilityInvocation[]>;
+    // Invocation references. Full durable invocation reads/writes are deferred
+    // to Task 3; this legacy surface remains a CapabilityInvocationRef projection.
+    saveInvocation(invocation: CapabilityInvocation | CapabilityInvocationRef): Promise<CapabilityInvocationRef>;
+    getInvocation(invocationId: string): Promise<CapabilityInvocationRef | null>;
+    listInvocations(missionId: string): Promise<CapabilityInvocationRef[]>;
     updateInvocation(
         invocationId: string,
         updates: Partial<CapabilityInvocation> | Partial<CapabilityInvocationRef>,
     ): Promise<void>;
 
-    /** Invocations that may be resumed without replaying uncertain effects. */
+    /** Full-entity recovery queries are added when Task 3 maps the durable fields. */
     listRecoverableInvocations?(): Promise<CapabilityInvocation[]>;
     /** All invocations that have not reached an immutable terminal state. */
     listNonTerminalInvocations?(): Promise<CapabilityInvocation[]>;

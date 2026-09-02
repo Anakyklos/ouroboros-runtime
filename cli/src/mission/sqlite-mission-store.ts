@@ -22,6 +22,7 @@ import type {
     CapabilityInvocationRef,
     MissionState,
 } from "./contracts.js";
+import { assertValidInvocationIdentity } from "./contracts.js";
 import type { MissionStore } from "./ports.js";
 import { assertNoRawSecrets } from "./sanitize.js";
 
@@ -374,10 +375,11 @@ export class SqliteMissionStore implements MissionStore {
     // Invocation references
     // ------------------------------------------------------------------
 
-    async saveInvocation(invocation: CapabilityInvocation | CapabilityInvocationRef): Promise<CapabilityInvocation> {
+    async saveInvocation(invocation: CapabilityInvocation | CapabilityInvocationRef): Promise<CapabilityInvocationRef> {
         // Fail-closed durable boundary: any persisted string (including IDs
         // and refs) containing a raw secret pattern is rejected.
         assertNoRawSecrets(invocation, "invocation");
+        if ("planRevisionId" in invocation) assertValidInvocationIdentity(invocation);
         this.stmt(
             "saveInvocation",
             `INSERT INTO mission_invocations (
@@ -406,15 +408,15 @@ export class SqliteMissionStore implements MissionStore {
             invocation.ownerVerification ? JSON.stringify(invocation.ownerVerification) : null,
             invocation.error ?? null,
         );
-        return invocation as CapabilityInvocation;
+        return this.toInvocationRef(invocation);
     }
 
-    async getInvocation(invocationId: string): Promise<CapabilityInvocation | null> {
+    async getInvocation(invocationId: string): Promise<CapabilityInvocationRef | null> {
         const row = this.stmt(
             "getInvocation",
             "SELECT * FROM mission_invocations WHERE invocation_id = ?",
         ).get(invocationId) as InvocationRow | null;
-        return row ? this.rowToInvocation(row) as CapabilityInvocation : null;
+        return row ? this.rowToInvocation(row) : null;
     }
 
     /** Sync helper used by getMission and listMissions. */
@@ -425,8 +427,8 @@ export class SqliteMissionStore implements MissionStore {
         ).all(missionId) as unknown as InvocationRow[];
     }
 
-    async listInvocations(missionId: string): Promise<CapabilityInvocation[]> {
-        return this.listInvocationRows(missionId).map((row) => this.rowToInvocation(row) as CapabilityInvocation);
+    async listInvocations(missionId: string): Promise<CapabilityInvocationRef[]> {
+        return this.listInvocationRows(missionId).map((row) => this.rowToInvocation(row));
     }
 
     async updateInvocation(
@@ -512,6 +514,21 @@ export class SqliteMissionStore implements MissionStore {
                 ? parseJson(row.owner_verification, undefined)
                 : undefined,
             error: row.error ?? undefined,
+        };
+    }
+
+    private toInvocationRef(invocation: CapabilityInvocation | CapabilityInvocationRef): CapabilityInvocationRef {
+        return {
+            invocationId: invocation.invocationId,
+            missionId: invocation.missionId,
+            stepId: invocation.stepId,
+            capabilityId: invocation.capabilityId,
+            status: invocation.status,
+            dispatchedAt: invocation.dispatchedAt,
+            completedAt: invocation.completedAt,
+            resultRefs: invocation.resultRefs,
+            ownerVerification: invocation.ownerVerification,
+            error: invocation.error,
         };
     }
 

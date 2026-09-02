@@ -335,10 +335,9 @@ export interface InvocationResult {
     /** Optional evidence refs produced by the invocation. */
     evidenceRefs: EvidenceRef[];
     /**
-     * When the invocation reached a TERMINAL status. Required for
-     * COMPLETED/FAILED/CANCELLED; absent (undefined) for non-terminal
-     * states (RUNNING/BLOCKED) — a non-terminal invocation has not
-     * completed, and fabricating a completion timestamp would be a lie.
+     * When this result was produced. Required for COMPLETED/CANCELLED and for
+     * FAILED attempt outcomes. FAILED describes a definitive attempt failure,
+     * but remains retryable when the invocation retry metadata permits it.
      */
     completedAt?: string;
 }
@@ -462,6 +461,32 @@ export interface CapabilityInvocation extends CapabilityInvocationRef {
     updatedAt: string;
 }
 
+/**
+ * Validate the identity-bearing portion of a full invocation before a durable
+ * write. Opaque refs are rejected when malformed, never silently redacted.
+ * Secret detection remains the store's recursive fail-closed responsibility.
+ */
+export function assertValidInvocationIdentity(
+    invocation: Pick<CapabilityInvocation, "invocationId" | "missionId" | "stepId" | "capabilityId" | "requestId" | "effectFingerprint" | "inputRefs">,
+): void {
+    const identityFields: Array<[string, string]> = [
+        ["invocationId", invocation.invocationId],
+        ["missionId", invocation.missionId],
+        ["stepId", invocation.stepId],
+        ["capabilityId", invocation.capabilityId],
+        ["requestId", invocation.requestId],
+        ["effectFingerprint", invocation.effectFingerprint],
+    ];
+    for (const [name, value] of identityFields) {
+        if (typeof value !== "string" || value.length === 0) {
+            throw new Error(`Invalid invocation identity field "${name}"; opaque identities must be non-empty strings`);
+        }
+    }
+    if (!Array.isArray(invocation.inputRefs) || invocation.inputRefs.some((ref) => typeof ref !== "string")) {
+        throw new Error("Invalid invocation identity field \"inputRefs\"; opaque refs must be a string array");
+    }
+}
+
 /** Explicit pause information for a Mission that is not cancelled. */
 export interface MissionPauseMetadata {
     previousState: MissionState;
@@ -470,6 +495,7 @@ export interface MissionPauseMetadata {
     pausedBy?: string;
 }
 
+/** Only COMPLETED and CANCELLED are immutable invocation terminal states. */
 export function isInvocationTerminal(invocation: Pick<CapabilityInvocationRef, "status">): boolean {
     return invocation.status === InvocationStatus.COMPLETED
         || invocation.status === InvocationStatus.CANCELLED;
@@ -499,20 +525,20 @@ export function isSafeRetryEligible(
         && isInvocationDue(invocation, now);
 }
 
-/** Terminal records are immutable, while non-terminal records may transition. */
+/** FAILED is an attempt outcome; retry metadata controls an explicit retry transition. */
 export function isInvocationUpdateAllowed(
     current: Pick<CapabilityInvocationRef, "status">,
     next: Pick<CapabilityInvocationRef, "status">,
 ): boolean {
-    return !isInvocationTerminal(current) || current.status === next.status;
+    return !isInvocationTerminal(current);
 }
 
-/** Merge a result without replacing an already terminal result or duplicating refs. */
+/** Merge a result without mutating an immutable terminal record or duplicating refs. */
 export function mergeInvocationResult(
     invocation: CapabilityInvocation,
     result: InvocationResult,
 ): CapabilityInvocation {
-    if (isInvocationTerminal(invocation) && invocation.status !== result.status) return invocation;
+    if (isInvocationTerminal(invocation)) return invocation;
     const refs = new Map(invocation.resultRefs.map((ref) => [ref.refId, ref]));
     for (const ref of result.evidenceRefs) refs.set(ref.refId, ref);
     return {
