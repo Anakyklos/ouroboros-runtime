@@ -61,9 +61,9 @@ export interface MissionStore {
     ): Promise<void>;
 
     /** Full-entity recovery queries over the authoritative invocation table. */
-    listRecoverableInvocations(): Promise<CapabilityInvocation[]>;
+    listRecoverableInvocations(limit: number): Promise<CapabilityInvocation[]>;
     /** All invocations that have not reached an immutable terminal state. */
-    listNonTerminalInvocations(): Promise<CapabilityInvocation[]>;
+    listNonTerminalInvocations(limit: number): Promise<CapabilityInvocation[]>;
     /** Due invocations ordered by eligibility, bounded by the caller. */
     listDueInvocations(now: string, limit: number): Promise<CapabilityInvocation[]>;
     /** Preserve completed effects across plan revisions and duplicate requests. */

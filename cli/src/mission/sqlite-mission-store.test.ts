@@ -1104,6 +1104,12 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         inspector.close();
         expect(missionColumns.some((column) => column.name === "pause_metadata")).toBe(true);
         const migrated = await second.getInvocation("legacy-invocation");
+        expect(migrated?.effectFingerprint).toBe("legacy:legacy-invocation");
+        const persisted = new Database(dbPath)
+            .query("SELECT effect_fingerprint FROM mission_invocations WHERE invocation_id = ?")
+            .get("legacy-invocation") as { effect_fingerprint: string };
+        expect(persisted.effect_fingerprint).toBe("legacy:legacy-invocation");
+        expect(await second.findInvocationByEffectFingerprint("legacy:legacy-invocation")).toEqual(migrated);
         expect(migrated?.delivery.state).toBe("uncertain");
         expect(migrated?.retry.nextEligibleAt).toBeNull();
         expect(migrated?.attempts).toEqual([]);
@@ -1146,13 +1152,16 @@ describe("SqliteMissionStore (durability + recovery)", () => {
 
         const due = await store.listDueInvocations("2026-08-30T13:00:00.000Z", 2);
         expect(due.map((invocation) => invocation.invocationId)).toEqual(["due-now", "due-early"]);
-        expect((await store.listNonTerminalInvocations()).map((invocation) => invocation.invocationId)).not.toContain("completed");
-        expect((await store.listRecoverableInvocations()).map((invocation) => invocation.invocationId)).toEqual([
+        expect((await store.listNonTerminalInvocations(2)).map((invocation) => invocation.invocationId)).toEqual([
             "due-early",
             "due-late",
-            "due-now",
-            "future",
         ]);
+        expect((await store.listRecoverableInvocations(2)).map((invocation) => invocation.invocationId)).toEqual([
+            "due-early",
+            "due-late",
+        ]);
+        expect(await store.listNonTerminalInvocations(0)).toEqual([]);
+        expect(await store.listRecoverableInvocations(Number.MAX_SAFE_INTEGER + 1)).toEqual([]);
 
         await store.close();
     });

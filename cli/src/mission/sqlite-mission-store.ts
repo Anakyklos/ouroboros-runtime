@@ -278,6 +278,9 @@ export class SqliteMissionStore implements MissionStore {
         // They must never become due merely because the new retry column is NULL.
         db.exec(`
             UPDATE mission_invocations
+            SET effect_fingerprint = 'legacy:' || invocation_id
+            WHERE effect_fingerprint IS NULL OR effect_fingerprint = '';
+            UPDATE mission_invocations
             SET delivery = '{"state":"uncertain"}'
             WHERE delivery = '{"state":"not_submitted"}'
               AND (dispatched_at IS NOT NULL OR status IN ('dispatched', 'running'));
@@ -637,17 +640,20 @@ export class SqliteMissionStore implements MissionStore {
         await this.saveInvocation(merged);
     }
 
-    async listNonTerminalInvocations(): Promise<CapabilityInvocation[]> {
+    async listNonTerminalInvocations(limit: number): Promise<CapabilityInvocation[]> {
+        if (!Number.isSafeInteger(limit) || limit <= 0) return [];
         const rows = this.stmt(
             "listNonTerminalInvocations",
             `SELECT * FROM mission_invocations
              WHERE status NOT IN ('completed', 'cancelled')
-             ORDER BY created_at ASC, invocation_id ASC`,
-        ).all() as unknown as InvocationRow[];
+             ORDER BY created_at ASC, invocation_id ASC
+             LIMIT ?`,
+        ).all(limit) as unknown as InvocationRow[];
         return rows.map((row) => this.rowToInvocation(row));
     }
 
-    async listRecoverableInvocations(): Promise<CapabilityInvocation[]> {
+    async listRecoverableInvocations(limit: number): Promise<CapabilityInvocation[]> {
+        if (!Number.isSafeInteger(limit) || limit <= 0) return [];
         const rows = this.stmt(
             "listRecoverableInvocations",
             `SELECT * FROM mission_invocations
@@ -655,8 +661,9 @@ export class SqliteMissionStore implements MissionStore {
                AND status NOT IN ('completed', 'cancelled')
                AND json_extract(delivery, '$.state') != 'uncertain'
                AND json_extract(reconciliation, '$.state') NOT IN ('pending', 'unsupported')
-             ORDER BY created_at ASC, invocation_id ASC`,
-        ).all() as unknown as InvocationRow[];
+             ORDER BY created_at ASC, invocation_id ASC
+             LIMIT ?`,
+        ).all(limit) as unknown as InvocationRow[];
         return rows.map((row) => this.rowToInvocation(row));
     }
 
