@@ -15,10 +15,11 @@
  *     object is structurally refused, and a forged `CompiledSourceRead`
  *     can never be sealed. The compiler itself holds no registry, no seam
  *     and no policy: it cannot widen what the boundary already authorized.
- *     `alreadyAuthorized` outcomes are re-verified against AUTHORITATIVE
- *     engine state (the invocation must exist for this mission/step with
- *     the claimed capability, and the step must already be dispatched):
- *     caller-supplied shapes are never authority.
+ *     There is NO caller-provided outcome path (no `alreadyAuthorized`):
+ *     the engine exposes no API that proves invocation/result identity for
+ *     a dispatch that happened elsewhere, so caller-supplied shapes are
+ *     never authority — reads must flow through the reader, which
+ *     dispatches and seals them in the same call.
  *  3. Budgets are NEVER taken from the requester as authority (review
  *     blocker 3): the proposed `ContextRequest.budget` is deterministically
  *     clamped to the runtime-owned `RequestBudgetPolicy` ceiling before

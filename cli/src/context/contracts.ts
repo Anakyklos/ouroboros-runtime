@@ -12,7 +12,8 @@
  * Flow:
  *   Mission
  *     → declarative context need (ContextRequest)
- *     → RegistryBoundContextReader (#63 boundary, #62 policy authorization)
+ *     → SeamBoundContextReader (#63 ConnectorDispatchSeam, #62 policy
+ *       authorization, sealing into non-forgeable SeamAuthorizedRead)
  *     → Context Compiler (deterministic, offline)
  *     → Bounded Context Package (provenance + classification + budget)
  *     → planner / verifiers (CONSUMERS of data, never authority)
@@ -131,7 +132,7 @@ export function clampBudget(
  * access storage. A planner may PROPOSE external reads via ownerHint; it
  * cannot choose databases, SQL, private filesystems or bypass policy.
  * Resolution happens only through the deterministic layer (#62 policy +
- * #63 registry, inside the RegistryBoundContextReader).
+ * #63 registry, via the SeamBoundContextReader over the ConnectorDispatchSeam).
  */
 export interface ContextRequest {
     /** Subject of the requested context (declarative; also the read ref). */
