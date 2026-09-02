@@ -138,8 +138,8 @@ BoundedContextPackage (deep-frozen inert DATA; items + unresolved + report)
     refuses blind replay; reconciliation of already-dispatched invocations
     is #50 territory, explicitly deferred).
 11. **Declared ≠ implemented ≠ verified.** Capabilities stay in the #63
-    registry; `Closes #64` criteria are proven by the **69 offline tests**
-    in `cli/src/context/context-compiler.test.ts` (236 including mission +
+    registry; `Closes #64` criteria are proven by the **71 offline tests**
+    in `cli/src/context/context-compiler.test.ts` (238 including mission +
     capabilities regression suites) + full `bun run check`.
 
 ## Suggested follow-up slicing
