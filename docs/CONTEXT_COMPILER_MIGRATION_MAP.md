@@ -24,7 +24,10 @@ BoundedContextPackage (deep-frozen inert DATA)
 - **`SeamBoundContextReader`** (`cli/src/context/sources.ts`): the ONLY
   production path to external content. It validates the accepted plan,
   dispatches through the #63 seam, packages the outcome, and — after all
-  gates — seals it via `getSeamSeal()`. There is **no caller-provided
+  gates — seals it via a module-private token (`SEAM_SEAL_TOKEN` lives in
+  sources.ts and is never exported; the `SeamAuthorizedRead` class is
+  exported for the compiler's identity check, but no minting function is).
+  There is **no caller-provided
   `SeamDispatchOutcome` path and no `alreadyAuthorized` path**: the engine
   exposes no API that proves invocation/result identity for outcomes
   dispatched elsewhere (that proof needs #50-grade reconciliation records,

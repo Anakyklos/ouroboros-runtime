@@ -325,3 +325,22 @@ export interface CompiledSourceRead {
     /** Honest count of malformed sibling rows skipped by the reader. */
     skippedInvalidRows?: number;
 }
+
+/** Typed, fail-closed error for the Context Compiler boundary. */
+export class ContextCompilerError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "ContextCompilerError";
+    }
+}
+
+/** Deep-freeze a pure-data structure so returned packages are immutable. */
+export function deepFreeze<T>(value: T): T {
+    if (value !== null && typeof value === "object") {
+        for (const key of Object.keys(value as Record<string, unknown>)) {
+            deepFreeze((value as Record<string, unknown>)[key]);
+        }
+        Object.freeze(value);
+    }
+    return value;
+}

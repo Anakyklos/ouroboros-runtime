@@ -24,12 +24,12 @@ import { describe, expect, it } from "bun:test";
 import { CapabilityResultStatus } from "../capabilities/connector.js";
 import {
     ContextCompiler,
-    ContextCompilerError,
     recompileAfterRestart,
-    SeamAuthorizedRead,
 } from "./compiler.js";
 import type { ContextReadResult } from "./compiler.js";
+import { SeamAuthorizedRead } from "./sources.js";
 import {
+    ContextCompilerError,
     EpistemicClass,
     SensitivityClass,
     SourceStatus,
@@ -394,6 +394,22 @@ describe("ContextCompiler — external reads are non-forgeable (structural closu
                 guessedToken,
             ),
         ).toThrow(ContextCompilerError);
+    });
+
+    it("ADVERSARIAL: no module exports a sealing authority — minting is structurally impossible outside sources.ts", async () => {
+        // The reviewer's requirement is STRUCTURAL closure. The seal must
+        // not be obtainable by importing: compiler.js must expose no seal
+        // factory, and sources.js must expose the class WITHOUT the token
+        // or any minting function.
+        const compilerKeys = Object.keys(await import("./compiler.js"));
+        expect(compilerKeys).not.toContain("getSeamSeal");
+        expect(compilerKeys).not.toContain("seamSeal");
+        expect(compilerKeys).not.toContain("SEAM_SEAL_TOKEN");
+        expect(compilerKeys).not.toContain("SeamAuthorizedRead"); // the class itself moved out
+        const sourcesKeys = Object.keys(await import("./sources.js"));
+        expect(sourcesKeys).toContain("SeamAuthorizedRead"); // identity check only
+        expect(sourcesKeys).not.toContain("sealRead");
+        expect(sourcesKeys).not.toContain("SEAM_SEAL_TOKEN");
     });
 
     it("valid external content still flows ONLY through the ConnectorDispatchSeam", async () => {

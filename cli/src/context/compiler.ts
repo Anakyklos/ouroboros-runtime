@@ -8,14 +8,14 @@
  *  1. Mission-owned refs are compiled ONLY from the requesting Mission's
  *     own contextRefs — cross-mission references are refused.
  *  2. External content reaches the package ONLY through a non-forgeable
- *     `SeamAuthorizedRead`: a nominal class whose construction is private
- *     to this module (the compiler), produced ONLY by the
- *     SeamBoundContextReader (sources.ts) from results that ALREADY passed
- *     the #63 `ConnectorDispatchSeam` gates. A plain `{descriptor, rows}`
- *     object is structurally refused, and a forged `CompiledSourceRead`
- *     can never be sealed. The compiler itself holds no registry, no seam
- *     and no policy: it cannot widen what the boundary already authorized.
- *     There is NO caller-provided outcome path (no `alreadyAuthorized`):
+ *     `SeamAuthorizedRead`: a nominal class OWNED by the reader module
+ *     (sources.ts), whose construction token is module-private and never
+ *     exported. The compiler imports the class only for identity checks
+ *     — it holds NO seal, NO token and NO minting function, so it cannot
+ *     widen what the boundary already authorized. A plain
+ *     `{descriptor, rows}` object is structurally refused, and a forged
+ *     `CompiledSourceRead` can never be sealed. There is NO
+ *     caller-provided outcome path (no `alreadyAuthorized`):
  *     the engine exposes no API that proves invocation/result identity for
  *     a dispatch that happened elsewhere, so caller-supplied shapes are
  *     never authority — reads must flow through the reader, which
@@ -75,10 +75,12 @@ import {
     BudgetExclusion,
     CompiledSourceRead,
     CompiledSourceReadDescriptor,
+    ContextCompilerError,
     ContextItem,
     ContextRequest,
     CONTEXT_COMPILER_CONTRACT_VERSION,
     DEFAULT_REQUEST_BUDGET_POLICY,
+    deepFreeze,
     EpistemicClass,
     estimateTokens,
     ItemProvenance,
@@ -90,82 +92,13 @@ import {
     type ContextRow,
 } from "./contracts.js";
 import { containsRawSecret, sanitizeText } from "../mission/sanitize.js";
+import { SeamAuthorizedRead } from "./sources.js";
 
-/**
- * 🔒 SeamAuthorizedRead — non-forgeable proof that a read crossed the
- * #63 `ConnectorDispatchSeam` boundary (review blocker, round 2). This is
- * a NOMINAL class with a PRIVATE constructor: a plain `{descriptor, rows}`
- * object, a hand-built look-alike, or a forged `CompiledSourceRead` can
- * never satisfy the compiler's input check — only the module-internal
- * seal, obtained by the SeamBoundContextReader (sources.ts) through
- * `getSeamSeal()`, carries the module-private construction token. A
- * constructor call without it (including through `as any`) throws at
- * RUNTIME, not merely at type-check time. The wrapped read is deep-frozen
- * at sealing: a sealed read cannot be mutated into a different
- * authorization. The compiler's input gate checks the class's PRIVATE
- * brand (`#sealed in value`), not merely `instanceof`, so prototype-chain
- * forgeries (`Object.create(SeamAuthorizedRead.prototype)`) are
- * structurally refused too.
- */
-export class SeamAuthorizedRead {
-    readonly read: CompiledSourceRead;
-    /** Brand (unforgeable): only the constructor after the token gate can
-     * install this private field, and prototype manipulation cannot.
-     * `Object.create(SeamAuthorizedRead.prototype)` with a forged `.read`
-     * PASSES `instanceof` — the gate therefore checks the private brand,
-     * never the prototype chain. */
-    #sealed = true;
 
-    constructor(read: CompiledSourceRead, sealToken: symbol) {
-        if (sealToken !== SEAM_SEAL_TOKEN) {
-            throw new ContextCompilerError(
-                "SeamAuthorizedRead cannot be constructed directly: reads are sealed only through the SeamBoundContextReader",
-            );
-        }
-        this.read = deepFreeze(read) as CompiledSourceRead;
-        Object.freeze(this);
-    }
-
-    /** Structural check: only genuinely sealed instances are authority.
-     * Uses the private brand (`#sealed in value`), so a prototype-chain
-     * forgery (Object.create of the class prototype) is refused — it has
-     * no private field and cannot install one. Non-objects are refused
-     * outright so every non-sealed input degrades to the same
-     * ContextCompilerError (never a TypeError). */
-    static isSealed(value: unknown): value is SeamAuthorizedRead {
-        if (typeof value !== "object" || value === null) return false;
-        return #sealed in value;
-    }
-}
-
-/** Module-private construction token: even a forced constructor call
- * without it fails closed at runtime (not merely at type-check time). */
-const SEAM_SEAL_TOKEN = Symbol("context.compiler.seamSeal");
-
-/**
- * The ONE module-internal sealing authority. Never exported as a value;
- * the reader borrows it (coordination only — every legit production read
- * still flows through seam dispatch inside sources.ts).
- */
-const seamSeal = (read: CompiledSourceRead): SeamAuthorizedRead =>
-    new SeamAuthorizedRead(read, SEAM_SEAL_TOKEN);
-
-/** The reader's only way to seal a seam-authorized read. */
-export function getSeamSeal(): (read: CompiledSourceRead) => SeamAuthorizedRead {
-    return seamSeal;
-}
 
 /** Structural check: only genuinely sealed instances are authority. */
 function isSeamAuthorizedRead(value: unknown): value is SeamAuthorizedRead {
     return SeamAuthorizedRead.isSealed(value);
-}
-
-/** Typed, fail-closed error for the Context Compiler boundary. */
-export class ContextCompilerError extends Error {
-    constructor(message: string) {
-        super(message);
-        this.name = "ContextCompilerError";
-    }
 }
 
 /** Deterministic sha256 (hex) of a canonical JSON payload. */
@@ -203,16 +136,6 @@ function computeItemId(input: {
     }).slice(0, 24)}`;
 }
 
-/** Deep-freeze a pure-data structure so returned packages are immutable. */
-function deepFreeze<T>(value: T): T {
-    if (value !== null && typeof value === "object") {
-        for (const key of Object.keys(value as Record<string, unknown>)) {
-            deepFreeze((value as Record<string, unknown>)[key]);
-        }
-        Object.freeze(value);
-    }
-    return value;
-}
 
 /**
  * What the SeamBoundContextReader reports for ONE requested source

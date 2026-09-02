@@ -23,7 +23,7 @@
  *    validated here and sanitized by the compiler downstream.
  *
  * Structural closure (round-2 review blocker): every successful read is
- * SEALED into a non-forgeable `SeamAuthorizedRead` (compiler module) — the
+ * SEALED into a non-forgeable `SeamAuthorizedRead` owned by THIS module — the
  * ONLY form the compiler accepts — so external content cannot enter
  * compilation without having crossed the seam HERE. Caller-provided
  * `SeamDispatchOutcome` objects are NOT accepted: a plausible-shaped object
@@ -45,9 +45,72 @@ import type {
     ContextRequest,
     UnresolvedSource,
 } from "./contracts.js";
-import { EpistemicClass, SensitivityClass, SourceStatus } from "./contracts.js";
-import { getSeamSeal } from "./compiler.js";
+import {
+    ContextCompilerError,
+    deepFreeze,
+    EpistemicClass,
+    SensitivityClass,
+    SourceStatus,
+} from "./contracts.js";
 import type { ContextReadResult } from "./compiler.js";
+
+/**
+ * 🔒 SeamAuthorizedRead — non-forgeable proof that a read crossed the
+ * #63 `ConnectorDispatchSeam` boundary (review blocker, round 2). This
+ * class lives HERE — in the reader module — so that the construction
+ * token is module-private: this file exports the CLASS (for the
+ * compiler's identity check) but NEVER the token or any seal factory.
+ * Minting a sealed read is therefore structurally impossible outside
+ * this module: no import of compiler.js, sources.js or anything else
+ * can construct one (the constructor throws without the token, and the
+ * private-field brand cannot be installed from outside). "Only the
+ * reader can seal" is enforced by module visibility, not convention.
+ * The wrapped read is deep-frozen at sealing: a sealed read cannot be
+ * mutated into a different authorization. The compiler's input gate
+ * checks the class's PRIVATE brand (`#sealed in value`), not merely
+ * `instanceof`, so prototype-chain forgeries are structurally refused.
+ */
+export class SeamAuthorizedRead {
+    readonly read: CompiledSourceRead;
+    /** Brand (unforgeable): only the constructor after the token gate can
+     * install this private field, and prototype manipulation cannot.
+     * `Object.create(SeamAuthorizedRead.prototype)` with a forged `.read`
+     * PASSES `instanceof` — the gate therefore checks the private brand,
+     * never the prototype chain. */
+    #sealed = true;
+
+    constructor(read: CompiledSourceRead, sealToken: symbol) {
+        if (sealToken !== SEAM_SEAL_TOKEN) {
+            throw new ContextCompilerError(
+                "SeamAuthorizedRead cannot be constructed directly: reads are sealed only inside the SeamBoundContextReader (sources.ts)",
+            );
+        }
+        this.read = deepFreeze(read) as CompiledSourceRead;
+        Object.freeze(this);
+    }
+
+    /** Structural check: only genuinely sealed instances are authority.
+     * Uses the private brand (`#sealed in value`), so a prototype-chain
+     * forgery (Object.create of the class prototype) is refused — it has
+     * no private field and cannot install one. Non-objects are refused
+     * outright so every non-sealed input degrades to the same
+     * ContextCompilerError (never a TypeError). */
+    static isSealed(value: unknown): value is SeamAuthorizedRead {
+        if (typeof value !== "object" || value === null) return false;
+        return #sealed in value;
+    }
+}
+
+/** Module-private construction token. NOT exported — this file exports
+ * the class only. No other module can mint a sealed read. */
+const SEAM_SEAL_TOKEN = Symbol("context.compiler.seamSeal");
+
+/** The ONE sealing authority, module-private: every legit production
+ * read still flows through seam dispatch inside this reader (the call
+ * site sits in packageOutcome, after ALL gates). */
+function sealRead(read: CompiledSourceRead): SeamAuthorizedRead {
+    return new SeamAuthorizedRead(read, SEAM_SEAL_TOKEN);
+}
 
 /**
  * Canonical provenance label derived from a capability id — a LABEL only.
@@ -367,7 +430,7 @@ export class SeamBoundContextReader {
         }
         // The ONLY place a read is ever sealed: past every structural and
         // scope gate, straight from a seam-authorized result.
-        return { ok: true, read: getSeamSeal()(read) };
+        return { ok: true, read: sealRead(read) };
     }
 }
 
