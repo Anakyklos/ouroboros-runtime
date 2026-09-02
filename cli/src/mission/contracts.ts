@@ -509,4 +509,10 @@ export interface CapabilityContract {
      * OWN module. Cross-module private storage is always denied.
      */
     ownsStorage: boolean;
+    /**
+     * Owner guarantee that every row this capability produces is a fact
+     * (declared ≠ implemented — the compiler still sanitizes and stamps
+     * provenance; this only licenses unclassified rows as FACT).
+     */
+    factRowsOnly?: boolean;
 }

@@ -69,6 +69,15 @@ export interface CapabilityResult {
     ownerVerification?: OwnerVerificationOutcome;
     /** For long-running capabilities: opaque owner handle for status. */
     ownerOperationRef?: string;
+    /**
+     * OPTIONAL structured content rows for read-style capabilities (used
+     * by the #64 Context Compiler). Unlike `summary`/`evidence` (which are
+     * provenance strings), this carries structured DATA — still sanitized,
+     * opaque and schema-gated: descriptors that accept context rows declare
+     * a `resultSchema` covering `contextRows`. Ouroboros treats these rows
+     * strictly as data (never instructions, never authority).
+     */
+    contextRows?: unknown[];
 }
 
 /** Versioned connector lifecycle. */
