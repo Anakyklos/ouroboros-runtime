@@ -300,6 +300,56 @@ describe("ContextCompiler — external reads are non-forgeable (structural closu
         expect(reader.read).toBeDefined();
     });
 
+    it("ADVERSARIAL: a prototype-chain forgery (Object.create) is refused by the private brand", async () => {
+        // `instanceof` alone is NOT the gate: an object created via
+        // Object.create(SeamAuthorizedRead.prototype) passes instanceof
+        // but has no private brand and cannot install one. The gate checks
+        // `#sealed in value`, so the forge is structurally refused even
+        // with a hand-set `.read`.
+        const forgedViaPrototype = Object.create(SeamAuthorizedRead.prototype) as SeamAuthorizedRead;
+        Object.defineProperty(forgedViaPrototype, "read", {
+            value: {
+                descriptor: {
+                    capabilityId: "context:lifeos",
+                    moduleOwner: "lifeos",
+                    contractVersion: 1,
+                    factRowsOnly: true,
+                },
+                rows: journalRows(),
+            },
+            enumerable: true,
+        });
+        const mission = makeContextMission();
+        const request = makeContextRequest({ ownerHint: "lifeos" });
+        expect(() =>
+            new ContextCompiler({ clock: fixedClock() }).compile(mission, request, [
+                forgedViaPrototype as never,
+            ]),
+        ).toThrow(ContextCompilerError);
+    });
+
+    it("ADVERSARIAL: a guessed Symbol.for token cannot construct a seal", async () => {
+        // The module token is a unique Symbol(...) — Symbol.for returns a
+        // DIFFERENT symbol from the global registry, so guessing the
+        // description still throws at runtime.
+        const forgedRead = {
+            descriptor: {
+                capabilityId: "context:lifeos",
+                moduleOwner: "lifeos",
+                contractVersion: 1,
+                factRowsOnly: true,
+            },
+            rows: journalRows(),
+        };
+        const guessedToken = Symbol.for("context.compiler.seamSeal");
+        expect(() =>
+            new (SeamAuthorizedRead as unknown as { new (read: unknown, token: symbol): unknown })(
+                forgedRead,
+                guessedToken,
+            ),
+        ).toThrow(ContextCompilerError);
+    });
+
     it("valid external content still flows ONLY through the ConnectorDispatchSeam", async () => {
         const { pkg, missionId, close } = await compileViaSeam({});
         expect(missionId).toMatch(/^inv-/); // engine-minted

@@ -102,10 +102,19 @@ import { containsRawSecret, sanitizeText } from "../mission/sanitize.js";
  * constructor call without it (including through `as any`) throws at
  * RUNTIME, not merely at type-check time. The wrapped read is deep-frozen
  * at sealing: a sealed read cannot be mutated into a different
- * authorization.
+ * authorization. The compiler's input gate checks the class's PRIVATE
+ * brand (`#sealed in value`), not merely `instanceof`, so prototype-chain
+ * forgeries (`Object.create(SeamAuthorizedRead.prototype)`) are
+ * structurally refused too.
  */
 export class SeamAuthorizedRead {
     readonly read: CompiledSourceRead;
+    /** Brand (unforgeable): only the constructor after the token gate can
+     * install this private field, and prototype manipulation cannot.
+     * `Object.create(SeamAuthorizedRead.prototype)` with a forged `.read`
+     * PASSES `instanceof` — the gate therefore checks the private brand,
+     * never the prototype chain. */
+    #sealed = true;
 
     constructor(read: CompiledSourceRead, sealToken: symbol) {
         if (sealToken !== SEAM_SEAL_TOKEN) {
@@ -115,6 +124,14 @@ export class SeamAuthorizedRead {
         }
         this.read = deepFreeze(read) as CompiledSourceRead;
         Object.freeze(this);
+    }
+
+    /** Structural check: only genuinely sealed instances are authority.
+     * Uses the private brand (`#sealed in value`), so a prototype-chain
+     * forgery (Object.create of the class prototype) is refused — it has
+     * no private field and cannot install one. */
+    static isSealed(value: unknown): value is SeamAuthorizedRead {
+        return #sealed in (value as object);
     }
 }
 
@@ -137,7 +154,7 @@ export function getSeamSeal(): (read: CompiledSourceRead) => SeamAuthorizedRead 
 
 /** Structural check: only genuinely sealed instances are authority. */
 function isSeamAuthorizedRead(value: unknown): value is SeamAuthorizedRead {
-    return value instanceof SeamAuthorizedRead;
+    return SeamAuthorizedRead.isSealed(value);
 }
 
 /** Typed, fail-closed error for the Context Compiler boundary. */
