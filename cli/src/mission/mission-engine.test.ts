@@ -8,6 +8,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
     EffectClass,
     InvocationStatus,
@@ -282,7 +285,7 @@ describe("MissionEngine", () => {
                 pausedBy: "operator-1",
             });
             expect((await harness.store.getInvocation(invocation.invocationId))?.status).toBe(
-                InvocationStatus.DISPATCHED,
+                InvocationStatus.PENDING,
             );
 
             const resumed = await engine.resumeMission(mission.missionId);
@@ -414,6 +417,274 @@ describe("MissionEngine", () => {
             expect(stored?.attempts.at(-1)).toMatchObject({ state: "failed", finishedAt: BASE_TIME });
             expect(stored?.retry.attempt).toBe(1);
             expect(stored?.retry.nextEligibleAt).toBeNull();
+        });
+
+        it("keeps a prepared invocation prepared across restart and allows local cancellation", async () => {
+            const directory = mkdtempSync(join(tmpdir(), "mission-engine-prepared-"));
+            const dbPath = join(directory, "missions.db");
+            try {
+                const firstStore = new SqliteMissionStore(dbPath);
+                await firstStore.initialize();
+                // Use the disk-backed store for both lifetimes while retaining the
+                // same deterministic fixtures as the in-memory harness.
+                const firstResolver = new FakeCapabilityResolver();
+                firstResolver.registerMany(makeDefaultCapabilityCatalog());
+                const firstDiskEngine = new MissionEngine({
+                    store: firstStore,
+                    policy: new PlanPolicyValidator(firstResolver),
+                    clock: new FakeClock(BASE_TIME),
+                    ids: new FakeIdGenerator("disk-first"),
+                    interpreter: (intent) => intent.originalIntent,
+                    verificationAuthority: new FakeVerificationAuthority(),
+                });
+                const mission = await firstDiskEngine.createMission({
+                    intent: makeIntent(),
+                    allowedCapabilityScope: DEFAULT_SCOPE,
+                });
+                const proposal = await firstDiskEngine.proposePlan(mission.missionId, makeCandidate(mission.missionId));
+                if (!proposal.ok) throw new Error("plan rejected");
+                await firstDiskEngine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+                const invocation = await firstDiskEngine.dispatchStep(mission.missionId, "step-1", {
+                    descriptor: {
+                        contractVersion: 1,
+                        moduleOwner: "runstead",
+                        idempotency: { mode: IdempotencyMode.IDEMPOTENT, keyScope: "request" },
+                        retry: { maxAttempts: 2, backoff: RetryBackoff.NONE },
+                        cancellationSupport: CancellationSupport.COOPERATIVE,
+                        reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
+                    },
+                });
+                expect(invocation.status).toBe(InvocationStatus.PENDING);
+                await firstStore.close();
+
+                const secondStore = new SqliteMissionStore(dbPath);
+                await secondStore.initialize();
+                const secondResolver = new FakeCapabilityResolver();
+                secondResolver.registerMany(makeDefaultCapabilityCatalog());
+                const secondEngine = new MissionEngine({
+                    store: secondStore,
+                    policy: new PlanPolicyValidator(secondResolver),
+                    clock: new FakeClock(BASE_TIME),
+                    ids: new FakeIdGenerator("disk-second"),
+                    interpreter: (intent) => intent.originalIntent,
+                    verificationAuthority: new FakeVerificationAuthority(),
+                });
+                const recovered = await secondStore.getInvocation(invocation.invocationId);
+                expect(recovered).toMatchObject({ status: InvocationStatus.PENDING, delivery: { state: "not_submitted" } });
+                expect(await secondStore.listDueInvocations(BASE_TIME, 10)).toEqual([]);
+                const cancelled = await secondEngine.cancelUnsubmitted(invocation.invocationId, "cancel before handoff");
+                expect(cancelled.status).toBe(InvocationStatus.CANCELLED);
+                expect((await secondStore.getInvocation(invocation.invocationId))?.delivery.state).toBe("not_submitted");
+                await secondStore.close();
+            } finally {
+                rmSync(directory, { recursive: true, force: true });
+            }
+        });
+
+        it("rejects result regressions and preserves a failed attempt exactly", async () => {
+            const mission = await acceptedForStep();
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.FAILED,
+                summary: "failure",
+                evidenceRefs: [],
+                completedAt: BASE_TIME,
+            });
+            const failed = await harness.store.getInvocation(invocation.invocationId);
+            await expect(engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.COMPLETED,
+                summary: "late success",
+                evidenceRefs: [],
+                completedAt: "2026-09-02T12:00:00.000Z",
+            })).rejects.toThrow(/transition|failed/i);
+            await expect(engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.PENDING,
+                summary: "regression",
+                evidenceRefs: [],
+            })).rejects.toThrow(/transition|pending/i);
+            expect(await harness.store.getInvocation(invocation.invocationId)).toEqual(failed);
+        });
+
+        it("requires reconciliation to move uncertain or blocked work to running", async () => {
+            const mission = await acceptedForStep();
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "uncertain" });
+            await expect(engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.RUNNING,
+                summary: "owner says running",
+                evidenceRefs: [],
+            })).rejects.toThrow(/reconciliation|uncertain/i);
+            const reconciled = await engine.markInvocationReconciliation(invocation.invocationId, {
+                state: "resolved",
+                outcome: "unknown",
+                status: InvocationStatus.RUNNING,
+                deliveryState: "running",
+                lastCheckedAt: BASE_TIME,
+            });
+            expect(reconciled.status).toBe(InvocationStatus.RUNNING);
+            expect(reconciled.delivery.state).toBe("running");
+            await expect(engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.PENDING,
+                summary: "regress to prepared",
+                evidenceRefs: [],
+            })).rejects.toThrow(/transition|pending/i);
+
+            const blockedMission = await acceptedForStep(makeStep({ stepId: "step-blocked" }));
+            const blocked = await engine.dispatchStep(blockedMission.missionId, "step-blocked");
+            await engine.recordInvocationResult(blocked.invocationId, {
+                invocationId: blocked.invocationId,
+                status: InvocationStatus.BLOCKED,
+                summary: "blocked pending reconciliation",
+                evidenceRefs: [],
+            });
+            const unblocked = await engine.markInvocationReconciliation(blocked.invocationId, {
+                state: "resolved",
+                outcome: "unknown",
+                status: InvocationStatus.RUNNING,
+                deliveryState: "running",
+                lastCheckedAt: BASE_TIME,
+            });
+            expect(unblocked.status).toBe(InvocationStatus.RUNNING);
+        });
+
+        it("prepares an idempotent retry without dispatching and rejects uncertain delivery", async () => {
+            const mission = await acceptedForStep();
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1", {
+                descriptor: {
+                    contractVersion: 1,
+                    moduleOwner: "runstead",
+                    idempotency: { mode: IdempotencyMode.IDEMPOTENT, keyScope: "effect" },
+                    retry: { maxAttempts: 3, backoff: RetryBackoff.FIXED },
+                    cancellationSupport: CancellationSupport.COOPERATIVE,
+                    reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
+                },
+            });
+            await engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.FAILED,
+                summary: "retryable failure",
+                evidenceRefs: [],
+                completedAt: BASE_TIME,
+            });
+            const prepared = await engine.prepareInvocationRetry(invocation.invocationId, { backoffMs: 5_000 });
+            expect(prepared.invocationId).toBe(invocation.invocationId);
+            expect(prepared.status).toBe(InvocationStatus.PENDING);
+            expect(prepared.requestId).toBe(invocation.requestId);
+            expect(prepared.effectFingerprint).toBe(invocation.effectFingerprint);
+            expect(prepared.retry).toMatchObject({ attempt: 1, backoff: RetryBackoff.FIXED, backoffMs: 5_000 });
+            expect(prepared.retry.nextEligibleAt).toBe("2026-08-30T12:00:05.000Z");
+            expect(prepared.attempts).toHaveLength(2);
+            expect(prepared.attempts[0].state).toBe("failed");
+            expect(prepared.attempts[1]).toMatchObject({ attempt: 1, state: "prepared" });
+            await expect(engine.dispatchStep(mission.missionId, "step-1")).rejects.toThrow(/already|conflict/i);
+
+            const uncertainMission = await acceptedForStep(makeStep({ stepId: "step-uncertain" }));
+            const uncertain = await engine.dispatchStep(uncertainMission.missionId, "step-uncertain", {
+                descriptor: {
+                    contractVersion: 1,
+                    moduleOwner: "runstead",
+                    idempotency: { mode: IdempotencyMode.IDEMPOTENT, keyScope: "request" },
+                    retry: { maxAttempts: 2, backoff: RetryBackoff.NONE },
+                    cancellationSupport: CancellationSupport.COOPERATIVE,
+                    reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
+                },
+            });
+            await engine.markInvocationHandoff(uncertain.invocationId, { deliveryState: "uncertain" });
+            await expect(engine.prepareInvocationRetry(uncertain.invocationId)).rejects.toThrow(/uncertain|failed/i);
+        });
+
+        it("records late cancelled evidence once without reviving invocation or Mission", async () => {
+            const mission = await acceptedForStep();
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.cancelMission(mission.missionId, "operator cancelled");
+            const evidence = { refId: "late-1", owner: "runstead", externalRef: "review:late", label: "late result" };
+            await engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.COMPLETED,
+                summary: "late owner fact",
+                evidenceRefs: [evidence],
+                completedAt: "2026-09-02T12:01:00.000Z",
+            });
+            const afterFirst = await harness.store.getInvocation(invocation.invocationId);
+            await engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.FAILED,
+                summary: "conflicting late fact",
+                evidenceRefs: [evidence],
+                completedAt: "2026-09-02T12:02:00.000Z",
+            });
+            const afterSecond = await harness.store.getInvocation(invocation.invocationId);
+            expect((await engine.getMission(mission.missionId)).state).toBe(MissionState.CANCELLED);
+            expect(afterFirst?.status).toBe(InvocationStatus.CANCELLED);
+            expect(afterSecond).toEqual(afterFirst);
+            expect((await engine.getMission(mission.missionId)).evidenceRefs.filter((ref) => ref.refId === "late-1")).toHaveLength(1);
+        });
+
+        it("rejects invalid opaque facts and persists only the known evidence shape", async () => {
+            const mission = await acceptedForStep();
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await expect(engine.markInvocationHandoff(invocation.invocationId, { correlationId: "token=secret" })).rejects.toThrow(/raw secret/i);
+            await expect(engine.markInvocationHandoff(invocation.invocationId, { remoteOperationHandle: "" })).rejects.toThrow(/non-empty/i);
+            await expect(engine.markInvocationReconciliation(invocation.invocationId, {
+                state: "resolved",
+                outcome: "performed",
+                lastCheckedAt: "not-a-timestamp",
+            })).rejects.toThrow(/timestamp|date|invalid/i);
+            await expect(engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.COMPLETED,
+                summary: "done",
+                evidenceRefs: [{ refId: "evidence-extra", owner: "runstead", externalRef: "review:1", label: "ok", extra: "discard" } as never],
+                completedAt: BASE_TIME,
+            })).rejects.toThrow(/extra|shape|secret|evidence/i);
+        });
+
+        it("scopes effect fingerprints to a Mission and atomically claims one local effect", async () => {
+            const firstMission = await acceptedForStep();
+            const secondMission = await acceptedForStep(makeStep({ stepId: "step-2" }));
+            const first = await engine.dispatchStep(firstMission.missionId, "step-1");
+            const second = await engine.dispatchStep(secondMission.missionId, "step-2");
+            expect(second.invocationId).not.toBe(first.invocationId);
+
+            const raceMission = await engine.createMission({ intent: makeIntent("api"), allowedCapabilityScope: DEFAULT_SCOPE });
+            const raceProposal = await engine.proposePlan(raceMission.missionId, makeCandidate(raceMission.missionId, {
+                steps: [makeStep({ stepId: "race-a" }), makeStep({ stepId: "race-b" })],
+            }));
+            if (!raceProposal.ok) throw new Error("race plan rejected");
+            await engine.acceptPlan(raceMission.missionId, raceProposal.revision.revisionId);
+            const outcomes = await Promise.allSettled([
+                engine.dispatchStep(raceMission.missionId, "race-a"),
+                engine.dispatchStep(raceMission.missionId, "race-b"),
+            ]);
+            expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+            expect(await harness.store.listInvocations(raceMission.missionId)).toHaveLength(1);
+        });
+
+        it("allows a later revision to create a distinct effect but not duplicate the same effect", async () => {
+            const mission = await acceptedForStep();
+            const first = await engine.dispatchStep(mission.missionId, "step-1");
+            const sameEffectProposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId, {
+                planId: "same-effect",
+                steps: [makeStep({ stepId: "step-1" })],
+            }));
+            if (!sameEffectProposal.ok) throw new Error("same effect plan rejected");
+            await engine.acceptPlan(mission.missionId, sameEffectProposal.revision.revisionId);
+            await expect(engine.dispatchStep(mission.missionId, "step-1")).rejects.toThrow(/already|conflict/i);
+
+            const distinctProposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId, {
+                planId: "different-effect",
+                steps: [makeStep({ stepId: "step-1", desiredOutcome: "Run security review" })],
+            }));
+            if (!distinctProposal.ok) throw new Error("different effect plan rejected");
+            await engine.acceptPlan(mission.missionId, distinctProposal.revision.revisionId);
+            const distinct = await engine.dispatchStep(mission.missionId, "step-1");
+            expect(distinct.effectFingerprint).not.toBe(first.effectFingerprint);
+            expect(await harness.store.listInvocations(mission.missionId)).toHaveLength(2);
         });
     });
 
@@ -801,7 +1072,7 @@ describe("MissionEngine", () => {
             await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
-            expect(invocation.status).toBe(InvocationStatus.DISPATCHED);
+            expect(invocation.status).toBe(InvocationStatus.PENDING);
 
             // A result declaring a DIFFERENT invocationId is identity drift,
             // never silently accepted for this invocation.
@@ -818,7 +1089,7 @@ describe("MissionEngine", () => {
             // The invocation was NOT updated by the rejected result.
             const invocations = await harness.store.listInvocations(mission.missionId);
             expect(invocations.find((i) => i.invocationId === invocation.invocationId)?.status).toBe(
-                InvocationStatus.DISPATCHED,
+                InvocationStatus.PENDING,
             );
         });
 
@@ -827,7 +1098,7 @@ describe("MissionEngine", () => {
             expect(mission.state).toBe(MissionState.READY);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
-            expect(invocation.status).toBe(InvocationStatus.DISPATCHED);
+            expect(invocation.status).toBe(InvocationStatus.PENDING);
             expect(invocation.capabilityId).toBe("runstead.code-review");
             expect(invocation.missionId).toBe(mission.missionId);
 
@@ -1611,7 +1882,7 @@ describe("MissionEngine", () => {
 
                 const after = await e.getMission(mission.missionId);
                 expect(after.invocationRefs[0].ownerVerification).toBeUndefined();
-                expect(after.invocationRefs[0].status).toBe(InvocationStatus.DISPATCHED);
+                expect(after.invocationRefs[0].status).toBe(InvocationStatus.PENDING);
             } finally {
                 await noAuthority.close();
             }

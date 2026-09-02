@@ -530,7 +530,40 @@ export function isInvocationUpdateAllowed(
     current: Pick<CapabilityInvocationRef, "status">,
     next: Pick<CapabilityInvocationRef, "status">,
 ): boolean {
-    return !isInvocationTerminal(current);
+    if (current.status === next.status) return true;
+    const allowed: Record<InvocationStatus, ReadonlySet<InvocationStatus>> = {
+        [InvocationStatus.PENDING]: new Set([
+            InvocationStatus.DISPATCHED,
+            InvocationStatus.RUNNING,
+            InvocationStatus.COMPLETED,
+            InvocationStatus.FAILED,
+            InvocationStatus.BLOCKED,
+            InvocationStatus.CANCELLED,
+        ]),
+        [InvocationStatus.DISPATCHED]: new Set([
+            InvocationStatus.RUNNING,
+            InvocationStatus.COMPLETED,
+            InvocationStatus.FAILED,
+            InvocationStatus.BLOCKED,
+            InvocationStatus.CANCELLED,
+        ]),
+        [InvocationStatus.RUNNING]: new Set([
+            InvocationStatus.COMPLETED,
+            InvocationStatus.FAILED,
+            InvocationStatus.BLOCKED,
+            InvocationStatus.CANCELLED,
+        ]),
+        [InvocationStatus.FAILED]: new Set([InvocationStatus.PENDING]),
+        [InvocationStatus.BLOCKED]: new Set([
+            InvocationStatus.RUNNING,
+            InvocationStatus.COMPLETED,
+            InvocationStatus.FAILED,
+            InvocationStatus.CANCELLED,
+        ]),
+        [InvocationStatus.COMPLETED]: new Set(),
+        [InvocationStatus.CANCELLED]: new Set(),
+    };
+    return allowed[current.status].has(next.status);
 }
 
 /** Merge a result without mutating an immutable terminal record or duplicating refs. */

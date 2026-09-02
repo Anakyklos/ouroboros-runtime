@@ -41,6 +41,8 @@ import {
     TERMINAL_STATES,
     assertValidInvocationIdentity,
     isInvocationTerminal,
+    isInvocationUpdateAllowed,
+    isSafeRetryEligible,
     hasUncertainDelivery,
     computeEffectFingerprint,
 } from "./contracts.js";
@@ -50,6 +52,7 @@ import type {
     ReconciliationSupport,
     RetryBackoff,
 } from "../capabilities/contracts.js";
+import { RetryBackoff as RetryBackoffValue } from "../capabilities/contracts.js";
 import {
     CapabilityResolver,
     ClockService,
@@ -172,6 +175,11 @@ export interface InvocationReconciliationUpdate {
     lastCheckedAt?: string;
     deliveryState?: "acknowledged" | "running" | "failed" | "uncertain";
     status?: InvocationStatus;
+}
+
+/** Optional deterministic controls for preparing a retry attempt. */
+export interface InvocationRetryOptions {
+    backoffMs?: number;
 }
 
 export type PlanProposalResult =
@@ -707,14 +715,7 @@ export class MissionEngine {
             throw new Error(`Step not found in current plan: ${stepId}`);
         }
 
-        // Gate 2: replay/uncertainty protection — one invocation per logical step.
-        const existing = await this.store.listInvocations(missionId);
-        const prior = existing.find((inv) => inv.stepId === stepId);
-        if (prior) {
-            throw new InvocationConflictError(missionId, stepId, prior.invocationId, prior.status);
-        }
-
-        // Gate 3: required approvals granted (authoritative Mission state).
+        // Gate 2: required approvals granted (authoritative Mission state).
         if (step.approvalRequirement) {
             const requirement = mission.approvalRequirements.find(
                 (r) => r.approvalId === step.approvalRequirement!.approvalId,
@@ -726,7 +727,7 @@ export class MissionEngine {
             }
         }
 
-        // Gate 4: capability still available in the current catalog.
+        // Gate 3: capability still available in the current catalog.
         const contract = await this.policy.resolver.resolve(step.capabilityRequirement);
         if (!contract) {
             throw new DispatchRejectedError(
@@ -734,7 +735,7 @@ export class MissionEngine {
             );
         }
 
-        // Gate 5: revalidate the accepted plan against current policy.
+        // Gate 4: revalidate the accepted plan against current policy.
         // Authorization is not frozen at proposal time.
         const revalidation = await this.policy.validate(mission, {
             planId: revision.planId,
@@ -754,7 +755,16 @@ export class MissionEngine {
             inputRefs: step.inputRefs,
             outcome: step.desiredOutcome,
         });
-        const priorEffect = await this.store.findInvocationByEffectFingerprint(effectFingerprint);
+        // A step id may be reused by a later revision only when it describes a
+        // distinct effect. Same-effect replay remains forbidden.
+        const existing = await this.store.listInvocations(missionId);
+        const prior = existing.find(
+            (inv) => inv.stepId === stepId && inv.effectFingerprint === effectFingerprint,
+        );
+        if (prior) {
+            throw new InvocationConflictError(missionId, stepId, prior.invocationId, prior.status);
+        }
+        const priorEffect = await this.store.findInvocationByEffectFingerprint(missionId, effectFingerprint);
         if (priorEffect) {
             if (priorEffect.status === InvocationStatus.COMPLETED) return priorEffect;
             throw new InvocationConflictError(
@@ -775,7 +785,7 @@ export class MissionEngine {
             missionId,
             stepId,
             capabilityId: step.capabilityRequirement,
-            status: InvocationStatus.DISPATCHED,
+            status: InvocationStatus.PENDING,
             resultRefs: [],
             planRevisionId: revision.revisionId,
             contractVersion: descriptor.contractVersion,
@@ -824,13 +834,32 @@ export class MissionEngine {
         assertNoRawSecrets(invocation);
 
         // Atomic: invocation row + mission state in one transaction.
-        await this.store.withTransaction(async () => {
-            await this.store.saveInvocation(invocation);
+        const conflictingInvocation = await this.store.withTransaction(async (): Promise<CapabilityInvocation | null | undefined> => {
+            const claimed = await this.store.claimInvocation(invocation);
+            if (!claimed) {
+                return this.store.findInvocationByEffectFingerprint(
+                    missionId,
+                    effectFingerprint,
+                );
+            }
             await this.store.updateMission(missionId, {
                 state: MissionState.EXECUTING,
                 updatedAt: this.clock.isoNow(),
             });
+            return undefined;
         });
+        if (conflictingInvocation !== undefined) {
+            if (!conflictingInvocation) {
+                throw new DispatchRejectedError("effect claim was lost but no existing invocation was found");
+            }
+            if (conflictingInvocation.status === InvocationStatus.COMPLETED) return conflictingInvocation;
+            throw new InvocationConflictError(
+                missionId,
+                stepId,
+                conflictingInvocation.invocationId,
+                conflictingInvocation.status,
+            );
+        }
 
         return invocation;
     }
@@ -867,9 +896,33 @@ export class MissionEngine {
         }
         validateInvocationResult(result);
 
-        // Immutable invocation terminality makes duplicate delivery safe. Do
-        // not re-attest or merge conflicting late payloads into a terminal row.
+        const sanitizedEvidenceRefs = sanitizeEvidenceRefs(result.evidenceRefs);
+
+        // A cancelled invocation remains cancelled forever, but an explicitly
+        // submitted late fact may still contribute evidence/reconciliation.
+        if (invocation.status === InvocationStatus.CANCELLED) {
+            return this.recordLateCancelledFacts(invocation, mission, result, sanitizedEvidenceRefs, ownerVerificationClaim);
+        }
+
+        // Immutable completed terminality makes duplicate delivery safe. FAILED
+        // is not terminal, but it can only repeat FAILED or leave via retry.
         if (isInvocationTerminal(invocation)) return mission;
+        if (result.status === InvocationStatus.PENDING || result.status === InvocationStatus.DISPATCHED) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                result.status,
+                "results cannot regress an invocation to a pre-handoff state",
+            );
+        }
+        if (result.status === InvocationStatus.RUNNING && hasUncertainDelivery(invocation)) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                result.status,
+                "uncertain delivery must be resolved through reconciliation",
+            );
+        }
 
         // OwnerVerification must be attested by the verification authority;
         // identity field matching is NOT provenance (fail-closed).
@@ -887,23 +940,11 @@ export class MissionEngine {
                     invocation,
                     contract,
                 );
-            // Sanitize the attested reason (free-form) before storage.
-            attestedOwnerVerification = {
-                ...attestedOwnerVerification,
-                reason: sanitizeText(attestedOwnerVerification.reason),
-            };
+            attestedOwnerVerification = sanitizeOwnerVerification(attestedOwnerVerification);
         }
 
         // Free-form text in result/evidence is sanitized before storage.
         const sanitizedSummary = sanitizeText(result.summary);
-        const sanitizedEvidenceRefs = result.evidenceRefs.map((ref) => {
-            assertNoRawSecrets({ refId: ref.refId, owner: ref.owner });
-            return {
-                ...ref,
-                label: sanitizeText(ref.label),
-                externalRef: sanitizeText(ref.externalRef),
-            };
-        });
         const resultRefs = mergeEvidenceRefs(invocation.resultRefs, sanitizedEvidenceRefs);
         const ownerVerification = invocation.ownerVerification?.verified === false
             ? invocation.ownerVerification
@@ -912,14 +953,24 @@ export class MissionEngine {
         const status = ownerRejected && result.status === InvocationStatus.COMPLETED
             ? InvocationStatus.FAILED
             : result.status;
-        const completedAt = result.completedAt ?? (status === InvocationStatus.FAILED ? this.clock.isoNow() : undefined);
+        if (!isInvocationUpdateAllowed(invocation, { status })) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                status,
+                "result status is not an authorized monotonic transition",
+            );
+        }
+        const completedAt = invocation.completedAt
+            ?? result.completedAt
+            ?? (status === InvocationStatus.FAILED ? this.clock.isoNow() : undefined);
         const now = this.clock.isoNow();
         const attempts = updateAttempt(invocation, status, completedAt, sanitizedSummary);
         const delivery = updateDelivery(invocation, status, completedAt);
         const updated: CapabilityInvocation = {
             ...invocation,
             status,
-            completedAt,
+            ...(completedAt === undefined ? {} : { completedAt }),
             resultRefs,
             error: status === InvocationStatus.FAILED ? sanitizedSummary : invocation.error,
             ownerVerification,
@@ -936,6 +987,15 @@ export class MissionEngine {
 
         const newEvidenceRefs = mergeEvidenceRefs(mission.evidenceRefs, sanitizedEvidenceRefs);
 
+        if (
+            invocation.status === InvocationStatus.FAILED
+            && status === InvocationStatus.FAILED
+            && resultRefs.length === invocation.resultRefs.length
+            && ownerVerification === invocation.ownerVerification
+        ) {
+            return mission;
+        }
+
         await this.store.withTransaction(async () => {
             await this.store.updateInvocation(invocationId, updated);
             await this.store.updateMission(invocation.missionId, {
@@ -945,6 +1005,98 @@ export class MissionEngine {
         });
 
         return this.requireMission(invocation.missionId);
+    }
+
+    /**
+     * Prepare the next idempotent attempt without crossing the connector seam.
+     * The failed attempt remains immutable and the invocation identity remains
+     * stable while a fresh correlation identity is prepared.
+     */
+    async prepareInvocationRetry(
+        invocationId: string,
+        options: InvocationRetryOptions = {},
+    ): Promise<CapabilityInvocation> {
+        const invocation = await this.requireInvocation(invocationId);
+        const now = this.clock.isoNow();
+        if (!isSafeRetryEligible(invocation, now)) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                InvocationStatus.PENDING,
+                "retry requires an idempotent, due, non-uncertain failed invocation",
+            );
+        }
+        if (invocation.delivery.state !== "failed" && invocation.delivery.state !== "not_submitted") {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                InvocationStatus.PENDING,
+                "retry requires failed or definitely not-submitted delivery",
+            );
+        }
+        if (invocation.cancellation.requested) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                InvocationStatus.PENDING,
+                "cancelled invocations cannot be retried",
+            );
+        }
+        const lastAttempt = invocation.attempts.at(-1);
+        if (!lastAttempt || lastAttempt.state !== "failed") {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                InvocationStatus.PENDING,
+                "retry requires a preserved failed attempt",
+            );
+        }
+        const requestedBackoffMs = options.backoffMs ?? invocation.retry.backoffMs;
+        if (!Number.isSafeInteger(requestedBackoffMs) || requestedBackoffMs < 0) {
+            throw new Error("retry backoffMs must be a non-negative safe integer");
+        }
+        const nextAttempt = Math.max(invocation.retry.attempt, lastAttempt.attempt + 1);
+        const backoffMs = invocation.retry.backoff === RetryBackoffValue.EXPONENTIAL
+            ? requestedBackoffMs * (2 ** Math.max(0, nextAttempt - 1))
+            : requestedBackoffMs;
+        if (!Number.isSafeInteger(backoffMs)) {
+            throw new Error("retry backoff exceeds safe integer range");
+        }
+        const nextEligibleAt = new Date(this.clock.now().getTime() + backoffMs).toISOString();
+        const prepared: CapabilityInvocation = {
+            ...invocation,
+            status: InvocationStatus.PENDING,
+            completedAt: undefined,
+            error: undefined,
+            retry: {
+                ...invocation.retry,
+                attempt: nextAttempt,
+                backoffMs,
+                nextEligibleAt,
+            },
+            attempts: [
+                ...invocation.attempts,
+                {
+                    attempt: nextAttempt,
+                    correlationId: sanitizeOpaqueString(this.ids.generate(), "correlationId"),
+                    state: "prepared",
+                    startedAt: now,
+                },
+            ],
+            delivery: { state: "not_submitted" },
+            reconciliation: {
+                ...invocation.reconciliation,
+                state: "not_required",
+                lastCheckedAt: undefined,
+                outcome: undefined,
+                nextAction: undefined,
+            },
+            updatedAt: now,
+        };
+        assertValidInvocationIdentity(prepared);
+        assertNoRawSecrets(prepared);
+        await this.store.updateInvocation(invocationId, prepared);
+        return this.requireInvocation(invocationId);
     }
 
     /**
@@ -1260,13 +1412,27 @@ export class MissionEngine {
                 "cancelled invocations cannot cross the handoff boundary",
             );
         }
+        validateHandoffUpdate(update);
         const now = this.clock.isoNow();
         const deliveryState = update.deliveryState ?? "uncertain";
+        const nextStatus = deliveryState === "running"
+            ? InvocationStatus.RUNNING
+            : InvocationStatus.DISPATCHED;
+        if (!isInvocationUpdateAllowed(invocation, { status: nextStatus })) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                nextStatus,
+                "handoff cannot regress invocation state",
+            );
+        }
         const attempts = invocation.attempts.map((attempt, index) =>
             index === invocation.attempts.length - 1 && attempt.state === "prepared"
                 ? {
                       ...attempt,
-                      correlationId: update.correlationId ?? attempt.correlationId,
+                      correlationId: update.correlationId === undefined
+                          ? attempt.correlationId
+                          : sanitizeOpaqueString(update.correlationId, "correlationId"),
                       state: "submitted" as const,
                   }
                 : attempt,
@@ -1280,7 +1446,9 @@ export class MissionEngine {
                 : { remoteOperationHandle: sanitizeOpaqueString(update.remoteOperationHandle, "remoteOperationHandle") }),
         };
         await this.store.updateInvocation(invocationId, {
-            status: deliveryState === "running" ? InvocationStatus.RUNNING : invocation.status,
+            status: invocation.status === InvocationStatus.RUNNING
+                ? InvocationStatus.RUNNING
+                : nextStatus,
             dispatchedAt: invocation.dispatchedAt ?? now,
             delivery,
             attempts,
@@ -1299,20 +1467,50 @@ export class MissionEngine {
     ): Promise<CapabilityInvocation> {
         const invocation = await this.requireInvocation(invocationId);
         if (isInvocationTerminal(invocation)) return invocation;
+        validateReconciliationUpdate(update);
         const now = this.clock.isoNow();
         const status = update.status ?? reconciliationStatus(update.outcome, invocation.status);
         const deliveryState = update.deliveryState ?? reconciliationDelivery(update.outcome, invocation.delivery.state);
-        if (status === InvocationStatus.PENDING || status === InvocationStatus.DISPATCHED) {
+        if (!isInvocationUpdateAllowed(invocation, { status })) {
             throw new InvalidStateTransitionError(
                 invocation.missionId,
                 invocation.status,
                 status,
-                "reconciliation cannot regress an invocation to pre-handoff state",
+                "reconciliation status is not an authorized monotonic transition",
             );
         }
+        if (status === InvocationStatus.COMPLETED && update.outcome !== "performed") {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                status,
+                "completed reconciliation requires performed outcome",
+            );
+        }
+        if (status === InvocationStatus.FAILED && update.outcome !== "not_performed") {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                status,
+                "failed reconciliation requires not_performed outcome",
+            );
+        }
+        if (status === InvocationStatus.RUNNING && update.outcome === "not_performed") {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                status,
+                "running reconciliation cannot report not_performed",
+            );
+        }
+        const completedAt = status === InvocationStatus.COMPLETED || status === InvocationStatus.FAILED
+            ? invocation.completedAt ?? now
+            : invocation.completedAt;
         await this.store.updateInvocation(invocationId, {
             status,
             delivery: { ...invocation.delivery, state: deliveryState },
+            ...(completedAt === undefined ? {} : { completedAt }),
+            attempts: updateAttempt(invocation, status, completedAt, sanitizeText(update.nextAction ?? "reconciliation")),
             reconciliation: {
                 ...invocation.reconciliation,
                 state: update.state,
@@ -1359,6 +1557,68 @@ export class MissionEngine {
 
     async listMissions(filter?: { state?: MissionState }): Promise<Mission[]> {
         return this.store.listMissions(filter);
+    }
+
+    private async recordLateCancelledFacts(
+        invocation: CapabilityInvocation,
+        mission: Mission,
+        result: InvocationResult,
+        evidenceRefs: EvidenceRef[],
+        ownerVerificationClaim?: OwnerVerification,
+    ): Promise<Mission> {
+        let attestedOwnerVerification: OwnerVerification | undefined;
+        if (ownerVerificationClaim) {
+            const contract = await this.policy.resolver.resolve(invocation.capabilityId);
+            if (!contract) throw new Error(`cannot verify invocation of unknown capability "${invocation.capabilityId}"`);
+            attestedOwnerVerification = sanitizeOwnerVerification(
+                await this.verificationAuthority.attestOwnerVerification(
+                    ownerVerificationClaim,
+                    invocation,
+                    contract,
+                ),
+            );
+        }
+
+        const resultRefs = mergeEvidenceRefs(invocation.resultRefs, evidenceRefs);
+        const ownerVerification = invocation.ownerVerification?.verified === false
+            ? invocation.ownerVerification
+            : attestedOwnerVerification ?? invocation.ownerVerification;
+        const observed = observedCancellationFacts(invocation, result.status, this.clock.isoNow());
+        const reconciliation = invocation.reconciliation.state === "resolved"
+            ? invocation.reconciliation
+            : observed.reconciliation;
+        const delivery = invocation.reconciliation.state === "resolved"
+            ? invocation.delivery
+            : observed.delivery;
+        const missionEvidence = mergeEvidenceRefs(mission.evidenceRefs, evidenceRefs);
+        const changed = resultRefs.length !== invocation.resultRefs.length
+            || missionEvidence.length !== mission.evidenceRefs.length
+            || ownerVerification !== invocation.ownerVerification
+            || JSON.stringify(reconciliation) !== JSON.stringify(invocation.reconciliation)
+            || JSON.stringify(delivery) !== JSON.stringify(invocation.delivery);
+        if (!changed) return mission;
+
+        const updated: CapabilityInvocation = {
+            ...invocation,
+            resultRefs,
+            ownerVerification,
+            ownerVerificationState: ownerVerification
+                ? ownerVerification.verified ? "verified" : "rejected"
+                : invocation.ownerVerificationState,
+            delivery,
+            reconciliation,
+            updatedAt: this.clock.isoNow(),
+        };
+        assertValidInvocationIdentity(updated);
+        assertNoRawSecrets(updated);
+        await this.store.withTransaction(async () => {
+            await this.store.updateInvocation(invocation.invocationId, updated);
+            await this.store.updateMission(invocation.missionId, {
+                evidenceRefs: missionEvidence,
+                updatedAt: this.clock.isoNow(),
+            });
+        });
+        return this.requireMission(invocation.missionId);
     }
 
     private async requireMission(missionId: string): Promise<Mission> {
@@ -1505,6 +1765,8 @@ function updateDelivery(
 }
 
 function validateInvocationResult(result: InvocationResult): void {
+    assertKnownKeys(result, ["invocationId", "status", "summary", "evidenceRefs", "completedAt"], "InvocationResult");
+    sanitizeOpaqueString(result.invocationId, "invocationId");
     if (!Object.values(InvocationStatus).includes(result.status)) {
         throw new Error(`Invalid invocation result status: ${String(result.status)}`);
     }
@@ -1519,20 +1781,128 @@ function validateInvocationResult(result: InvocationResult): void {
     if (result.completedAt !== undefined && typeof result.completedAt !== "string") {
         throw new Error("InvocationResult completedAt must be a string");
     }
+    if (result.completedAt !== undefined) assertIsoTimestamp(result.completedAt, "completedAt");
 }
 
 function sanitizeOpaqueString(value: string, field: string): string {
-    if (typeof value !== "string" || value.length === 0) {
+    if (typeof value !== "string" || value.trim().length === 0) {
         throw new Error(`${field} must be a non-empty string`);
     }
     assertNoRawSecrets(value, field);
     return value;
 }
 
+function assertKnownKeys(value: object, allowed: readonly string[], field: string): void {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${field} must be an object`);
+    }
+    const keys = Object.keys(value);
+    const extra = keys.filter((key) => !allowed.includes(key));
+    if (extra.length > 0) throw new Error(`${field} contains unsupported fields: ${extra.join(", ")}`);
+}
+
+function assertIsoTimestamp(value: string, field: string): void {
+    if (
+        typeof value !== "string"
+        || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+        || Number.isNaN(Date.parse(value))
+    ) {
+        throw new Error(`${field} must be a valid ISO timestamp`);
+    }
+}
+
+function validateHandoffUpdate(update: InvocationHandoffUpdate): void {
+    assertKnownKeys(update, ["deliveryState", "remoteOperationHandle", "correlationId"], "InvocationHandoffUpdate");
+    if (update.deliveryState !== undefined && !["acknowledged", "running", "uncertain"].includes(update.deliveryState)) {
+        throw new Error(`Invalid handoff deliveryState: ${String(update.deliveryState)}`);
+    }
+    if (update.correlationId !== undefined) sanitizeOpaqueString(update.correlationId, "correlationId");
+    if (update.remoteOperationHandle !== undefined) sanitizeOpaqueString(update.remoteOperationHandle, "remoteOperationHandle");
+}
+
+function validateReconciliationUpdate(update: InvocationReconciliationUpdate): void {
+    assertKnownKeys(update, ["state", "outcome", "nextAction", "lastCheckedAt", "deliveryState", "status"], "InvocationReconciliationUpdate");
+    if (!["not_required", "pending", "resolved", "unsupported"].includes(update.state)) {
+        throw new Error(`Invalid reconciliation state: ${String(update.state)}`);
+    }
+    if (update.outcome !== undefined && !["performed", "not_performed", "unknown"].includes(update.outcome)) {
+        throw new Error(`Invalid reconciliation outcome: ${String(update.outcome)}`);
+    }
+    if (update.deliveryState !== undefined && !["acknowledged", "running", "failed", "uncertain"].includes(update.deliveryState)) {
+        throw new Error(`Invalid reconciliation deliveryState: ${String(update.deliveryState)}`);
+    }
+    if (update.status !== undefined && !Object.values(InvocationStatus).includes(update.status)) {
+        throw new Error(`Invalid reconciliation status: ${String(update.status)}`);
+    }
+    if (update.nextAction !== undefined) sanitizeText(update.nextAction);
+    if (update.lastCheckedAt !== undefined) assertIsoTimestamp(update.lastCheckedAt, "lastCheckedAt");
+}
+
+function sanitizeEvidenceRefs(refs: EvidenceRef[]): EvidenceRef[] {
+    if (!Array.isArray(refs)) throw new Error("InvocationResult evidenceRefs must be an array");
+    return refs.map((ref) => {
+        if (!ref || typeof ref !== "object" || Array.isArray(ref)) throw new Error("EvidenceRef must be an object");
+        assertKnownKeys(ref, ["refId", "owner", "externalRef", "label"], "EvidenceRef");
+        if (typeof ref.label !== "string" || typeof ref.externalRef !== "string") {
+            throw new Error("EvidenceRef label and externalRef must be strings");
+        }
+        return {
+            refId: sanitizeOpaqueString(ref.refId, "evidence.refId"),
+            owner: sanitizeOpaqueString(ref.owner, "evidence.owner"),
+            externalRef: sanitizeText(ref.externalRef),
+            label: sanitizeText(ref.label),
+        };
+    });
+}
+
+function sanitizeOwnerVerification(verification: OwnerVerification): OwnerVerification {
+    if (!verification || typeof verification !== "object") throw new Error("OwnerVerification must be an object");
+    assertKnownKeys(verification, ["invocationId", "verified", "reason", "owner", "verifiedAt"], "OwnerVerification");
+    if (typeof verification.verified !== "boolean") throw new Error("OwnerVerification.verified must be boolean");
+    assertIsoTimestamp(verification.verifiedAt, "OwnerVerification.verifiedAt");
+    return {
+        invocationId: sanitizeOpaqueString(verification.invocationId, "OwnerVerification.invocationId"),
+        verified: verification.verified,
+        reason: sanitizeText(verification.reason),
+        owner: sanitizeOpaqueString(verification.owner, "OwnerVerification.owner"),
+        verifiedAt: verification.verifiedAt,
+    };
+}
+
+function observedCancellationFacts(
+    invocation: CapabilityInvocation,
+    status: InvocationStatus,
+    now: string,
+): Pick<CapabilityInvocation, "delivery" | "reconciliation"> {
+    if (status === InvocationStatus.COMPLETED) {
+        return {
+            delivery: { ...invocation.delivery, state: "acknowledged", acknowledgedAt: invocation.delivery.acknowledgedAt ?? now },
+            reconciliation: { ...invocation.reconciliation, state: "resolved", outcome: "performed", lastCheckedAt: now },
+        };
+    }
+    if (status === InvocationStatus.FAILED || status === InvocationStatus.CANCELLED) {
+        return {
+            delivery: { ...invocation.delivery, state: "failed" },
+            reconciliation: { ...invocation.reconciliation, state: "resolved", outcome: "not_performed", lastCheckedAt: now },
+        };
+    }
+    if (status === InvocationStatus.RUNNING) {
+        return {
+            delivery: { ...invocation.delivery, state: "running" },
+            reconciliation: { ...invocation.reconciliation, state: "pending", outcome: "unknown", lastCheckedAt: now },
+        };
+    }
+    return {
+        delivery: { ...invocation.delivery, state: "uncertain" },
+        reconciliation: { ...invocation.reconciliation, state: "pending", outcome: "unknown", lastCheckedAt: now },
+    };
+}
+
 function reconciliationStatus(
     outcome: InvocationReconciliationUpdate["outcome"],
     current: InvocationStatus,
 ): InvocationStatus {
+    if (outcome === "performed") return InvocationStatus.COMPLETED;
     return outcome === "not_performed" ? InvocationStatus.FAILED : current;
 }
 

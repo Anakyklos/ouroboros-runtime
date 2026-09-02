@@ -66,8 +66,13 @@ export interface MissionStore {
     listNonTerminalInvocations(limit: number): Promise<CapabilityInvocation[]>;
     /** Due invocations ordered by eligibility, bounded by the caller. */
     listDueInvocations(now: string, limit: number): Promise<CapabilityInvocation[]>;
+    /** Atomically claim a Mission-local effect fingerprint before handoff. */
+    claimInvocation(invocation: CapabilityInvocation): Promise<boolean>;
     /** Preserve completed effects across plan revisions and duplicate requests. */
-    findInvocationByEffectFingerprint(effectFingerprint: string): Promise<CapabilityInvocation | null>;
+    findInvocationByEffectFingerprint(
+        missionId: string,
+        effectFingerprint: string,
+    ): Promise<CapabilityInvocation | null>;
 }
 
 /** ------------------------------------------------------------------ */

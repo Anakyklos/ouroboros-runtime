@@ -1109,7 +1109,7 @@ describe("SqliteMissionStore (durability + recovery)", () => {
             .query("SELECT effect_fingerprint FROM mission_invocations WHERE invocation_id = ?")
             .get("legacy-invocation") as { effect_fingerprint: string };
         expect(persisted.effect_fingerprint).toBe("legacy:legacy-invocation");
-        expect(await second.findInvocationByEffectFingerprint("legacy:legacy-invocation")).toEqual(migrated);
+        expect(await second.findInvocationByEffectFingerprint("legacy-mission", "legacy:legacy-invocation")).toEqual(migrated);
         expect(migrated?.delivery.state).toBe("uncertain");
         expect(migrated?.retry.nextEligibleAt).toBeNull();
         expect(migrated?.attempts).toEqual([]);
@@ -1129,22 +1129,27 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         });
         await store.saveInvocation(makeFullInvocation(mission.missionId, {
             invocationId: "due-late",
+            effectFingerprint: "effect-due-late",
             retry: { maxAttempts: 3, attempt: 0, backoff: RetryBackoff.FIXED, backoffMs: 1, nextEligibleAt: "2026-08-30T12:30:00.000Z" },
         }));
         await store.saveInvocation(makeFullInvocation(mission.missionId, {
             invocationId: "due-early",
+            effectFingerprint: "effect-due-early",
             retry: { maxAttempts: 3, attempt: 0, backoff: RetryBackoff.FIXED, backoffMs: 1, nextEligibleAt: "2026-08-30T12:10:00.000Z" },
         }));
         await store.saveInvocation(makeFullInvocation(mission.missionId, {
             invocationId: "due-now",
+            effectFingerprint: "effect-due-now",
             retry: { maxAttempts: 3, attempt: 0, backoff: RetryBackoff.NONE, backoffMs: 0, nextEligibleAt: null },
         }));
         await store.saveInvocation(makeFullInvocation(mission.missionId, {
             invocationId: "future",
+            effectFingerprint: "effect-future",
             retry: { maxAttempts: 3, attempt: 0, backoff: RetryBackoff.FIXED, backoffMs: 1, nextEligibleAt: "2026-08-30T14:00:00.000Z" },
         }));
         await store.saveInvocation(makeFullInvocation(mission.missionId, {
             invocationId: "completed",
+            effectFingerprint: "effect-completed",
             status: InvocationStatus.COMPLETED,
             completedAt: INVOCATION_TIME,
             retry: { maxAttempts: 3, attempt: 1, backoff: RetryBackoff.NONE, backoffMs: 0, nextEligibleAt: null },
@@ -1187,11 +1192,12 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         const recovered = await store.getInvocation(completed.invocationId);
         expect(recovered?.status).toBe(InvocationStatus.COMPLETED);
         expect(recovered?.resultRefs).toEqual(completed.resultRefs);
-        expect(await store.findInvocationByEffectFingerprint(completed.effectFingerprint)).toEqual(completed);
+        expect(await store.findInvocationByEffectFingerprint(mission.missionId, completed.effectFingerprint)).toEqual(completed);
         expect(await store.listInvocations(mission.missionId)).toHaveLength(1);
 
         const cancelled = makeFullInvocation(mission.missionId, {
             invocationId: "cancelled",
+            effectFingerprint: "fingerprint-cancelled",
             status: InvocationStatus.CANCELLED,
             completedAt: INVOCATION_TIME,
         });

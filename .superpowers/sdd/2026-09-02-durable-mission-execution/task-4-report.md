@@ -1,49 +1,52 @@
 # Task 4 Report: Durable Mission Execution Transitions
 
-## Files changed
+## Escopo entregue
 
+Implementado exclusivamente o fix do Task 4 a partir de `c36f490`:
+
+- `cli/src/mission/contracts.ts`
+  - Matriz explícita de transições monotônicas para invocations.
+  - Estados terminais permanecem imutáveis; retry é a única saída explícita de `FAILED`.
 - `cli/src/mission/mission-engine.ts`
-  - Persists a complete `CapabilityInvocation` before any handoff seam, including plan revision, descriptor metadata, stable request/effect/correlation identity, prepared attempt, and `not_submitted` delivery.
-  - Adds idempotent result/evidence recording with immutable terminal completed/cancelled invocations and sovereign negative owner verification.
-  - Preserves explicit `FAILED` attempt results without implicitly retrying or dispatching.
-  - Adds persisted pause/resume transitions distinct from cancellation and waiting, explicit waiting-to-ready restoration, conservative cancellation handling, and small handoff/reconciliation state transitions.
-  - Applies raw-secret rejection and string sanitization at every persisted engine boundary.
-- `cli/src/mission/mission-engine.test.ts`
-  - Added deterministic FakeClock/fake-store coverage for prepared invocation persistence, idempotency, owner verification, pause/resume, cancellation, descriptor validation, revision fingerprint reuse, waiting restoration, and explicit failed attempts.
-- `.superpowers/sdd/2026-09-02-durable-mission-execution/task-4-report.md`
-  - Recorded scope, validation, and limitations.
+  - Pré-handoff persiste a invocation como `PENDING`, com attempt preparado e delivery `not_submitted`.
+  - Handoff explícito promove para `DISPATCHED` ou `RUNNING`; facts incertos exigem reconciliação.
+  - Preparação de retry explícita, idempotente, sem dispatch automático, preservando request/effect/capability/revision/idempotency identity.
+  - Resultados regressivos são rejeitados e resultados tardios após cancellation preservam status da invocation e da Mission, incorporando facts/evidence de forma idempotente.
+  - Fingerprint é calculado e consultado no escopo da Mission, com validação de shape, identities opacas e sanitização apenas de texto livre.
+- `cli/src/mission/ports.ts`
+  - Port mínimo para claim atômico e busca de fingerprint por `(missionId, effectFingerprint)`.
+- `cli/src/mission/sqlite-mission-store.ts`
+  - Índice único `(mission_id, effect_fingerprint)` e claim insert-only.
+  - Transações serializadas por store para evitar race local entre claims concorrentes.
+  - Invocations legadas recebem defaults conservadores e ficam incertas, nunca replayáveis automaticamente.
+  - Migração falha fechada diante de fingerprints duplicados, sem apagar efeitos.
+  - Invocations inicialmente preparadas são excluídas das consultas automáticas de recovery/due até handoff ou retry explícito.
+- Testes determinísticos:
+  - `cli/src/mission/mission-engine.test.ts`
+  - `cli/src/mission/sqlite-mission-store.test.ts`
 
-## Behavior delivered
+## Comportamento e limites
 
-- `dispatchStep` creates the durable invocation and mission transition atomically before any external handoff.
-- Duplicate terminal results and evidence are no-ops. Completed effects from earlier plan revisions prevent a second invocation for the same effect fingerprint.
-- Negative owner verification remains authoritative even when a planner/result claims success. Failed attempts remain explicit and retain retry metadata without scheduler behavior.
-- Pausing does not cancel active work, survives restart through persisted mission state, and resuming restores the prior non-terminal state without dispatching.
-- Cancellation marks unsubmitted work cancelled locally and requests cancellation conservatively for active or uncertain work.
-- Waiting missions remain waiting until an explicit `restoreWaitingToReady` transition.
+- `MissionIntent` continua distinto de `Mission`; nenhuma alteração foi feita no fluxo de connector, scheduler ou Context Compiler.
+- Não foi implementada integração efetiva com `dispatch-seam.ts`. A API de handoff/reconciliação permanece no motor para o seam do Task 5.
+- Não foram tocados UI, legado, connector, scheduler, Context Compiler ou `.agent/memory`.
+- Os arquivos `.agent/memory/2026-08-31.md`, `2026-09-01.md` e `2026-09-02.md` já estavam untracked e foram excluídos do commit.
 
-## Commands and results
+## Validação final
 
 ```bash
 bun test cli/src/mission/mission-engine.test.ts cli/src/mission/durable-mission-execution.test.ts cli/src/mission/sqlite-mission-store.test.ts
 ```
 
-Result: **77 pass, 0 fail, 389 expect() calls**.
+Resultado: **85 pass, 0 fail, 427 expect() calls**.
 
 ```bash
 bun run check:runtime
-```
-
-Result: **exit code 0**.
-
-```bash
 git diff --check
 ```
 
-Result: **exit code 0** before this report was added. It will be rerun after the report update.
+Resultado: **ambos com exit code 0** após a atualização deste relatório.
 
-## Scope limits
+## Commit
 
-- No connector calls, real reconciliation, scheduler, retry dispatch, or changes to `dispatch-seam.ts` were added.
-- Context, UI, legacy subsystems, and `.agent/memory` were not modified. Existing `.agent/memory` files remain untracked and are excluded from the commit.
-- The full `bun run check` gate was not rerun because the requested validation scope was the focused Mission/durable/SQLite suites plus `bun run check:runtime` and `git diff --check`.
+Será criado um único commit escopado contendo somente os arquivos do Task 4 listados acima e este relatório.

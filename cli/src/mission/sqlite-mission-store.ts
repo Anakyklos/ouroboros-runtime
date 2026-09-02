@@ -135,6 +135,7 @@ export class SqliteMissionStore implements MissionStore {
     private db: Database | null = null;
     private readonly dbPath: string;
     private readonly statements: Record<string, ReturnType<Database["prepare"]>> = {};
+    private transactionQueue: Promise<void> = Promise.resolve();
 
     constructor(dbPath: string = ".ouroboros/missions.db") {
         this.dbPath = dbPath;
@@ -296,6 +297,19 @@ export class SqliteMissionStore implements MissionStore {
             END
             WHERE owner_verification IS NOT NULL;
         `);
+        const duplicate = db.query(
+            `SELECT mission_id, effect_fingerprint, COUNT(*) AS count
+             FROM mission_invocations
+             WHERE effect_fingerprint IS NOT NULL AND effect_fingerprint != ''
+             GROUP BY mission_id, effect_fingerprint
+             HAVING COUNT(*) > 1`,
+        ).all() as Array<{ mission_id: string; effect_fingerprint: string; count: number }>;
+        if (duplicate.length > 0) {
+            throw new Error(
+                `Mission invocation fingerprint migration refused: duplicate local effect claim for mission "${duplicate[0].mission_id}" and fingerprint "${duplicate[0].effect_fingerprint}"`,
+            );
+        }
+        db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_invocations_mission_effect ON mission_invocations(mission_id, effect_fingerprint)");
         db.exec("CREATE INDEX IF NOT EXISTS idx_invocations_effect ON mission_invocations(effect_fingerprint)");
         db.exec("CREATE INDEX IF NOT EXISTS idx_invocations_due ON mission_invocations(status, delivery, updated_at)");
     }
@@ -659,6 +673,9 @@ export class SqliteMissionStore implements MissionStore {
             `SELECT * FROM mission_invocations
              WHERE status IN ('pending', 'failed', 'blocked')
                AND status NOT IN ('completed', 'cancelled')
+               AND NOT (status = 'pending' AND dispatched_at IS NULL
+                        AND json_extract(retry, '$.attempt') = 0
+                        AND json_extract(delivery, '$.state') = 'not_submitted')
                AND json_extract(delivery, '$.state') != 'uncertain'
                AND json_extract(reconciliation, '$.state') NOT IN ('pending', 'unsupported')
              ORDER BY created_at ASC, invocation_id ASC
@@ -674,6 +691,9 @@ export class SqliteMissionStore implements MissionStore {
             `SELECT * FROM mission_invocations
              WHERE status IN ('pending', 'failed', 'blocked')
                AND status NOT IN ('completed', 'cancelled')
+               AND NOT (status = 'pending' AND dispatched_at IS NULL
+                        AND json_extract(retry, '$.attempt') = 0
+                        AND json_extract(delivery, '$.state') = 'not_submitted')
                AND json_extract(delivery, '$.state') != 'uncertain'
                AND json_extract(reconciliation, '$.state') NOT IN ('pending', 'unsupported')
                AND (json_extract(retry, '$.nextEligibleAt') IS NULL
@@ -688,15 +708,69 @@ export class SqliteMissionStore implements MissionStore {
         return rows.map((row) => this.rowToInvocation(row));
     }
 
-    async findInvocationByEffectFingerprint(effectFingerprint: string): Promise<CapabilityInvocation | null> {
+    async claimInvocation(invocation: CapabilityInvocation): Promise<boolean> {
+        assertNoRawSecrets(invocation, "invocation");
+        const normalized = this.normalizeInvocation(invocation);
+        assertValidInvocationIdentity(normalized);
+        try {
+            this.stmt(
+                "claimInvocation",
+                `INSERT INTO mission_invocations (
+                    invocation_id, mission_id, step_id, capability_id, plan_revision_id,
+                    contract_version, module_owner, request_id, effect_fingerprint, input_refs,
+                    idempotency, retry, attempts, delivery, cancellation, reconciliation,
+                    owner_verification_state, status, dispatched_at, completed_at, result_refs,
+                    owner_verification, error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ).run(
+                normalized.invocationId,
+                normalized.missionId,
+                normalized.stepId,
+                normalized.capabilityId,
+                normalized.planRevisionId,
+                normalized.contractVersion,
+                normalized.moduleOwner,
+                normalized.requestId,
+                normalized.effectFingerprint,
+                JSON.stringify(normalized.inputRefs),
+                JSON.stringify(normalized.idempotency),
+                JSON.stringify(normalized.retry),
+                JSON.stringify(normalized.attempts),
+                JSON.stringify(normalized.delivery),
+                JSON.stringify(normalized.cancellation),
+                JSON.stringify(normalized.reconciliation),
+                normalized.ownerVerificationState,
+                normalized.status,
+                normalized.dispatchedAt ?? null,
+                normalized.completedAt ?? null,
+                JSON.stringify(normalized.resultRefs),
+                normalized.ownerVerification ? JSON.stringify(normalized.ownerVerification) : null,
+                normalized.error ?? null,
+                normalized.createdAt,
+                normalized.updatedAt,
+            );
+            return true;
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (message.includes("UNIQUE constraint failed: mission_invocations.mission_id, mission_invocations.effect_fingerprint")) {
+                return false;
+            }
+            throw error;
+        }
+    }
+
+    async findInvocationByEffectFingerprint(
+        missionId: string,
+        effectFingerprint: string,
+    ): Promise<CapabilityInvocation | null> {
         const row = this.stmt(
             "findInvocationByEffectFingerprint",
             `SELECT * FROM mission_invocations
-             WHERE effect_fingerprint = ?
+             WHERE mission_id = ? AND effect_fingerprint = ?
              ORDER BY CASE WHEN status = 'completed' THEN 0 ELSE 1 END,
                       created_at ASC, invocation_id ASC
              LIMIT 1`,
-        ).get(effectFingerprint) as InvocationRow | null;
+        ).get(missionId, effectFingerprint) as InvocationRow | null;
         return row ? this.rowToInvocation(row) : null;
     }
 
@@ -870,6 +944,12 @@ export class SqliteMissionStore implements MissionStore {
     /** Execute a function inside a BEGIN/COMMIT transaction. */
     async withTransaction<T>(fn: () => Promise<T>): Promise<T> {
         const db = this.ensureDb();
+        const previous = this.transactionQueue;
+        let release!: () => void;
+        this.transactionQueue = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        await previous;
         db.exec("BEGIN");
         try {
             const result = await fn();
@@ -878,6 +958,8 @@ export class SqliteMissionStore implements MissionStore {
         } catch (e) {
             db.exec("ROLLBACK");
             throw e;
+        } finally {
+            release();
         }
     }
 
