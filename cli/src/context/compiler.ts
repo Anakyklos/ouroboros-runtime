@@ -7,19 +7,31 @@
  * Structural authority rules enforced HERE (not by prompts):
  *  1. Mission-owned refs are compiled ONLY from the requesting Mission's
  *     own contextRefs — cross-mission references are refused.
- *  2. External content reaches the package ONLY as seam-authorized
- *     `ContextReadOutcome`s produced by the SeamBoundContextReader
- *     (sources.ts) from results that ALREADY passed the #63
- *     `ConnectorDispatchSeam` gates. The compiler itself holds no
- *     registry, no seam and no policy: it cannot widen what the boundary
- *     already authorized.
+ *  2. External content reaches the package ONLY through a non-forgeable
+ *     `SeamAuthorizedRead`: a nominal class whose construction is private
+ *     to this module (the compiler), produced ONLY by the
+ *     SeamBoundContextReader (sources.ts) from results that ALREADY passed
+ *     the #63 `ConnectorDispatchSeam` gates. A plain `{descriptor, rows}`
+ *     object is structurally refused, and a forged `CompiledSourceRead`
+ *     can never be sealed. The compiler itself holds no registry, no seam
+ *     and no policy: it cannot widen what the boundary already authorized.
+ *     `alreadyAuthorized` outcomes are re-verified against AUTHORITATIVE
+ *     engine state (the invocation must exist for this mission/step with
+ *     the claimed capability, and the step must already be dispatched):
+ *     caller-supplied shapes are never authority.
  *  3. Budgets are NEVER taken from the requester as authority (review
  *     blocker 3): the proposed `ContextRequest.budget` is deterministically
  *     clamped to the runtime-owned `RequestBudgetPolicy` ceiling before
  *     use, and EVERY mutation of a package (compile, deriveSummary,
  *     addInference) re-runs the same class/dedup/budget pipeline and
  *     updates the honest budgetReport. A package can never exceed its
- *     effective budget — including after additions.
+ *     effective budget — including after additions — and mutations are
+ *     MONOTONICALLY NON-EXPANDING (review blocker, round 2): the
+ *     package's recorded `budgetReport.limits` are the authorized ceiling;
+ *     a mutating compiler can only keep or TIGHTEN them (the strictest
+ *     across all compilers that touched the package), never widen them.
+ *     The report additionally asserts observed ≤ limits; an over-budget
+ *     package refuses to grow at all.
  *  4. External content is DATA and stays epistemically honest (review
  *     blocker 5): rows carry their source epistemic class; the compiler
  *     never defaults external content to FACT. A row without a declared
@@ -38,6 +50,20 @@
  *  8. No secrets/Authorization/CoT/raw provider responses are persisted:
  *     every string passes the shared sanitizers; unredactable secrets are
  *     refused with an honest exclusion record — never a silent leak.
+ *  9. Sensitivity accompanies redaction (review blocker, round 2): a
+ *     string that had to be sanitized can never carry NORMAL sensitivity.
+ *     Whenever the sanitized content differs from its source, the item's
+ *     provenance is marked REDACTED (and the source row is recorded as an
+ *     honest exclusion); RESTRICTED rows remain reference-only. This one
+ *     rule applies uniformly to mission-owned contextRefs, external rows,
+ *     inferences and derived summaries.
+ * 10. Restart is recomposition, not replay (review blocker, round 2):
+ *     `recompileAfterRestart` accepts only the durable Mission, the
+ *     request, the SAME seam-bound reader and a live compiler. External
+ *     content is re-acquired through the #63 seam after restart; a
+ *     package compiled before the restart is data, never authority, and
+ *     blind redispatch of an already-dispatched step is refused by the
+ *     engine (InvocationConflictError).
  */
 
 import { createHash } from "node:crypto";
@@ -63,6 +89,55 @@ import {
     type ContextRow,
 } from "./contracts.js";
 import { containsRawSecret, sanitizeText } from "../mission/sanitize.js";
+
+/**
+ * 🔒 SeamAuthorizedRead — non-forgeable proof that a read crossed the
+ * #63 `ConnectorDispatchSeam` boundary (review blocker, round 2). This is
+ * a NOMINAL class with a PRIVATE constructor: a plain `{descriptor, rows}`
+ * object, a hand-built look-alike, or a forged `CompiledSourceRead` can
+ * never satisfy the compiler's input check — only the module-internal
+ * seal, obtained by the SeamBoundContextReader (sources.ts) through
+ * `getSeamSeal()`, carries the module-private construction token. A
+ * constructor call without it (including through `as any`) throws at
+ * RUNTIME, not merely at type-check time. The wrapped read is deep-frozen
+ * at sealing: a sealed read cannot be mutated into a different
+ * authorization.
+ */
+export class SeamAuthorizedRead {
+    readonly read: CompiledSourceRead;
+
+    constructor(read: CompiledSourceRead, sealToken: symbol) {
+        if (sealToken !== SEAM_SEAL_TOKEN) {
+            throw new ContextCompilerError(
+                "SeamAuthorizedRead cannot be constructed directly: reads are sealed only through the SeamBoundContextReader",
+            );
+        }
+        this.read = deepFreeze(read) as CompiledSourceRead;
+        Object.freeze(this);
+    }
+}
+
+/** Module-private construction token: even a forced constructor call
+ * without it fails closed at runtime (not merely at type-check time). */
+const SEAM_SEAL_TOKEN = Symbol("context.compiler.seamSeal");
+
+/**
+ * The ONE module-internal sealing authority. Never exported as a value;
+ * the reader borrows it (coordination only — every legit production read
+ * still flows through seam dispatch inside sources.ts).
+ */
+const seamSeal = (read: CompiledSourceRead): SeamAuthorizedRead =>
+    new SeamAuthorizedRead(read, SEAM_SEAL_TOKEN);
+
+/** The reader's only way to seal a seam-authorized read. */
+export function getSeamSeal(): (read: CompiledSourceRead) => SeamAuthorizedRead {
+    return seamSeal;
+}
+
+/** Structural check: only genuinely sealed instances are authority. */
+function isSeamAuthorizedRead(value: unknown): value is SeamAuthorizedRead {
+    return value instanceof SeamAuthorizedRead;
+}
 
 /** Typed, fail-closed error for the Context Compiler boundary. */
 export class ContextCompilerError extends Error {
@@ -119,12 +194,15 @@ function deepFreeze<T>(value: T): T {
 }
 
 /**
- * One outcome of the SeamBoundContextReader (sources.ts): either a
- * successful seam-authorized read carrying the authorized descriptor
- * (provenance is computed by the compiler, never forged by connectors) or
- * an honest unresolved record. The compiler consumes this union verbatim.
+ * What the SeamBoundContextReader reports for ONE requested source
+ * (sources.ts): either a successful read SEALED as a non-forgeable
+ * `SeamAuthorizedRead` (the ONLY form the compiler accepts), or an honest
+ * refusal record. Honest refusals are surface data for the caller, never
+ * compiler authority — a refused source can never contribute content.
  */
-export type ContextReadOutcome = CompiledSourceRead | UnresolvedSource;
+export type ContextReadResult =
+    | { ok: true; read: SeamAuthorizedRead }
+    | { ok: false; unresolved: UnresolvedSource };
 
 /**
  * Deterministic package identity: hash of the FULL package content,
@@ -142,6 +220,20 @@ function dedupKey(item: ContextItem): string {
         epistemicClass: item.epistemicClass,
         content: item.content,
     });
+}
+
+/**
+ * Sensitivity accompanies redaction (review blocker, round 2) — the ONE
+ * consistent rule (Option A) for every sanitizeText inclusion: when the
+ * compiled content differs from its raw source OR carries a [REDACTED]
+ * marker (also covers pre-redacted durable state, e.g. engine-sanitized
+ * contextRef labels), the item's provenance is REDACTED — never NORMAL
+ * next to redaction markers.
+ */
+function redactionSensitivity(raw: string, content: string): SensitivityClass {
+    return content !== raw || content.includes("[REDACTED]")
+        ? SensitivityClass.REDACTED
+        : SensitivityClass.NORMAL;
 }
 
 /**
@@ -213,14 +305,20 @@ export class ContextCompiler {
 
     /**
      * Compile the package. Deterministic and PURE with respect to its
-     * inputs (mission, request, seam-authorized reads, clock): the same
-     * durable Mission state + refs + reads always recompose the same
+     * inputs (mission, request, SEALED seam-authorized reads, clock): the
+     * same durable Mission state + refs + reads always recompose the same
      * package. No caches, no model calls, no network.
+     *
+     * Structural closure (review blocker, round 2): external content is
+     * accepted ONLY as non-forgeable `SeamAuthorizedRead`s produced by the
+     * SeamBoundContextReader. A raw `{descriptor, rows}` or a forged
+     * `CompiledSourceRead` is refused BEFORE any item is produced — the
+     * whole compilation fails closed.
      */
     compile(
         mission: Mission,
         request: ContextRequest,
-        reads: ContextReadOutcome[],
+        reads: SeamAuthorizedRead[],
     ): BoundedContextPackage {
         // Gate 0 — declarative request sanity (fail-closed budgets: a
         // missing/invalid budget never compiles an unbounded package).
@@ -246,6 +344,16 @@ export class ContextCompiler {
                 `ContextRequest targets mission "${request.missionId}" but compilation was requested for "${mission.missionId}"`,
             );
         }
+        // Gate 1b — structural closure on external reads: every entry must
+        // be a genuinely sealed SeamAuthorizedRead. Plain objects are
+        // refused, never silently coerced into authority.
+        for (const r of reads) {
+            if (!isSeamAuthorizedRead(r)) {
+                throw new ContextCompilerError(
+                    "external reads must be SeamAuthorizedRead values produced by the SeamBoundContextReader; raw descriptor/rows objects are not authority (fail-closed)",
+                );
+            }
+        }
 
         const now = this.isoNow();
         const items: ContextItem[] = [];
@@ -253,18 +361,25 @@ export class ContextCompiler {
         const excluded: BudgetExclusion[] = [];
 
         // ── Phase A: mission-owned references (durable, authorized) ───
+        // A request WITHOUT an ownerHint is mission-only: contextRefs are
+        // compiled WITHOUT any seam read (blocker 1 test contract).
+        // Sensitivity accompanies redaction (review blocker, round 2): a
+        // label that had to be sanitized is compiled as REDACTED, never
+        // as NORMAL.
         for (const owned of mission.contextRefs) {
-            const content = sanitizeText(owned.label);
+            const rawLabel = owned.label;
+            const ownedContent = sanitizeText(rawLabel);
+            const ownedRedacted = redactionSensitivity(rawLabel, ownedContent);
             items.push({
                 itemId: computeItemId({
                     owner: owned.owner,
                     sourceRef: owned.externalRef,
                     epistemicClass: EpistemicClass.FACT,
-                    content,
+                    content: ownedContent,
                     missionId: mission.missionId,
                 }),
                 epistemicClass: EpistemicClass.FACT,
-                content,
+                content: ownedContent,
                 provenance: {
                     owner: owned.owner,
                     sourceRef: owned.externalRef,
@@ -272,36 +387,40 @@ export class ContextCompiler {
                     authorization: `authorized by ${sanitizeText(owned.authorizedBy)} via MissionIntent.contextRefs`,
                     missionId: mission.missionId,
                     purpose: sanitizeText(request.purpose),
-                    sensitivity: SensitivityClass.NORMAL,
+                    sensitivity: ownedRedacted,
                     origin: "mission_owned",
                 },
             });
         }
 
         // ── Phase B: seam-authorized external reads (#63 boundary) ────
-        // `reads` are produced ONLY by the SeamBoundContextReader
-        // (sources.ts) from ConnectorDispatchSeam-authorized results. The
-        // compiler never defaults external content to FACT (blocker 5).
+        // `reads` are non-forgeable SeamAuthorizedReads produced ONLY by
+        // the SeamBoundContextReader from ConnectorDispatchSeam-authorized
+        // results. The compiler never defaults external content to FACT
+        // (blocker 5).
         for (const outcome of reads) {
-            if (!("rows" in outcome)) {
-                unresolved.push(outcome);
-                continue;
-            }
-            if (outcome.skippedInvalidRows !== undefined && outcome.skippedInvalidRows > 0) {
+            const outcomeRead = outcome.read;
+            if (outcomeRead.skippedInvalidRows !== undefined && outcomeRead.skippedInvalidRows > 0) {
                 unresolved.push({
-                    requestedRef: sanitizeText(outcome.descriptor.capabilityId),
-                    owner: outcome.descriptor.moduleOwner,
+                    requestedRef: sanitizeText(outcomeRead.descriptor.capabilityId),
+                    owner: outcomeRead.descriptor.moduleOwner,
                     status: SourceStatus.UNSUPPORTED,
-                    detail: `${outcome.skippedInvalidRows} malformed row(s) skipped by structural validation`,
+                    detail: `${outcomeRead.skippedInvalidRows} malformed row(s) skipped by structural validation`,
                 });
             }
-            for (const row of outcome.rows) {
+            for (const row of outcomeRead.rows) {
                 // Sanitize BEFORE classification. Unredactable secret-like
                 // content is EXCLUDED with an honest record — never a
                 // silent carry, never a silent drop.
                 const rawContent = row.content;
                 const content = sanitizeText(rawContent);
-                if (content !== rawContent || containsRawSecret(content)) {
+                // Sensitivity accompanies redaction (review blocker,
+                // round 2): content that NEEDED sanitizing — or arrived
+                // pre-redacted — is carried with REDACTED sensitivity,
+                // never NORMAL next to redaction markers. An unredactable
+                // secret-like string is refused outright below.
+                const rowRedacted = redactionSensitivity(rawContent, content);
+                if (containsRawSecret(content)) {
                     excluded.push({
                         itemId: `secret:${sha256Json({ ref: row.sourceRef, content }).slice(0, 24)}`,
                         reason: "secret_refused",
@@ -313,11 +432,11 @@ export class ContextCompiler {
                 // No silent promotion to FACT, ever. A row without a class
                 // is refused unless the descriptor contract explicitly
                 // guarantees fact-only rows for this capability.
-                const itemClass = rowClassOf(row, outcome.descriptor);
+                const itemClass = rowClassOf(row, outcomeRead.descriptor);
                 if (itemClass === undefined) {
                     unresolved.push({
                         requestedRef: sanitizeText(row.sourceRef),
-                        owner: outcome.descriptor.moduleOwner,
+                        owner: outcomeRead.descriptor.moduleOwner,
                         status: SourceStatus.UNSUPPORTED,
                         detail:
                             "row carried no epistemic classification and the capability does not declare fact-only rows",
@@ -325,12 +444,20 @@ export class ContextCompiler {
                     continue;
                 }
 
-                const sensitivity = row.sensitivity ?? SensitivityClass.NORMAL;
+                // RESTRICTED stays RESTRICTED (the stricter class wins);
+                // redaction only ever upgrades NORMAL to REDACTED.
+                const declaredSensitivity = row.sensitivity ?? SensitivityClass.NORMAL;
+                const sensitivity =
+                    declaredSensitivity === SensitivityClass.RESTRICTED
+                        ? SensitivityClass.RESTRICTED
+                        : rowRedacted === SensitivityClass.REDACTED
+                          ? SensitivityClass.REDACTED
+                          : declaredSensitivity;
                 if (sensitivity === SensitivityClass.RESTRICTED) {
                     // Owner-declared restricted: reference-only, no content.
                     items.push({
                         itemId: computeItemId({
-                            owner: outcome.descriptor.moduleOwner,
+                            owner: outcomeRead.descriptor.moduleOwner,
                             sourceRef: row.sourceRef,
                             epistemicClass: itemClass,
                             content: "(restricted)",
@@ -339,7 +466,7 @@ export class ContextCompiler {
                         epistemicClass: itemClass,
                         content: `(restricted: reference-only ${row.sourceRef})`,
                         provenance: this.externalProvenance(
-                            outcome.descriptor,
+                            outcomeRead.descriptor,
                             row,
                             request,
                             now,
@@ -362,7 +489,7 @@ export class ContextCompiler {
                     if (Number.isNaN(age) || age > request.maxAgeMs) {
                         unresolved.push({
                             requestedRef: sanitizeText(row.sourceRef),
-                            owner: outcome.descriptor.moduleOwner,
+                            owner: outcomeRead.descriptor.moduleOwner,
                             status: SourceStatus.STALE,
                             detail: Number.isNaN(age)
                                 ? "freshness required but the source carried no valid timestamp"
@@ -374,7 +501,7 @@ export class ContextCompiler {
 
                 items.push({
                     itemId: computeItemId({
-                        owner: outcome.descriptor.moduleOwner,
+                        owner: outcomeRead.descriptor.moduleOwner,
                         sourceRef: row.sourceRef,
                         epistemicClass: itemClass,
                         content,
@@ -382,8 +509,8 @@ export class ContextCompiler {
                     }),
                     epistemicClass: itemClass,
                     content,
-                    provenance: this.externalProvenance(
-                        outcome.descriptor,
+                        provenance: this.externalProvenance(
+                            outcomeRead.descriptor,
                         row,
                         request,
                         now,
@@ -482,7 +609,15 @@ export class ContextCompiler {
             .map((s) => s.content)
             .join(" | ")
             .slice(0, Math.max(1, spec.maxChars));
-        const content = sanitizeText(joined);
+        const rawJoined = joined;
+        const content = sanitizeText(rawJoined);
+        const summaryRedacted = redactionSensitivity(rawJoined, content);
+        if (containsRawSecret(content)) {
+            return {
+                ok: false,
+                reason: "derived summary would carry an unredactable secret (refused)",
+            };
+        }
         const summaryItem: ContextItem = {
             itemId: computeItemId({
                 owner: "ouroboros.compiler",
@@ -501,7 +636,7 @@ export class ContextCompiler {
                 authorization: `derived from ${ordered.length} compiled item(s) by deterministic reduction "first:${ordered.length}"; sources remain reconstructible`,
                 missionId: pkg.missionId,
                 purpose: sanitizeText(pkg.request.purpose),
-                sensitivity: SensitivityClass.NORMAL,
+                sensitivity: summaryRedacted,
                 origin: "mission_owned",
             },
             derivedFrom: ordered.map((s) => s.itemId),
@@ -524,7 +659,12 @@ export class ContextCompiler {
     ):
         | { ok: true; item: ContextItem; package: BoundedContextPackage }
         | { ok: false; reason: string } {
-        const content = sanitizeText(spec.content);
+        const rawContent = spec.content;
+        const content = sanitizeText(rawContent);
+        const inferenceRedacted = redactionSensitivity(rawContent, content);
+        if (containsRawSecret(content)) {
+            return { ok: false, reason: "inference carries an unredactable secret (refused)" };
+        }
         const item: ContextItem = {
             itemId: computeItemId({
                 owner: "planner",
@@ -543,7 +683,7 @@ export class ContextCompiler {
                     "declared by the requester as an inference; NOT a fact and never promoted",
                 missionId: pkg.missionId,
                 purpose: sanitizeText(pkg.request.purpose),
-                sensitivity: SensitivityClass.NORMAL,
+                sensitivity: inferenceRedacted,
                 origin: "external_owner",
             },
         };
@@ -566,6 +706,40 @@ export class ContextCompiler {
         const item = additions[0];
         const excluded: BudgetExclusion[] = [];
 
+        // Gate 0 — MONOTONIC NON-EXPANSION (review blocker, round 2): the
+        // package's recorded limits are the AUTHORIZED ceiling. The
+        // mutating instance's own policy can keep or TIGHTEN them (the
+        // strictest across all compilers that touched the package) — it can
+        // never widen them, so a loose compiler cannot expand a package
+        // compiled under a stricter policy.
+        const own = this.effectiveBudget(pkg.request).effective;
+        const inherited = pkg.budgetReport.limits;
+        const effective = {
+            maxItems: Math.min(own.maxItems, inherited.maxItems),
+            maxTotalChars: Math.min(own.maxTotalChars, inherited.maxTotalChars),
+            maxEstimatedTokens: Math.min(own.maxEstimatedTokens, inherited.maxEstimatedTokens),
+        };
+        // Over-budget honesty: if observed ever exceeds the inherited
+        // ceiling (e.g. hand-built input), the package refuses to grow at
+        // all — never launder an over-budget state.
+        const observedNow = {
+            items: pkg.items.length,
+            totalChars: pkg.items.reduce((sum, i) => sum + i.content.length, 0),
+            estimatedTokens: estimateTokens(
+                pkg.items.reduce((sum, i) => sum + i.content.length, 0),
+            ),
+        };
+        const alreadyOverBudget =
+            observedNow.items > inherited.maxItems ||
+            observedNow.totalChars > inherited.maxTotalChars ||
+            observedNow.estimatedTokens > inherited.maxEstimatedTokens;
+        if (alreadyOverBudget) {
+            return {
+                ok: false,
+                reason: "package already exceeds its recorded budget limits (refusing to grow an over-budget package)",
+            };
+        }
+
         // Gate 1 — minimal disclosure (requestedClasses still authority).
         const requested = pkg.request.requestedClasses;
         if (requested && !requested.includes(item.epistemicClass)) {
@@ -582,8 +756,6 @@ export class ContextCompiler {
             return { ok: false, reason: "identical item already in the package (duplicate)" };
         }
 
-        // Gate 3 — effective budget (clamped, policy-owned, re-checked).
-        const { effective } = this.effectiveBudget(pkg.request);
         const totalChars = pkg.items.reduce((sum, i) => sum + i.content.length, 0);
         const nextChars = totalChars + item.content.length;
         if (pkg.items.length + 1 > effective.maxItems) {
@@ -602,9 +774,9 @@ export class ContextCompiler {
         // Honest accounting: the new package's report reflects the addition.
         const items = [...pkg.items, item];
         const budgetReport = {
-            limits: { ...pkg.budgetReport.limits },
+            limits: { ...effective },
             proposed: { ...pkg.budgetReport.proposed },
-            clamped: pkg.budgetReport.clamped,
+            clamped: pkg.budgetReport.clamped || this.budgetPolicy !== DEFAULT_REQUEST_BUDGET_POLICY,
             observed: {
                 items: items.length,
                 totalChars: nextChars,
@@ -744,15 +916,20 @@ function expiryFor(
 }
 
 /**
- * Restart recomposition entry point. Recompiles the package from durable
- * Mission state + seam-authorized reads — no prompt/output cache, no replay
- * of model output. Pure: same inputs → same package (deterministic ids).
+ * Restart recomposition entry point (review blocker, round 2). Recompiles
+ * the package from the DURABLE Mission state and the SAME request —
+ * mission-owned contextRefs flow from durable storage; external content is
+ * NEVER carried across the restart: it must be RE-ACQUIRED through the
+ * #63 seam (SeamBoundContextReader) and handed to the compiler as sealed
+ * reads. Previous results are data, never authority; a step that already
+ * dispatched cannot be blindly replayed (the engine refuses with
+ * InvocationConflictError; reconciliation is #50 territory). Pure with
+ * respect to its inputs: same Mission + request + clock → same package.
  */
 export function recompileAfterRestart(
     mission: Mission,
     request: ContextRequest,
-    reads: ContextReadOutcome[],
     options: { clock?: () => Date; budgetPolicy?: RequestBudgetPolicy } = {},
 ): BoundedContextPackage {
-    return new ContextCompiler(options).compile(mission, request, reads);
+    return new ContextCompiler(options).compile(mission, request, []);
 }

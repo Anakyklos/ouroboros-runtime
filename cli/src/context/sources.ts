@@ -21,6 +21,16 @@
  *  - No DB paths, no SQL, no private schemas cross this boundary: only
  *    opaque source refs returned by owner-side connectors, structurally
  *    validated here and sanitized by the compiler downstream.
+ *
+ * Structural closure (round-2 review blocker): every successful read is
+ * SEALED into a non-forgeable `SeamAuthorizedRead` (compiler module) — the
+ * ONLY form the compiler accepts — so external content cannot enter
+ * compilation without having crossed the seam HERE. Caller-provided
+ * `SeamDispatchOutcome` objects are NOT accepted: a plausible-shaped object
+ * is not proof of authorization, and the engine exposes no API today to
+ * prove invocation/result identity for outcomes dispatched elsewhere (that
+ * proof needs #50-grade reconciliation records). If a read matters,
+ * dispatch it through this reader.
  */
 
 import type { CapabilityRegistryApi } from "../capabilities/registry.js";
@@ -36,7 +46,8 @@ import type {
     UnresolvedSource,
 } from "./contracts.js";
 import { EpistemicClass, SensitivityClass, SourceStatus } from "./contracts.js";
-import type { ContextReadOutcome } from "./compiler.js";
+import { getSeamSeal } from "./compiler.js";
+import type { ContextReadResult } from "./compiler.js";
 
 /**
  * Canonical provenance label derived from a capability id — a LABEL only.
@@ -133,9 +144,8 @@ function rowsFromResult(result: { contextRows?: unknown }): {
 }
 
 /**
- * 🔗 SeamBoundContextReader — produces `ContextReadOutcome`s for the
- * compiler by dispatching accepted plan steps through the #63 seam (or by
- * re-validating outcomes the seam already authorized elsewhere). The
+ * 🔗 SeamBoundContextReader — produces `ContextReadResult`s for the
+ * compiler by dispatching accepted plan steps through the #63 seam. The
  * registry handle here is DATA-ONLY (descriptor reads); no capability is
  * ever invoked except through the seam.
  */
@@ -149,24 +159,17 @@ export class SeamBoundContextReader {
     /**
      * Compile-ready reads for a request. A request WITHOUT ownerHint is
      * mission-only (no external read, no dispatch). Otherwise the caller
-     * names the accepted plan step that justifies the read (dispatch path)
-     * and/or passes outcomes already authorized by the seam (e.g. from an
-     * earlier engine dispatch) — those are re-validated against CURRENT
-     * mission state and never trusted on arrival.
+     * names the accepted plan step that justifies the read; the step is
+     * dispatched through the #63 seam and the authorized result (if any)
+     * is sealed into a `SeamAuthorizedRead`.
      */
     async read(
         mission: Mission,
         request: ContextRequest,
-        options: {
-            dispatchStepId?: string;
-            alreadyAuthorized?: SeamDispatchOutcome[];
-        } = {},
-    ): Promise<ContextReadOutcome[]> {
+        options: { dispatchStepId?: string } = {},
+    ): Promise<ContextReadResult[]> {
         if (!request.ownerHint) return []; // mission-only compilation
-        const outcomes: ContextReadOutcome[] = [];
-        for (const authorized of options.alreadyAuthorized ?? []) {
-            outcomes.push(await this.packageAuthorized(mission, request, authorized));
-        }
+        const outcomes: ContextReadResult[] = [];
         if (options.dispatchStepId !== undefined) {
             outcomes.push(await this.dispatchAndPackage(mission, request, options.dispatchStepId));
         }
@@ -184,7 +187,7 @@ export class SeamBoundContextReader {
         mission: Mission,
         request: ContextRequest,
         stepId: string,
-    ): Promise<ContextReadOutcome> {
+    ): Promise<ContextReadResult> {
         const requestedRef = request.subject;
         // Fresh authoritative mission state (never the caller's snapshot).
         const current = await this.engine.getMission(mission.missionId);
@@ -192,44 +195,51 @@ export class SeamBoundContextReader {
 
         // Current mission must still have an accepted plan (revocation-safe).
         if (!current.currentPlanRevisionId) {
-            return {
+            return unresolved(
                 requestedRef,
-                owner: label,
-                status: SourceStatus.UNSUPPORTED,
-                detail: "no accepted plan revision for this mission",
-            };
+                label,
+                SourceStatus.UNSUPPORTED,
+                "no accepted plan revision for this mission",
+            );
         }
         const revision = await this.engine.getPlanRevision(current.currentPlanRevisionId);
         if (!revision || revision.missionId !== mission.missionId) {
-            return {
+            return unresolved(
                 requestedRef,
-                owner: label,
-                status: SourceStatus.UNSUPPORTED,
-                detail: "current plan revision is not readable for this mission",
-            };
+                label,
+                SourceStatus.UNSUPPORTED,
+                "current plan revision is not readable for this mission",
+            );
         }
         const step = revision.steps.find((s) => s.stepId === stepId);
         if (!step) {
-            return {
+            return unresolved(
                 requestedRef,
-                owner: label,
-                status: SourceStatus.UNSUPPORTED,
-                detail: `step "${stepId}" is not part of the accepted plan`,
-            };
+                label,
+                SourceStatus.UNSUPPORTED,
+                `step "${stepId}" is not part of the accepted plan`,
+            );
         }
         // Read-only discipline: context compilation consumes READ steps.
         if (step.effectClass !== EffectClass.READ) {
-            return {
+            return unresolved(
                 requestedRef,
-                owner: contextOwnerFromStep(step),
-                status: SourceStatus.UNSUPPORTED,
-                detail: "accepted plan step is not a read",
-            };
+                contextOwnerFromStep(step),
+                SourceStatus.UNSUPPORTED,
+                "accepted plan step is not a read",
+            );
         }
         // Defense in depth against CURRENT state (policy gates re-run at
         // dispatch; these typed refusals precede any seam call).
         const revoked = scopeRefusal(current, step.capabilityRequirement, requestedRef);
-        if (revoked) return { requestedRef, owner: contextOwnerFromStep(step), ...revoked };
+        if (revoked) {
+            return unresolved(
+                requestedRef,
+                contextOwnerFromStep(step),
+                revoked.status,
+                revoked.detail,
+            );
+        }
 
         // Dispatch through the ONE seam. Refusals BEFORE invoke leave no
         // invocation minted; uncertainty AFTER invoke is preserved by the
@@ -239,65 +249,31 @@ export class SeamBoundContextReader {
             outcome = await this.seam.dispatchThroughSeam(mission.missionId, stepId);
         } catch (error) {
             if (error instanceof CapabilityUnavailableError) {
-                return {
+                return unresolved(
                     requestedRef,
-                    owner: contextOwnerFromStep(step),
-                    status: SourceStatus.UNAVAILABLE,
-                    detail: sanitizeDetail(error.detail ?? "capability unavailable"),
-                };
+                    contextOwnerFromStep(step),
+                    SourceStatus.UNAVAILABLE,
+                    sanitizeDetail(error.detail ?? "capability unavailable"),
+                );
             }
             if (error instanceof DispatchSeamError) {
                 // The seam already recorded the honest invocation state
                 // (e.g. BLOCKED/uncertain after a connector throw): the
                 // capability could not be consumed now — UNAVAILABLE with
                 // the sanitized reason; reconciliation is engine territory.
-                return {
+                return unresolved(
                     requestedRef,
-                    owner: contextOwnerFromStep(step),
-                    status: SourceStatus.UNAVAILABLE,
-                    detail: sanitizeDetail(error instanceof Error ? error.message : String(error)),
-                };
+                    contextOwnerFromStep(step),
+                    SourceStatus.UNAVAILABLE,
+                    sanitizeDetail(error instanceof Error ? error.message : String(error)),
+                );
             }
-            return {
+            return unresolved(
                 requestedRef,
-                owner: contextOwnerFromStep(step),
-                status: SourceStatus.UNSUPPORTED,
-                detail: sanitizeDetail(error instanceof Error ? error.message : String(error)),
-            };
-        }
-        return this.packageOutcome(current, request, outcome);
-    }
-
-    /**
-     * Package an already-seam-authorized outcome (dispatched elsewhere by
-     * the engine). Re-validated against CURRENT mission state: results are
-     * never trusted on arrival.
-     */
-    private async packageAuthorized(
-        mission: Mission,
-        request: ContextRequest,
-        outcome: SeamDispatchOutcome,
-    ): Promise<ContextReadOutcome> {
-        const current = await this.engine.getMission(mission.missionId);
-        if (outcome.invocation.missionId !== current.missionId) {
-            return {
-                requestedRef: request.subject,
-                owner: contextOwnerFromCapabilityId(outcome.invocation.capabilityId),
-                status: SourceStatus.UNSUPPORTED,
-                detail: "invocation belongs to another mission",
-            };
-        }
-        const revoked = scopeRefusal(
-            current,
-            outcome.invocation.capabilityId,
-            request.subject,
-        );
-        if (revoked) {
-            return {
-                requestedRef: request.subject,
-                owner: contextOwnerFromCapabilityId(outcome.invocation.capabilityId),
-                ...revoked,
-            };
+                contextOwnerFromStep(step),
+                SourceStatus.UNSUPPORTED,
+                sanitizeDetail(error instanceof Error ? error.message : String(error)),
+            );
         }
         return this.packageOutcome(current, request, outcome);
     }
@@ -307,7 +283,7 @@ export class SeamBoundContextReader {
         mission: Mission,
         request: ContextRequest,
         outcome: SeamDispatchOutcome,
-    ): ContextReadOutcome {
+    ): ContextReadResult {
         const requestedRef = request.subject;
         const owner = contextOwnerFromCapabilityId(outcome.invocation.capabilityId);
 
@@ -315,14 +291,14 @@ export class SeamBoundContextReader {
         // BLOCKED/pending/failed statuses degrade honestly — reconciliation
         // territory, never a silent fake success, never a blind replay.
         if (outcome.recordedStatus !== "completed") {
-            return {
+            return unresolved(
                 requestedRef,
                 owner,
-                status: SourceStatus.UNAVAILABLE,
-                detail: sanitizeDetail(
+                SourceStatus.UNAVAILABLE,
+                sanitizeDetail(
                     `invocation status "${outcome.recordedStatus}" carries no compiled content (honest degradation; reconcile, never replay blindly)`,
                 ),
-            };
+            );
         }
 
         // Descriptor is read DATA-ONLY from the registry (the same source
@@ -334,48 +310,47 @@ export class SeamBoundContextReader {
             descriptor = undefined;
         }
         if (!descriptor) {
-            return {
+            return unresolved(
                 requestedRef,
                 owner,
-                status: SourceStatus.UNSUPPORTED,
-                detail: "capability descriptor no longer present in the registry",
-            };
+                SourceStatus.UNSUPPORTED,
+                "capability descriptor no longer present in the registry",
+            );
         }
 
         const { rows, skipped } = rowsFromResult(outcome.result);
         for (const row of rows) {
             // Row-level prefix checks (descriptor contract + mission scope).
             if (!descriptor.allowedInputRefPrefixes.some((p) => row.sourceRef.startsWith(p))) {
-                return {
-                    requestedRef: sanitizeDetail(row.sourceRef),
+                return unresolved(
+                    sanitizeDetail(row.sourceRef),
                     owner,
-                    status: SourceStatus.UNSUPPORTED,
-                    detail: "row sourceRef outside capability declared ref prefixes",
-                };
+                    SourceStatus.UNSUPPORTED,
+                    "row sourceRef outside capability declared ref prefixes",
+                );
             }
             if (
                 !mission.allowedCapabilityScope.allowedRefPrefixes.some((p) =>
                     row.sourceRef.startsWith(p),
                 )
             ) {
-                return {
-                    requestedRef: sanitizeDetail(row.sourceRef),
+                return unresolved(
+                    sanitizeDetail(row.sourceRef),
                     owner,
-                    status: SourceStatus.REVOKED,
-                    detail: "row sourceRef outside mission allowed ref prefixes",
-                };
+                    SourceStatus.REVOKED,
+                    "row sourceRef outside mission allowed ref prefixes",
+                );
             }
         }
         if (rows.length === 0) {
-            return {
+            return unresolved(
                 requestedRef,
                 owner,
-                status: SourceStatus.UNSUPPORTED,
-                detail:
-                    skipped > 0
-                        ? "connector returned no structurally valid context rows"
-                        : "connector returned no context rows",
-            };
+                SourceStatus.UNSUPPORTED,
+                skipped > 0
+                    ? "connector returned no structurally valid context rows"
+                    : "connector returned no context rows",
+            );
         }
         const read: CompiledSourceRead = {
             descriptor: {
@@ -390,8 +365,21 @@ export class SeamBoundContextReader {
             // Malformed sibling rows are recorded honestly on the read.
             read.skippedInvalidRows = skipped;
         }
-        return read;
+        // The ONLY place a read is ever sealed: past every structural and
+        // scope gate, straight from a seam-authorized result.
+        return { ok: true, read: getSeamSeal()(read) };
     }
+}
+
+/** Honest refusal record (typed, sanitized — never compiler authority). */
+function unresolved(
+    requestedRef: string,
+    owner: string,
+    status: SourceStatus,
+    detail: string,
+): ContextReadResult {
+    const record: UnresolvedSource = { requestedRef, owner, status, detail };
+    return { ok: false, unresolved: record };
 }
 
 /**
