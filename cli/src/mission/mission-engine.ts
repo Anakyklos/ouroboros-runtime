@@ -20,6 +20,7 @@ import {
     ApprovalRequirement,
     BudgetPolicy,
     CapabilityContract,
+    CapabilityInvocation,
     CapabilityInvocationRef,
     CriterionVerification,
     EvidenceRef,
@@ -30,6 +31,7 @@ import {
     MissionIntent,
     MissionState,
     MissionVerificationResult,
+    MissionPauseMetadata,
     OwnerVerification,
     PlanCandidate,
     PlanRevision,
@@ -37,8 +39,17 @@ import {
     StepApprovalRequirement,
     WAITING_STATES,
     TERMINAL_STATES,
+    assertValidInvocationIdentity,
+    isInvocationTerminal,
+    hasUncertainDelivery,
     computeEffectFingerprint,
 } from "./contracts.js";
+import type {
+    CancellationSupport,
+    IdempotencyMode,
+    ReconciliationSupport,
+    RetryBackoff,
+} from "../capabilities/contracts.js";
 import {
     CapabilityResolver,
     ClockService,
@@ -48,7 +59,7 @@ import {
     VerificationAuthority,
 } from "./ports.js";
 import { PlanPolicyValidator } from "./policy.js";
-import { sanitizeText, sanitizeStringArray, sanitizePlanStep } from "./sanitize.js";
+import { assertNoRawSecrets, sanitizeText, sanitizeStringArray, sanitizePlanStep } from "./sanitize.js";
 import { createHash } from "node:crypto";
 
 /** Default clock (real time). */
@@ -125,6 +136,44 @@ export interface CreateMissionInput {
     approvalRequirements?: ApprovalRequirement[];
 }
 
+/**
+ * Already validated descriptor semantics supplied by the connector seam.
+ * Planner data is intentionally absent: it can never authorize these fields.
+ */
+export interface DispatchDescriptorMetadata {
+    contractVersion: number;
+    moduleOwner: string;
+    idempotency: { mode: IdempotencyMode; keyScope: "request" | "effect" | "none" };
+    retry: { maxAttempts: number; backoff: RetryBackoff };
+    cancellationSupport: CancellationSupport;
+    reconciliationSupport: ReconciliationSupport;
+}
+
+/** Optional metadata path for the already validated capability descriptor. */
+export interface DispatchStepOptions {
+    descriptor?: DispatchDescriptorMetadata;
+}
+
+/** Compatibility alias for seam integrations that name this metadata explicitly. */
+export type InvocationDispatchOptions = DispatchStepOptions;
+
+/** Durable facts recorded immediately before a potentially effectful handoff. */
+export interface InvocationHandoffUpdate {
+    deliveryState?: "acknowledged" | "running" | "uncertain";
+    remoteOperationHandle?: string;
+    correlationId?: string;
+}
+
+/** Durable reconciliation facts. This method does not call a connector. */
+export interface InvocationReconciliationUpdate {
+    state: "not_required" | "pending" | "resolved" | "unsupported";
+    outcome?: "performed" | "not_performed" | "unknown";
+    nextAction?: string;
+    lastCheckedAt?: string;
+    deliveryState?: "acknowledged" | "running" | "failed" | "uncertain";
+    status?: InvocationStatus;
+}
+
 export type PlanProposalResult =
     | { ok: true; revision: PlanRevision; decision: PolicyDecision }
     | { ok: false; decision: PolicyDecision };
@@ -151,7 +200,7 @@ export class MissionNotFoundError extends Error {
 }
 
 export class InvalidStateTransitionError extends Error {
-    constructor(missionId: string, from: MissionState, to: MissionState, reason: string) {
+    constructor(missionId: string, from: MissionState | InvocationStatus, to: MissionState | InvocationStatus, reason: string) {
         super(
             `Invalid state transition for mission ${missionId}: ${from} -> ${to} (${reason})`,
         );
@@ -246,6 +295,17 @@ class DefaultMissionVerifier implements MissionVerifier {
             return { satisfied: false, ownerBlocked: false, reasons };
         }
 
+        // Negative owner verification blocks completion (binding rule).
+        const negativeOwners = invocations.filter(
+            (inv) => inv.ownerVerification !== undefined && !inv.ownerVerification.verified,
+        );
+        if (negativeOwners.length > 0) {
+            reasons.push(
+                `Module owner verification is negative for ${negativeOwners.length} invocation(s); mission-level verification cannot override it`,
+            );
+            return { satisfied: false, ownerBlocked: true, reasons };
+        }
+
         const failedInvocations = invocations.filter(
             (inv) =>
                 inv.status === InvocationStatus.FAILED ||
@@ -257,17 +317,6 @@ class DefaultMissionVerifier implements MissionVerifier {
                 `${failedInvocations.length} invocation(s) did not complete successfully`,
             );
             return { satisfied: false, ownerBlocked: false, reasons };
-        }
-
-        // Negative owner verification blocks completion (binding rule).
-        const negativeOwners = invocations.filter(
-            (inv) => inv.ownerVerification !== undefined && !inv.ownerVerification.verified,
-        );
-        if (negativeOwners.length > 0) {
-            reasons.push(
-                `Module owner verification is negative for ${negativeOwners.length} invocation(s); mission-level verification cannot override it`,
-            );
-            return { satisfied: false, ownerBlocked: true, reasons };
         }
 
         // Mandatory owner verification: fail closed when the capability's
@@ -630,7 +679,11 @@ export class MissionEngine {
      *
      * Writes are atomic (invocation row + mission state in one transaction).
      */
-    async dispatchStep(missionId: string, stepId: string): Promise<CapabilityInvocationRef> {
+    async dispatchStep(
+        missionId: string,
+        stepId: string,
+        options?: DispatchStepOptions,
+    ): Promise<CapabilityInvocation> {
         const mission = await this.requireMission(missionId);
 
         // Gate 1: Mission state must be authorizable.
@@ -695,15 +748,80 @@ export class MissionEngine {
             );
         }
 
-        const invocation: CapabilityInvocationRef = {
-            invocationId: this.ids.generate(),
+        const effectFingerprint = computeEffectFingerprint({
+            capabilityId: step.capabilityRequirement,
+            effectClass: step.effectClass,
+            inputRefs: step.inputRefs,
+            outcome: step.desiredOutcome,
+        });
+        const priorEffect = await this.store.findInvocationByEffectFingerprint(effectFingerprint);
+        if (priorEffect) {
+            if (priorEffect.status === InvocationStatus.COMPLETED) return priorEffect;
+            throw new InvocationConflictError(
+                missionId,
+                stepId,
+                priorEffect.invocationId,
+                priorEffect.status,
+            );
+        }
+
+        const descriptor = options?.descriptor
+            ? validateDispatchDescriptor(options.descriptor)
+            : defaultDispatchDescriptor(contract);
+        const now = this.clock.isoNow();
+        const invocationId = this.ids.generate();
+        const invocation: CapabilityInvocation = {
+            invocationId,
             missionId,
             stepId,
             capabilityId: step.capabilityRequirement,
             status: InvocationStatus.DISPATCHED,
-            dispatchedAt: this.clock.isoNow(),
             resultRefs: [],
+            planRevisionId: revision.revisionId,
+            contractVersion: descriptor.contractVersion,
+            moduleOwner: descriptor.moduleOwner,
+            requestId: invocationId,
+            effectFingerprint,
+            inputRefs: [...step.inputRefs],
+            idempotency: {
+                mode: descriptor.idempotency.mode,
+                key: descriptor.idempotency.keyScope === "request"
+                    ? invocationId
+                    : descriptor.idempotency.keyScope === "effect"
+                        ? effectFingerprint
+                        : undefined,
+            },
+            retry: {
+                maxAttempts: descriptor.retry.maxAttempts,
+                attempt: 0,
+                backoff: descriptor.retry.backoff,
+                backoffMs: 0,
+                nextEligibleAt: null,
+            },
+            attempts: [{
+                attempt: 0,
+                correlationId: this.ids.generate(),
+                state: "prepared",
+                startedAt: now,
+            }],
+            delivery: { state: "not_submitted" },
+            cancellation: {
+                support: descriptor.cancellationSupport,
+                requested: false,
+                state: "not_requested",
+            },
+            reconciliation: {
+                support: descriptor.reconciliationSupport,
+                state: "not_required",
+            },
+            ownerVerificationState: "pending",
+            createdAt: now,
+            updatedAt: now,
         };
+        // Identity-bearing refs are never silently redacted. The store repeats
+        // this check, but the engine must fail closed before its transaction.
+        assertValidInvocationIdentity(invocation);
+        assertNoRawSecrets(invocation);
 
         // Atomic: invocation row + mission state in one transaction.
         await this.store.withTransaction(async () => {
@@ -726,7 +844,7 @@ export class MissionEngine {
     async recordInvocationResult(
         invocationId: string,
         result: InvocationResult,
-        ownerVerification?: OwnerVerification,
+        ownerVerificationClaim?: OwnerVerification,
     ): Promise<Mission> {
         const invocation = await this.store.getInvocation(invocationId);
         if (!invocation) {
@@ -741,13 +859,22 @@ export class MissionEngine {
             );
         }
         const mission = await this.requireMission(invocation.missionId);
-        // Terminal missions cannot accept late results (consistency).
-        this.guardNotTerminal(mission, "recordInvocationResult");
+        // Completed/failed Missions reject late results. A cancelled Mission
+        // may still receive an explicit owner/reconciliation fact, but the
+        // Mission itself can never be revived.
+        if (TERMINAL_STATES.has(mission.state) && mission.state !== MissionState.CANCELLED) {
+            this.guardNotTerminal(mission, "recordInvocationResult");
+        }
+        validateInvocationResult(result);
+
+        // Immutable invocation terminality makes duplicate delivery safe. Do
+        // not re-attest or merge conflicting late payloads into a terminal row.
+        if (isInvocationTerminal(invocation)) return mission;
 
         // OwnerVerification must be attested by the verification authority;
         // identity field matching is NOT provenance (fail-closed).
         let attestedOwnerVerification: OwnerVerification | undefined;
-        if (ownerVerification) {
+        if (ownerVerificationClaim) {
             const contract = await this.policy.resolver.resolve(invocation.capabilityId);
             if (!contract) {
                 throw new Error(
@@ -756,7 +883,7 @@ export class MissionEngine {
             }
             attestedOwnerVerification =
                 await this.verificationAuthority.attestOwnerVerification(
-                    ownerVerification,
+                    ownerVerificationClaim,
                     invocation,
                     contract,
                 );
@@ -769,33 +896,45 @@ export class MissionEngine {
 
         // Free-form text in result/evidence is sanitized before storage.
         const sanitizedSummary = sanitizeText(result.summary);
-        const sanitizedEvidenceRefs = result.evidenceRefs.map((ref) => ({
-            ...ref,
-            label: sanitizeText(ref.label),
-            externalRef: sanitizeText(ref.externalRef),
-        }));
-
-        const updated: CapabilityInvocationRef = {
+        const sanitizedEvidenceRefs = result.evidenceRefs.map((ref) => {
+            assertNoRawSecrets({ refId: ref.refId, owner: ref.owner });
+            return {
+                ...ref,
+                label: sanitizeText(ref.label),
+                externalRef: sanitizeText(ref.externalRef),
+            };
+        });
+        const resultRefs = mergeEvidenceRefs(invocation.resultRefs, sanitizedEvidenceRefs);
+        const ownerVerification = invocation.ownerVerification?.verified === false
+            ? invocation.ownerVerification
+            : attestedOwnerVerification ?? invocation.ownerVerification;
+        const ownerRejected = ownerVerification?.verified === false;
+        const status = ownerRejected && result.status === InvocationStatus.COMPLETED
+            ? InvocationStatus.FAILED
+            : result.status;
+        const completedAt = result.completedAt ?? (status === InvocationStatus.FAILED ? this.clock.isoNow() : undefined);
+        const now = this.clock.isoNow();
+        const attempts = updateAttempt(invocation, status, completedAt, sanitizedSummary);
+        const delivery = updateDelivery(invocation, status, completedAt);
+        const updated: CapabilityInvocation = {
             ...invocation,
-            status: result.status,
-            // Only terminal statuses carry a completion timestamp;
-            // non-terminal results leave it unset (no fabricated times).
-            completedAt: result.completedAt,
-            resultRefs: sanitizedEvidenceRefs,
-            error:
-                result.status === InvocationStatus.FAILED
-                    ? sanitizedSummary
-                    : invocation.error,
-            ownerVerification:
-                attestedOwnerVerification ?? invocation.ownerVerification,
+            status,
+            completedAt,
+            resultRefs,
+            error: status === InvocationStatus.FAILED ? sanitizedSummary : invocation.error,
+            ownerVerification,
+            ownerVerificationState: ownerVerification
+                ? ownerVerification.verified ? "verified" : "rejected"
+                : invocation.ownerVerificationState,
+            attempts,
+            delivery,
+            retry: status === InvocationStatus.FAILED
+                ? { ...invocation.retry, attempt: Math.max(invocation.retry.attempt, (attempts.at(-1)?.attempt ?? 0) + 1) }
+                : invocation.retry,
+            updatedAt: now,
         };
 
-        const newEvidenceRefs = [...mission.evidenceRefs];
-        for (const ref of sanitizedEvidenceRefs) {
-            if (!newEvidenceRefs.some((existing) => existing.refId === ref.refId)) {
-                newEvidenceRefs.push(ref);
-            }
-        }
+        const newEvidenceRefs = mergeEvidenceRefs(mission.evidenceRefs, sanitizedEvidenceRefs);
 
         await this.store.withTransaction(async () => {
             await this.store.updateInvocation(invocationId, updated);
@@ -947,16 +1086,243 @@ export class MissionEngine {
         return this.requireMission(missionId);
     }
 
-    /** Cancel a Mission (cooperative, terminal). */
-    async cancelMission(missionId: string, reason: string): Promise<Mission> {
+    /** Pause a Mission without cancelling or mutating active invocations. */
+    async pauseMission(missionId: string, reason: string, pausedBy?: string): Promise<Mission> {
         const mission = await this.requireMission(missionId);
-        this.guardNotTerminal(mission, "cancelMission");
+        this.guardNotTerminal(mission, "pauseMission");
+        if (mission.state === MissionState.PAUSED) return mission;
+        const pauseMetadata: MissionPauseMetadata = {
+            previousState: mission.state,
+            reason: sanitizeText(reason),
+            pausedAt: this.clock.isoNow(),
+            ...(pausedBy === undefined ? {} : { pausedBy: sanitizeText(pausedBy) }),
+        };
         await this.store.updateMission(missionId, {
-            state: MissionState.CANCELLED,
-            unresolvedQuestions: [...mission.unresolvedQuestions, `cancelled: ${sanitizeText(reason)}`],
+            state: MissionState.PAUSED,
+            pauseMetadata,
             updatedAt: this.clock.isoNow(),
         });
         return this.requireMission(missionId);
+    }
+
+    /** Resume a paused Mission to its persisted previous state. */
+    async resumeMission(missionId: string): Promise<Mission> {
+        const mission = await this.requireMission(missionId);
+        this.guardNotTerminal(mission, "resumeMission");
+        if (mission.state !== MissionState.PAUSED) {
+            throw new InvalidStateTransitionError(
+                missionId,
+                mission.state,
+                MissionState.READY,
+                "resumeMission requires a paused Mission",
+            );
+        }
+        const pauseMetadata = mission.pauseMetadata;
+        if (!pauseMetadata || pauseMetadata.previousState === MissionState.PAUSED || TERMINAL_STATES.has(pauseMetadata.previousState)) {
+            throw new InvalidStateTransitionError(
+                missionId,
+                mission.state,
+                MissionState.READY,
+                "paused Mission has no valid resumable state",
+            );
+        }
+        await this.store.updateMission(missionId, {
+            state: pauseMetadata.previousState,
+            pauseMetadata: undefined,
+            updatedAt: this.clock.isoNow(),
+        });
+        return this.requireMission(missionId);
+    }
+
+    /** Explicitly restore one legitimate wait to READY; never automatic. */
+    async restoreWaitingToReady(missionId: string): Promise<Mission> {
+        const mission = await this.requireMission(missionId);
+        this.guardNotTerminal(mission, "restoreWaitingToReady");
+        if (!WAITING_STATES.has(mission.state)) {
+            throw new InvalidStateTransitionError(
+                missionId,
+                mission.state,
+                MissionState.READY,
+                "restoreWaitingToReady requires a waiting Mission",
+            );
+        }
+        await this.store.updateMission(missionId, {
+            state: MissionState.READY,
+            updatedAt: this.clock.isoNow(),
+        });
+        return this.requireMission(missionId);
+    }
+
+    /** Cancel a Mission and persist conservative cancellation per invocation. */
+    async cancelMission(missionId: string, reason: string, cancelledBy?: string): Promise<Mission> {
+        const mission = await this.requireMission(missionId);
+        this.guardNotTerminal(mission, "cancelMission");
+        const now = this.clock.isoNow();
+        const sanitizedReason = sanitizeText(reason);
+        await this.store.withTransaction(async () => {
+            const invocations = await this.store.listInvocations(missionId);
+            for (const invocation of invocations) {
+                if (isInvocationTerminal(invocation)) continue;
+                if (invocation.delivery.state === "not_submitted") {
+                    await this.store.updateInvocation(invocation.invocationId, {
+                        status: InvocationStatus.CANCELLED,
+                        completedAt: now,
+                        updatedAt: now,
+                        delivery: { state: "not_submitted" },
+                        cancellation: {
+                            ...invocation.cancellation,
+                            requested: true,
+                            requestedAt: now,
+                            ...(cancelledBy === undefined ? {} : { requestedBy: sanitizeText(cancelledBy) }),
+                            state: "acknowledged",
+                            reason: sanitizedReason,
+                        },
+                        attempts: invocation.attempts.map((attempt) =>
+                            attempt.state === "prepared"
+                                ? { ...attempt, state: "failed", finishedAt: now, error: `cancelled: ${sanitizedReason}` }
+                                : attempt,
+                        ),
+                    });
+                    continue;
+                }
+                await this.store.updateInvocation(invocation.invocationId, {
+                    updatedAt: now,
+                    cancellation: {
+                        ...invocation.cancellation,
+                        requested: true,
+                        requestedAt: now,
+                        ...(cancelledBy === undefined ? {} : { requestedBy: sanitizeText(cancelledBy) }),
+                        state: invocation.cancellation.support === "unsupported" || invocation.cancellation.support === "none"
+                            ? "unsupported"
+                            : "requested",
+                        reason: sanitizedReason,
+                    },
+                    reconciliation: hasUncertainDelivery(invocation)
+                        ? {
+                              ...invocation.reconciliation,
+                              state: "pending",
+                              nextAction: "reconcile cancellation before any retry",
+                              lastCheckedAt: now,
+                          }
+                        : invocation.reconciliation,
+                });
+            }
+            await this.store.updateMission(missionId, {
+                state: MissionState.CANCELLED,
+                unresolvedQuestions: [...mission.unresolvedQuestions, `cancelled: ${sanitizedReason}`],
+                updatedAt: now,
+            });
+        });
+        return this.requireMission(missionId);
+    }
+
+    /** Cancel a not-submitted invocation without crossing the connector seam. */
+    async cancelUnsubmitted(invocationId: string, reason: string, cancelledBy?: string): Promise<CapabilityInvocation> {
+        const invocation = await this.requireInvocation(invocationId);
+        if (isInvocationTerminal(invocation)) return invocation;
+        if (invocation.delivery.state !== "not_submitted") {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                InvocationStatus.CANCELLED,
+                "cancelUnsubmitted requires not_submitted delivery",
+            );
+        }
+        const now = this.clock.isoNow();
+        await this.store.updateInvocation(invocationId, {
+            status: InvocationStatus.CANCELLED,
+            completedAt: now,
+            updatedAt: now,
+            cancellation: {
+                ...invocation.cancellation,
+                requested: true,
+                requestedAt: now,
+                ...(cancelledBy === undefined ? {} : { requestedBy: sanitizeText(cancelledBy) }),
+                state: "acknowledged",
+                reason: sanitizeText(reason),
+            },
+        });
+        return this.requireInvocation(invocationId);
+    }
+
+    /** Persist the handoff boundary before a connector call. */
+    async markInvocationHandoff(
+        invocationId: string,
+        update: InvocationHandoffUpdate = {},
+    ): Promise<CapabilityInvocation> {
+        const invocation = await this.requireInvocation(invocationId);
+        if (isInvocationTerminal(invocation)) return invocation;
+        if (invocation.cancellation.requested) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                InvocationStatus.DISPATCHED,
+                "cancelled invocations cannot cross the handoff boundary",
+            );
+        }
+        const now = this.clock.isoNow();
+        const deliveryState = update.deliveryState ?? "uncertain";
+        const attempts = invocation.attempts.map((attempt, index) =>
+            index === invocation.attempts.length - 1 && attempt.state === "prepared"
+                ? {
+                      ...attempt,
+                      correlationId: update.correlationId ?? attempt.correlationId,
+                      state: "submitted" as const,
+                  }
+                : attempt,
+        );
+        const delivery = {
+            ...invocation.delivery,
+            state: deliveryState,
+            ...(deliveryState === "acknowledged" ? { acknowledgedAt: now } : {}),
+            ...(update.remoteOperationHandle === undefined
+                ? {}
+                : { remoteOperationHandle: sanitizeOpaqueString(update.remoteOperationHandle, "remoteOperationHandle") }),
+        };
+        await this.store.updateInvocation(invocationId, {
+            status: deliveryState === "running" ? InvocationStatus.RUNNING : invocation.status,
+            dispatchedAt: invocation.dispatchedAt ?? now,
+            delivery,
+            attempts,
+            reconciliation: deliveryState === "uncertain"
+                ? { ...invocation.reconciliation, state: "pending", nextAction: "reconcile before retry" }
+                : invocation.reconciliation,
+            updatedAt: now,
+        });
+        return this.requireInvocation(invocationId);
+    }
+
+    /** Persist a typed reconciliation fact without invoking a connector. */
+    async markInvocationReconciliation(
+        invocationId: string,
+        update: InvocationReconciliationUpdate,
+    ): Promise<CapabilityInvocation> {
+        const invocation = await this.requireInvocation(invocationId);
+        if (isInvocationTerminal(invocation)) return invocation;
+        const now = this.clock.isoNow();
+        const status = update.status ?? reconciliationStatus(update.outcome, invocation.status);
+        const deliveryState = update.deliveryState ?? reconciliationDelivery(update.outcome, invocation.delivery.state);
+        if (status === InvocationStatus.PENDING || status === InvocationStatus.DISPATCHED) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                status,
+                "reconciliation cannot regress an invocation to pre-handoff state",
+            );
+        }
+        await this.store.updateInvocation(invocationId, {
+            status,
+            delivery: { ...invocation.delivery, state: deliveryState },
+            reconciliation: {
+                ...invocation.reconciliation,
+                state: update.state,
+                ...(update.outcome === undefined ? {} : { outcome: update.outcome }),
+                lastCheckedAt: update.lastCheckedAt ?? now,
+                ...(update.nextAction === undefined ? {} : { nextAction: sanitizeText(update.nextAction) }),
+            },
+            updatedAt: now,
+        });
+        return this.requireInvocation(invocationId);
     }
 
     /** Mark the Mission as failed_terminal (explicit, terminal). */
@@ -1003,6 +1369,12 @@ export class MissionEngine {
         return mission;
     }
 
+    private async requireInvocation(invocationId: string): Promise<CapabilityInvocation> {
+        const invocation = await this.store.getInvocation(invocationId);
+        if (!invocation) throw new Error(`Invocation not found: ${invocationId}`);
+        return invocation;
+    }
+
     /**
      * Terminality is a code invariant, not a comment: no normal operation
      * may mutate a Mission in a terminal state. Future exceptional recovery
@@ -1019,6 +1391,159 @@ export class MissionEngine {
             );
         }
     }
+}
+
+function defaultDispatchDescriptor(contract: CapabilityContract): DispatchDescriptorMetadata {
+    return {
+        contractVersion: 0,
+        moduleOwner: contract.moduleOwner,
+        idempotency: { mode: "unknown" as IdempotencyMode, keyScope: "none" },
+        retry: { maxAttempts: 0, backoff: "none" as RetryBackoff },
+        cancellationSupport: "unsupported" as CancellationSupport,
+        reconciliationSupport: "none" as ReconciliationSupport,
+    };
+}
+
+function validateDispatchDescriptor(
+    descriptor: DispatchDescriptorMetadata,
+): DispatchDescriptorMetadata {
+    assertNoRawSecrets(descriptor, "dispatch descriptor");
+    if (!Number.isSafeInteger(descriptor.contractVersion) || descriptor.contractVersion <= 0) {
+        throw new DispatchRejectedError("descriptor contractVersion must be a positive safe integer");
+    }
+    if (typeof descriptor.moduleOwner !== "string" || descriptor.moduleOwner.trim() === "") {
+        throw new DispatchRejectedError("descriptor moduleOwner must be a non-empty string");
+    }
+    const modes = new Set(["idempotent", "non_idempotent", "unknown"]);
+    const keyScopes = new Set(["request", "effect", "none"]);
+    if (!modes.has(descriptor.idempotency.mode) || !keyScopes.has(descriptor.idempotency.keyScope)) {
+        throw new DispatchRejectedError("descriptor idempotency semantics are invalid");
+    }
+    if (!Number.isSafeInteger(descriptor.retry.maxAttempts) || descriptor.retry.maxAttempts < 0) {
+        throw new DispatchRejectedError("descriptor retry.maxAttempts must be a non-negative safe integer");
+    }
+    if (!["none", "fixed", "exponential"].includes(descriptor.retry.backoff)) {
+        throw new DispatchRejectedError("descriptor retry.backoff is invalid");
+    }
+    if (!["none", "cooperative", "hard", "unsupported"].includes(descriptor.cancellationSupport)) {
+        throw new DispatchRejectedError("descriptor cancellationSupport is invalid");
+    }
+    if (!["none", "status_replay", "full_replay"].includes(descriptor.reconciliationSupport)) {
+        throw new DispatchRejectedError("descriptor reconciliationSupport is invalid");
+    }
+    return {
+        contractVersion: descriptor.contractVersion,
+        moduleOwner: descriptor.moduleOwner,
+        idempotency: { ...descriptor.idempotency },
+        retry: { ...descriptor.retry },
+        cancellationSupport: descriptor.cancellationSupport,
+        reconciliationSupport: descriptor.reconciliationSupport,
+    };
+}
+
+function mergeEvidenceRefs<T extends { refId: string }>(existing: T[], additions: T[]): T[] {
+    const refs = new Map(existing.map((ref) => [ref.refId, ref]));
+    for (const ref of additions) {
+        if (!refs.has(ref.refId)) refs.set(ref.refId, ref);
+    }
+    return [...refs.values()];
+}
+
+function updateAttempt(
+    invocation: CapabilityInvocation,
+    status: InvocationStatus,
+    finishedAt: string | undefined,
+    error: string,
+): CapabilityInvocation["attempts"] {
+    if (invocation.attempts.length === 0) return invocation.attempts;
+    const index = invocation.attempts.length - 1;
+    const current = invocation.attempts[index];
+    if (status === InvocationStatus.FAILED && current.state === "failed") return invocation.attempts;
+    const nextState = status === InvocationStatus.FAILED
+        ? "failed"
+        : status === InvocationStatus.COMPLETED || status === InvocationStatus.CANCELLED
+            ? "acknowledged"
+            : status === InvocationStatus.BLOCKED
+                ? "uncertain"
+                : current.state;
+    if (nextState === current.state && status !== InvocationStatus.FAILED) return invocation.attempts;
+    return invocation.attempts.map((attempt, attemptIndex) =>
+        attemptIndex === index
+            ? {
+                  ...attempt,
+                  state: nextState,
+                  ...(finishedAt === undefined ? {} : { finishedAt }),
+                  ...(nextState === "failed" ? { error } : {}),
+              }
+            : attempt,
+    );
+}
+
+function updateDelivery(
+    invocation: CapabilityInvocation,
+    status: InvocationStatus,
+    acknowledgedAt: string | undefined,
+): CapabilityInvocation["delivery"] {
+    const state = status === InvocationStatus.COMPLETED
+        ? "acknowledged"
+        : status === InvocationStatus.RUNNING
+            ? "running"
+            : status === InvocationStatus.FAILED
+                ? "failed"
+                : status === InvocationStatus.BLOCKED
+                    ? "uncertain"
+                    : status === InvocationStatus.CANCELLED
+                        ? invocation.delivery.state === "not_submitted" ? "not_submitted" : "acknowledged"
+                        : invocation.delivery.state;
+    return {
+        ...invocation.delivery,
+        state,
+        ...(state === "acknowledged" && acknowledgedAt
+            ? { acknowledgedAt: invocation.delivery.acknowledgedAt ?? acknowledgedAt }
+            : {}),
+    };
+}
+
+function validateInvocationResult(result: InvocationResult): void {
+    if (!Object.values(InvocationStatus).includes(result.status)) {
+        throw new Error(`Invalid invocation result status: ${String(result.status)}`);
+    }
+    if (typeof result.summary !== "string") throw new Error("InvocationResult summary must be a string");
+    if (!Array.isArray(result.evidenceRefs)) throw new Error("InvocationResult evidenceRefs must be an array");
+    if ((result.status === InvocationStatus.COMPLETED
+        || result.status === InvocationStatus.CANCELLED
+        || result.status === InvocationStatus.FAILED)
+        && typeof result.completedAt !== "string") {
+        throw new Error(`InvocationResult ${result.status} requires completedAt`);
+    }
+    if (result.completedAt !== undefined && typeof result.completedAt !== "string") {
+        throw new Error("InvocationResult completedAt must be a string");
+    }
+}
+
+function sanitizeOpaqueString(value: string, field: string): string {
+    if (typeof value !== "string" || value.length === 0) {
+        throw new Error(`${field} must be a non-empty string`);
+    }
+    assertNoRawSecrets(value, field);
+    return value;
+}
+
+function reconciliationStatus(
+    outcome: InvocationReconciliationUpdate["outcome"],
+    current: InvocationStatus,
+): InvocationStatus {
+    return outcome === "not_performed" ? InvocationStatus.FAILED : current;
+}
+
+function reconciliationDelivery(
+    outcome: InvocationReconciliationUpdate["outcome"],
+    current: CapabilityInvocation["delivery"]["state"],
+): CapabilityInvocation["delivery"]["state"] {
+    if (outcome === "performed") return "acknowledged";
+    if (outcome === "not_performed") return "failed";
+    if (outcome === "unknown") return "uncertain";
+    return current;
 }
 
 /** Default interpreter: the interpreted objective starts as the preserved intent. */
