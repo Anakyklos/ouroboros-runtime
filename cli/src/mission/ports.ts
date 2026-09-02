@@ -50,24 +50,24 @@ export interface MissionStore {
         reason?: string,
     ): Promise<void>;
 
-    // Invocation references. Full durable invocation reads/writes are deferred
-    // to Task 3; this legacy surface remains a CapabilityInvocationRef projection.
+    // Full invocation durability is authoritative in mission_invocations.
+    // Mission.invocationRefs remains the separate minimal projection.
     saveInvocation(invocation: CapabilityInvocation | CapabilityInvocationRef): Promise<CapabilityInvocationRef>;
-    getInvocation(invocationId: string): Promise<CapabilityInvocationRef | null>;
-    listInvocations(missionId: string): Promise<CapabilityInvocationRef[]>;
+    getInvocation(invocationId: string): Promise<CapabilityInvocation | null>;
+    listInvocations(missionId: string): Promise<CapabilityInvocation[]>;
     updateInvocation(
         invocationId: string,
         updates: Partial<CapabilityInvocation> | Partial<CapabilityInvocationRef>,
     ): Promise<void>;
 
-    /** Full-entity recovery queries are added when Task 3 maps the durable fields. */
-    listRecoverableInvocations?(): Promise<CapabilityInvocation[]>;
+    /** Full-entity recovery queries over the authoritative invocation table. */
+    listRecoverableInvocations(): Promise<CapabilityInvocation[]>;
     /** All invocations that have not reached an immutable terminal state. */
-    listNonTerminalInvocations?(): Promise<CapabilityInvocation[]>;
+    listNonTerminalInvocations(): Promise<CapabilityInvocation[]>;
     /** Due invocations ordered by eligibility, bounded by the caller. */
-    listDueInvocations?(now: string, limit: number): Promise<CapabilityInvocation[]>;
+    listDueInvocations(now: string, limit: number): Promise<CapabilityInvocation[]>;
     /** Preserve completed effects across plan revisions and duplicate requests. */
-    findInvocationByEffectFingerprint?(effectFingerprint: string): Promise<CapabilityInvocation | null>;
+    findInvocationByEffectFingerprint(effectFingerprint: string): Promise<CapabilityInvocation | null>;
 }
 
 /** ------------------------------------------------------------------ */

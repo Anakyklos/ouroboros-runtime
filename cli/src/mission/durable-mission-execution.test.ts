@@ -140,7 +140,8 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
 
         const invocation = durableInvocation();
         await store.saveInvocation(invocation);
-        const recovered = await store.getInvocation(invocation.invocationId) as DurableInvocation;
+        const recovered = await store.getInvocation(invocation.invocationId);
+        if (!recovered) throw new Error("invocation was not recovered");
         const recoveredMission = await store.getMission(MISSION_ID);
 
         expect(recovered).toMatchObject(invocation);
@@ -192,7 +193,8 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
             } as Partial<DurableInvocation>),
         });
 
-        const failed = await store.getInvocation("invocation-1") as DurableInvocation;
+        const failed = await store.getInvocation("invocation-1");
+        if (!failed) throw new Error("failed invocation was not recovered");
         expect(failed.delivery.state).toBe("failed");
         expect(failed.retry.attempt).toBe(1);
         expect(failed.retry.nextEligibleAt).toBe(LATER);
@@ -238,7 +240,8 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
             },
         }));
 
-        const recovered = await store.getInvocation("invocation-1") as DurableInvocation;
+        const recovered = await store.getInvocation("invocation-1");
+        if (!recovered) throw new Error("uncertain invocation was not recovered");
         expect(recovered.delivery.state).toBe("uncertain");
         expect(recovered.cancellation).toMatchObject({ requested: true, state: "unsupported" });
         expect(recovered.reconciliation).toMatchObject({ state: "pending", nextAction: "operator intervention" });
@@ -305,7 +308,8 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
         const second = new SqliteMissionStore(db.path);
         await second.initialize();
 
-        const invocation = await second.getInvocation("legacy-invocation") as DurableInvocation | null;
+        const invocation = await second.getInvocation("legacy-invocation");
+        if (!invocation) throw new Error("legacy invocation was not recovered");
         expect(invocation?.retry.nextEligibleAt).toBeNull();
         expect(invocation?.reconciliation.state).toBe("unsupported");
         expect(invocation?.delivery.state).toBe("uncertain");
@@ -353,7 +357,8 @@ describe("durable mission execution contract (Task 1 red phase)", () => {
             retry: { maxAttempts: 3, attempt: 1, backoff: RetryBackoff.FIXED, backoffMs: 86_400_000, nextEligibleAt: "2026-09-03T18:00:00.000Z" },
         }));
 
-        const recovered = await store.getInvocation("invocation-1") as DurableInvocation;
+        const recovered = await store.getInvocation("invocation-1");
+        if (!recovered) throw new Error("delayed invocation was not recovered");
         const persistedNextEligibleAt = recovered.retry.nextEligibleAt;
         expect(clock.isoNow()).toBe(NOW);
         expect(persistedNextEligibleAt).toBe("2026-09-03T18:00:00.000Z");
