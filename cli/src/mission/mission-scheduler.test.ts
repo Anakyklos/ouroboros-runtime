@@ -190,7 +190,7 @@ describe("MissionScheduler", () => {
         expect(report.reconciledInvocationIds).toEqual([]);
     });
 
-    it("binds a pre-#50 completed invocation to its accepted effect and never replays it after restart", async () => {
+    it("preserves a replay barrier when a pre-#50 effect could belong to an older plan revision", async () => {
         const db = tempDb();
         cleanups.push(db.cleanup);
         const legacy = new Database(db.path);
@@ -215,12 +215,30 @@ describe("MissionScheduler", () => {
                 result_refs TEXT NOT NULL, owner_verification TEXT, error TEXT
             );
         `);
-        const step = {
-            stepId: "read-status",
-            desiredOutcome: "Read the current LifeOS status",
+        const stepA = {
+            stepId: "prepare",
+            desiredOutcome: "Prepare effect A",
             dependencyIds: [],
             capabilityRequirement: "lifeos.query",
-            inputRefs: ["refs/lifeos/status"],
+            inputRefs: ["refs/lifeos/a"],
+            expectedAcceptance: ["status read"],
+            effectClass: EffectClass.READ,
+        };
+        const stepB = {
+            stepId: "prepare",
+            desiredOutcome: "Prepare effect B",
+            dependencyIds: [],
+            capabilityRequirement: "lifeos.query",
+            inputRefs: ["refs/lifeos/b"],
+            expectedAcceptance: ["status read"],
+            effectClass: EffectClass.READ,
+        };
+        const dependentStep = {
+            stepId: "dependent",
+            desiredOutcome: "Run dependent effect",
+            dependencyIds: ["prepare"],
+            capabilityRequirement: "lifeos.query",
+            inputRefs: ["refs/lifeos/dependent"],
             expectedAcceptance: ["status read"],
             effectClass: EffectClass.READ,
         };
@@ -250,7 +268,7 @@ describe("MissionScheduler", () => {
             "[]",
             "[]",
             "ready",
-            "legacy-revision",
+            "revision-r2",
             "[]",
             "[]",
             "[]",
@@ -264,17 +282,35 @@ describe("MissionScheduler", () => {
                 accepted_at, replaces_revision_id, rejection_reason, created_at
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
-            "legacy-revision",
+            "revision-r1",
             "legacy-mission",
             1,
-            "legacy-plan",
-            JSON.stringify([step]),
+            "plan-r1",
+            JSON.stringify([stepA]),
+            "superseded",
+            "first accepted plan",
+            BASE_TIME,
+            null,
+            null,
+            BASE_TIME,
+        );
+        legacy.query(
+            `INSERT INTO mission_plan_revisions (
+                revision_id, mission_id, revision_number, plan_id, steps, status, reason,
+                accepted_at, replaces_revision_id, rejection_reason, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "revision-r2",
+            "legacy-mission",
+            2,
+            "plan-r2",
+            JSON.stringify([stepB, dependentStep]),
             "accepted",
-            "legacy accepted plan",
-            BASE_TIME,
+            "later accepted plan with changed effect",
+            "2026-09-03T19:00:00.000Z",
+            "revision-r1",
             null,
-            null,
-            BASE_TIME,
+            "2026-09-03T19:00:00.000Z",
         );
         legacy.query(
             `INSERT INTO mission_invocations (
@@ -284,11 +320,11 @@ describe("MissionScheduler", () => {
         ).run(
             "legacy-completed",
             "legacy-mission",
-            step.stepId,
-            step.capabilityRequirement,
+            stepA.stepId,
+            stepA.capabilityRequirement,
             "completed",
-            BASE_TIME,
-            BASE_TIME,
+            "2026-09-03T18:30:00.000Z",
+            "2026-09-03T18:30:00.000Z",
             "[]",
             null,
             null,
@@ -301,13 +337,16 @@ describe("MissionScheduler", () => {
 
         const store = new SqliteMissionStore(db.path);
         await store.initialize();
-        const expectedFingerprint = computeEffectFingerprint({
-            capabilityId: step.capabilityRequirement,
-            effectClass: step.effectClass,
-            inputRefs: step.inputRefs,
-            outcome: step.desiredOutcome,
+        const currentEffectFingerprint = computeEffectFingerprint({
+            capabilityId: stepB.capabilityRequirement,
+            effectClass: stepB.effectClass,
+            inputRefs: stepB.inputRefs,
+            outcome: stepB.desiredOutcome,
         });
-        expect((await store.getInvocation("legacy-completed"))?.effectFingerprint).toBe(expectedFingerprint);
+        const migrated = await store.getInvocation("legacy-completed");
+        expect(migrated?.effectFingerprint).toBe("legacy:legacy-completed");
+        expect(migrated?.effectFingerprint).not.toBe(currentEffectFingerprint);
+        expect(migrated?.planRevisionId).toBe("");
 
         const engine = createEngine(store, new FakeIdGenerator("legacy-restart"));
         const registry = createRegistry();
@@ -339,6 +378,7 @@ describe("MissionScheduler", () => {
         expect(invokes).toBe(0);
         expect(report.dispatchedInvocationIds).toEqual([]);
         expect(await store.listInvocations("legacy-mission")).toHaveLength(1);
+        expect(await store.getInvocation("legacy-dependent")).toBeNull();
         expect((await store.getInvocation("legacy-completed"))?.status).toBe(InvocationStatus.COMPLETED);
         await store.close();
     });

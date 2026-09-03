@@ -322,14 +322,15 @@ export class SqliteMissionStore implements MissionStore {
             ["updated_at", `TEXT NOT NULL DEFAULT '${LEGACY_EPOCH}'`],
         ]);
 
-        // A pre-#50 invocation has no effect fingerprint. When the durable
-        // Mission still points at an accepted revision containing the exact
-        // legacy step, the plan is authoritative enough to reconstruct the
-        // fingerprint used by the new replay guard. Otherwise the fallback
-        // marker below remains a step-level replay barrier; it is never an
-        // invitation to dispatch the legacy row again.
+        // A pre-#50 invocation has no effect fingerprint or plan revision
+        // identity. Only a row that already carries a non-empty revision id
+        // can be rebound, and only when that id names a historically accepted
+        // revision with one unambiguous, structurally valid step. The current
+        // Mission pointer is deliberately not provenance: it may point at a
+        // later revision with different effect semantics. Rows without this
+        // proof retain a replay barrier and are never dispatched blindly.
         const legacyRows = db.query(
-            `SELECT invocation_id, mission_id, step_id, capability_id
+            `SELECT invocation_id, mission_id, step_id, capability_id, plan_revision_id
              FROM mission_invocations
              WHERE effect_fingerprint IS NULL OR effect_fingerprint = ''`,
         ).all() as Array<{
@@ -337,6 +338,7 @@ export class SqliteMissionStore implements MissionStore {
             mission_id: string;
             step_id: string;
             capability_id: string;
+            plan_revision_id: string | null;
         }>;
         const updateLegacyFingerprint = db.query(
             `UPDATE mission_invocations
@@ -346,33 +348,37 @@ export class SqliteMissionStore implements MissionStore {
              WHERE invocation_id = ?`,
         );
         for (const legacy of legacyRows) {
-            const bound = db.query(
-                `SELECT m.current_plan_revision_id, p.revision_id, p.status, p.steps
-                 FROM missions m
-                 LEFT JOIN mission_plan_revisions p
-                   ON p.revision_id = m.current_plan_revision_id
-                  AND p.mission_id = m.mission_id
-                 WHERE m.mission_id = ?`,
-            ).get(legacy.mission_id) as {
-                current_plan_revision_id: string | null;
-                revision_id: string | null;
-                status: string | null;
-                steps: string | null;
-            } | null;
+            const revisionId = typeof legacy.plan_revision_id === "string"
+                ? legacy.plan_revision_id.trim()
+                : "";
+            const revision = revisionId
+                ? db.query(
+                    `SELECT revision_id, mission_id, status, accepted_at, steps
+                     FROM mission_plan_revisions
+                     WHERE revision_id = ?`,
+                ).get(revisionId) as {
+                    revision_id: string;
+                    mission_id: string;
+                    status: string;
+                    accepted_at: string | null;
+                    steps: string | null;
+                } | null
+                : null;
             const steps = parseJson<Array<{
                 stepId?: unknown;
                 capabilityRequirement?: unknown;
                 effectClass?: unknown;
                 inputRefs?: unknown;
                 desiredOutcome?: unknown;
-            }>>(bound?.steps, []);
-            const step = bound
-                && bound.current_plan_revision_id === bound.revision_id
-                && bound.status === "accepted"
-                ? steps.find((candidate) => candidate.stepId === legacy.step_id)
-                : undefined;
-            const canBind =
-                typeof step?.capabilityRequirement === "string"
+            }>>(revision?.steps, []);
+            const matchingSteps = steps.filter((candidate) => candidate.stepId === legacy.step_id);
+            const step = matchingSteps.length === 1 ? matchingSteps[0] : undefined;
+            const canBind = revision !== null
+                && revision.mission_id === legacy.mission_id
+                && (revision.status === "accepted" || revision.status === "superseded")
+                && typeof revision.accepted_at === "string"
+                && Number.isFinite(Date.parse(revision.accepted_at))
+                && typeof step?.capabilityRequirement === "string"
                 && step.capabilityRequirement === legacy.capability_id
                 && typeof step.effectClass === "string"
                 && Object.values(EffectClass).includes(step.effectClass as EffectClass)
@@ -393,8 +399,8 @@ export class SqliteMissionStore implements MissionStore {
                 });
                 updateLegacyFingerprint.run(
                     effectFingerprint,
-                    bound?.revision_id ?? "",
-                    bound?.revision_id ?? "",
+                    revision.revision_id,
+                    revision.revision_id,
                     effectClass,
                     effectClass,
                     legacy.invocation_id,
