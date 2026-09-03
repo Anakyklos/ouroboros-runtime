@@ -401,7 +401,8 @@ export interface CapabilityInvocationAttempt {
 
 /** Durable delivery state, kept separate from the logical invocation status. */
 export interface CapabilityInvocationDelivery {
-    state: "not_submitted" | "acknowledged" | "running" | "failed" | "uncertain";
+    /** The connector handoff began, but no owner acknowledgement exists yet. */
+    state: "not_submitted" | "submitted" | "acknowledged" | "running" | "failed" | "uncertain";
     acknowledgedAt?: string;
     remoteOperationHandle?: string;
 }
@@ -447,6 +448,8 @@ export interface CapabilityInvocation extends CapabilityInvocationRef {
     planRevisionId: string;
     contractVersion: number;
     moduleOwner: string;
+    /** Effect semantics copied from the authorized plan/capability contract. */
+    effectClass?: EffectClass;
     requestId: string;
     effectFingerprint: string;
     inputRefs: string[];

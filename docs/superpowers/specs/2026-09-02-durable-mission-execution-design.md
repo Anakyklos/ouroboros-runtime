@@ -31,12 +31,12 @@ For a new effectful invocation:
 1. resolve and validate the mission, current accepted plan, approvals, capability contract, and policy;
 2. persist the invocation intent and a non-submitted attempt in the existing SQLite database;
 3. invoke only through `ConnectorDispatchSeam`;
-4. persist acknowledged, running, failed, or uncertain delivery conservatively;
+4. persist submitted, acknowledged, running, failed, or uncertain delivery conservatively;
 5. reconcile using the persisted request identity when the descriptor and connector support it;
 6. persist typed result/evidence and owner verification;
 7. release dependent steps only after the invocation is verified as complete.
 
-A crash or exception after possible handoff leaves the invocation uncertain/blocked. It is never submitted again merely because the process restarted. A retry is allowed only after a definitive non-delivery/failure or authoritative reconciliation says the effect was not performed, and only within the declared retry/idempotency policy. Reconciliation, retry, fallback, substitution, and replan are distinct operations.
+A crash or exception after possible handoff leaves the invocation uncertain/blocked. The intermediate `submitted` marker means the seam entered connector code without an owner acknowledgement, and is treated like uncertain delivery for replay decisions. It is never submitted again merely because the process restarted. A retry is allowed only after a definitive non-delivery/failure or authoritative reconciliation says the effect was not performed, and only within the declared retry/idempotency policy. Reconciliation, retry, fallback, substitution, and replan are distinct operations.
 
 ## Recovery and scheduling
 
@@ -48,7 +48,7 @@ A transiently unavailable connector moves only the affected mission to `waiting_
 
 ## Controls and idempotency
 
-`paused` is a persisted Mission state distinct from `cancelled`. Pausing records the previous resumable state and prevents future dispatch. Resume restores that state but does not replay an invocation whose delivery is uncertain. Cancellation during a wait prevents future dispatch. Cancellation of active work uses the declared connector cancellation operation when available, then reconciles conservatively; unsupported cancellation never fabricates success.
+`paused` is a persisted Mission state distinct from `cancelled`. Pausing records the previous resumable state and prevents future dispatch. Resume restores that state but does not replay an invocation whose delivery is uncertain. Cancellation during a wait prevents future dispatch. Cancellation of active work uses the declared connector cancellation operation when available, then reconciles conservatively; cooperative acknowledgement is not completion, hard cancellation may record `not_performed`, and unsupported cancellation never fabricates success. Completed external context is re-acquired through the same connector's declared reconciliation/observation operation, without mutating the terminal invocation or storing private rows in Ouroboros.
 
 Duplicate result/event/evidence application is idempotent. Terminal invocation state cannot return to `running`, and a negative owner-verification verdict cannot be overwritten by planner or mission-level opinion. A later plan revision retains the durable effect fingerprint and completed invocation memory, so an already completed effect is not recreated as a new invocation for the same logical effect.
 

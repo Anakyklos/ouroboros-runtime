@@ -132,6 +132,7 @@ function makeFullInvocation(
         effectFingerprint: "fingerprint-1",
         contractVersion: 7,
         moduleOwner: "runstead",
+        effectClass: EffectClass.EXECUTION,
         status: InvocationStatus.PENDING,
         requestId: "request-1",
         inputRefs: ["refs/runstead/pr/42"],
@@ -287,6 +288,7 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         await engine1.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
         const invocation = await engine1.dispatchStep(mission.missionId, "step-1");
+        await engine1.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
         await engine1.recordInvocationResult(
             invocation.invocationId,
             {
@@ -529,6 +531,7 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         await engine1.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
         const invocation = await engine1.dispatchStep(mission.missionId, "step-1");
+        await engine1.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
         await engine1.recordInvocationResult(
             invocation.invocationId,
             {
@@ -737,6 +740,7 @@ describe("SqliteMissionStore (durability + recovery)", () => {
 
         // Inject secrets through every free-form persisted path.
         const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+        await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
         await engine.recordInvocationResult(
             invocation.invocationId,
             {
@@ -1130,21 +1134,25 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         await store.saveInvocation(makeFullInvocation(mission.missionId, {
             invocationId: "due-late",
             effectFingerprint: "effect-due-late",
+            delivery: { state: "not_submitted" },
             retry: { maxAttempts: 3, attempt: 0, backoff: RetryBackoff.FIXED, backoffMs: 1, nextEligibleAt: "2026-08-30T12:30:00.000Z" },
         }));
         await store.saveInvocation(makeFullInvocation(mission.missionId, {
             invocationId: "due-early",
             effectFingerprint: "effect-due-early",
+            delivery: { state: "not_submitted" },
             retry: { maxAttempts: 3, attempt: 0, backoff: RetryBackoff.FIXED, backoffMs: 1, nextEligibleAt: "2026-08-30T12:10:00.000Z" },
         }));
         await store.saveInvocation(makeFullInvocation(mission.missionId, {
             invocationId: "due-now",
             effectFingerprint: "effect-due-now",
+            delivery: { state: "not_submitted" },
             retry: { maxAttempts: 3, attempt: 0, backoff: RetryBackoff.NONE, backoffMs: 0, nextEligibleAt: null },
         }));
         await store.saveInvocation(makeFullInvocation(mission.missionId, {
             invocationId: "future",
             effectFingerprint: "effect-future",
+            delivery: { state: "not_submitted" },
             retry: { maxAttempts: 3, attempt: 0, backoff: RetryBackoff.FIXED, backoffMs: 1, nextEligibleAt: "2026-08-30T14:00:00.000Z" },
         }));
         await store.saveInvocation(makeFullInvocation(mission.missionId, {

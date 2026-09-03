@@ -45,6 +45,7 @@ function durableInvocation(overrides: Partial<DurableInvocation> = {}): DurableI
         effectFingerprint: EFFECT_FINGERPRINT,
         contractVersion: 1,
         moduleOwner: "runstead",
+        effectClass: EffectClass.EXECUTION,
         status: InvocationStatus.PENDING,
         requestId: "request-1",
         inputRefs: [],

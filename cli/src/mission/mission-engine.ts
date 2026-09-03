@@ -162,7 +162,7 @@ export type InvocationDispatchOptions = DispatchStepOptions;
 
 /** Durable facts recorded immediately before a potentially effectful handoff. */
 export interface InvocationHandoffUpdate {
-    deliveryState?: "acknowledged" | "running" | "uncertain";
+    deliveryState?: "submitted" | "acknowledged" | "running" | "uncertain";
     remoteOperationHandle?: string;
     correlationId?: string;
 }
@@ -175,6 +175,17 @@ export interface InvocationReconciliationUpdate {
     lastCheckedAt?: string;
     deliveryState?: "acknowledged" | "running" | "failed" | "uncertain";
     status?: InvocationStatus;
+}
+
+/** Durable result of a connector cancellation request. */
+export interface InvocationCancellationOutcomeUpdate {
+    state: "requested" | "acknowledged" | "unsupported";
+    /** A hard cancellation may make the invocation terminal. */
+    status?: InvocationStatus;
+    deliveryState?: "acknowledged" | "running" | "failed" | "uncertain";
+    reconciliationState?: "pending" | "resolved" | "unsupported";
+    outcome?: "performed" | "not_performed" | "unknown";
+    nextAction?: string;
 }
 
 /** Optional deterministic controls for preparing a retry attempt. */
@@ -686,6 +697,8 @@ export class MissionEngine {
      *     is not frozen at proposal time).
      *
      * Writes are atomic (invocation row + mission state in one transaction).
+     * The scheduler and connector seam continue this durable record without
+     * minting a second invocation after restart.
      */
     async dispatchStep(
         missionId: string,
@@ -785,11 +798,15 @@ export class MissionEngine {
             missionId,
             stepId,
             capabilityId: step.capabilityRequirement,
-            status: InvocationStatus.PENDING,
+            // #62 callers historically observe a dispatched invocation here;
+            // the separate delivery state is the authoritative distinction
+            // between a durable intent and an external handoff.
+            status: InvocationStatus.DISPATCHED,
             resultRefs: [],
             planRevisionId: revision.revisionId,
             contractVersion: descriptor.contractVersion,
             moduleOwner: descriptor.moduleOwner,
+            effectClass: step.effectClass,
             requestId: invocationId,
             effectFingerprint,
             inputRefs: [...step.inputRefs],
@@ -875,6 +892,38 @@ export class MissionEngine {
         result: InvocationResult,
         ownerVerificationClaim?: OwnerVerification,
     ): Promise<Mission> {
+        return this.recordInvocationResultInternal(
+            invocationId,
+            result,
+            ownerVerificationClaim,
+            false,
+        );
+    }
+
+    /**
+     * Apply a typed result obtained by reconciliation of a prior handoff.
+     * This is deliberately separate from the normal result path so a
+     * blocked/uncertain invocation cannot be reopened by an arbitrary caller.
+     */
+    async recordReconciledInvocationResult(
+        invocationId: string,
+        result: InvocationResult,
+        ownerVerificationClaim?: OwnerVerification,
+    ): Promise<Mission> {
+        return this.recordInvocationResultInternal(
+            invocationId,
+            result,
+            ownerVerificationClaim,
+            true,
+        );
+    }
+
+    private async recordInvocationResultInternal(
+        invocationId: string,
+        result: InvocationResult,
+        ownerVerificationClaim: OwnerVerification | undefined,
+        fromReconciliation: boolean,
+    ): Promise<Mission> {
         const invocation = await this.store.getInvocation(invocationId);
         if (!invocation) {
             throw new Error(`Invocation not found: ${invocationId}`);
@@ -907,6 +956,33 @@ export class MissionEngine {
         // Immutable completed terminality makes duplicate delivery safe. FAILED
         // is not terminal, but it can only repeat FAILED or leave via retry.
         if (isInvocationTerminal(invocation)) return mission;
+        const reconciliationAllowed = fromReconciliation
+            && invocation.reconciliation.state === "pending"
+            && invocation.delivery.state !== "not_submitted";
+        if (fromReconciliation && !reconciliationAllowed) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                result.status,
+                "reconciled results require a pending reconciliation after handoff",
+            );
+        }
+        const preHandoffFailure = result.status === InvocationStatus.FAILED
+            && invocation.delivery.state === "not_submitted";
+        const resultBeforeHandoff = invocation.delivery.state === "not_submitted"
+            && !preHandoffFailure;
+        if (!fromReconciliation && !preHandoffFailure && (
+            resultBeforeHandoff
+            || (invocation.status !== InvocationStatus.DISPATCHED
+                && invocation.status !== InvocationStatus.RUNNING)
+        )) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                result.status,
+                "normal results require an engine-owned handoff",
+            );
+        }
         if (result.status === InvocationStatus.PENDING || result.status === InvocationStatus.DISPATCHED) {
             throw new InvalidStateTransitionError(
                 invocation.missionId,
@@ -915,7 +991,7 @@ export class MissionEngine {
                 "results cannot regress an invocation to a pre-handoff state",
             );
         }
-        if (result.status === InvocationStatus.RUNNING && hasUncertainDelivery(invocation)) {
+        if (!fromReconciliation && result.status === InvocationStatus.RUNNING && hasUncertainDelivery(invocation)) {
             throw new InvalidStateTransitionError(
                 invocation.missionId,
                 invocation.status,
@@ -940,7 +1016,11 @@ export class MissionEngine {
                     invocation,
                     contract,
                 );
-            attestedOwnerVerification = sanitizeOwnerVerification(attestedOwnerVerification);
+            attestedOwnerVerification = sanitizeOwnerVerification(
+                attestedOwnerVerification,
+                invocation,
+                this.clock.isoNow(),
+            );
         }
 
         // Free-form text in result/evidence is sanitized before storage.
@@ -967,6 +1047,33 @@ export class MissionEngine {
         const now = this.clock.isoNow();
         const attempts = updateAttempt(invocation, status, completedAt, sanitizedSummary);
         const delivery = updateDelivery(invocation, status, completedAt);
+        const reconciliation = status === InvocationStatus.COMPLETED
+            ? {
+                  ...invocation.reconciliation,
+                  state: "resolved" as const,
+                  outcome: "performed" as const,
+                  lastCheckedAt: now,
+                  nextAction: undefined,
+              }
+            : status === InvocationStatus.FAILED
+                ? {
+                      ...invocation.reconciliation,
+                      state: "resolved" as const,
+                      outcome: "not_performed" as const,
+                      lastCheckedAt: now,
+                      nextAction: undefined,
+                  }
+                : status === InvocationStatus.RUNNING || status === InvocationStatus.BLOCKED
+                    ? {
+                          ...invocation.reconciliation,
+                          state: "pending" as const,
+                          outcome: "unknown" as const,
+                          lastCheckedAt: now,
+                          nextAction: status === InvocationStatus.RUNNING
+                              ? "reconcile running invocation again"
+                              : "reconcile blocked invocation before any retry",
+                      }
+                    : invocation.reconciliation;
         const updated: CapabilityInvocation = {
             ...invocation,
             status,
@@ -979,6 +1086,7 @@ export class MissionEngine {
                 : invocation.ownerVerificationState,
             attempts,
             delivery,
+            reconciliation,
             retry: status === InvocationStatus.FAILED
                 ? { ...invocation.retry, attempt: Math.max(invocation.retry.attempt, (attempts.at(-1)?.attempt ?? 0) + 1) }
                 : invocation.retry,
@@ -1349,14 +1457,12 @@ export class MissionEngine {
                             : "requested",
                         reason: sanitizedReason,
                     },
-                    reconciliation: hasUncertainDelivery(invocation)
-                        ? {
-                              ...invocation.reconciliation,
-                              state: "pending",
-                              nextAction: "reconcile cancellation before any retry",
-                              lastCheckedAt: now,
-                          }
-                        : invocation.reconciliation,
+                    reconciliation: {
+                        ...invocation.reconciliation,
+                        state: "pending",
+                        nextAction: "reconcile cancellation before any retry",
+                        lastCheckedAt: now,
+                    },
                 });
             }
             await this.store.updateMission(missionId, {
@@ -1397,6 +1503,91 @@ export class MissionEngine {
         return this.requireInvocation(invocationId);
     }
 
+    /**
+     * Persist the result of a connector cancellation request. A cooperative
+     * cancellation acknowledgement is not an invocation completion claim:
+     * the invocation remains active until owner reconciliation supplies an
+     * authoritative outcome. Only a hard cancellation may mark it cancelled
+     * here, and that path records non-performance explicitly.
+     */
+    async recordInvocationCancellationOutcome(
+        invocationId: string,
+        update: InvocationCancellationOutcomeUpdate,
+    ): Promise<CapabilityInvocation> {
+        const invocation = await this.requireInvocation(invocationId);
+        if (isInvocationTerminal(invocation)) return invocation;
+        if (!invocation.cancellation.requested) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                invocation.status,
+                "cancellation outcome requires a persisted cancellation request",
+            );
+        }
+        validateCancellationOutcomeUpdate(update);
+        const status = update.status ?? invocation.status;
+        if (!isInvocationUpdateAllowed(invocation, { status })) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                status,
+                "cancellation outcome cannot regress invocation state",
+            );
+        }
+        if (status === InvocationStatus.CANCELLED && (
+            invocation.cancellation.support !== "hard"
+            || update.state !== "acknowledged"
+            || update.outcome !== "not_performed"
+        )) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                status,
+                "cancelled invocation requires an acknowledged hard-cancel and not_performed outcome",
+            );
+        }
+        const now = this.clock.isoNow();
+        const deliveryState = update.deliveryState ?? (
+            status === InvocationStatus.CANCELLED ? "failed" : invocation.delivery.state
+        );
+        const reconciliationState = update.reconciliationState ?? (
+            status === InvocationStatus.CANCELLED ? "resolved" : "pending"
+        );
+        const reconciliationOutcome = update.outcome ?? (
+            status === InvocationStatus.CANCELLED ? "not_performed" : "unknown"
+        );
+        const completedAt = status === InvocationStatus.CANCELLED
+            ? invocation.completedAt ?? now
+            : invocation.completedAt;
+        await this.store.updateInvocation(invocationId, {
+            status,
+            ...(completedAt === undefined ? {} : { completedAt }),
+            delivery: { ...invocation.delivery, state: deliveryState },
+            cancellation: {
+                ...invocation.cancellation,
+                requested: true,
+                state: update.state,
+            },
+            reconciliation: {
+                ...invocation.reconciliation,
+                state: reconciliationState,
+                outcome: reconciliationOutcome,
+                lastCheckedAt: now,
+                ...(update.nextAction === undefined
+                    ? {}
+                    : { nextAction: sanitizeText(update.nextAction) }),
+            },
+            attempts: updateAttempt(
+                invocation,
+                status,
+                completedAt,
+                sanitizeText(update.nextAction ?? "cancellation outcome recorded"),
+            ),
+            updatedAt: now,
+        });
+        return this.requireInvocation(invocationId);
+    }
+
     /** Persist the handoff boundary before a connector call. */
     async markInvocationHandoff(
         invocationId: string,
@@ -1415,6 +1606,14 @@ export class MissionEngine {
         validateHandoffUpdate(update);
         const now = this.clock.isoNow();
         const deliveryState = update.deliveryState ?? "uncertain";
+        if (!isHandoffDeliveryUpdateAllowed(invocation.delivery.state, deliveryState)) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                invocation.status,
+                `handoff delivery cannot regress from ${invocation.delivery.state} to ${deliveryState}`,
+            );
+        }
         const nextStatus = deliveryState === "running"
             ? InvocationStatus.RUNNING
             : InvocationStatus.DISPATCHED;
@@ -1427,13 +1626,18 @@ export class MissionEngine {
             );
         }
         const attempts = invocation.attempts.map((attempt, index) =>
-            index === invocation.attempts.length - 1 && attempt.state === "prepared"
+            index === invocation.attempts.length - 1
+            && (attempt.state === "prepared" || attempt.state === "submitted")
                 ? {
                       ...attempt,
                       correlationId: update.correlationId === undefined
                           ? attempt.correlationId
                           : sanitizeOpaqueString(update.correlationId, "correlationId"),
-                      state: "submitted" as const,
+                      state: deliveryState === "acknowledged" || deliveryState === "running"
+                          ? "acknowledged" as const
+                          : deliveryState === "uncertain"
+                              ? "uncertain" as const
+                              : "submitted" as const,
                   }
                 : attempt,
         );
@@ -1453,6 +1657,7 @@ export class MissionEngine {
             delivery,
             attempts,
             reconciliation: deliveryState === "uncertain"
+                || deliveryState === "submitted"
                 ? { ...invocation.reconciliation, state: "pending", nextAction: "reconcile before retry" }
                 : invocation.reconciliation,
             updatedAt: now,
@@ -1479,7 +1684,7 @@ export class MissionEngine {
                 "reconciliation status is not an authorized monotonic transition",
             );
         }
-        if (status === InvocationStatus.COMPLETED && update.outcome !== "performed") {
+        if (update.state === "resolved" && status === InvocationStatus.COMPLETED && update.outcome !== "performed") {
             throw new InvalidStateTransitionError(
                 invocation.missionId,
                 invocation.status,
@@ -1487,7 +1692,7 @@ export class MissionEngine {
                 "completed reconciliation requires performed outcome",
             );
         }
-        if (status === InvocationStatus.FAILED && update.outcome !== "not_performed") {
+        if (update.state === "resolved" && status === InvocationStatus.FAILED && update.outcome !== "not_performed") {
             throw new InvalidStateTransitionError(
                 invocation.missionId,
                 invocation.status,
@@ -1495,7 +1700,7 @@ export class MissionEngine {
                 "failed reconciliation requires not_performed outcome",
             );
         }
-        if (status === InvocationStatus.RUNNING && update.outcome === "not_performed") {
+        if (update.state === "resolved" && status === InvocationStatus.RUNNING && update.outcome === "not_performed") {
             throw new InvalidStateTransitionError(
                 invocation.missionId,
                 invocation.status,
@@ -1503,7 +1708,8 @@ export class MissionEngine {
                 "running reconciliation cannot report not_performed",
             );
         }
-        const completedAt = status === InvocationStatus.COMPLETED || status === InvocationStatus.FAILED
+        const completedAt = update.state === "resolved"
+            && (status === InvocationStatus.COMPLETED || status === InvocationStatus.FAILED)
             ? invocation.completedAt ?? now
             : invocation.completedAt;
         await this.store.updateInvocation(invocationId, {
@@ -1545,6 +1751,16 @@ export class MissionEngine {
         return this.store.getPlanRevision(revisionId);
     }
 
+    /** Read one full durable invocation for recovery and seam continuation. */
+    async getInvocation(invocationId: string): Promise<CapabilityInvocation | null> {
+        return this.store.getInvocation(invocationId);
+    }
+
+    /** Read full invocation entities for recovery-aware boundary adapters. */
+    async listInvocations(missionId: string): Promise<CapabilityInvocation[]> {
+        return this.store.listInvocations(missionId);
+    }
+
     /**
      * Resolve the authorization-shaped contract the policy validator sees
      * for a capability id (read-only). Exposed so the dispatch seam can
@@ -1559,6 +1775,27 @@ export class MissionEngine {
         return this.store.listMissions(filter);
     }
 
+    /**
+     * Record that a non-terminal Mission was reconstructed after restart.
+     * Recovery changes only recovery metadata and never resumes, cancels, or
+     * reclassifies executable work.
+     */
+    async recoverMission(missionId: string): Promise<Mission> {
+        const mission = await this.requireMission(missionId);
+        if (TERMINAL_STATES.has(mission.state)) return mission;
+        const recoveredAt = this.clock.isoNow();
+        await this.store.updateMission(missionId, {
+            recoveryMetadata: {
+                ...mission.recoveryMetadata,
+                recovered: true,
+                recoveryCount: mission.recoveryMetadata.recoveryCount + 1,
+                lastRecoveredAt: recoveredAt,
+            },
+            updatedAt: recoveredAt,
+        });
+        return this.requireMission(missionId);
+    }
+
     private async recordLateCancelledFacts(
         invocation: CapabilityInvocation,
         mission: Mission,
@@ -1566,8 +1803,19 @@ export class MissionEngine {
         evidenceRefs: EvidenceRef[],
         ownerVerificationClaim?: OwnerVerification,
     ): Promise<Mission> {
+        if (!ownerVerificationClaim) {
+            throw new Error("late cancelled facts require an owner verification attestation");
+        }
+        if (result.status === InvocationStatus.PENDING || result.status === InvocationStatus.DISPATCHED) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                result.status,
+                "late cancelled facts require a performed, not_performed, or unknown outcome",
+            );
+        }
         let attestedOwnerVerification: OwnerVerification | undefined;
-        if (ownerVerificationClaim) {
+        {
             const contract = await this.policy.resolver.resolve(invocation.capabilityId);
             if (!contract) throw new Error(`cannot verify invocation of unknown capability "${invocation.capabilityId}"`);
             attestedOwnerVerification = sanitizeOwnerVerification(
@@ -1576,13 +1824,15 @@ export class MissionEngine {
                     invocation,
                     contract,
                 ),
+                invocation,
+                this.clock.isoNow(),
             );
         }
 
         const resultRefs = mergeEvidenceRefs(invocation.resultRefs, evidenceRefs);
-        const ownerVerification = invocation.ownerVerification?.verified === false
+        const ownerVerification = invocation.ownerVerification !== undefined
             ? invocation.ownerVerification
-            : attestedOwnerVerification ?? invocation.ownerVerification;
+            : attestedOwnerVerification;
         const observed = observedCancellationFacts(invocation, result.status, this.clock.isoNow());
         const reconciliation = invocation.reconciliation.state === "resolved"
             ? invocation.reconciliation
@@ -1719,13 +1969,15 @@ function updateAttempt(
     const index = invocation.attempts.length - 1;
     const current = invocation.attempts[index];
     if (status === InvocationStatus.FAILED && current.state === "failed") return invocation.attempts;
-    const nextState = status === InvocationStatus.FAILED
-        ? "failed"
-        : status === InvocationStatus.COMPLETED || status === InvocationStatus.CANCELLED
-            ? "acknowledged"
+        const nextState = status === InvocationStatus.FAILED
+            ? "failed"
+            : status === InvocationStatus.COMPLETED || status === InvocationStatus.CANCELLED
+                ? "acknowledged"
             : status === InvocationStatus.BLOCKED
                 ? "uncertain"
-                : current.state;
+                : status === InvocationStatus.RUNNING && current.state === "submitted"
+                    ? "acknowledged"
+                    : current.state;
     if (nextState === current.state && status !== InvocationStatus.FAILED) return invocation.attempts;
     return invocation.attempts.map((attempt, attemptIndex) =>
         attemptIndex === index
@@ -1813,7 +2065,7 @@ function assertIsoTimestamp(value: string, field: string): void {
 
 function validateHandoffUpdate(update: InvocationHandoffUpdate): void {
     assertKnownKeys(update, ["deliveryState", "remoteOperationHandle", "correlationId"], "InvocationHandoffUpdate");
-    if (update.deliveryState !== undefined && !["acknowledged", "running", "uncertain"].includes(update.deliveryState)) {
+    if (update.deliveryState !== undefined && !["submitted", "acknowledged", "running", "uncertain"].includes(update.deliveryState)) {
         throw new Error(`Invalid handoff deliveryState: ${String(update.deliveryState)}`);
     }
     if (update.correlationId !== undefined) sanitizeOpaqueString(update.correlationId, "correlationId");
@@ -1838,6 +2090,30 @@ function validateReconciliationUpdate(update: InvocationReconciliationUpdate): v
     if (update.lastCheckedAt !== undefined) assertIsoTimestamp(update.lastCheckedAt, "lastCheckedAt");
 }
 
+function validateCancellationOutcomeUpdate(update: InvocationCancellationOutcomeUpdate): void {
+    assertKnownKeys(
+        update,
+        ["state", "status", "deliveryState", "reconciliationState", "outcome", "nextAction"],
+        "InvocationCancellationOutcomeUpdate",
+    );
+    if (update.state !== "requested" && update.state !== "acknowledged" && update.state !== "unsupported") {
+        throw new Error(`Invalid cancellation outcome state: ${String(update.state)}`);
+    }
+    if (update.status !== undefined && !Object.values(InvocationStatus).includes(update.status)) {
+        throw new Error(`Invalid cancellation outcome status: ${String(update.status)}`);
+    }
+    if (update.deliveryState !== undefined && !["acknowledged", "running", "failed", "uncertain"].includes(update.deliveryState)) {
+        throw new Error(`Invalid cancellation outcome deliveryState: ${String(update.deliveryState)}`);
+    }
+    if (update.reconciliationState !== undefined && !["pending", "resolved", "unsupported"].includes(update.reconciliationState)) {
+        throw new Error(`Invalid cancellation outcome reconciliationState: ${String(update.reconciliationState)}`);
+    }
+    if (update.outcome !== undefined && !["performed", "not_performed", "unknown"].includes(update.outcome)) {
+        throw new Error(`Invalid cancellation outcome: ${String(update.outcome)}`);
+    }
+    if (update.nextAction !== undefined) sanitizeText(update.nextAction);
+}
+
 function sanitizeEvidenceRefs(refs: EvidenceRef[]): EvidenceRef[] {
     if (!Array.isArray(refs)) throw new Error("InvocationResult evidenceRefs must be an array");
     return refs.map((ref) => {
@@ -1855,17 +2131,30 @@ function sanitizeEvidenceRefs(refs: EvidenceRef[]): EvidenceRef[] {
     });
 }
 
-function sanitizeOwnerVerification(verification: OwnerVerification): OwnerVerification {
+function sanitizeOwnerVerification(
+    verification: OwnerVerification,
+    invocation: Pick<CapabilityInvocation, "invocationId" | "moduleOwner">,
+    fallbackVerifiedAt: string,
+): OwnerVerification {
     if (!verification || typeof verification !== "object") throw new Error("OwnerVerification must be an object");
     assertKnownKeys(verification, ["invocationId", "verified", "reason", "owner", "verifiedAt"], "OwnerVerification");
     if (typeof verification.verified !== "boolean") throw new Error("OwnerVerification.verified must be boolean");
-    assertIsoTimestamp(verification.verifiedAt, "OwnerVerification.verifiedAt");
+    const verifiedAt = verification.verifiedAt ?? fallbackVerifiedAt;
+    assertIsoTimestamp(verifiedAt, "OwnerVerification.verifiedAt");
+    const invocationId = sanitizeOpaqueString(verification.invocationId, "OwnerVerification.invocationId");
+    if (invocationId !== invocation.invocationId) {
+        throw new Error("OwnerVerification.invocationId does not match the target invocation");
+    }
+    const owner = sanitizeOpaqueString(verification.owner, "OwnerVerification.owner");
+    if (owner !== invocation.moduleOwner) {
+        throw new Error("OwnerVerification.owner does not match the target invocation module owner");
+    }
     return {
-        invocationId: sanitizeOpaqueString(verification.invocationId, "OwnerVerification.invocationId"),
+        invocationId,
         verified: verification.verified,
         reason: sanitizeText(verification.reason),
-        owner: sanitizeOpaqueString(verification.owner, "OwnerVerification.owner"),
-        verifiedAt: verification.verifiedAt,
+        owner,
+        verifiedAt,
     };
 }
 
@@ -1914,6 +2203,19 @@ function reconciliationDelivery(
     if (outcome === "not_performed") return "failed";
     if (outcome === "unknown") return "uncertain";
     return current;
+}
+
+function isHandoffDeliveryUpdateAllowed(
+    current: CapabilityInvocation["delivery"]["state"],
+    next: InvocationHandoffUpdate["deliveryState"],
+): boolean {
+    if (next === undefined || current === next) return true;
+    // Uncertainty is a conservative widening and may be recorded from any
+    // active delivery state. It is never a reason to replay the effect.
+    if (next === "uncertain" && current !== "failed") return true;
+    if (current === "not_submitted") return true;
+    if (current === "submitted" && (next === "acknowledged" || next === "running")) return true;
+    return false;
 }
 
 /** Default interpreter: the interpreted objective starts as the preserved intent. */

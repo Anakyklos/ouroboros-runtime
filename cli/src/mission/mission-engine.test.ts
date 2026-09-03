@@ -172,6 +172,18 @@ describe("MissionEngine", () => {
             return engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
         }
 
+        async function recordAfterHandoff(
+            invocationId: string,
+            result: Parameters<MissionEngine["recordInvocationResult"]>[1],
+            ownerVerificationClaim?: Parameters<MissionEngine["recordInvocationResult"]>[2],
+        ): Promise<Mission> {
+            const invocation = await harness.store.getInvocation(invocationId);
+            if (invocation?.delivery.state === "not_submitted") {
+                await engine.markInvocationHandoff(invocationId, { deliveryState: "acknowledged" });
+            }
+            return engine.recordInvocationResult(invocationId, result, ownerVerificationClaim);
+        }
+
         it("persists a complete prepared, not-submitted invocation before handoff metadata", async () => {
             const mission = await acceptedForStep();
             const invocation = await engine.dispatchStep(mission.missionId, "step-1", {
@@ -190,6 +202,7 @@ describe("MissionEngine", () => {
                 planRevisionId: mission.currentPlanRevisionId,
                 contractVersion: 1,
                 moduleOwner: "runstead",
+                effectClass: EffectClass.EXECUTION,
                 requestId: invocation.invocationId,
                 effectFingerprint: expect.any(String),
                 inputRefs: ["refs/runstead/pr/42"],
@@ -209,6 +222,45 @@ describe("MissionEngine", () => {
             expect(stored?.dispatchedAt).toBeUndefined();
         });
 
+        it("rejects a normal result for a prepared not-submitted invocation", async () => {
+            const mission = await acceptedForStep();
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+
+            await expect(engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.COMPLETED,
+                summary: "forged pre-handoff completion",
+                evidenceRefs: [],
+                completedAt: BASE_TIME,
+            })).rejects.toThrow(/handoff|pending|not_submitted/i);
+
+            expect(await harness.store.getInvocation(invocation.invocationId)).toEqual(invocation);
+        });
+
+        it("rejects a normal result from BLOCKED without explicit reconciliation", async () => {
+            const mission = await acceptedForStep();
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "uncertain" });
+            await engine.markInvocationReconciliation(invocation.invocationId, {
+                state: "resolved",
+                outcome: "unknown",
+                status: InvocationStatus.BLOCKED,
+                deliveryState: "uncertain",
+                lastCheckedAt: BASE_TIME,
+            });
+            const blocked = await harness.store.getInvocation(invocation.invocationId);
+
+            await expect(engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.COMPLETED,
+                summary: "unauthorized unblock",
+                evidenceRefs: [],
+                completedAt: BASE_TIME,
+            })).rejects.toThrow(/handoff|reconciliation|blocked|transition/i);
+
+            expect(await harness.store.getInvocation(invocation.invocationId)).toEqual(blocked);
+        });
+
         it("merges duplicate completed results and evidence without changing the terminal record", async () => {
             const mission = await acceptedForStep();
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
@@ -221,9 +273,9 @@ describe("MissionEngine", () => {
                 ],
                 completedAt: BASE_TIME,
             };
-            await engine.recordInvocationResult(invocation.invocationId, result);
+            await recordAfterHandoff(invocation.invocationId, result);
             const first = await harness.store.getInvocation(invocation.invocationId);
-            await engine.recordInvocationResult(invocation.invocationId, {
+            await recordAfterHandoff(invocation.invocationId, {
                 ...result,
                 summary: "conflicting late summary",
                 evidenceRefs: [
@@ -243,7 +295,7 @@ describe("MissionEngine", () => {
         it("keeps a negative owner verdict sovereign over a later planner-level success", async () => {
             const mission = await acceptedForStep();
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
-            await engine.recordInvocationResult(
+            await recordAfterHandoff(
                 invocation.invocationId,
                 {
                     invocationId: invocation.invocationId,
@@ -260,13 +312,13 @@ describe("MissionEngine", () => {
                     verifiedAt: BASE_TIME,
                 },
             );
-            await engine.recordInvocationResult(invocation.invocationId, {
+            await expect(recordAfterHandoff(invocation.invocationId, {
                 invocationId: invocation.invocationId,
                 status: InvocationStatus.COMPLETED,
                 summary: "planner says complete",
                 evidenceRefs: [],
                 completedAt: BASE_TIME,
-            });
+            })).rejects.toThrow(/transition|failed|owner/i);
 
             const stored = await harness.store.getInvocation(invocation.invocationId);
             expect(stored?.status).toBe(InvocationStatus.FAILED);
@@ -285,7 +337,7 @@ describe("MissionEngine", () => {
                 pausedBy: "operator-1",
             });
             expect((await harness.store.getInvocation(invocation.invocationId))?.status).toBe(
-                InvocationStatus.PENDING,
+                InvocationStatus.DISPATCHED,
             );
 
             const resumed = await engine.resumeMission(mission.missionId);
@@ -380,7 +432,7 @@ describe("MissionEngine", () => {
         it("does not recreate a completed effect when a later plan revision changes only the step id", async () => {
             const mission = await acceptedForStep();
             const first = await engine.dispatchStep(mission.missionId, "step-1");
-            await engine.recordInvocationResult(first.invocationId, {
+            await recordAfterHandoff(first.invocationId, {
                 invocationId: first.invocationId,
                 status: InvocationStatus.COMPLETED,
                 summary: "done",
@@ -405,7 +457,7 @@ describe("MissionEngine", () => {
         it("records FAILED as an explicit attempt outcome without silently retrying", async () => {
             const mission = await acceptedForStep();
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
-            await engine.recordInvocationResult(invocation.invocationId, {
+            await recordAfterHandoff(invocation.invocationId, {
                 invocationId: invocation.invocationId,
                 status: InvocationStatus.FAILED,
                 summary: "definitive attempt failure",
@@ -454,7 +506,7 @@ describe("MissionEngine", () => {
                         reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
                     },
                 });
-                expect(invocation.status).toBe(InvocationStatus.PENDING);
+                expect(invocation.status).toBe(InvocationStatus.DISPATCHED);
                 await firstStore.close();
 
                 const secondStore = new SqliteMissionStore(dbPath);
@@ -470,8 +522,10 @@ describe("MissionEngine", () => {
                     verificationAuthority: new FakeVerificationAuthority(),
                 });
                 const recovered = await secondStore.getInvocation(invocation.invocationId);
-                expect(recovered).toMatchObject({ status: InvocationStatus.PENDING, delivery: { state: "not_submitted" } });
-                expect(await secondStore.listDueInvocations(BASE_TIME, 10)).toEqual([]);
+                expect(recovered).toMatchObject({ status: InvocationStatus.DISPATCHED, delivery: { state: "not_submitted" } });
+                expect((await secondStore.listDueInvocations(BASE_TIME, 10)).map((item) => item.invocationId)).toEqual([
+                    invocation.invocationId,
+                ]);
                 const cancelled = await secondEngine.cancelUnsubmitted(invocation.invocationId, "cancel before handoff");
                 expect(cancelled.status).toBe(InvocationStatus.CANCELLED);
                 expect((await secondStore.getInvocation(invocation.invocationId))?.delivery.state).toBe("not_submitted");
@@ -484,7 +538,7 @@ describe("MissionEngine", () => {
         it("rejects result regressions and preserves a failed attempt exactly", async () => {
             const mission = await acceptedForStep();
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
-            await engine.recordInvocationResult(invocation.invocationId, {
+            await recordAfterHandoff(invocation.invocationId, {
                 invocationId: invocation.invocationId,
                 status: InvocationStatus.FAILED,
                 summary: "failure",
@@ -536,7 +590,7 @@ describe("MissionEngine", () => {
 
             const blockedMission = await acceptedForStep(makeStep({ stepId: "step-blocked" }));
             const blocked = await engine.dispatchStep(blockedMission.missionId, "step-blocked");
-            await engine.recordInvocationResult(blocked.invocationId, {
+            await recordAfterHandoff(blocked.invocationId, {
                 invocationId: blocked.invocationId,
                 status: InvocationStatus.BLOCKED,
                 summary: "blocked pending reconciliation",
@@ -564,7 +618,7 @@ describe("MissionEngine", () => {
                     reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
                 },
             });
-            await engine.recordInvocationResult(invocation.invocationId, {
+            await recordAfterHandoff(invocation.invocationId, {
                 invocationId: invocation.invocationId,
                 status: InvocationStatus.FAILED,
                 summary: "retryable failure",
@@ -603,26 +657,67 @@ describe("MissionEngine", () => {
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
             await engine.cancelMission(mission.missionId, "operator cancelled");
             const evidence = { refId: "late-1", owner: "runstead", externalRef: "review:late", label: "late result" };
-            await engine.recordInvocationResult(invocation.invocationId, {
+            await recordAfterHandoff(invocation.invocationId, {
                 invocationId: invocation.invocationId,
                 status: InvocationStatus.COMPLETED,
                 summary: "late owner fact",
                 evidenceRefs: [evidence],
                 completedAt: "2026-09-02T12:01:00.000Z",
+            }, {
+                invocationId: invocation.invocationId,
+                verified: true,
+                reason: "owner reports the late effect",
+                owner: "runstead",
+                verifiedAt: BASE_TIME,
             });
             const afterFirst = await harness.store.getInvocation(invocation.invocationId);
-            await engine.recordInvocationResult(invocation.invocationId, {
+            await recordAfterHandoff(invocation.invocationId, {
                 invocationId: invocation.invocationId,
                 status: InvocationStatus.FAILED,
                 summary: "conflicting late fact",
                 evidenceRefs: [evidence],
                 completedAt: "2026-09-02T12:02:00.000Z",
+            }, {
+                invocationId: invocation.invocationId,
+                verified: true,
+                reason: "conflicting late report",
+                owner: "runstead",
+                verifiedAt: BASE_TIME,
             });
             const afterSecond = await harness.store.getInvocation(invocation.invocationId);
             expect((await engine.getMission(mission.missionId)).state).toBe(MissionState.CANCELLED);
             expect(afterFirst?.status).toBe(InvocationStatus.CANCELLED);
             expect(afterSecond).toEqual(afterFirst);
             expect((await engine.getMission(mission.missionId)).evidenceRefs.filter((ref) => ref.refId === "late-1")).toHaveLength(1);
+        });
+
+        it("requires an attested compatible outcome for late cancelled facts", async () => {
+            const mission = await acceptedForStep();
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.cancelMission(mission.missionId, "operator cancelled");
+            const cancelled = await harness.store.getInvocation(invocation.invocationId);
+
+            await expect(engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.COMPLETED,
+                summary: "missing attestation",
+                evidenceRefs: [],
+                completedAt: BASE_TIME,
+            })).rejects.toThrow(/attest|owner verification/i);
+            await expect(engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.PENDING,
+                summary: "pending is not an outcome",
+                evidenceRefs: [],
+            }, {
+                invocationId: invocation.invocationId,
+                verified: true,
+                reason: "owner report",
+                owner: "runstead",
+                verifiedAt: BASE_TIME,
+            })).rejects.toThrow(/outcome|pending|dispatched/i);
+
+            expect(await harness.store.getInvocation(invocation.invocationId)).toEqual(cancelled);
         });
 
         it("rejects invalid opaque facts and persists only the known evidence shape", async () => {
@@ -1072,7 +1167,8 @@ describe("MissionEngine", () => {
             await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
-            expect(invocation.status).toBe(InvocationStatus.PENDING);
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
+            expect(invocation.status).toBe(InvocationStatus.DISPATCHED);
 
             // A result declaring a DIFFERENT invocationId is identity drift,
             // never silently accepted for this invocation.
@@ -1089,7 +1185,7 @@ describe("MissionEngine", () => {
             // The invocation was NOT updated by the rejected result.
             const invocations = await harness.store.listInvocations(mission.missionId);
             expect(invocations.find((i) => i.invocationId === invocation.invocationId)?.status).toBe(
-                InvocationStatus.PENDING,
+                InvocationStatus.DISPATCHED,
             );
         });
 
@@ -1098,7 +1194,8 @@ describe("MissionEngine", () => {
             expect(mission.state).toBe(MissionState.READY);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
-            expect(invocation.status).toBe(InvocationStatus.PENDING);
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
+            expect(invocation.status).toBe(InvocationStatus.DISPATCHED);
             expect(invocation.capabilityId).toBe("runstead.code-review");
             expect(invocation.missionId).toBe(mission.missionId);
 
@@ -1283,6 +1380,7 @@ describe("MissionEngine", () => {
             await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
             await engine.recordInvocationResult(
                 invocation.invocationId,
                 {
@@ -1324,6 +1422,7 @@ describe("MissionEngine", () => {
             await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
             await engine.recordInvocationResult(
                 invocation.invocationId,
                 {
@@ -1492,6 +1591,7 @@ describe("MissionEngine", () => {
             await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
             await engine.recordInvocationResult(
                 invocation.invocationId,
                 {
@@ -1568,6 +1668,7 @@ describe("MissionEngine", () => {
             await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
             // Owner verification fails, planner says "looks good".
             await engine.recordInvocationResult(
                 invocation.invocationId,
@@ -1610,6 +1711,7 @@ describe("MissionEngine", () => {
             await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
             // runstead.code-review belongs to "runstead", but the caller
             // claims "katherine" verified it — must be rejected fail-closed.
             await expect(
@@ -1647,6 +1749,7 @@ describe("MissionEngine", () => {
             await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
             await expect(
                 engine.recordInvocationResult(
                     invocation.invocationId,
@@ -1682,6 +1785,7 @@ describe("MissionEngine", () => {
             await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
             await engine.recordInvocationResult(
                 invocation.invocationId,
                 {
@@ -1731,6 +1835,7 @@ describe("MissionEngine", () => {
             await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
             await engine.recordInvocationResult(
                 invocation.invocationId,
                 {
@@ -1795,6 +1900,7 @@ describe("MissionEngine", () => {
             await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
             await engine.recordInvocationResult(
                 invocation.invocationId,
                 {
@@ -1860,6 +1966,7 @@ describe("MissionEngine", () => {
                 await e.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
                 const invocation = await e.dispatchStep(mission.missionId, "step-1");
+                await e.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
                 await expect(
                     e.recordInvocationResult(
                         invocation.invocationId,
@@ -1882,7 +1989,7 @@ describe("MissionEngine", () => {
 
                 const after = await e.getMission(mission.missionId);
                 expect(after.invocationRefs[0].ownerVerification).toBeUndefined();
-                expect(after.invocationRefs[0].status).toBe(InvocationStatus.PENDING);
+                expect(after.invocationRefs[0].status).toBe(InvocationStatus.DISPATCHED);
             } finally {
                 await noAuthority.close();
             }
@@ -1917,6 +2024,7 @@ describe("MissionEngine", () => {
             await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
             await engine.recordInvocationResult(
                 invocation.invocationId,
                 {
@@ -1960,6 +2068,7 @@ describe("MissionEngine", () => {
             await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
             await engine.recordInvocationResult(
                 invocation.invocationId,
                 {
@@ -2019,6 +2128,7 @@ describe("MissionEngine", () => {
             await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
             await engine.recordInvocationResult(
                 invocation.invocationId,
                 {

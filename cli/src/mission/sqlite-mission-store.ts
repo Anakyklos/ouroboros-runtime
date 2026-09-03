@@ -23,6 +23,7 @@ import type {
 } from "./contracts.js";
 import {
     assertValidInvocationIdentity,
+    isInvocationUpdateAllowed,
     isInvocationTerminal,
 } from "./contracts.js";
 import {
@@ -80,6 +81,7 @@ interface InvocationRow {
     plan_revision_id: string | null;
     contract_version: number | null;
     module_owner: string | null;
+    effect_class: string | null;
     request_id: string | null;
     effect_fingerprint: string | null;
     input_refs: string | null;
@@ -129,6 +131,40 @@ function defaultRetry(): CapabilityInvocation["retry"] {
         backoffMs: 0,
         nextEligibleAt: null,
     };
+}
+
+function assertImmutableInvocationIdentity(
+    current: CapabilityInvocation,
+    next: CapabilityInvocation,
+): void {
+    const fields: Array<keyof CapabilityInvocation> = [
+        "missionId",
+        "stepId",
+        "capabilityId",
+        "planRevisionId",
+        "contractVersion",
+        "moduleOwner",
+        "effectClass",
+        "requestId",
+        "effectFingerprint",
+        "inputRefs",
+        "createdAt",
+    ];
+    for (const field of fields) {
+        if (JSON.stringify(current[field]) !== JSON.stringify(next[field])) {
+            throw new Error(`Invocation ${current.invocationId} identity field "${field}" is immutable`);
+        }
+    }
+    if (
+        current.idempotency.mode !== next.idempotency.mode
+        || current.idempotency.key !== next.idempotency.key
+        || current.retry.maxAttempts !== next.retry.maxAttempts
+        || current.retry.backoff !== next.retry.backoff
+        || current.cancellation.support !== next.cancellation.support
+        || current.reconciliation.support !== next.reconciliation.support
+    ) {
+        throw new Error(`Invocation ${current.invocationId} execution semantics are immutable`);
+    }
 }
 
 export class SqliteMissionStore implements MissionStore {
@@ -208,6 +244,7 @@ export class SqliteMissionStore implements MissionStore {
                 plan_revision_id TEXT NOT NULL DEFAULT '',
                 contract_version INTEGER NOT NULL DEFAULT 0,
                 module_owner TEXT NOT NULL DEFAULT '',
+                effect_class TEXT NOT NULL DEFAULT '',
                 request_id TEXT NOT NULL DEFAULT '',
                 effect_fingerprint TEXT NOT NULL DEFAULT '',
                 input_refs TEXT NOT NULL DEFAULT '[]',
@@ -261,6 +298,7 @@ export class SqliteMissionStore implements MissionStore {
             ["plan_revision_id", "TEXT NOT NULL DEFAULT ''"],
             ["contract_version", "INTEGER NOT NULL DEFAULT 0"],
             ["module_owner", "TEXT NOT NULL DEFAULT ''"],
+            ["effect_class", "TEXT NOT NULL DEFAULT ''"],
             ["request_id", "TEXT NOT NULL DEFAULT ''"],
             ["effect_fingerprint", "TEXT NOT NULL DEFAULT ''"],
             ["input_refs", "TEXT NOT NULL DEFAULT '[]'"],
@@ -284,7 +322,7 @@ export class SqliteMissionStore implements MissionStore {
             UPDATE mission_invocations
             SET delivery = '{"state":"uncertain"}'
             WHERE delivery = '{"state":"not_submitted"}'
-              AND (dispatched_at IS NOT NULL OR status IN ('dispatched', 'running'));
+              AND (dispatched_at IS NOT NULL OR status = 'running');
             UPDATE mission_invocations
             SET created_at = COALESCE(dispatched_at, completed_at, '${LEGACY_EPOCH}'),
                 updated_at = COALESCE(completed_at, dispatched_at, '${LEGACY_EPOCH}')
@@ -529,7 +567,14 @@ export class SqliteMissionStore implements MissionStore {
         if (current && isInvocationTerminal(current)) {
             return this.toInvocationRef(current);
         }
-
+        if (current && isFull) {
+            assertImmutableInvocationIdentity(current, normalized);
+            if (!isInvocationUpdateAllowed(current, normalized)) {
+                throw new Error(
+                    `Invocation ${normalized.invocationId} cannot transition from ${current.status} to ${normalized.status}`,
+                );
+            }
+        }
         const effective = current
             ? {
                   ...(isFull ? normalized : current),
@@ -557,11 +602,11 @@ export class SqliteMissionStore implements MissionStore {
             "saveInvocation",
             `INSERT INTO mission_invocations (
                 invocation_id, mission_id, step_id, capability_id, plan_revision_id,
-                contract_version, module_owner, request_id, effect_fingerprint, input_refs,
+                contract_version, module_owner, effect_class, request_id, effect_fingerprint, input_refs,
                 idempotency, retry, attempts, delivery, cancellation, reconciliation,
                 owner_verification_state, status, dispatched_at, completed_at, result_refs,
                 owner_verification, error, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(invocation_id) DO UPDATE SET
                 mission_id = excluded.mission_id,
                 step_id = excluded.step_id,
@@ -569,6 +614,7 @@ export class SqliteMissionStore implements MissionStore {
                 plan_revision_id = excluded.plan_revision_id,
                 contract_version = excluded.contract_version,
                 module_owner = excluded.module_owner,
+                effect_class = excluded.effect_class,
                 request_id = excluded.request_id,
                 effect_fingerprint = excluded.effect_fingerprint,
                 input_refs = excluded.input_refs,
@@ -595,6 +641,7 @@ export class SqliteMissionStore implements MissionStore {
             effective.planRevisionId,
             effective.contractVersion,
             effective.moduleOwner,
+            effective.effectClass ?? "",
             effective.requestId,
             effective.effectFingerprint,
             JSON.stringify(effective.inputRefs),
@@ -675,7 +722,8 @@ export class SqliteMissionStore implements MissionStore {
                AND status NOT IN ('completed', 'cancelled')
                AND NOT (status = 'pending' AND dispatched_at IS NULL
                         AND json_extract(retry, '$.attempt') = 0
-                        AND json_extract(delivery, '$.state') = 'not_submitted')
+                        AND json_extract(delivery, '$.state') = 'not_submitted'
+                        AND json_extract(retry, '$.nextEligibleAt') IS NULL)
                AND json_extract(delivery, '$.state') != 'uncertain'
                AND json_extract(reconciliation, '$.state') NOT IN ('pending', 'unsupported')
              ORDER BY created_at ASC, invocation_id ASC
@@ -689,12 +737,10 @@ export class SqliteMissionStore implements MissionStore {
         const rows = this.stmt(
             "listDueInvocations",
             `SELECT * FROM mission_invocations
-             WHERE status IN ('pending', 'failed', 'blocked')
+             WHERE status IN ('pending', 'dispatched', 'failed')
                AND status NOT IN ('completed', 'cancelled')
-               AND NOT (status = 'pending' AND dispatched_at IS NULL
-                        AND json_extract(retry, '$.attempt') = 0
-                        AND json_extract(delivery, '$.state') = 'not_submitted')
-               AND json_extract(delivery, '$.state') != 'uncertain'
+               AND json_extract(delivery, '$.state') IN ('not_submitted', 'failed')
+               AND COALESCE(json_extract(cancellation, '$.requested'), 0) = 0
                AND json_extract(reconciliation, '$.state') NOT IN ('pending', 'unsupported')
                AND (json_extract(retry, '$.nextEligibleAt') IS NULL
                     OR json_extract(retry, '$.nextEligibleAt') <= ?)
@@ -717,12 +763,12 @@ export class SqliteMissionStore implements MissionStore {
                 "claimInvocation",
                 `INSERT INTO mission_invocations (
                     invocation_id, mission_id, step_id, capability_id, plan_revision_id,
-                    contract_version, module_owner, request_id, effect_fingerprint, input_refs,
+                    contract_version, module_owner, effect_class, request_id, effect_fingerprint, input_refs,
                     idempotency, retry, attempts, delivery, cancellation, reconciliation,
                     owner_verification_state, status, dispatched_at, completed_at, result_refs,
                     owner_verification, error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            ).run(
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                ).run(
                 normalized.invocationId,
                 normalized.missionId,
                 normalized.stepId,
@@ -730,6 +776,7 @@ export class SqliteMissionStore implements MissionStore {
                 normalized.planRevisionId,
                 normalized.contractVersion,
                 normalized.moduleOwner,
+                normalized.effectClass ?? "",
                 normalized.requestId,
                 normalized.effectFingerprint,
                 JSON.stringify(normalized.inputRefs),
@@ -854,6 +901,7 @@ export class SqliteMissionStore implements MissionStore {
             planRevisionId: "",
             contractVersion: 0,
             moduleOwner: "",
+            effectClass: undefined,
             requestId: `legacy:${invocation.invocationId}`,
             effectFingerprint: `legacy:${invocation.invocationId}`,
             inputRefs: [],
@@ -897,6 +945,7 @@ export class SqliteMissionStore implements MissionStore {
             planRevisionId: row.plan_revision_id ?? "",
             contractVersion: row.contract_version ?? 0,
             moduleOwner: row.module_owner ?? "",
+            effectClass: row.effect_class ? row.effect_class as CapabilityInvocation["effectClass"] : undefined,
             requestId: row.request_id || `legacy:${row.invocation_id}`,
             effectFingerprint: row.effect_fingerprint || `legacy:${row.invocation_id}`,
             inputRefs: parseJson<string[]>(row.input_refs, []),
