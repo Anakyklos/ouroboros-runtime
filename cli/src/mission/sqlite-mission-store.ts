@@ -386,7 +386,22 @@ export class SqliteMissionStore implements MissionStore {
                 capability_id: string;
             },
         ): LegacyStepMatch => {
-            const steps = parseJson<LegacyStep[]>(revision.steps, []);
+            if (typeof revision.steps !== "string") return { kind: "ambiguous" };
+            let parsedSteps: unknown;
+            try {
+                parsedSteps = JSON.parse(revision.steps);
+            } catch {
+                return { kind: "ambiguous" };
+            }
+            if (
+                !Array.isArray(parsedSteps)
+                || parsedSteps.some((candidate) => (
+                    candidate === null || typeof candidate !== "object" || Array.isArray(candidate)
+                ))
+            ) {
+                return { kind: "ambiguous" };
+            }
+            const steps = parsedSteps as LegacyStep[];
             const matching = steps.filter((candidate) => candidate.stepId === legacy.step_id);
             if (matching.length === 0) return { kind: "none" };
             if (matching.length !== 1) return { kind: "ambiguous" };
@@ -443,10 +458,10 @@ export class SqliteMissionStore implements MissionStore {
             } else {
                 const revisions = revisionsForMission(legacy.mission_id);
                 const hasInvalidHistory = revisions.some((revision) => !validAcceptedAt(revision.accepted_at));
-                const acceptedAtValues = revisions
-                    .filter((revision) => validAcceptedAt(revision.accepted_at))
-                    .map((revision) => revision.accepted_at);
-                const hasDuplicateAcceptedAt = new Set(acceptedAtValues).size !== acceptedAtValues.length;
+                const acceptedAtTimes = revisions
+                    .map((revision) => validAcceptedAt(revision.accepted_at) ? Date.parse(revision.accepted_at) : null)
+                    .filter((time): time is number => time !== null);
+                const hasDuplicateAcceptedAt = new Set(acceptedAtTimes).size !== acceptedAtTimes.length;
                 const matches = revisions.map((revision) => ({
                     revision,
                     match: acceptedStatuses.has(revision.status) && validAcceptedAt(revision.accepted_at)
@@ -480,10 +495,12 @@ export class SqliteMissionStore implements MissionStore {
                     const dispatchedTime = Date.parse(legacy.dispatched_at);
                     if (Number.isFinite(dispatchedTime)) {
                         let active: typeof matches[number] | undefined;
+                        let activeTime = Number.NEGATIVE_INFINITY;
                         for (const candidate of matches) {
                             const revisionTime = Date.parse(candidate.revision.accepted_at as string);
-                            if (revisionTime <= dispatchedTime) {
+                            if (revisionTime <= dispatchedTime && revisionTime > activeTime) {
                                 active = candidate;
+                                activeTime = revisionTime;
                             }
                         }
                         if (active?.match.kind === "valid") {
