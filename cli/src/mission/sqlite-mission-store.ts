@@ -323,14 +323,16 @@ export class SqliteMissionStore implements MissionStore {
         ]);
 
         // A pre-#50 invocation has no effect fingerprint or plan revision
-        // identity. Only a row that already carries a non-empty revision id
-        // can be rebound, and only when that id names a historically accepted
-        // revision with one unambiguous, structurally valid step. The current
-        // Mission pointer is deliberately not provenance: it may point at a
-        // later revision with different effect semantics. Rows without this
-        // proof retain a replay barrier and are never dispatched blindly.
+        // identity. A row with an explicit revision id can be rebound only
+        // when that id names a historically accepted revision with one
+        // unambiguous, structurally valid step. Without that id, a unique
+        // accepted revision may be proven by its persisted acceptance history
+        // and dispatch timestamp. The current Mission pointer is deliberately
+        // not provenance: it may point at a later revision with different
+        // effect semantics. Rows without this proof retain a replay barrier
+        // and are never dispatched blindly.
         const legacyRows = db.query(
-            `SELECT invocation_id, mission_id, step_id, capability_id, plan_revision_id
+            `SELECT invocation_id, mission_id, step_id, capability_id, plan_revision_id, dispatched_at
              FROM mission_invocations
              WHERE effect_fingerprint IS NULL OR effect_fingerprint = ''`,
         ).all() as Array<{
@@ -339,6 +341,7 @@ export class SqliteMissionStore implements MissionStore {
             step_id: string;
             capability_id: string;
             plan_revision_id: string | null;
+            dispatched_at: string | null;
         }>;
         const updateLegacyFingerprint = db.query(
             `UPDATE mission_invocations
@@ -347,50 +350,154 @@ export class SqliteMissionStore implements MissionStore {
                  effect_class = CASE WHEN ? != '' THEN ? ELSE effect_class END
              WHERE invocation_id = ?`,
         );
+
+        type LegacyStep = {
+            stepId?: unknown;
+            capabilityRequirement?: unknown;
+            effectClass?: unknown;
+            inputRefs?: unknown;
+            desiredOutcome?: unknown;
+        };
+        type LegacyRevision = {
+            revision_id: string;
+            mission_id: string;
+            status: string;
+            accepted_at: string | null;
+            steps: string | null;
+        };
+        type LegacyBinding = {
+            revision: LegacyRevision;
+            step: LegacyStep;
+        };
+        type LegacyStepMatch =
+            | { kind: "none" }
+            | { kind: "ambiguous" }
+            | { kind: "different_capability"; step: LegacyStep }
+            | { kind: "invalid"; step: LegacyStep }
+            | { kind: "valid"; step: LegacyStep };
+        const acceptedStatuses = new Set(["accepted", "superseded"]);
+        const validAcceptedAt = (value: string | null): value is string => (
+            typeof value === "string" && Number.isFinite(Date.parse(value))
+        );
+        const classifyStep = (
+            revision: LegacyRevision,
+            legacy: {
+                step_id: string;
+                capability_id: string;
+            },
+        ): LegacyStepMatch => {
+            const steps = parseJson<LegacyStep[]>(revision.steps, []);
+            const matching = steps.filter((candidate) => candidate.stepId === legacy.step_id);
+            if (matching.length === 0) return { kind: "none" };
+            if (matching.length !== 1) return { kind: "ambiguous" };
+            const step = matching[0];
+            if (step.capabilityRequirement !== legacy.capability_id) {
+                return { kind: "different_capability", step };
+            }
+            if (
+                typeof step.capabilityRequirement !== "string"
+                || typeof step.effectClass !== "string"
+                || !Object.values(EffectClass).includes(step.effectClass as EffectClass)
+                || typeof step.desiredOutcome !== "string"
+                || step.desiredOutcome.length === 0
+                || !Array.isArray(step.inputRefs)
+                || !step.inputRefs.every((ref) => typeof ref === "string")
+            ) {
+                return { kind: "invalid", step };
+            }
+            return { kind: "valid", step };
+        };
+        const directRevision = (revisionId: string): LegacyRevision | null => (
+            db.query(
+                `SELECT revision_id, mission_id, status, accepted_at, steps
+                 FROM mission_plan_revisions
+                 WHERE revision_id = ?`,
+            ).get(revisionId) as LegacyRevision | null
+        );
+        const revisionsForMission = (missionId: string): LegacyRevision[] => (
+            db.query(
+                `SELECT revision_id, mission_id, status, accepted_at, steps
+                 FROM mission_plan_revisions
+                 WHERE mission_id = ? AND status IN ('accepted', 'superseded')
+                 ORDER BY accepted_at ASC, revision_id ASC`,
+            ).all(missionId) as LegacyRevision[]
+        );
+
         for (const legacy of legacyRows) {
             const revisionId = typeof legacy.plan_revision_id === "string"
                 ? legacy.plan_revision_id.trim()
                 : "";
-            const revision = revisionId
-                ? db.query(
-                    `SELECT revision_id, mission_id, status, accepted_at, steps
-                     FROM mission_plan_revisions
-                     WHERE revision_id = ?`,
-                ).get(revisionId) as {
-                    revision_id: string;
-                    mission_id: string;
-                    status: string;
-                    accepted_at: string | null;
-                    steps: string | null;
-                } | null
-                : null;
-            const steps = parseJson<Array<{
-                stepId?: unknown;
-                capabilityRequirement?: unknown;
-                effectClass?: unknown;
-                inputRefs?: unknown;
-                desiredOutcome?: unknown;
-            }>>(revision?.steps, []);
-            const matchingSteps = steps.filter((candidate) => candidate.stepId === legacy.step_id);
-            const step = matchingSteps.length === 1 ? matchingSteps[0] : undefined;
-            const canBind = revision !== null
-                && revision.mission_id === legacy.mission_id
-                && (revision.status === "accepted" || revision.status === "superseded")
-                && typeof revision.accepted_at === "string"
-                && Number.isFinite(Date.parse(revision.accepted_at))
-                && typeof step?.capabilityRequirement === "string"
-                && step.capabilityRequirement === legacy.capability_id
-                && typeof step.effectClass === "string"
-                && Object.values(EffectClass).includes(step.effectClass as EffectClass)
-                && typeof step.desiredOutcome === "string"
-                && step.desiredOutcome.length > 0
-                && Array.isArray(step.inputRefs)
-                && step.inputRefs.every((ref) => typeof ref === "string");
-            if (canBind) {
-                const capabilityId = step.capabilityRequirement as string;
-                const effectClass = step.effectClass as EffectClass;
-                const inputRefs = step.inputRefs as string[];
-                const desiredOutcome = step.desiredOutcome as string;
+            let binding: LegacyBinding | null = null;
+            if (revisionId) {
+                // An explicit persisted revision id is the strongest available
+                // provenance. Never fall back to another revision if it is
+                // missing, rejected, malformed, or structurally ambiguous.
+                const revision = directRevision(revisionId);
+                const match = revision
+                    && revision.mission_id === legacy.mission_id
+                    && acceptedStatuses.has(revision.status)
+                    && validAcceptedAt(revision.accepted_at)
+                    ? classifyStep(revision, legacy)
+                    : { kind: "none" as const };
+                if (revision && match.kind === "valid") binding = { revision, step: match.step };
+            } else {
+                const revisions = revisionsForMission(legacy.mission_id);
+                const hasInvalidHistory = revisions.some((revision) => !validAcceptedAt(revision.accepted_at));
+                const acceptedAtValues = revisions
+                    .filter((revision) => validAcceptedAt(revision.accepted_at))
+                    .map((revision) => revision.accepted_at);
+                const hasDuplicateAcceptedAt = new Set(acceptedAtValues).size !== acceptedAtValues.length;
+                const matches = revisions.map((revision) => ({
+                    revision,
+                    match: acceptedStatuses.has(revision.status) && validAcceptedAt(revision.accepted_at)
+                        ? classifyStep(revision, legacy)
+                        : { kind: "none" as const },
+                }));
+                const candidates = matches.flatMap(({ revision, match }) => {
+                    return match.kind === "valid" ? [{ revision, step: match.step }] : [];
+                });
+                const revisionsWithStep = matches.filter(({ match }) => match.kind !== "none");
+
+                if (
+                    !hasInvalidHistory
+                    && !hasDuplicateAcceptedAt
+                    && candidates.length === 1
+                    && revisionsWithStep.length === 1
+                ) {
+                    const dispatchedAt = legacy.dispatched_at;
+                    const dispatchedTime = dispatchedAt === null ? null : Date.parse(dispatchedAt);
+                    const candidateTime = Date.parse(candidates[0].revision.accepted_at as string);
+                    if (
+                        dispatchedAt === null
+                        || (dispatchedTime !== null && Number.isFinite(dispatchedTime) && dispatchedTime >= candidateTime)
+                    ) {
+                        binding = candidates[0];
+                    }
+                } else if (!hasInvalidHistory && !hasDuplicateAcceptedAt && legacy.dispatched_at !== null) {
+                    // With multiple matching revisions, only a persisted
+                    // dispatch time can identify the accepted revision's
+                    // active interval. A missing or invalid time stays blocked.
+                    const dispatchedTime = Date.parse(legacy.dispatched_at);
+                    if (Number.isFinite(dispatchedTime)) {
+                        let active: typeof matches[number] | undefined;
+                        for (const candidate of matches) {
+                            const revisionTime = Date.parse(candidate.revision.accepted_at as string);
+                            if (revisionTime <= dispatchedTime) {
+                                active = candidate;
+                            }
+                        }
+                        if (active?.match.kind === "valid") {
+                            binding = { revision: active.revision, step: active.match.step };
+                        }
+                    }
+                }
+            }
+
+            if (binding) {
+                const capabilityId = binding.step.capabilityRequirement as string;
+                const effectClass = binding.step.effectClass as EffectClass;
+                const inputRefs = binding.step.inputRefs as string[];
+                const desiredOutcome = binding.step.desiredOutcome as string;
                 const effectFingerprint = computeEffectFingerprint({
                     capabilityId,
                     effectClass,
@@ -399,8 +506,8 @@ export class SqliteMissionStore implements MissionStore {
                 });
                 updateLegacyFingerprint.run(
                     effectFingerprint,
-                    revision.revision_id,
-                    revision.revision_id,
+                    binding.revision.revision_id,
+                    binding.revision.revision_id,
                     effectClass,
                     effectClass,
                     legacy.invocation_id,

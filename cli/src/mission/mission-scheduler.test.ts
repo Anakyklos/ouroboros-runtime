@@ -190,6 +190,126 @@ describe("MissionScheduler", () => {
         expect(report.reconciledInvocationIds).toEqual([]);
     });
 
+    it("reconstructs a legacy effect when one accepted revision proves its identity", async () => {
+        const db = tempDb();
+        cleanups.push(db.cleanup);
+        const legacy = new Database(db.path);
+        legacy.exec(`
+            CREATE TABLE missions (
+                mission_id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL, source TEXT NOT NULL,
+                sanitized_original_intent TEXT NOT NULL, original_intent_ref TEXT NOT NULL,
+                interpreted_objective TEXT NOT NULL, constraints TEXT NOT NULL, acceptance_criteria TEXT NOT NULL,
+                budget_policy TEXT NOT NULL, allowed_capability_scope TEXT NOT NULL, approval_requirements TEXT NOT NULL,
+                context_refs TEXT NOT NULL, state TEXT NOT NULL, current_plan_revision_id TEXT,
+                evidence_refs TEXT NOT NULL, criterion_verifications TEXT NOT NULL, unresolved_questions TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, recovery_metadata TEXT NOT NULL
+            );
+            CREATE TABLE mission_plan_revisions (
+                revision_id TEXT PRIMARY KEY, mission_id TEXT NOT NULL, revision_number INTEGER NOT NULL,
+                plan_id TEXT NOT NULL, steps TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL,
+                accepted_at TEXT, replaces_revision_id TEXT, rejection_reason TEXT, created_at TEXT NOT NULL
+            );
+            CREATE TABLE mission_invocations (
+                invocation_id TEXT PRIMARY KEY, mission_id TEXT NOT NULL, step_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL, status TEXT NOT NULL, dispatched_at TEXT, completed_at TEXT,
+                result_refs TEXT NOT NULL, owner_verification TEXT, error TEXT
+            );
+        `);
+        const step = {
+            stepId: "read-status",
+            desiredOutcome: "Read the current LifeOS status",
+            dependencyIds: [],
+            capabilityRequirement: "lifeos.query",
+            inputRefs: ["refs/lifeos/status"],
+            expectedAcceptance: ["status read"],
+            effectClass: EffectClass.READ,
+        };
+        legacy.query(
+            `INSERT INTO missions (
+                mission_id, schema_version, source, sanitized_original_intent, original_intent_ref,
+                interpreted_objective, constraints, acceptance_criteria, budget_policy,
+                allowed_capability_scope, approval_requirements, context_refs, state,
+                current_plan_revision_id, evidence_refs, criterion_verifications, unresolved_questions,
+                created_at, updated_at, recovery_metadata
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "legacy-mission",
+            1,
+            "cli",
+            "Read the current LifeOS status",
+            "sha256:legacy-mission",
+            "Read the current LifeOS status",
+            "[]",
+            '["status read"]',
+            "{}",
+            JSON.stringify({
+                capabilityIds: ["lifeos.query"],
+                allowedEffectClasses: [EffectClass.READ],
+                allowedRefPrefixes: ["refs/lifeos/"],
+            }),
+            "[]",
+            "[]",
+            "ready",
+            null,
+            "[]",
+            "[]",
+            "[]",
+            BASE_TIME,
+            BASE_TIME,
+            '{"recovered":false,"recoveryCount":0}',
+        );
+        legacy.query(
+            `INSERT INTO mission_plan_revisions (
+                revision_id, mission_id, revision_number, plan_id, steps, status, reason,
+                accepted_at, replaces_revision_id, rejection_reason, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "revision-r1",
+            "legacy-mission",
+            1,
+            "plan-r1",
+            JSON.stringify([step]),
+            "accepted",
+            "only accepted plan",
+            BASE_TIME,
+            null,
+            null,
+            BASE_TIME,
+        );
+        legacy.query(
+            `INSERT INTO mission_invocations (
+                invocation_id, mission_id, step_id, capability_id, status, dispatched_at,
+                completed_at, result_refs, owner_verification, error
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "legacy-completed",
+            "legacy-mission",
+            step.stepId,
+            step.capabilityRequirement,
+            "completed",
+            "2026-09-03T18:30:00.000Z",
+            "2026-09-03T18:30:00.000Z",
+            "[]",
+            null,
+            null,
+        );
+        legacy.close();
+
+        const store = new SqliteMissionStore(db.path);
+        await store.initialize();
+        const expectedFingerprint = computeEffectFingerprint({
+            capabilityId: step.capabilityRequirement,
+            effectClass: step.effectClass,
+            inputRefs: step.inputRefs,
+            outcome: step.desiredOutcome,
+        });
+        const migrated = await store.getInvocation("legacy-completed");
+        expect(migrated?.effectFingerprint).toBe(expectedFingerprint);
+        expect(migrated?.planRevisionId).toBe("revision-r1");
+        expect(await store.findInvocationByEffectFingerprint("legacy-mission", expectedFingerprint)).toEqual(migrated);
+        await store.close();
+    });
+
     it("preserves a replay barrier when a pre-#50 effect could belong to an older plan revision", async () => {
         const db = tempDb();
         cleanups.push(db.cleanup);
@@ -323,7 +443,10 @@ describe("MissionScheduler", () => {
             stepA.stepId,
             stepA.capabilityRequirement,
             "completed",
-            "2026-09-03T18:30:00.000Z",
+            // The old row has no dispatch timestamp. With both accepted
+            // revisions carrying the same step/capability, revision identity
+            // is therefore not reconstructible during migration.
+            null,
             "2026-09-03T18:30:00.000Z",
             "[]",
             null,
