@@ -509,6 +509,18 @@ export function hasUncertainDelivery(invocation: Pick<CapabilityInvocation, "del
         || invocation.attempts.some((attempt) => attempt.state === "uncertain");
 }
 
+/**
+ * Legacy rows cannot always be bound to a current plan effect. Their
+ * migration marker is deliberately a replay barrier, not an effect identity:
+ * a caller must never treat missing legacy information as permission to
+ * submit the step again.
+ */
+export function isLegacyReplayBarrier(
+    invocation: Pick<CapabilityInvocation, "effectFingerprint">,
+): boolean {
+    return invocation.effectFingerprint.startsWith("legacy:");
+}
+
 export function isInvocationDue(
     invocation: Pick<CapabilityInvocation, "retry">,
     now: string | Date,

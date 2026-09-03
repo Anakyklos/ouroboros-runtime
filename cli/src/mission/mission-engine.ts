@@ -40,6 +40,7 @@ import {
     WAITING_STATES,
     TERMINAL_STATES,
     assertValidInvocationIdentity,
+    isLegacyReplayBarrier,
     isInvocationTerminal,
     isInvocationUpdateAllowed,
     isSafeRetryEligible,
@@ -64,6 +65,10 @@ import {
 import { PlanPolicyValidator } from "./policy.js";
 import { assertNoRawSecrets, sanitizeText, sanitizeStringArray, sanitizePlanStep } from "./sanitize.js";
 import { createHash } from "node:crypto";
+import {
+    isReconciliationAuthority,
+    type ReconciliationAuthority,
+} from "./reconciliation-authority.js";
 
 /** Default clock (real time). */
 class SystemClock implements ClockService {
@@ -777,6 +782,17 @@ export class MissionEngine {
         if (prior) {
             throw new InvocationConflictError(missionId, stepId, prior.invocationId, prior.status);
         }
+        const legacyBarrier = existing.find(
+            (inv) => inv.stepId === stepId && isLegacyReplayBarrier(inv),
+        );
+        if (legacyBarrier) {
+            throw new InvocationConflictError(
+                missionId,
+                stepId,
+                legacyBarrier.invocationId,
+                legacyBarrier.status,
+            );
+        }
         const priorEffect = await this.store.findInvocationByEffectFingerprint(missionId, effectFingerprint);
         if (priorEffect) {
             if (priorEffect.status === InvocationStatus.COMPLETED) return priorEffect;
@@ -909,7 +925,16 @@ export class MissionEngine {
         invocationId: string,
         result: InvocationResult,
         ownerVerificationClaim?: OwnerVerification,
+        authority?: ReconciliationAuthority,
     ): Promise<Mission> {
+        if (!isReconciliationAuthority(authority)) {
+            throw new InvalidStateTransitionError(
+                invocationId,
+                InvocationStatus.BLOCKED,
+                result.status,
+                "only the runtime-controlled ConnectorDispatchSeam may promote reconciliation results",
+            );
+        }
         return this.recordInvocationResultInternal(
             invocationId,
             result,
@@ -1715,8 +1740,40 @@ export class MissionEngine {
         const invocation = await this.requireInvocation(invocationId);
         if (isInvocationTerminal(invocation)) return invocation;
         validateReconciliationUpdate(update);
+        if (invocation.delivery.state === "not_submitted") {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                update.status ?? invocation.status,
+                "reconciliation requires a persisted connector handoff; delivery is still not_submitted",
+            );
+        }
+        if (invocation.reconciliation.state !== "pending") {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                update.status ?? invocation.status,
+                "reconciliation requires a pending reconciliation state",
+            );
+        }
+        if (update.outcome === "performed" || update.outcome === "not_performed") {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                update.status ?? invocation.status,
+                "execution outcomes must come from the ConnectorDispatchSeam owner boundary",
+            );
+        }
+        if (update.status === InvocationStatus.COMPLETED) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                update.status,
+                "completed reconciliation results must come from the ConnectorDispatchSeam owner boundary",
+            );
+        }
         const now = this.clock.isoNow();
-        const status = update.status ?? reconciliationStatus(update.outcome, invocation.status);
+        const status = update.status ?? invocation.status;
         if (status === InvocationStatus.CANCELLED) {
             throw new InvalidStateTransitionError(
                 invocation.missionId,
@@ -1732,30 +1789,6 @@ export class MissionEngine {
                 invocation.status,
                 status,
                 "reconciliation status is not an authorized monotonic transition",
-            );
-        }
-        if (update.state === "resolved" && status === InvocationStatus.COMPLETED && update.outcome !== "performed") {
-            throw new InvalidStateTransitionError(
-                invocation.missionId,
-                invocation.status,
-                status,
-                "completed reconciliation requires performed outcome",
-            );
-        }
-        if (update.state === "resolved" && status === InvocationStatus.FAILED && update.outcome !== "not_performed") {
-            throw new InvalidStateTransitionError(
-                invocation.missionId,
-                invocation.status,
-                status,
-                "failed reconciliation requires not_performed outcome",
-            );
-        }
-        if (update.state === "resolved" && status === InvocationStatus.RUNNING && update.outcome === "not_performed") {
-            throw new InvalidStateTransitionError(
-                invocation.missionId,
-                invocation.status,
-                status,
-                "running reconciliation cannot report not_performed",
             );
         }
         const completedAt = update.state === "resolved"
@@ -2244,14 +2277,6 @@ function observedCancellationFacts(
         delivery: { ...invocation.delivery, state: "uncertain" },
         reconciliation: { ...invocation.reconciliation, state: "pending", outcome: "unknown", lastCheckedAt: now },
     };
-}
-
-function reconciliationStatus(
-    outcome: InvocationReconciliationUpdate["outcome"],
-    current: InvocationStatus,
-): InvocationStatus {
-    if (outcome === "performed") return InvocationStatus.COMPLETED;
-    return outcome === "not_performed" ? InvocationStatus.FAILED : current;
 }
 
 function reconciliationDelivery(

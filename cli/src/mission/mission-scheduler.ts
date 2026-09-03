@@ -15,6 +15,7 @@ import {
     TERMINAL_STATES,
     InvocationStatus,
     computeEffectFingerprint,
+    isLegacyReplayBarrier,
 } from "./contracts.js";
 import {
     CapabilityUnavailableError,
@@ -128,7 +129,7 @@ export class MissionScheduler {
         // First resolve facts about work that already crossed the connector
         // boundary. This pass can call reconcile/cancel, but it never calls
         // invoke for an existing row.
-        const recoverable = await this.store.listNonTerminalInvocations(this.recoveryBatchSize);
+        const recoverable = await this.store.listActionableInvocations(this.recoveryBatchSize);
         for (const invocation of recoverable) {
             let current = invocation;
             try {
@@ -269,7 +270,9 @@ export class MissionScheduler {
             );
             const isReadyStep = (step: typeof revision.steps[number]): boolean => {
                 const effectFingerprint = effectByStep.get(step.stepId)!;
-                if (invocations.some((invocation) => invocation.effectFingerprint === effectFingerprint)) return false;
+                if (invocations.some((invocation) =>
+                    invocation.effectFingerprint === effectFingerprint
+                    || (invocation.stepId === step.stepId && isLegacyReplayBarrier(invocation)))) return false;
                 if (step.dependencyIds.some((dependencyId) => {
                     const dependencyEffect = effectByStep.get(dependencyId);
                     return dependencyEffect === undefined || !completedEffects.has(dependencyEffect);
@@ -308,17 +311,16 @@ export class MissionScheduler {
             }
         }
 
-        const futureWakeups = (await this.store.listNonTerminalInvocations(this.recoveryBatchSize))
-            .map((invocation) => invocation.retry.nextEligibleAt)
-            .filter((nextEligibleAt): nextEligibleAt is string => nextEligibleAt !== null)
-            .filter((nextEligibleAt) => Date.parse(nextEligibleAt) > this.clock.now().getTime())
-            .sort();
+        // This is intentionally independent of the bounded recovery query.
+        // Old unsupported rows cannot hide a later eligible wakeup, and the
+        // database returns only the single minimum timestamp.
+        const nextWakeAt = await this.store.getNextInvocationWakeAt(now);
         return {
             recoveredMissionIds: recovery.recoveredMissionIds,
             reconciledInvocationIds,
             dispatchedInvocationIds,
             waitingMissionIds: [...new Set(waitingMissionIds)],
-            nextWakeAt: futureWakeups[0] ?? null,
+            nextWakeAt,
             idle: dispatchedInvocationIds.length === 0,
         };
     }

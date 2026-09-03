@@ -66,7 +66,7 @@ const REVIEW_DESCRIPTOR = defineCapabilityDescriptor({
     allowedInputRefPrefixes: ["refs/runstead/"],
     requiresOwnerVerification: true,
     cancellationSupport: "cooperative" as const,
-    reconciliationSupport: "status_replay" as const,
+    reconciliationSupport: "full_replay" as const,
 });
 
 // ownsStorage mirrors the default #62 catalog contract for this id: policy
@@ -298,7 +298,7 @@ describe("ConnectorDispatchSeam", () => {
             (await harness.store.listInvocations(missionId))[0].invocationId,
         );
         expect(stored?.cancellation.support).toBe("cooperative");
-        expect(stored?.reconciliation.support).toBe("status_replay");
+        expect(stored?.reconciliation.support).toBe("full_replay");
     });
 
     it("resumes a durable not-submitted invocation without minting a second row", async () => {
@@ -310,7 +310,7 @@ describe("ConnectorDispatchSeam", () => {
                 idempotency: { mode: "idempotent", keyScope: "request" },
                 retry: { maxAttempts: 0, backoff: "none" },
                 cancellationSupport: "cooperative",
-                reconciliationSupport: "status_replay",
+                reconciliationSupport: "full_replay",
             },
         });
         const counters = { describe: 0, invoke: 0 };

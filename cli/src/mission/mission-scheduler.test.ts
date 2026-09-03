@@ -1,8 +1,17 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { EffectClass, InvocationStatus, MissionState, type Mission, type PlanCandidate } from "./contracts.js";
+import {
+    computeEffectFingerprint,
+    EffectClass,
+    InvocationStatus,
+    MissionState,
+    type CapabilityInvocation,
+    type Mission,
+    type PlanCandidate,
+} from "./contracts.js";
 import { MissionEngine } from "./mission-engine.js";
 import { MissionScheduler } from "./mission-scheduler.js";
 import { PlanPolicyValidator } from "./policy.js";
@@ -181,6 +190,159 @@ describe("MissionScheduler", () => {
         expect(report.reconciledInvocationIds).toEqual([]);
     });
 
+    it("binds a pre-#50 completed invocation to its accepted effect and never replays it after restart", async () => {
+        const db = tempDb();
+        cleanups.push(db.cleanup);
+        const legacy = new Database(db.path);
+        legacy.exec(`
+            CREATE TABLE missions (
+                mission_id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL, source TEXT NOT NULL,
+                sanitized_original_intent TEXT NOT NULL, original_intent_ref TEXT NOT NULL,
+                interpreted_objective TEXT NOT NULL, constraints TEXT NOT NULL, acceptance_criteria TEXT NOT NULL,
+                budget_policy TEXT NOT NULL, allowed_capability_scope TEXT NOT NULL, approval_requirements TEXT NOT NULL,
+                context_refs TEXT NOT NULL, state TEXT NOT NULL, current_plan_revision_id TEXT,
+                evidence_refs TEXT NOT NULL, criterion_verifications TEXT NOT NULL, unresolved_questions TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, recovery_metadata TEXT NOT NULL
+            );
+            CREATE TABLE mission_plan_revisions (
+                revision_id TEXT PRIMARY KEY, mission_id TEXT NOT NULL, revision_number INTEGER NOT NULL,
+                plan_id TEXT NOT NULL, steps TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL,
+                accepted_at TEXT, replaces_revision_id TEXT, rejection_reason TEXT, created_at TEXT NOT NULL
+            );
+            CREATE TABLE mission_invocations (
+                invocation_id TEXT PRIMARY KEY, mission_id TEXT NOT NULL, step_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL, status TEXT NOT NULL, dispatched_at TEXT, completed_at TEXT,
+                result_refs TEXT NOT NULL, owner_verification TEXT, error TEXT
+            );
+        `);
+        const step = {
+            stepId: "read-status",
+            desiredOutcome: "Read the current LifeOS status",
+            dependencyIds: [],
+            capabilityRequirement: "lifeos.query",
+            inputRefs: ["refs/lifeos/status"],
+            expectedAcceptance: ["status read"],
+            effectClass: EffectClass.READ,
+        };
+        legacy.query(
+            `INSERT INTO missions (
+                mission_id, schema_version, source, sanitized_original_intent, original_intent_ref,
+                interpreted_objective, constraints, acceptance_criteria, budget_policy,
+                allowed_capability_scope, approval_requirements, context_refs, state,
+                current_plan_revision_id, evidence_refs, criterion_verifications, unresolved_questions,
+                created_at, updated_at, recovery_metadata
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "legacy-mission",
+            1,
+            "cli",
+            "Read the current LifeOS status",
+            "sha256:legacy-mission",
+            "Read the current LifeOS status",
+            "[]",
+            '["status read"]',
+            "{}",
+            JSON.stringify({
+                capabilityIds: ["lifeos.query"],
+                allowedEffectClasses: [EffectClass.READ],
+                allowedRefPrefixes: ["refs/lifeos/"],
+            }),
+            "[]",
+            "[]",
+            "ready",
+            "legacy-revision",
+            "[]",
+            "[]",
+            "[]",
+            BASE_TIME,
+            BASE_TIME,
+            '{"recovered":false,"recoveryCount":0}',
+        );
+        legacy.query(
+            `INSERT INTO mission_plan_revisions (
+                revision_id, mission_id, revision_number, plan_id, steps, status, reason,
+                accepted_at, replaces_revision_id, rejection_reason, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "legacy-revision",
+            "legacy-mission",
+            1,
+            "legacy-plan",
+            JSON.stringify([step]),
+            "accepted",
+            "legacy accepted plan",
+            BASE_TIME,
+            null,
+            null,
+            BASE_TIME,
+        );
+        legacy.query(
+            `INSERT INTO mission_invocations (
+                invocation_id, mission_id, step_id, capability_id, status, dispatched_at,
+                completed_at, result_refs, owner_verification, error
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "legacy-completed",
+            "legacy-mission",
+            step.stepId,
+            step.capabilityRequirement,
+            "completed",
+            BASE_TIME,
+            BASE_TIME,
+            "[]",
+            null,
+            null,
+        );
+        legacy.close();
+
+        const firstStore = new SqliteMissionStore(db.path);
+        await firstStore.initialize();
+        await firstStore.close();
+
+        const store = new SqliteMissionStore(db.path);
+        await store.initialize();
+        const expectedFingerprint = computeEffectFingerprint({
+            capabilityId: step.capabilityRequirement,
+            effectClass: step.effectClass,
+            inputRefs: step.inputRefs,
+            outcome: step.desiredOutcome,
+        });
+        expect((await store.getInvocation("legacy-completed"))?.effectFingerprint).toBe(expectedFingerprint);
+
+        const engine = createEngine(store, new FakeIdGenerator("legacy-restart"));
+        const registry = createRegistry();
+        let invokes = 0;
+        const seam = new ConnectorDispatchSeam(engine, registry, new FakeClock(BASE_TIME));
+        seam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => registry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                invokes++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "should never be submitted",
+                    evidence: [],
+                };
+            },
+        });
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam,
+            clock: new FakeClock(BASE_TIME),
+            recoveryBatchSize: 2,
+        });
+
+        const report = await scheduler.runOnce();
+        expect(invokes).toBe(0);
+        expect(report.dispatchedInvocationIds).toEqual([]);
+        expect(await store.listInvocations("legacy-mission")).toHaveLength(1);
+        expect((await store.getInvocation("legacy-completed"))?.status).toBe(InvocationStatus.COMPLETED);
+        await store.close();
+    });
+
     it("dispatches a dependency-ready step once through the real connector seam", async () => {
         const store = new SqliteMissionStore(":memory:");
         await store.initialize();
@@ -229,6 +391,173 @@ describe("MissionScheduler", () => {
         const invocations = await store.listInvocations(created.missionId);
         expect(invocations).toHaveLength(1);
         expect(invocations[0].status).toBe(InvocationStatus.COMPLETED);
+    });
+
+    it("does not starve later reconciliation or hide its future wake behind permanent blockers", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const clock = new FakeClock(BASE_TIME);
+        const engine = new MissionEngine({
+            store,
+            policy: new PlanPolicyValidator((() => {
+                const resolver = new FakeCapabilityResolver();
+                resolver.registerMany(makeDefaultCapabilityCatalog());
+                return resolver;
+            })()),
+            clock,
+            ids: new FakeIdGenerator("starvation"),
+            interpreter: (intent) => intent.originalIntent,
+            verificationAuthority: new FakeVerificationAuthority(),
+        });
+        const mission = await engine.createMission({
+            intent: {
+                requestId: "request-starvation",
+                source: "cli",
+                originalIntent: "Read several durable statuses",
+                constraints: [],
+                acceptanceCriteria: ["status read"],
+            },
+            allowedCapabilityScope: makeMission("unused").allowedCapabilityScope,
+        });
+        const proposal = await engine.proposePlan(mission.missionId, {
+            planId: "starvation-plan",
+            missionId: mission.missionId,
+            plannerNote: "starvation regression plan",
+            steps: [
+                {
+                    stepId: "reconcile-later",
+                    desiredOutcome: "Read later status",
+                    dependencyIds: [],
+                    capabilityRequirement: "lifeos.query",
+                    inputRefs: ["refs/lifeos/later"],
+                    expectedAcceptance: ["status read"],
+                    effectClass: EffectClass.READ,
+                },
+                {
+                    stepId: "future-retry",
+                    desiredOutcome: "Read future status",
+                    dependencyIds: [],
+                    capabilityRequirement: "lifeos.query",
+                    inputRefs: ["refs/lifeos/future"],
+                    expectedAcceptance: ["status read"],
+                    effectClass: EffectClass.READ,
+                },
+            ],
+        });
+        if (!proposal.ok) throw new Error("starvation plan was rejected");
+        await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+        const legacyBlocked = (index: number): CapabilityInvocation => ({
+            invocationId: `old-blocked-${index}`,
+            missionId: mission.missionId,
+            stepId: `old-blocked-step-${index}`,
+            capabilityId: "lifeos.query",
+            planRevisionId: proposal.revision.revisionId,
+            contractVersion: 1,
+            moduleOwner: "lifeos",
+            effectClass: EffectClass.READ,
+            requestId: `old-request-${index}`,
+            effectFingerprint: `old-effect-${index}`,
+            inputRefs: [],
+            idempotency: { mode: IdempotencyMode.IDEMPOTENT, key: `old-request-${index}` },
+            retry: { maxAttempts: 0, attempt: 0, backoff: RetryBackoff.NONE, backoffMs: 0, nextEligibleAt: null },
+            attempts: [],
+            delivery: { state: "uncertain" },
+            cancellation: { support: CancellationSupport.NONE, requested: false, state: "not_requested" },
+            reconciliation: { support: ReconciliationSupport.STATUS_REPLAY, state: "unsupported" },
+            ownerVerificationState: "not_required",
+            status: InvocationStatus.BLOCKED,
+            resultRefs: [],
+            createdAt: "2026-09-01T00:00:00.000Z",
+            updatedAt: "2026-09-01T00:00:00.000Z",
+        });
+        for (let index = 1; index <= 3; index++) {
+            await store.saveInvocation(legacyBlocked(index));
+        }
+
+        const later = await engine.dispatchStep(mission.missionId, "reconcile-later", {
+            descriptor: {
+                contractVersion: 1,
+                moduleOwner: "lifeos",
+                idempotency: { mode: IdempotencyMode.IDEMPOTENT, keyScope: "request" },
+                retry: { maxAttempts: 3, backoff: RetryBackoff.FIXED },
+                cancellationSupport: CancellationSupport.NONE,
+                reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
+            },
+        });
+        await engine.markInvocationHandoff(later.invocationId, { deliveryState: "uncertain" });
+
+        const future = await engine.dispatchStep(mission.missionId, "future-retry", {
+            descriptor: {
+                contractVersion: 1,
+                moduleOwner: "lifeos",
+                idempotency: { mode: IdempotencyMode.IDEMPOTENT, keyScope: "request" },
+                retry: { maxAttempts: 3, backoff: RetryBackoff.FIXED },
+                cancellationSupport: CancellationSupport.NONE,
+                reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
+            },
+        });
+        await engine.recordInvocationResult(future.invocationId, {
+            invocationId: future.invocationId,
+            status: InvocationStatus.FAILED,
+            summary: "transient failure before retry",
+            evidenceRefs: [],
+            completedAt: BASE_TIME,
+        });
+        const futureRetryAt = "2026-09-03T18:05:00.000Z";
+        await engine.prepareInvocationRetry(future.invocationId, { backoffMs: 5 * 60 * 1000 });
+        expect((await store.getInvocation(future.invocationId))?.retry.nextEligibleAt).toBe(futureRetryAt);
+
+        let reconcileCount = 0;
+        let invokeCount = 0;
+        const registry = createRegistry();
+        const seam = new ConnectorDispatchSeam(engine, registry, clock);
+        seam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => registry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                invokeCount++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "unexpected direct invocation",
+                    evidence: [],
+                };
+            },
+            reconcile: async (requestId) => {
+                reconcileCount++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId,
+                    summary: "reconciled later status",
+                    evidence: [],
+                };
+            },
+        });
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam,
+            clock,
+            recoveryBatchSize: 2,
+        });
+
+        expect(await store.getInvocation(later.invocationId)).toMatchObject({
+            status: InvocationStatus.DISPATCHED,
+            delivery: { state: "uncertain" },
+            reconciliation: { state: "pending" },
+        });
+        expect((await store.listActionableInvocations(2)).map((invocation) => invocation.invocationId)).toEqual([
+            later.invocationId,
+        ]);
+        const report = await scheduler.runOnce();
+        expect(reconcileCount).toBe(1);
+        expect(invokeCount).toBe(0);
+        expect(report.reconciledInvocationIds).toEqual([later.invocationId]);
+        expect((await store.getInvocation(later.invocationId))?.status).toBe(InvocationStatus.COMPLETED);
+        expect(report.nextWakeAt).toBe(futureRetryAt);
+        await store.close();
     });
 
     it("resumes a durable pre-handoff invocation after restart without creating a second row", async () => {

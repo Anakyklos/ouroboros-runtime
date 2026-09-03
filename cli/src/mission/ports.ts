@@ -64,8 +64,16 @@ export interface MissionStore {
     listRecoverableInvocations(limit: number): Promise<CapabilityInvocation[]>;
     /** All invocations that have not reached an immutable terminal state. */
     listNonTerminalInvocations(limit: number): Promise<CapabilityInvocation[]>;
+    /**
+     * Bounded recovery work only: handoffs awaiting reconciliation or active
+     * cancellation. Permanent unsupported/blocked rows are not allowed to
+     * occupy the front of the recovery cursor forever.
+     */
+    listActionableInvocations(limit: number): Promise<CapabilityInvocation[]>;
     /** Due invocations ordered by eligibility, bounded by the caller. */
     listDueInvocations(now: string, limit: number): Promise<CapabilityInvocation[]>;
+    /** Earliest future retry wake, queried directly without a batch scan. */
+    getNextInvocationWakeAt(now: string): Promise<string | null>;
     /** Atomically claim a Mission-local effect fingerprint before handoff. */
     claimInvocation(invocation: CapabilityInvocation): Promise<boolean>;
     /** Preserve completed effects across plan revisions and duplicate requests. */

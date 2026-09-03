@@ -23,6 +23,8 @@ import type {
 } from "./contracts.js";
 import {
     assertValidInvocationIdentity,
+    computeEffectFingerprint,
+    EffectClass,
     isInvocationUpdateAllowed,
     isInvocationTerminal,
 } from "./contracts.js";
@@ -320,15 +322,101 @@ export class SqliteMissionStore implements MissionStore {
             ["updated_at", `TEXT NOT NULL DEFAULT '${LEGACY_EPOCH}'`],
         ]);
 
+        // A pre-#50 invocation has no effect fingerprint. When the durable
+        // Mission still points at an accepted revision containing the exact
+        // legacy step, the plan is authoritative enough to reconstruct the
+        // fingerprint used by the new replay guard. Otherwise the fallback
+        // marker below remains a step-level replay barrier; it is never an
+        // invitation to dispatch the legacy row again.
+        const legacyRows = db.query(
+            `SELECT invocation_id, mission_id, step_id, capability_id
+             FROM mission_invocations
+             WHERE effect_fingerprint IS NULL OR effect_fingerprint = ''`,
+        ).all() as Array<{
+            invocation_id: string;
+            mission_id: string;
+            step_id: string;
+            capability_id: string;
+        }>;
+        const updateLegacyFingerprint = db.query(
+            `UPDATE mission_invocations
+             SET effect_fingerprint = ?,
+                 plan_revision_id = CASE WHEN ? != '' THEN ? ELSE plan_revision_id END,
+                 effect_class = CASE WHEN ? != '' THEN ? ELSE effect_class END
+             WHERE invocation_id = ?`,
+        );
+        for (const legacy of legacyRows) {
+            const bound = db.query(
+                `SELECT m.current_plan_revision_id, p.revision_id, p.status, p.steps
+                 FROM missions m
+                 LEFT JOIN mission_plan_revisions p
+                   ON p.revision_id = m.current_plan_revision_id
+                  AND p.mission_id = m.mission_id
+                 WHERE m.mission_id = ?`,
+            ).get(legacy.mission_id) as {
+                current_plan_revision_id: string | null;
+                revision_id: string | null;
+                status: string | null;
+                steps: string | null;
+            } | null;
+            const steps = parseJson<Array<{
+                stepId?: unknown;
+                capabilityRequirement?: unknown;
+                effectClass?: unknown;
+                inputRefs?: unknown;
+                desiredOutcome?: unknown;
+            }>>(bound?.steps, []);
+            const step = bound
+                && bound.current_plan_revision_id === bound.revision_id
+                && bound.status === "accepted"
+                ? steps.find((candidate) => candidate.stepId === legacy.step_id)
+                : undefined;
+            const canBind =
+                typeof step?.capabilityRequirement === "string"
+                && step.capabilityRequirement === legacy.capability_id
+                && typeof step.effectClass === "string"
+                && Object.values(EffectClass).includes(step.effectClass as EffectClass)
+                && typeof step.desiredOutcome === "string"
+                && step.desiredOutcome.length > 0
+                && Array.isArray(step.inputRefs)
+                && step.inputRefs.every((ref) => typeof ref === "string");
+            if (canBind) {
+                const capabilityId = step.capabilityRequirement as string;
+                const effectClass = step.effectClass as EffectClass;
+                const inputRefs = step.inputRefs as string[];
+                const desiredOutcome = step.desiredOutcome as string;
+                const effectFingerprint = computeEffectFingerprint({
+                    capabilityId,
+                    effectClass,
+                    inputRefs,
+                    outcome: desiredOutcome,
+                });
+                updateLegacyFingerprint.run(
+                    effectFingerprint,
+                    bound?.revision_id ?? "",
+                    bound?.revision_id ?? "",
+                    effectClass,
+                    effectClass,
+                    legacy.invocation_id,
+                );
+            } else {
+                updateLegacyFingerprint.run(
+                    `legacy:${legacy.invocation_id}`,
+                    "",
+                    "",
+                    "",
+                    "",
+                    legacy.invocation_id,
+                );
+            }
+        }
+
         // Existing dispatched/running rows have an unknown handoff outcome.
         // They must never become due merely because the new retry column is NULL.
         const legacyDispatchedPredicate = hadDeliveryColumn
             ? "(dispatched_at IS NOT NULL OR status = 'running')"
             : "(dispatched_at IS NOT NULL OR status IN ('running', 'dispatched'))";
         db.exec(`
-            UPDATE mission_invocations
-            SET effect_fingerprint = 'legacy:' || invocation_id
-            WHERE effect_fingerprint IS NULL OR effect_fingerprint = '';
             UPDATE mission_invocations
             SET delivery = '{"state":"uncertain"}'
             WHERE delivery = '{"state":"not_submitted"}'
@@ -730,6 +818,33 @@ export class SqliteMissionStore implements MissionStore {
         return rows.map((row) => this.rowToInvocation(row));
     }
 
+    async listActionableInvocations(limit: number): Promise<CapabilityInvocation[]> {
+        if (!Number.isSafeInteger(limit) || limit <= 0) return [];
+        const rows = this.stmt(
+            "listActionableInvocations",
+            `SELECT * FROM mission_invocations
+             WHERE status NOT IN ('completed', 'cancelled')
+               AND (
+                    (
+                        COALESCE(json_extract(cancellation, '$.requested'), 0) = 1
+                        AND COALESCE(json_extract(cancellation, '$.state'), '') = 'requested'
+                        AND json_extract(delivery, '$.state') != 'not_submitted'
+                    )
+                    OR (
+                        json_extract(delivery, '$.state') != 'not_submitted'
+                        AND json_extract(reconciliation, '$.state') = 'pending'
+                    )
+               )
+             ORDER BY
+                CASE WHEN COALESCE(json_extract(cancellation, '$.requested'), 0) = 1 THEN 0 ELSE 1 END,
+                updated_at ASC,
+                created_at ASC,
+                invocation_id ASC
+             LIMIT ?`,
+        ).all(limit) as unknown as InvocationRow[];
+        return rows.map((row) => this.rowToInvocation(row));
+    }
+
     async listRecoverableInvocations(limit: number): Promise<CapabilityInvocation[]> {
         if (!Number.isSafeInteger(limit) || limit <= 0) return [];
         const rows = this.stmt(
@@ -769,6 +884,22 @@ export class SqliteMissionStore implements MissionStore {
              LIMIT ?`,
         ).all(now, limit) as unknown as InvocationRow[];
         return rows.map((row) => this.rowToInvocation(row));
+    }
+
+    async getNextInvocationWakeAt(now: string): Promise<string | null> {
+        const row = this.stmt(
+            "getNextInvocationWakeAt",
+            `SELECT MIN(json_extract(retry, '$.nextEligibleAt')) AS next_eligible_at
+             FROM mission_invocations
+             WHERE status IN ('pending', 'dispatched', 'failed')
+               AND status NOT IN ('completed', 'cancelled')
+               AND json_extract(delivery, '$.state') IN ('not_submitted', 'failed')
+               AND COALESCE(json_extract(cancellation, '$.requested'), 0) = 0
+               AND json_extract(reconciliation, '$.state') NOT IN ('pending', 'unsupported')
+               AND json_extract(retry, '$.nextEligibleAt') IS NOT NULL
+               AND json_extract(retry, '$.nextEligibleAt') > ?`,
+        ).get(now) as { next_eligible_at: string | null } | null;
+        return row?.next_eligible_at ?? null;
     }
 
     async claimInvocation(invocation: CapabilityInvocation): Promise<boolean> {

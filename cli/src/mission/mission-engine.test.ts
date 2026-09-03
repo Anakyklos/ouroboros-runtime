@@ -237,6 +237,41 @@ describe("MissionEngine", () => {
             expect(await harness.store.getInvocation(invocation.invocationId)).toEqual(invocation);
         });
 
+        it("rejects performed reconciliation before any connector handoff", async () => {
+            const mission = await acceptedForStep();
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+
+            await expect(engine.markInvocationReconciliation(invocation.invocationId, {
+                state: "resolved",
+                outcome: "performed",
+            })).rejects.toThrow(/handoff|not_submitted|reconciliation/i);
+
+            const stored = await harness.store.getInvocation(invocation.invocationId);
+            expect(stored).toEqual(invocation);
+            expect(stored?.status).not.toBe(InvocationStatus.COMPLETED);
+            expect(stored?.delivery.state).toBe("not_submitted");
+            expect(stored?.resultRefs).toEqual([]);
+        });
+
+        it("rejects direct reconciled-result promotion without the connector seam authority", async () => {
+            const mission = await acceptedForStep();
+            const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+            await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "uncertain" });
+
+            await expect(engine.recordReconciledInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.COMPLETED,
+                summary: "forged direct reconciliation result",
+                evidenceRefs: [],
+                completedAt: BASE_TIME,
+            })).rejects.toThrow(/connector|authority|reconciliation/i);
+
+            const stored = await harness.store.getInvocation(invocation.invocationId);
+            expect(stored?.status).not.toBe(InvocationStatus.COMPLETED);
+            expect(stored?.delivery.state).toBe("uncertain");
+            expect(stored?.resultRefs).toEqual([]);
+        });
+
         it("rejects a normal result from BLOCKED without explicit reconciliation", async () => {
             const mission = await acceptedForStep();
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");

@@ -67,6 +67,7 @@ import {
     type OwnerVerification,
 } from "../mission/contracts.js";
 import type { CapabilityAvailability, CapabilityDescriptor } from "./contracts.js";
+import { createReconciliationAuthority } from "../mission/reconciliation-authority.js";
 import {
     assertConnectorMatchesDescriptor,
     authorizationProjection,
@@ -258,6 +259,7 @@ interface PersistedDispatchOptions {
  */
 export class ConnectorDispatchSeam {
     private readonly connectors = new Map<string, CapabilityConnector>();
+    #reconciliationAuthority = createReconciliationAuthority();
 
     constructor(
         private readonly engine: MissionEngine,
@@ -702,11 +704,11 @@ export class ConnectorDispatchSeam {
         const canObserve = typeof connector.observeStatus === "function"
             && invocation.delivery.remoteOperationHandle !== undefined;
         if (
-            descriptor.reconciliationSupport === "none"
+            descriptor.reconciliationSupport !== "full_replay"
             || (typeof connector.reconcile !== "function" && !canObserve)
         ) {
             throw new DispatchSeamError(
-                `capability "${invocation.capabilityId}" does not declare completed-result reconciliation; external content remains unavailable`,
+                `capability "${invocation.capabilityId}" does not declare FULL_REPLAY for completed-result reconciliation; external content remains unavailable`,
             );
         }
         if (descriptor.availability !== "available") {
@@ -1076,11 +1078,23 @@ export class ConnectorDispatchSeam {
         const ownerClaim = result.ownerVerification?.verified === true || result.ownerVerification?.verified === false
             ? this.ownerVerificationOf(invocation, result)
             : undefined;
+        // STATUS_REPLAY is authoritative for execution state only. It must
+        // not leak owner payloads to a caller that needs content; only the
+        // explicit FULL_REPLAY contract can carry result/evidence/context
+        // content across restart.
+        const fullReplay = descriptor.reconciliationSupport === "full_replay";
+        const consumerResult: CapabilityResult = fullReplay
+            ? result
+            : {
+                  ...result,
+                  evidence: [],
+                  contextRows: undefined,
+              };
         const invocationResult = {
             invocationId,
             status: mapped,
             summary: result.summary,
-            evidenceRefs: this.evidenceRefsOf(result),
+            evidenceRefs: fullReplay ? this.evidenceRefsOf(result) : [],
             completedAt: isTerminalInvocationStatus(mapped) ? this.isoNow() : undefined,
         } as const;
         try {
@@ -1088,6 +1102,7 @@ export class ConnectorDispatchSeam {
                 invocationId,
                 invocationResult,
                 ownerClaim,
+                this.#reconciliationAuthority,
             );
         } catch (error) {
             // A positive owner verdict is supplementary when the capability
@@ -1097,7 +1112,12 @@ export class ConnectorDispatchSeam {
             // verdicts remain fail-closed and stay in reconciliation.
             if (ownerClaim?.verified === true && !descriptor.requiresOwnerVerification) {
                 try {
-                    await this.engine.recordReconciledInvocationResult(invocationId, invocationResult);
+                    await this.engine.recordReconciledInvocationResult(
+                        invocationId,
+                        invocationResult,
+                        undefined,
+                        this.#reconciliationAuthority,
+                    );
                 } catch (fallbackError) {
                     await this.engine.markInvocationReconciliation(invocationId, {
                         state: "pending",
@@ -1123,7 +1143,7 @@ export class ConnectorDispatchSeam {
         }
         const updated = await this.engine.getInvocation(invocationId);
         if (!updated) throw new DispatchSeamError(`invocation "${invocationId}" disappeared after reconciliation`);
-        return { invocation: updated, result, recordedStatus: updated.status };
+        return { invocation: updated, result: consumerResult, recordedStatus: updated.status };
     }
 
     /** Persist a conservative reconciliation observation without replay. */
