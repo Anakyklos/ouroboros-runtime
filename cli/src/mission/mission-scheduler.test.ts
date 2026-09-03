@@ -346,6 +346,7 @@ describe("MissionScheduler", () => {
         const migrated = await store.getInvocation("legacy-completed");
         expect(migrated?.effectFingerprint).toBe("legacy:legacy-completed");
         expect(migrated?.effectFingerprint).not.toBe(currentEffectFingerprint);
+        expect(await store.findInvocationByEffectFingerprint("legacy-mission", currentEffectFingerprint)).toBeNull();
         expect(migrated?.planRevisionId).toBe("");
 
         const engine = createEngine(store, new FakeIdGenerator("legacy-restart"));
