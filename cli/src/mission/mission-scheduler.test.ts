@@ -293,6 +293,23 @@ describe("MissionScheduler", () => {
             null,
             null,
         );
+        legacy.query(
+            `INSERT INTO mission_invocations (
+                invocation_id, mission_id, step_id, capability_id, status, dispatched_at,
+                completed_at, result_refs, owner_verification, error
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "legacy-without-dispatch-time",
+            "legacy-mission",
+            step.stepId,
+            step.capabilityRequirement,
+            "completed",
+            null,
+            "2026-09-03T18:30:00.000Z",
+            "[]",
+            null,
+            null,
+        );
         legacy.close();
 
         const store = new SqliteMissionStore(db.path);
@@ -307,6 +324,10 @@ describe("MissionScheduler", () => {
         expect(migrated?.effectFingerprint).toBe(expectedFingerprint);
         expect(migrated?.planRevisionId).toBe("revision-r1");
         expect(await store.findInvocationByEffectFingerprint("legacy-mission", expectedFingerprint)).toEqual(migrated);
+        expect((await store.getInvocation("legacy-without-dispatch-time"))?.effectFingerprint).toBe(
+            "legacy:legacy-without-dispatch-time",
+        );
+        expect((await store.getInvocation("legacy-without-dispatch-time"))?.planRevisionId).toBe("");
         await store.close();
     });
 

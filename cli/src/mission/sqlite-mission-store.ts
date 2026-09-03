@@ -483,8 +483,9 @@ export class SqliteMissionStore implements MissionStore {
                     const dispatchedTime = dispatchedAt === null ? null : Date.parse(dispatchedAt);
                     const candidateTime = Date.parse(candidates[0].revision.accepted_at as string);
                     if (
-                        dispatchedAt === null
-                        || (dispatchedTime !== null && Number.isFinite(dispatchedTime) && dispatchedTime >= candidateTime)
+                        dispatchedTime !== null
+                        && Number.isFinite(dispatchedTime)
+                        && dispatchedTime >= candidateTime
                     ) {
                         binding = candidates[0];
                     }
