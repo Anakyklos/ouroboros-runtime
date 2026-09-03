@@ -241,6 +241,20 @@ describe("MissionEngine", () => {
             const mission = await acceptedForStep();
             const invocation = await engine.dispatchStep(mission.missionId, "step-1");
             await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "uncertain" });
+            await expect(engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.COMPLETED,
+                summary: "forged direct resolution of uncertain delivery",
+                evidenceRefs: [],
+                completedAt: BASE_TIME,
+            })).rejects.toThrow(/uncertain|reconciliation/i);
+            await expect(engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.CANCELLED,
+                summary: "forged cancellation result",
+                evidenceRefs: [],
+                completedAt: BASE_TIME,
+            })).rejects.toThrow(/cancellation|explicit/i);
             await engine.markInvocationReconciliation(invocation.invocationId, {
                 state: "resolved",
                 outcome: "unknown",
@@ -367,6 +381,10 @@ describe("MissionEngine", () => {
                 requested: true,
                 requestedBy: "operator-1",
                 state: "acknowledged",
+            });
+            expect(stored?.attempts.at(-1)).toMatchObject({
+                state: "failed",
+                error: "cancelled: operator cancelled",
             });
         });
 

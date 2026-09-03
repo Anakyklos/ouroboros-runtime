@@ -1093,6 +1093,10 @@ describe("SqliteMissionStore (durability + recovery)", () => {
                 'legacy-invocation', 'legacy-mission', 'step-1', 'runstead.code-review', 'dispatched',
                 '2026-08-30T12:00:00.000Z', NULL, '[]', NULL, NULL
             );
+            INSERT INTO mission_invocations VALUES (
+                'legacy-dispatched-without-time', 'legacy-mission', 'step-2', 'runstead.code-review', 'dispatched',
+                NULL, NULL, '[]', NULL, NULL
+            );
         `);
         legacy.close();
 
@@ -1120,6 +1124,8 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         expect(migrated?.resultRefs).toEqual([]);
         expect(migrated?.reconciliation.state).toBe("unsupported");
         expect(await second.listDueInvocations("2026-08-30T13:00:00.000Z", 10)).toEqual([]);
+        expect((await second.getInvocation("legacy-dispatched-without-time"))?.delivery.state).toBe("uncertain");
+        expect((await second.getInvocation("legacy-dispatched-without-time"))?.reconciliation.state).toBe("unsupported");
 
         await second.close();
     });
@@ -1228,6 +1234,11 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         expect(normalized?.idempotency.mode).toBe(IdempotencyMode.UNKNOWN);
         expect(normalized?.delivery.state).toBe("not_submitted");
         expect(normalized?.retry.nextEligibleAt).toBeNull();
+        await expect(store.saveInvocation({
+            ...legacyRef,
+            missionId: "another-mission",
+        })).rejects.toThrow(/identity field "missionId" is immutable/i);
+        expect((await store.getInvocation(legacyRef.invocationId))?.missionId).toBe(mission.missionId);
 
         await store.close();
     });

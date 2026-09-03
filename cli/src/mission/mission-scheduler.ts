@@ -51,6 +51,8 @@ export class MissionScheduler {
     private readonly maxInFlight: number;
     private readonly recoveryBatchSize: number;
     private recoveryComplete = false;
+    private recoveryInProgress: Promise<MissionRecoveryReport> | null = null;
+    private runInProgress: Promise<MissionSchedulerRunReport> | null = null;
 
     constructor(options: MissionSchedulerOptions) {
         this.engine = options.engine;
@@ -74,6 +76,17 @@ export class MissionScheduler {
         if (this.recoveryComplete) {
             return { recoveredMissionIds: [], reconciledInvocationIds: [] };
         }
+        if (this.recoveryInProgress) return this.recoveryInProgress;
+        const recovery = this.recoverInternal();
+        this.recoveryInProgress = recovery;
+        try {
+            return await recovery;
+        } finally {
+            if (this.recoveryInProgress === recovery) this.recoveryInProgress = null;
+        }
+    }
+
+    private async recoverInternal(): Promise<MissionRecoveryReport> {
         const missions = await this.store.listMissions();
         const recoveredMissionIds: string[] = [];
         for (const mission of missions) {
@@ -89,8 +102,21 @@ export class MissionScheduler {
      * Run one bounded scheduling pass. The scheduler owns no resident timer
      * and never sleeps. Every external operation is selected from durable
      * state, while `nextWakeAt` lets its caller arrange a single future wake.
+     * Concurrent calls on this runtime instance share one pass; cross-process
+     * exactly-once coordination remains deliberately out of scope.
      */
     async runOnce(): Promise<MissionSchedulerRunReport> {
+        if (this.runInProgress) return this.runInProgress;
+        const run = this.runOnceInternal();
+        this.runInProgress = run;
+        try {
+            return await run;
+        } finally {
+            if (this.runInProgress === run) this.runInProgress = null;
+        }
+    }
+
+    private async runOnceInternal(): Promise<MissionSchedulerRunReport> {
         const recovery = await this.recover();
         const dispatchedInvocationIds: string[] = [];
         const reconciledInvocationIds: string[] = [];
@@ -136,7 +162,14 @@ export class MissionScheduler {
                 if (error instanceof CapabilityUnavailableError || error instanceof ConnectorNotRegisteredError) {
                     try {
                         const mission = await this.engine.getMission(current.missionId);
-                        if (!TERMINAL_STATES.has(mission.state) && mission.state !== MissionState.PAUSED) {
+                        // An unavailable connector may explain READY/EXECUTING
+                        // work, or an existing capability wait, but it must not
+                        // overwrite an approval/context/provider/budget wait
+                        // that requires its own explicit owner action.
+                        const canEnterCapabilityWait = mission.state === MissionState.READY
+                            || mission.state === MissionState.EXECUTING
+                            || mission.state === MissionState.WAITING_FOR_CAPABILITY;
+                        if (canEnterCapabilityWait) {
                             await this.engine.setWaiting(
                                 mission.missionId,
                                 MissionState.WAITING_FOR_CAPABILITY,
@@ -158,8 +191,17 @@ export class MissionScheduler {
         for (const candidate of dueInvocations) {
             if (dispatchSlots <= 0) break;
             if (suppressedMissions.has(candidate.missionId)) continue;
-            const mission = await this.store.getMission(candidate.missionId);
+            let mission = await this.store.getMission(candidate.missionId);
             if (!mission || TERMINAL_STATES.has(mission.state) || mission.state === MissionState.PAUSED) continue;
+            if (mission.state === MissionState.WAITING_FOR_CAPABILITY) {
+                try {
+                    await this.engine.restoreWaitingToReady(mission.missionId);
+                    mission = await this.store.getMission(candidate.missionId);
+                } catch {
+                    continue;
+                }
+            }
+            if (!mission) continue;
             if (
                 mission.state !== MissionState.READY
                 && mission.state !== MissionState.EXECUTING
@@ -197,8 +239,8 @@ export class MissionScheduler {
         }
 
         const missions = await this.store.listMissions();
-        const candidates: Array<{ missionId: string; stepId: string }> = [];
         for (const mission of missions) {
+            if (dispatchSlots <= 0) break;
             if (TERMINAL_STATES.has(mission.state) || mission.state === MissionState.PAUSED) continue;
             // Capability waits are retried only as a fresh authorization check
             // in this pass. Approval/context/provider/budget waits are never
@@ -225,18 +267,17 @@ export class MissionScheduler {
                     }),
                 ]),
             );
-            const readySteps: string[] = [];
-            for (const step of revision.steps) {
+            const isReadyStep = (step: typeof revision.steps[number]): boolean => {
                 const effectFingerprint = effectByStep.get(step.stepId)!;
-                if (invocations.some((invocation) => invocation.effectFingerprint === effectFingerprint)) continue;
+                if (invocations.some((invocation) => invocation.effectFingerprint === effectFingerprint)) return false;
                 if (step.dependencyIds.some((dependencyId) => {
                     const dependencyEffect = effectByStep.get(dependencyId);
                     return dependencyEffect === undefined || !completedEffects.has(dependencyEffect);
-                })) continue;
-                readySteps.push(step.stepId);
-            }
+                })) return false;
+                return true;
+            };
             if (capabilityWaiting) {
-                if (readySteps.length === 0) continue;
+                if (!revision.steps.some(isReadyStep)) continue;
                 try {
                     await this.engine.restoreWaitingToReady(mission.missionId);
                 } catch {
@@ -248,22 +289,21 @@ export class MissionScheduler {
                     && restored.state !== MissionState.EXECUTING
                 )) continue;
             }
-            for (const stepId of readySteps) {
-                candidates.push({ missionId: mission.missionId, stepId });
-            }
-        }
-
-        for (const candidate of candidates) {
-            if (dispatchSlots <= 0) break;
-            if (suppressedMissions.has(candidate.missionId)) continue;
-            try {
-                const outcome = await this.seam.dispatchThroughSeam(candidate.missionId, candidate.stepId);
-                dispatchedInvocationIds.push(outcome.invocation.invocationId);
-                dispatchSlots--;
-            } catch (error) {
-                await this.handleDispatchError(candidate.missionId, error, waitingMissionIds);
-                if (waitingMissionIds.includes(candidate.missionId)) {
-                    suppressedMissions.add(candidate.missionId);
+            // Dispatch directly while scanning the durable plan. This avoids
+            // building an unbounded in-memory candidate queue; at most
+            // `maxInFlight` connector calls can be active in this pass.
+            for (const step of revision.steps) {
+                if (dispatchSlots <= 0 || suppressedMissions.has(mission.missionId)) break;
+                if (!isReadyStep(step)) continue;
+                try {
+                    const outcome = await this.seam.dispatchThroughSeam(mission.missionId, step.stepId);
+                    dispatchedInvocationIds.push(outcome.invocation.invocationId);
+                    dispatchSlots--;
+                } catch (error) {
+                    await this.handleDispatchError(mission.missionId, error, waitingMissionIds);
+                    if (waitingMissionIds.includes(mission.missionId)) {
+                        suppressedMissions.add(mission.missionId);
+                    }
                 }
             }
         }

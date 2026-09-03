@@ -953,6 +953,15 @@ export class MissionEngine {
             return this.recordLateCancelledFacts(invocation, mission, result, sanitizedEvidenceRefs, ownerVerificationClaim);
         }
 
+        if (result.status === InvocationStatus.CANCELLED) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                result.status,
+                "cancellation must use the explicit cancellation outcome path",
+            );
+        }
+
         // Immutable completed terminality makes duplicate delivery safe. FAILED
         // is not terminal, but it can only repeat FAILED or leave via retry.
         if (isInvocationTerminal(invocation)) return mission;
@@ -991,12 +1000,12 @@ export class MissionEngine {
                 "results cannot regress an invocation to a pre-handoff state",
             );
         }
-        if (!fromReconciliation && result.status === InvocationStatus.RUNNING && hasUncertainDelivery(invocation)) {
+        if (!fromReconciliation && hasUncertainDelivery(invocation) && result.status !== InvocationStatus.BLOCKED) {
             throw new InvalidStateTransitionError(
                 invocation.missionId,
                 invocation.status,
                 result.status,
-                "uncertain delivery must be resolved through reconciliation",
+                "uncertain delivery must be recorded or resolved through reconciliation",
             );
         }
 
@@ -1499,6 +1508,11 @@ export class MissionEngine {
                 state: "acknowledged",
                 reason: sanitizeText(reason),
             },
+            attempts: invocation.attempts.map((attempt) =>
+                attempt.state === "prepared"
+                    ? { ...attempt, state: "failed", finishedAt: now, error: `cancelled: ${sanitizeText(reason)}` }
+                    : attempt,
+            ),
         });
         return this.requireInvocation(invocationId);
     }
@@ -1525,7 +1539,23 @@ export class MissionEngine {
             );
         }
         validateCancellationOutcomeUpdate(update);
+        if (!isCancellationStateUpdateAllowed(invocation.cancellation.state, update.state)) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                invocation.status,
+                `cancellation state cannot regress from ${invocation.cancellation.state} to ${update.state}`,
+            );
+        }
         const status = update.status ?? invocation.status;
+        if (status !== invocation.status && status !== InvocationStatus.CANCELLED) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                status,
+                "cancellation outcomes may only acknowledge hard cancellation as terminal",
+            );
+        }
         if (!isInvocationUpdateAllowed(invocation, { status })) {
             throw new InvalidStateTransitionError(
                 invocation.missionId,
@@ -1544,6 +1574,18 @@ export class MissionEngine {
                 invocation.status,
                 status,
                 "cancelled invocation requires an acknowledged hard-cancel and not_performed outcome",
+            );
+        }
+        if (status !== InvocationStatus.CANCELLED && (
+            update.reconciliationState === "resolved"
+            || update.outcome === "performed"
+            || update.outcome === "not_performed"
+        )) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                status,
+                "active cancellation acknowledgement cannot assert an execution outcome",
             );
         }
         const now = this.clock.isoNow();
@@ -1675,6 +1717,14 @@ export class MissionEngine {
         validateReconciliationUpdate(update);
         const now = this.clock.isoNow();
         const status = update.status ?? reconciliationStatus(update.outcome, invocation.status);
+        if (status === InvocationStatus.CANCELLED) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                status,
+                "cancellation must use the explicit cancellation outcome path",
+            );
+        }
         const deliveryState = update.deliveryState ?? reconciliationDelivery(update.outcome, invocation.delivery.state);
         if (!isInvocationUpdateAllowed(invocation, { status })) {
             throw new InvalidStateTransitionError(
@@ -2112,6 +2162,15 @@ function validateCancellationOutcomeUpdate(update: InvocationCancellationOutcome
         throw new Error(`Invalid cancellation outcome: ${String(update.outcome)}`);
     }
     if (update.nextAction !== undefined) sanitizeText(update.nextAction);
+}
+
+function isCancellationStateUpdateAllowed(
+    current: CapabilityInvocation["cancellation"]["state"],
+    next: InvocationCancellationOutcomeUpdate["state"],
+): boolean {
+    if (current === next) return true;
+    if (current === "requested") return next === "acknowledged" || next === "unsupported";
+    return false;
 }
 
 function sanitizeEvidenceRefs(refs: EvidenceRef[]): EvidenceRef[] {

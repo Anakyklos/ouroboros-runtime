@@ -280,6 +280,13 @@ export class SqliteMissionStore implements MissionStore {
             const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
             return new Set(rows.map((row) => row.name));
         };
+        // A pre-#50 database has no delivery column. In that schema the
+        // legacy logical status `dispatched` already means that a handoff may
+        // have happened, even when dispatched_at was never recorded. A
+        // current #50 row, however, can be deliberately prepared as
+        // `status=dispatched` with `delivery=not_submitted`, so the distinction
+        // must be captured before ALTER TABLE adds the default column.
+        const hadDeliveryColumn = columns("mission_invocations").has("delivery");
         const addMissing = (
             table: string,
             definitions: Array<[string, string]>,
@@ -315,6 +322,9 @@ export class SqliteMissionStore implements MissionStore {
 
         // Existing dispatched/running rows have an unknown handoff outcome.
         // They must never become due merely because the new retry column is NULL.
+        const legacyDispatchedPredicate = hadDeliveryColumn
+            ? "(dispatched_at IS NOT NULL OR status = 'running')"
+            : "(dispatched_at IS NOT NULL OR status IN ('running', 'dispatched'))";
         db.exec(`
             UPDATE mission_invocations
             SET effect_fingerprint = 'legacy:' || invocation_id
@@ -322,7 +332,7 @@ export class SqliteMissionStore implements MissionStore {
             UPDATE mission_invocations
             SET delivery = '{"state":"uncertain"}'
             WHERE delivery = '{"state":"not_submitted"}'
-              AND (dispatched_at IS NOT NULL OR status = 'running');
+              AND ${legacyDispatchedPredicate};
             UPDATE mission_invocations
             SET created_at = COALESCE(dispatched_at, completed_at, '${LEGACY_EPOCH}'),
                 updated_at = COALESCE(completed_at, dispatched_at, '${LEGACY_EPOCH}')
@@ -567,6 +577,16 @@ export class SqliteMissionStore implements MissionStore {
         if (current && isInvocationTerminal(current)) {
             return this.toInvocationRef(current);
         }
+        if (current && !isFull) {
+            // A legacy reference is a projection, not authority over the
+            // canonical full identity. Reject a stale/cross-mission
+            // projection instead of allowing it to retarget the durable row.
+            for (const field of ["missionId", "stepId", "capabilityId"] as const) {
+                if (current[field] !== normalized[field]) {
+                    throw new Error(`Invocation ${normalized.invocationId} identity field "${field}" is immutable`);
+                }
+            }
+        }
         if (current && isFull) {
             assertImmutableInvocationIdentity(current, normalized);
             if (!isInvocationUpdateAllowed(current, normalized)) {
@@ -580,9 +600,6 @@ export class SqliteMissionStore implements MissionStore {
                   ...(isFull ? normalized : current),
                   ...(!isFull
                       ? {
-                            missionId: normalized.missionId,
-                            stepId: normalized.stepId,
-                            capabilityId: normalized.capabilityId,
                             status: normalized.status,
                             dispatchedAt: normalized.dispatchedAt,
                             completedAt: normalized.completedAt,

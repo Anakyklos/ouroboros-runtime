@@ -511,6 +511,130 @@ describe("MissionScheduler", () => {
         );
     });
 
+    it("isolates a missing recovery connector while preserving the uncertain invocation", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const engine = createEngine(store, new FakeIdGenerator("recovery-isolation"));
+        const broken = await engine.createMission({
+            intent: {
+                requestId: "request-broken-recovery",
+                source: "cli",
+                originalIntent: "Read the current LifeOS status",
+                constraints: [],
+                acceptanceCriteria: ["status read"],
+            },
+            allowedCapabilityScope: makeMission("unused").allowedCapabilityScope,
+        });
+        const brokenPlan = await engine.proposePlan(broken.missionId, planFor(broken));
+        if (!brokenPlan.ok) throw new Error("broken recovery plan was rejected");
+        await engine.acceptPlan(broken.missionId, brokenPlan.revision.revisionId);
+        const uncertain = await engine.dispatchStep(broken.missionId, "read-status", {
+            descriptor: {
+                contractVersion: 1,
+                moduleOwner: "lifeos",
+                idempotency: { mode: IdempotencyMode.IDEMPOTENT, keyScope: "request" },
+                retry: { maxAttempts: 3, backoff: RetryBackoff.FIXED },
+                cancellationSupport: CancellationSupport.NONE,
+                reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
+            },
+        });
+        await engine.markInvocationHandoff(uncertain.invocationId, { deliveryState: "uncertain" });
+
+        const other = await engine.createMission({
+            intent: {
+                requestId: "request-healthy-recovery",
+                source: "cli",
+                originalIntent: "Review the Runstead change",
+                constraints: [],
+                acceptanceCriteria: ["status read"],
+            },
+            allowedCapabilityScope: {
+                capabilityIds: ["runstead.code-review"],
+                allowedEffectClasses: [EffectClass.EXECUTION],
+                allowedRefPrefixes: ["refs/runstead/"],
+            },
+        });
+        const otherPlan = await engine.proposePlan(other.missionId, planFor(other, {
+            capabilityId: "runstead.code-review",
+            effectClass: EffectClass.EXECUTION,
+            inputRef: "refs/runstead/change-recovery",
+        }));
+        if (!otherPlan.ok) throw new Error("healthy recovery plan was rejected");
+        await engine.acceptPlan(other.missionId, otherPlan.revision.revisionId);
+
+        const registry = createRegistry();
+        const seam = new ConnectorDispatchSeam(engine, registry, new FakeClock(BASE_TIME));
+        let healthyInvokes = 0;
+        seam.registerConnector("runstead.code-review", {
+            connectorContractVersion: 1,
+            capabilityId: "runstead.code-review",
+            describe: () => registry.requireDescriptor("runstead.code-review"),
+            invoke: async (request) => {
+                healthyInvokes++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "reviewed",
+                    evidence: [],
+                    ownerVerification: { owner: "runstead", verified: true, reason: "owner reviewed" },
+                };
+            },
+        });
+        const scheduler = new MissionScheduler({ engine, store, seam, clock: new FakeClock(BASE_TIME), maxInFlight: 2 });
+
+        await scheduler.runOnce();
+
+        expect(healthyInvokes).toBe(1);
+        expect((await store.getMission(broken.missionId))?.state).toBe(MissionState.WAITING_FOR_CAPABILITY);
+        expect((await store.getInvocation(uncertain.invocationId))?.status).toBe(InvocationStatus.BLOCKED);
+        expect((await store.getInvocation(uncertain.invocationId))?.delivery.state).toBe("uncertain");
+        expect((await store.getMission(other.missionId))?.invocationRefs[0].status).toBe(InvocationStatus.COMPLETED);
+    });
+
+    it("does not overwrite an approval wait while an uncertain invocation lacks its connector", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const engine = createEngine(store, new FakeIdGenerator("wait-preservation"));
+        const mission = await engine.createMission({
+            intent: {
+                requestId: "request-wait-preservation",
+                source: "cli",
+                originalIntent: "Read the current LifeOS status",
+                constraints: [],
+                acceptanceCriteria: ["status read"],
+            },
+            allowedCapabilityScope: makeMission("unused").allowedCapabilityScope,
+        });
+        const proposal = await engine.proposePlan(mission.missionId, planFor(mission));
+        if (!proposal.ok) throw new Error("wait-preservation plan was rejected");
+        await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+        const invocation = await engine.dispatchStep(mission.missionId, "read-status", {
+            descriptor: {
+                contractVersion: 1,
+                moduleOwner: "lifeos",
+                idempotency: { mode: IdempotencyMode.IDEMPOTENT, keyScope: "request" },
+                retry: { maxAttempts: 3, backoff: RetryBackoff.FIXED },
+                cancellationSupport: CancellationSupport.NONE,
+                reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
+            },
+        });
+        await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "uncertain" });
+        await engine.setWaiting(mission.missionId, MissionState.WAITING_FOR_APPROVAL, "operator approval remains required");
+
+        const registry = createRegistry();
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam: new ConnectorDispatchSeam(engine, registry, new FakeClock(BASE_TIME)),
+            clock: new FakeClock(BASE_TIME),
+        });
+
+        await scheduler.runOnce();
+
+        expect((await store.getMission(mission.missionId))?.state).toBe(MissionState.WAITING_FOR_APPROVAL);
+        expect((await store.getInvocation(invocation.invocationId))?.delivery.state).toBe("uncertain");
+    });
+
     it("does not invoke a completed effect again in a fresh scheduler instance", async () => {
         const store = new SqliteMissionStore(":memory:");
         await store.initialize();
@@ -542,7 +666,7 @@ describe("MissionScheduler", () => {
         });
 
         const first = new MissionScheduler({ engine, store, seam, clock: new FakeClock(BASE_TIME) });
-        await first.runOnce();
+        await Promise.all([first.runOnce(), first.runOnce()]);
         const second = new MissionScheduler({ engine, store, seam, clock: new FakeClock(BASE_TIME) });
         await second.runOnce();
 
