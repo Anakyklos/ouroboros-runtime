@@ -325,12 +325,12 @@ export class SqliteMissionStore implements MissionStore {
         // A pre-#50 invocation has no effect fingerprint or plan revision
         // identity. A row with an explicit revision id can be rebound only
         // when that id names a historically accepted revision with one
-        // unambiguous, structurally valid step. Without that id, a unique
-        // accepted revision may be proven by its persisted acceptance history
-        // and dispatch timestamp. The current Mission pointer is deliberately
-        // not provenance: it may point at a later revision with different
-        // effect semantics. Rows without this proof retain a replay barrier
-        // and are never dispatched blindly.
+        // unambiguous, structurally valid step. Without that id, the revision
+        // active at the persisted dispatch timestamp may be proven by the
+        // complete accepted history. The current Mission pointer is
+        // deliberately not provenance: it may point at a later revision with
+        // different effect semantics. Rows without this proof retain a replay
+        // barrier and are never dispatched blindly.
         const legacyRows = db.query(
             `SELECT invocation_id, mission_id, step_id, capability_id, plan_revision_id, dispatched_at
              FROM mission_invocations
@@ -462,50 +462,32 @@ export class SqliteMissionStore implements MissionStore {
                     .map((revision) => validAcceptedAt(revision.accepted_at) ? Date.parse(revision.accepted_at) : null)
                     .filter((time): time is number => time !== null);
                 const hasDuplicateAcceptedAt = new Set(acceptedAtTimes).size !== acceptedAtTimes.length;
-                const matches = revisions.map((revision) => ({
-                    revision,
-                    match: acceptedStatuses.has(revision.status) && validAcceptedAt(revision.accepted_at)
-                        ? classifyStep(revision, legacy)
-                        : { kind: "none" as const },
-                }));
-                const candidates = matches.flatMap(({ revision, match }) => {
-                    return match.kind === "valid" ? [{ revision, step: match.step }] : [];
-                });
-                const revisionsWithStep = matches.filter(({ match }) => match.kind !== "none");
-
+                // A dispatch timestamp must select the revision that was
+                // active at that instant, even when only an older revision
+                // contains the step. A superseding revision that removed the
+                // step therefore blocks reconstruction instead of permitting
+                // the old revision's effect to be rebound after supersession.
                 if (
                     !hasInvalidHistory
                     && !hasDuplicateAcceptedAt
-                    && candidates.length === 1
-                    && revisionsWithStep.length === 1
+                    && typeof legacy.dispatched_at === "string"
                 ) {
-                    const dispatchedAt = legacy.dispatched_at;
-                    const dispatchedTime = dispatchedAt === null ? null : Date.parse(dispatchedAt);
-                    const candidateTime = Date.parse(candidates[0].revision.accepted_at as string);
-                    if (
-                        dispatchedTime !== null
-                        && Number.isFinite(dispatchedTime)
-                        && dispatchedTime >= candidateTime
-                    ) {
-                        binding = candidates[0];
-                    }
-                } else if (!hasInvalidHistory && !hasDuplicateAcceptedAt && legacy.dispatched_at !== null) {
-                    // With multiple matching revisions, only a persisted
-                    // dispatch time can identify the accepted revision's
-                    // active interval. A missing or invalid time stays blocked.
                     const dispatchedTime = Date.parse(legacy.dispatched_at);
                     if (Number.isFinite(dispatchedTime)) {
-                        let active: typeof matches[number] | undefined;
+                        let active: LegacyRevision | undefined;
                         let activeTime = Number.NEGATIVE_INFINITY;
-                        for (const candidate of matches) {
-                            const revisionTime = Date.parse(candidate.revision.accepted_at as string);
+                        for (const revision of revisions) {
+                            const revisionTime = Date.parse(revision.accepted_at as string);
                             if (revisionTime <= dispatchedTime && revisionTime > activeTime) {
-                                active = candidate;
+                                active = revision;
                                 activeTime = revisionTime;
                             }
                         }
-                        if (active?.match.kind === "valid") {
-                            binding = { revision: active.revision, step: active.match.step };
+                        if (active && acceptedStatuses.has(active.status)) {
+                            const match = classifyStep(active, legacy);
+                            if (match.kind === "valid") {
+                                binding = { revision: active, step: match.step };
+                            }
                         }
                     }
                 }

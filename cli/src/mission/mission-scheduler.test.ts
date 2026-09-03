@@ -528,6 +528,339 @@ describe("MissionScheduler", () => {
         await store.close();
     });
 
+    it("preserves a replay barrier when the active revision removed the legacy step", async () => {
+        const db = tempDb();
+        cleanups.push(db.cleanup);
+        const legacy = new Database(db.path);
+        legacy.exec(`
+            CREATE TABLE missions (
+                mission_id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL, source TEXT NOT NULL,
+                sanitized_original_intent TEXT NOT NULL, original_intent_ref TEXT NOT NULL,
+                interpreted_objective TEXT NOT NULL, constraints TEXT NOT NULL, acceptance_criteria TEXT NOT NULL,
+                budget_policy TEXT NOT NULL, allowed_capability_scope TEXT NOT NULL, approval_requirements TEXT NOT NULL,
+                context_refs TEXT NOT NULL, state TEXT NOT NULL, current_plan_revision_id TEXT,
+                evidence_refs TEXT NOT NULL, criterion_verifications TEXT NOT NULL, unresolved_questions TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, recovery_metadata TEXT NOT NULL
+            );
+            CREATE TABLE mission_plan_revisions (
+                revision_id TEXT PRIMARY KEY, mission_id TEXT NOT NULL, revision_number INTEGER NOT NULL,
+                plan_id TEXT NOT NULL, steps TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL,
+                accepted_at TEXT, replaces_revision_id TEXT, rejection_reason TEXT, created_at TEXT NOT NULL
+            );
+            CREATE TABLE mission_invocations (
+                invocation_id TEXT PRIMARY KEY, mission_id TEXT NOT NULL, step_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL, status TEXT NOT NULL, dispatched_at TEXT, completed_at TEXT,
+                result_refs TEXT NOT NULL, owner_verification TEXT, error TEXT
+            );
+        `);
+        const stepA = {
+            stepId: "prepare",
+            desiredOutcome: "Prepare effect A",
+            dependencyIds: [],
+            capabilityRequirement: "lifeos.query",
+            inputRefs: ["refs/lifeos/a"],
+            expectedAcceptance: ["status read"],
+            effectClass: EffectClass.READ,
+        };
+        const laterStep = {
+            stepId: "later",
+            desiredOutcome: "Run later effect",
+            dependencyIds: ["prepare"],
+            capabilityRequirement: "lifeos.query",
+            inputRefs: ["refs/lifeos/later"],
+            expectedAcceptance: ["status read"],
+            effectClass: EffectClass.READ,
+        };
+        legacy.query(
+            `INSERT INTO missions (
+                mission_id, schema_version, source, sanitized_original_intent, original_intent_ref,
+                interpreted_objective, constraints, acceptance_criteria, budget_policy,
+                allowed_capability_scope, approval_requirements, context_refs, state,
+                current_plan_revision_id, evidence_refs, criterion_verifications, unresolved_questions,
+                created_at, updated_at, recovery_metadata
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "legacy-mission",
+            1,
+            "cli",
+            "Read the current LifeOS status",
+            "sha256:legacy-mission",
+            "Read the current LifeOS status",
+            "[]",
+            '["status read"]',
+            "{}",
+            JSON.stringify({
+                capabilityIds: ["lifeos.query"],
+                allowedEffectClasses: [EffectClass.READ],
+                allowedRefPrefixes: ["refs/lifeos/"],
+            }),
+            "[]",
+            "[]",
+            "ready",
+            "revision-r2",
+            "[]",
+            "[]",
+            "[]",
+            BASE_TIME,
+            BASE_TIME,
+            '{"recovered":false,"recoveryCount":0}',
+        );
+        legacy.query(
+            `INSERT INTO mission_plan_revisions (
+                revision_id, mission_id, revision_number, plan_id, steps, status, reason,
+                accepted_at, replaces_revision_id, rejection_reason, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "revision-r1",
+            "legacy-mission",
+            1,
+            "plan-r1",
+            JSON.stringify([stepA]),
+            "superseded",
+            "first accepted plan",
+            BASE_TIME,
+            null,
+            null,
+            BASE_TIME,
+        );
+        legacy.query(
+            `INSERT INTO mission_plan_revisions (
+                revision_id, mission_id, revision_number, plan_id, steps, status, reason,
+                accepted_at, replaces_revision_id, rejection_reason, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "revision-r2",
+            "legacy-mission",
+            2,
+            "plan-r2",
+            JSON.stringify([laterStep]),
+            "accepted",
+            "later plan removed prepare",
+            "2026-09-03T19:00:00.000Z",
+            "revision-r1",
+            null,
+            "2026-09-03T19:00:00.000Z",
+        );
+        legacy.query(
+            `INSERT INTO mission_invocations (
+                invocation_id, mission_id, step_id, capability_id, status, dispatched_at,
+                completed_at, result_refs, owner_verification, error
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "legacy-after-removal",
+            "legacy-mission",
+            stepA.stepId,
+            stepA.capabilityRequirement,
+            "completed",
+            "2026-09-03T20:00:00.000Z",
+            "2026-09-03T20:00:00.000Z",
+            "[]",
+            null,
+            null,
+        );
+        legacy.close();
+
+        const store = new SqliteMissionStore(db.path);
+        await store.initialize();
+        const effectFingerprintA = computeEffectFingerprint({
+            capabilityId: stepA.capabilityRequirement,
+            effectClass: stepA.effectClass,
+            inputRefs: stepA.inputRefs,
+            outcome: stepA.desiredOutcome,
+        });
+        const migrated = await store.getInvocation("legacy-after-removal");
+        expect(migrated?.effectFingerprint).toBe("legacy:legacy-after-removal");
+        expect(migrated?.effectFingerprint).not.toBe(effectFingerprintA);
+        expect(migrated?.planRevisionId).toBe("");
+        expect(await store.findInvocationByEffectFingerprint("legacy-mission", effectFingerprintA)).toBeNull();
+
+        const engine = createEngine(store, new FakeIdGenerator("legacy-removal-restart"));
+        const registry = createRegistry();
+        let invokes = 0;
+        const seam = new ConnectorDispatchSeam(engine, registry, new FakeClock(BASE_TIME));
+        seam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => registry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                invokes++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "must not replay removed legacy step",
+                    evidence: [],
+                };
+            },
+        });
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam,
+            clock: new FakeClock(BASE_TIME),
+        });
+
+        const report = await scheduler.runOnce();
+        expect(invokes).toBe(0);
+        expect(report.dispatchedInvocationIds).toEqual([]);
+        expect(await store.listInvocations("legacy-mission")).toHaveLength(1);
+        expect((await store.getInvocation("legacy-after-removal"))?.status).toBe(InvocationStatus.COMPLETED);
+        await store.close();
+    });
+
+    it("reconstructs a legacy effect only inside the active accepted revision interval", async () => {
+        const db = tempDb();
+        cleanups.push(db.cleanup);
+        const legacy = new Database(db.path);
+        legacy.exec(`
+            CREATE TABLE missions (
+                mission_id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL, source TEXT NOT NULL,
+                sanitized_original_intent TEXT NOT NULL, original_intent_ref TEXT NOT NULL,
+                interpreted_objective TEXT NOT NULL, constraints TEXT NOT NULL, acceptance_criteria TEXT NOT NULL,
+                budget_policy TEXT NOT NULL, allowed_capability_scope TEXT NOT NULL, approval_requirements TEXT NOT NULL,
+                context_refs TEXT NOT NULL, state TEXT NOT NULL, current_plan_revision_id TEXT,
+                evidence_refs TEXT NOT NULL, criterion_verifications TEXT NOT NULL, unresolved_questions TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, recovery_metadata TEXT NOT NULL
+            );
+            CREATE TABLE mission_plan_revisions (
+                revision_id TEXT PRIMARY KEY, mission_id TEXT NOT NULL, revision_number INTEGER NOT NULL,
+                plan_id TEXT NOT NULL, steps TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL,
+                accepted_at TEXT, replaces_revision_id TEXT, rejection_reason TEXT, created_at TEXT NOT NULL
+            );
+            CREATE TABLE mission_invocations (
+                invocation_id TEXT PRIMARY KEY, mission_id TEXT NOT NULL, step_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL, status TEXT NOT NULL, dispatched_at TEXT, completed_at TEXT,
+                result_refs TEXT NOT NULL, owner_verification TEXT, error TEXT
+            );
+        `);
+        const stepA = {
+            stepId: "prepare",
+            desiredOutcome: "Prepare effect A",
+            dependencyIds: [],
+            capabilityRequirement: "lifeos.query",
+            inputRefs: ["refs/lifeos/a"],
+            expectedAcceptance: ["status read"],
+            effectClass: EffectClass.READ,
+        };
+        const stepB = {
+            stepId: "prepare",
+            desiredOutcome: "Prepare effect B",
+            dependencyIds: [],
+            capabilityRequirement: "lifeos.query",
+            inputRefs: ["refs/lifeos/b"],
+            expectedAcceptance: ["status read"],
+            effectClass: EffectClass.READ,
+        };
+        legacy.query(
+            `INSERT INTO missions (
+                mission_id, schema_version, source, sanitized_original_intent, original_intent_ref,
+                interpreted_objective, constraints, acceptance_criteria, budget_policy,
+                allowed_capability_scope, approval_requirements, context_refs, state,
+                current_plan_revision_id, evidence_refs, criterion_verifications, unresolved_questions,
+                created_at, updated_at, recovery_metadata
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "legacy-interval-mission",
+            1,
+            "cli",
+            "Read the current LifeOS status",
+            "sha256:legacy-interval-mission",
+            "Read the current LifeOS status",
+            "[]",
+            '["status read"]',
+            "{}",
+            JSON.stringify({
+                capabilityIds: ["lifeos.query"],
+                allowedEffectClasses: [EffectClass.READ],
+                allowedRefPrefixes: ["refs/lifeos/"],
+            }),
+            "[]",
+            "[]",
+            "ready",
+            "revision-r2",
+            "[]",
+            "[]",
+            "[]",
+            BASE_TIME,
+            BASE_TIME,
+            '{"recovered":false,"recoveryCount":0}',
+        );
+        legacy.query(
+            `INSERT INTO mission_plan_revisions (
+                revision_id, mission_id, revision_number, plan_id, steps, status, reason,
+                accepted_at, replaces_revision_id, rejection_reason, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "revision-r1",
+            "legacy-interval-mission",
+            1,
+            "plan-r1",
+            JSON.stringify([stepA]),
+            "superseded",
+            "first accepted plan",
+            BASE_TIME,
+            null,
+            null,
+            BASE_TIME,
+        );
+        legacy.query(
+            `INSERT INTO mission_plan_revisions (
+                revision_id, mission_id, revision_number, plan_id, steps, status, reason,
+                accepted_at, replaces_revision_id, rejection_reason, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "revision-r2",
+            "legacy-interval-mission",
+            2,
+            "plan-r2",
+            JSON.stringify([stepB]),
+            "accepted",
+            "later plan changed prepare effect",
+            "2026-09-03T19:00:00.000Z",
+            "revision-r1",
+            null,
+            "2026-09-03T19:00:00.000Z",
+        );
+        legacy.query(
+            `INSERT INTO mission_invocations (
+                invocation_id, mission_id, step_id, capability_id, status, dispatched_at,
+                completed_at, result_refs, owner_verification, error
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+            "legacy-r1-interval",
+            "legacy-interval-mission",
+            stepA.stepId,
+            stepA.capabilityRequirement,
+            "completed",
+            "2026-09-03T18:30:00.000Z",
+            "2026-09-03T18:30:00.000Z",
+            "[]",
+            null,
+            null,
+        );
+        legacy.close();
+
+        const store = new SqliteMissionStore(db.path);
+        await store.initialize();
+        const effectFingerprintA = computeEffectFingerprint({
+            capabilityId: stepA.capabilityRequirement,
+            effectClass: stepA.effectClass,
+            inputRefs: stepA.inputRefs,
+            outcome: stepA.desiredOutcome,
+        });
+        const effectFingerprintB = computeEffectFingerprint({
+            capabilityId: stepB.capabilityRequirement,
+            effectClass: stepB.effectClass,
+            inputRefs: stepB.inputRefs,
+            outcome: stepB.desiredOutcome,
+        });
+        const migrated = await store.getInvocation("legacy-r1-interval");
+        expect(migrated?.effectFingerprint).toBe(effectFingerprintA);
+        expect(migrated?.effectFingerprint).not.toBe(effectFingerprintB);
+        expect(migrated?.planRevisionId).toBe("revision-r1");
+        expect(await store.findInvocationByEffectFingerprint("legacy-interval-mission", effectFingerprintB)).toBeNull();
+        await store.close();
+    });
+
     it("dispatches a dependency-ready step once through the real connector seam", async () => {
         const store = new SqliteMissionStore(":memory:");
         await store.initialize();
