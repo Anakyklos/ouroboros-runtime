@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { DaemonServer } from './server.js';
 import { EventBus } from './event-bus.js';
 import type { StoragePort } from "../ports/storage.port.js";
+import { SqliteMissionStore } from "../mission/sqlite-mission-store.js";
+import { EffectClass, MissionState, type Mission } from "../mission/contracts.js";
 
 // Mock StoragePort to bypass better-sqlite3 in Bun tests
 class MockStorage implements StoragePort {
@@ -17,24 +19,56 @@ class MockStorage implements StoragePort {
 describe("DaemonServer", () => {
   let server: DaemonServer;
   let storage: StoragePort;
+  let missionStore: SqliteMissionStore;
   const eventBus = new EventBus();
   const TEST_PORT = 17777;
 
   beforeAll(async () => {
     storage = new MockStorage();
-    // await storage.initialize();
+    missionStore = new SqliteMissionStore(":memory:");
+    await missionStore.initialize();
+    const mission: Mission = {
+      missionId: "mission-server-1",
+      schemaVersion: 1,
+      source: "cli",
+      originalIntent: "Authorization: Bearer private prompt",
+      sanitizedOriginalIntent: "[REDACTED] private prompt",
+      originalIntentRef: "hash-server-mission",
+      interpretedObjective: "sanitized objective",
+      constraints: [],
+      acceptanceCriteria: ["mission complete"],
+      budgetPolicy: {},
+      allowedCapabilityScope: {
+        capabilityIds: ["runstead.code-review"],
+        allowedEffectClasses: [EffectClass.EXECUTION],
+        allowedRefPrefixes: ["refs/runstead/"],
+      },
+      approvalRequirements: [],
+      contextRefs: [],
+      state: MissionState.WAITING_FOR_PROVIDER,
+      currentPlanRevisionId: "revision-server-1",
+      invocationRefs: [],
+      evidenceRefs: [],
+      criterionVerifications: [],
+      unresolvedQuestions: [],
+      createdAt: "2026-09-04T00:00:00.000Z",
+      updatedAt: "2026-09-04T00:00:00.000Z",
+      recoveryMetadata: { recovered: true, recoveryCount: 1 },
+    };
+    await missionStore.createMission(mission);
 
     server = new DaemonServer(storage, {
       port: TEST_PORT,
       host: "127.0.0.1",
       enableWebUI: false,
-    }, eventBus);
+    }, eventBus, missionStore);
 
     await server.start();
   });
 
   afterAll(async () => {
     await server.stop();
+    await missionStore.close();
   });
 
   it("should respond to health check", async () => {
@@ -142,7 +176,62 @@ describe("DaemonServer", () => {
       expect(message.data).toMatchObject({
         cursor: 2,
         status: { processStatus: "alive" },
+        protocolVersion: 1,
+        missions: [{ missionId: "mission-server-1", state: "waiting_for_provider" }],
       });
+    } finally {
+      socket.close();
+      await new Promise<void>((resolve) => {
+        if (socket.readyState === WebSocket.CLOSED) {
+          resolve();
+          return;
+        }
+        socket.addEventListener("close", () => resolve(), { once: true });
+      });
+    }
+  });
+
+  it("should expose only explicit operational events, not legacy EventBus events", async () => {
+    const socket = new WebSocket(`ws://127.0.0.1:${TEST_PORT}/ws`);
+    const messages: Record<string, unknown>[] = [];
+    const nextMessage = () => new Promise<Record<string, unknown>>((resolve, reject) => {
+      socket.addEventListener("message", (event) => {
+        try {
+          const parsed = JSON.parse(String(event.data)) as Record<string, unknown>;
+          messages.push(parsed);
+          resolve(parsed);
+        } catch (error) {
+          reject(error);
+        }
+      }, { once: true });
+      socket.addEventListener("error", () => reject(new Error("websocket connection failed")), { once: true });
+    });
+
+    try {
+      await nextMessage();
+      eventBus.emit("thought", {
+        type: "reasoning",
+        content: "private chain-of-thought",
+        timestamp: new Date(),
+      });
+      eventBus.emit("wave", {
+        type: "wave_started",
+        waveId: "legacy-wave",
+        waveIndex: 1,
+        totalWaves: 1,
+        tasks: [],
+      });
+      eventBus.emit("mission", {
+        kind: "state_changed",
+        missionId: "mission-server-1",
+        state: "waiting_for_provider",
+        currentPlanRevisionId: "revision-server-1",
+        updatedAt: "2026-09-04T00:00:00.000Z",
+      });
+      const message = await nextMessage();
+
+      expect(message.event).toBe("mission");
+      expect(messages).toHaveLength(2);
     } finally {
       socket.close();
       await new Promise<void>((resolve) => {
