@@ -536,4 +536,3 @@ Não fazer merge, não abrir segunda PR e não iniciar outra issue após a cria�
 - **Placeholders:** não há decisões pendentes, tarefas sem arquivo ou comandos com caminho simbólico. Os parâmetros genéricos em assinaturas TypeScript são tipos, não marcadores de preenchimento.
 - **Consistência:** `DaemonEventDataMap`, `DaemonEventCorrelation`, `DaemonSnapshot`, `DaemonMissionProjection`, `DaemonInvocationProjection` e `DaemonDurableProjection` são definidos no contrato e usados com os mesmos nomes nas tarefas posteriores. O snapshot é assíncrono no gateway e no projection, mas continua uma única mensagem de wire.
 - **Escopo:** nenhuma tarefa altera a máquina de estados, scheduler ou persistência da #50. A única integração durável prevista é leitura sanitizada do `MissionStore` existente.
-
