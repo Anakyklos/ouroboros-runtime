@@ -149,6 +149,90 @@ describe("daemon durable frontend projection", () => {
     expect(JSON.stringify(withInvocation)).not.toContain("Authorization");
   });
 
+  it("applies every validated operational event to its bounded observation map", async () => {
+    const module = await loadProjectionModule();
+    expect(module).not.toBeNull();
+    if (!module) return;
+
+    let state = module.initialDaemonProjectionState as Record<string, unknown>;
+    const applyDaemonEnvelope = module.applyDaemonEnvelope as (
+      value: Record<string, unknown>,
+      envelope: DaemonEventEnvelope,
+    ) => Record<string, unknown>;
+    const events: Array<[DaemonEventEnvelope["event"], unknown]> = [
+      ["plan_revision", {
+        kind: "accepted",
+        missionId: "mission-1",
+        revisionId: "revision-1",
+        revisionNumber: 1,
+        status: "accepted",
+        createdAt: "2026-09-04T00:00:00.000Z",
+        acceptedAt: "2026-09-04T00:00:00.000Z",
+      }],
+      ["approval", {
+        kind: "requested",
+        missionId: "mission-1",
+        approvalId: "approval-1",
+        state: "pending",
+        updatedAt: "2026-09-04T00:00:00.000Z",
+      }],
+      ["capability_availability", {
+        capabilityId: "runstead.code-review",
+        available: true,
+        observedAt: "2026-09-04T00:00:00.000Z",
+      }],
+      ["context_request", {
+        kind: "requested",
+        missionId: "mission-1",
+        requestId: "context-1",
+        state: "pending",
+        updatedAt: "2026-09-04T00:00:00.000Z",
+      }],
+      ["human_decision", {
+        kind: "required",
+        missionId: "mission-1",
+        decisionId: "decision-1",
+        state: "required",
+        updatedAt: "2026-09-04T00:00:00.000Z",
+      }],
+      ["mission_verification", {
+        missionId: "mission-1",
+        satisfied: false,
+        ownerBlocked: true,
+        updatedAt: "2026-09-04T00:00:00.000Z",
+      }],
+    ];
+
+    events.forEach(([event, data], index) => {
+      state = applyDaemonEnvelope(state, envelope(event, data, index + 1));
+    });
+
+    expect((state.planRevisions as Record<string, unknown>)["revision-1"]).toBeDefined();
+    expect((state.approvals as Record<string, unknown>)["approval-1"]).toBeDefined();
+    expect((state.capabilityAvailability as Record<string, unknown>)["runstead.code-review"]).toBeDefined();
+    expect((state.contextRequests as Record<string, unknown>)["context-1"]).toBeDefined();
+    expect((state.humanDecisions as Record<string, unknown>)["decision-1"]).toBeDefined();
+    expect((state.missionVerifications as Record<string, unknown>)["mission-1"]).toMatchObject({ ownerBlocked: true });
+  });
+
+  it("does not mutate projection state for an invalid envelope", async () => {
+    const module = await loadProjectionModule();
+    expect(module).not.toBeNull();
+    if (!module) return;
+
+    const state = module.initialDaemonProjectionState as Record<string, unknown>;
+    const applyDaemonEnvelope = module.applyDaemonEnvelope as (
+      value: Record<string, unknown>,
+      envelope: DaemonEventEnvelope,
+    ) => Record<string, unknown>;
+    const invalid = envelope("mission", {
+      ...missionEvent,
+      state: "invalid",
+    }, 1);
+
+    expect(applyDaemonEnvelope(state, invalid)).toBe(state);
+  });
+
   it("replaces stale local entities when an authoritative snapshot arrives", async () => {
     const module = await loadProjectionModule();
     expect(module).not.toBeNull();

@@ -113,6 +113,83 @@ describe("daemon event contract", () => {
     })).toEqual({ ok: false, code: "invalid_payload" });
   });
 
+  it("accepts every public operational event shape", () => {
+    const events: Array<[string, Record<string, unknown>]> = [
+      ["plan_revision", {
+        kind: "accepted",
+        missionId: "mission-1",
+        revisionId: "revision-1",
+        revisionNumber: 1,
+        status: "accepted",
+        createdAt: "2026-09-04T00:00:00.000Z",
+        acceptedAt: "2026-09-04T00:00:00.000Z",
+      }],
+      ["approval", {
+        kind: "resolved",
+        missionId: "mission-1",
+        approvalId: "approval-1",
+        state: "granted",
+        updatedAt: "2026-09-04T00:00:00.000Z",
+      }],
+      ["capability_invocation", {
+        kind: "started",
+        invocationId: "invocation-1",
+        missionId: "mission-1",
+        stepId: "step-1",
+        capabilityId: "runstead.code-review",
+        moduleOwner: "runstead",
+        planRevisionId: "revision-1",
+        status: "running",
+        deliveryState: "running",
+        ownerVerificationState: "pending",
+        createdAt: "2026-09-04T00:00:00.000Z",
+        updatedAt: "2026-09-04T00:00:00.000Z",
+      }],
+      ["capability_availability", {
+        capabilityId: "runstead.code-review",
+        available: true,
+        observedAt: "2026-09-04T00:00:00.000Z",
+        moduleOwner: "runstead",
+        connectorVersion: 1,
+      }],
+      ["context_request", {
+        kind: "requested",
+        missionId: "mission-1",
+        requestId: "context-1",
+        state: "pending",
+        updatedAt: "2026-09-04T00:00:00.000Z",
+      }],
+      ["human_decision", {
+        kind: "required",
+        missionId: "mission-1",
+        decisionId: "decision-1",
+        state: "required",
+        updatedAt: "2026-09-04T00:00:00.000Z",
+      }],
+      ["mission_verification", {
+        missionId: "mission-1",
+        satisfied: false,
+        ownerBlocked: false,
+        updatedAt: "2026-09-04T00:00:00.000Z",
+      }],
+      ["daemon", { type: "ready", port: 7777 }],
+      ["log", { level: "info", source: "daemon", message: "daemon ready" }],
+    ];
+
+    events.forEach(([event, data], index) => {
+      expect(validate({
+        version: 1,
+        eventId: `event-${event}`,
+        sequence: index + 2,
+        event,
+        data,
+        timestamp: "2026-09-04T00:00:00.000Z",
+      })).toEqual({
+        ok: true,
+        envelope: expect.any(Object),
+      });
+    });
+  });
   it("requires a complete sanitized Mission projection for Mission events", () => {
     const { source: _source, ...withoutSource } = validMissionEnvelope.data;
     expect(validate({
