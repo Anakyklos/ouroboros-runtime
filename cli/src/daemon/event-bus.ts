@@ -171,6 +171,11 @@ export class EventBus {
         this.redactionLifecycleListeners.forEach(callback => callback(secret, false));
     }
 
+    /** Return the number of listeners currently registered for a channel. */
+    listenerCount<K extends keyof EventMap>(event: K): number {
+        return this.listeners.get(event)?.size ?? 0;
+    }
+
     /**
      * Log helper - emits a log event
      */

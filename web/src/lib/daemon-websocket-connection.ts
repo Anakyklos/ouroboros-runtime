@@ -86,16 +86,23 @@ export class DaemonWebSocketConnection {
     this.clearReconnectTimer();
     const socket = this.socket;
     this.socket = null;
-    if (socket && (socket.readyState === CONNECTING_READY_STATE || socket.readyState === OPEN_READY_STATE)) {
-      socket.close();
+    if (socket) {
+      this.clearSocketHandlers(socket);
+      if (socket.readyState === CONNECTING_READY_STATE || socket.readyState === OPEN_READY_STATE) {
+        socket.close();
+      }
     }
     this.onStatus?.("disconnected");
   }
 
   send(data: unknown): boolean {
     if (this.socket?.readyState !== OPEN_READY_STATE) return false;
-    this.socket.send(JSON.stringify(data));
-    return true;
+    try {
+      this.socket.send(JSON.stringify(data));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   get cursor(): number {
@@ -108,7 +115,14 @@ export class DaemonWebSocketConnection {
       return;
     }
 
-    const socket = this.createWebSocket(this.url);
+    let socket: WebSocketLike;
+    try {
+      socket = this.createWebSocket(this.url);
+    } catch {
+      this.onDiagnostic?.({ code: "transport_error" });
+      this.scheduleReconnect();
+      return;
+    }
     const generation = ++this.generation;
     this.socket = socket;
     this.onStatus?.("reconnecting");
@@ -131,18 +145,21 @@ export class DaemonWebSocketConnection {
       const decision = this.stream.accept(value);
       if (decision === "resync_required") {
         this.scheduleReconnect();
-        socket.close();
+        this.invalidateSocket(socket, generation);
       }
     };
 
     socket.onerror = () => {
       if (!this.isCurrent(socket, generation)) return;
-      this.onDiagnostic?.({ code: "invalid_envelope" });
+      this.onDiagnostic?.({ code: "transport_error" });
+      this.invalidateSocket(socket, generation);
+      this.scheduleReconnect();
     };
 
     socket.onclose = () => {
       if (!this.isCurrent(socket, generation)) return;
       this.socket = null;
+      this.clearSocketHandlers(socket);
       if (this.stopped) {
         this.onStatus?.("disconnected");
         return;
@@ -169,6 +186,23 @@ export class DaemonWebSocketConnection {
     if (this.reconnectTimer === null) return;
     this.clearTimer(this.reconnectTimer);
     this.reconnectTimer = null;
+  }
+
+  private invalidateSocket(socket: WebSocketLike, generation: number): void {
+    if (!this.isCurrent(socket, generation)) return;
+    this.socket = null;
+    this.generation += 1;
+    this.clearSocketHandlers(socket);
+    if (socket.readyState === CONNECTING_READY_STATE || socket.readyState === OPEN_READY_STATE) {
+      socket.close();
+    }
+  }
+
+  private clearSocketHandlers(socket: WebSocketLike): void {
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onclose = null;
+    socket.onerror = null;
   }
 
   private isCurrent(socket: WebSocketLike, generation: number): boolean {

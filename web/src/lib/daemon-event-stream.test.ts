@@ -4,7 +4,9 @@ import {
   calculateReconnectDelay,
 } from "./daemon-event-stream";
 import type {
+  AllowedDaemonEvent,
   DaemonEventEnvelope,
+  DaemonMissionEventData,
   DaemonSnapshot,
 } from "../../../shared/daemon-event-contract";
 
@@ -19,6 +21,14 @@ const capabilities = {
 };
 
 const snapshot: DaemonSnapshot = {
+  protocolVersion: 1,
+  transportCapabilities: {
+    orderedEvents: true,
+    authoritativeSnapshot: true,
+    resync: true,
+    durableMissions: true,
+    durableInvocations: true,
+  },
   cursor: 1,
   capabilities,
   status: {
@@ -31,12 +41,29 @@ const snapshot: DaemonSnapshot = {
     tokensUsed: { available: false, reason: "not wired" },
     memory: { rssBytes: 1, heapUsedBytes: 2, heapTotalBytes: 3 },
     capabilities,
-    timestamp: "2026-08-19T22:00:00.000Z",
+    timestamp: "2026-09-04T00:00:00.000Z",
   },
+  missions: [],
+  invocations: [],
 };
 
+function missionEventData(state: DaemonMissionEventData["state"]): DaemonMissionEventData {
+  return {
+    kind: "state_changed",
+    missionId: "mission-1",
+    state,
+    source: "mission_control",
+    currentPlanRevisionId: "revision-1",
+    createdAt: "2026-09-04T00:00:00.000Z",
+    updatedAt: "2026-09-04T00:00:00.000Z",
+    recoveryCount: 0,
+    invocationIds: [],
+    pendingApprovalCount: 0,
+  };
+}
+
 function envelope<T>(
-  event: DaemonEventEnvelope<T>["event"],
+  event: AllowedDaemonEvent,
   sequence: number,
   data: T,
   eventId = `event-${sequence}`,
@@ -47,7 +74,7 @@ function envelope<T>(
     sequence,
     event,
     data,
-    timestamp: "2026-08-19T22:00:00.000Z",
+    timestamp: "2026-09-04T00:00:00.000Z",
   };
 }
 
@@ -67,6 +94,14 @@ describe("DaemonEventStream", () => {
     expect(stream.cursor).toBe(2);
   });
 
+  it("preserves waiting states as valid Mission events", () => {
+    const applied: unknown[] = [];
+    const stream = new DaemonEventStream({ onEnvelope: (value) => applied.push(value) });
+
+    expect(stream.accept(envelope("mission", 1, missionEventData("waiting_for_provider")))).toBe("applied");
+    expect(applied).toHaveLength(1);
+  });
+
   it("ignores malformed and unknown messages before callbacks run", () => {
     const applied: unknown[] = [];
     const diagnostics: string[] = [];
@@ -84,7 +119,21 @@ describe("DaemonEventStream", () => {
     expect(diagnostics).toEqual(["invalid_envelope", "unknown_event"]);
   });
 
-  it("rejects an incomplete snapshot without invoking snapshot consumers", () => {
+  it("reports version and payload diagnostics without invoking consumers", () => {
+    const diagnostics: string[] = [];
+    const applied: unknown[] = [];
+    const stream = new DaemonEventStream({
+      onEnvelope: (value) => applied.push(value),
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic.code),
+    });
+
+    expect(stream.accept({ ...envelope("daemon", 1, { type: "ready" }), version: 2 })).toBe("invalid");
+    expect(stream.accept(envelope("mission", 1, { ...missionEventData("executing"), state: "invalid" } as never))).toBe("invalid");
+    expect(applied).toHaveLength(0);
+    expect(diagnostics).toEqual(["unsupported_version", "invalid_payload"]);
+  });
+
+  it("rejects an incomplete or inconsistent snapshot without invoking snapshot consumers", () => {
     const snapshots: unknown[] = [];
     const diagnostics: string[] = [];
     const stream = new DaemonEventStream({
@@ -92,17 +141,10 @@ describe("DaemonEventStream", () => {
       onDiagnostic: (diagnostic) => diagnostics.push(diagnostic.code),
     });
 
-    expect(
-      stream.accept(
-        envelope("snapshot", 1, {
-          cursor: 1,
-          status: {},
-          capabilities: {},
-        } as never),
-      ),
-    ).toBe("invalid");
+    expect(stream.accept(envelope("snapshot", 1, { cursor: 1, status: {}, capabilities: {} } as never))).toBe("invalid");
+    expect(stream.accept(envelope("snapshot", 4, { ...snapshot, cursor: 3 }))).toBe("invalid");
     expect(snapshots).toHaveLength(0);
-    expect(diagnostics).toEqual(["invalid_envelope"]);
+    expect(diagnostics).toEqual(["invalid_payload", "invalid_payload"]);
   });
 
   it("deduplicates an event by eventId and does not apply it twice", () => {
@@ -124,8 +166,8 @@ describe("DaemonEventStream", () => {
     });
 
     expect(stream.accept(envelope("daemon", 1, { type: "ready" }))).toBe("applied");
-    expect(stream.accept(envelope("task", 3, { type: "progress" }))).toBe("resync_required");
-    expect(stream.accept(envelope("daemon", 2, { type: "ready_again" }))).toBe("out_of_order");
+    expect(stream.accept(envelope("mission", 3, missionEventData("executing")))).toBe("resync_required");
+    expect(stream.accept(envelope("daemon", 2, { type: "ready" }))).toBe("out_of_order");
     expect(applied).toHaveLength(1);
     expect(stream.cursor).toBe(1);
     expect(decisions).toEqual(["sequence_gap", "out_of_order"]);
@@ -137,7 +179,7 @@ describe("DaemonEventStream", () => {
 
     expect(stream.accept(envelope("daemon", 1, { type: "ready" }))).toBe("applied");
     expect(stream.accept(envelope("snapshot", 4, { ...snapshot, cursor: 4 }))).toBe("applied");
-    expect(stream.accept(envelope("daemon", 5, { type: "waiting_for_provider" }))).toBe("applied");
+    expect(stream.accept(envelope("mission", 5, missionEventData("waiting_for_provider")))).toBe("applied");
     expect(snapshots).toHaveLength(1);
     expect(stream.cursor).toBe(5);
   });

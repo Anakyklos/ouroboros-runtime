@@ -64,10 +64,12 @@ describe("DaemonServer", () => {
     }, eventBus, missionStore);
 
     await server.start();
+    expect(eventBus.listenerCount("*")).toBe(1);
   });
 
   afterAll(async () => {
     await server.stop();
+    expect(eventBus.listenerCount("*")).toBe(0);
     await missionStore.close();
   });
 
@@ -179,6 +181,8 @@ describe("DaemonServer", () => {
         protocolVersion: 1,
         missions: [{ missionId: "mission-server-1", state: "waiting_for_provider" }],
       });
+      expect(JSON.stringify(message)).not.toContain("Authorization");
+      expect(JSON.stringify(message)).not.toContain("private prompt");
     } finally {
       socket.close();
       await new Promise<void>((resolve) => {
@@ -191,6 +195,27 @@ describe("DaemonServer", () => {
     }
   });
 
+  it("does not alter the durable Mission when a client disconnects", async () => {
+    const before = await missionStore.getMission("mission-server-1");
+    const socket = new WebSocket(`ws://127.0.0.1:${TEST_PORT}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      socket.addEventListener("message", () => resolve(), { once: true });
+      socket.addEventListener("error", () => reject(new Error("websocket connection failed")), { once: true });
+    });
+    socket.close();
+    await new Promise<void>((resolve) => {
+      if (socket.readyState === WebSocket.CLOSED) {
+        resolve();
+        return;
+      }
+      socket.addEventListener("close", () => resolve(), { once: true });
+    });
+    const after = await missionStore.getMission("mission-server-1");
+
+    expect(before?.state).toBe("waiting_for_provider");
+    expect(after?.state).toBe(before?.state);
+    expect(after?.updatedAt).toBe(before?.updatedAt);
+  });
   it("should expose only explicit operational events, not legacy EventBus events", async () => {
     const socket = new WebSocket(`ws://127.0.0.1:${TEST_PORT}/ws`);
     const messages: Record<string, unknown>[] = [];
