@@ -25,6 +25,7 @@ import {
     CredentialRegistry,
     CredentialedProviderInvoker,
 } from "./provider-security.js";
+import { ProviderResilience, type ProviderResilienceOptions } from "./provider-resilience.js";
 
 // Engines
 import { PolicyEngine, createPolicyEngine } from "./PolicyEngine.js";
@@ -60,6 +61,8 @@ export interface InferenceSubsystemConfig {
     stateDir?: string;
     /** Registry opcional injetado pela camada superior de credenciais */
     credentialRegistry?: CredentialRegistry;
+    /** Política comum de retry, quota e circuit breaker para a provider boundary */
+    resilience?: ProviderResilienceOptions;
 }
 
 export interface InferenceStatus {
@@ -79,6 +82,7 @@ export class InferenceSubsystem {
     private provider!: LocalInferenceProvider;
     private credentialRegistry: CredentialRegistry;
     private credentialedInvoker!: CredentialedProviderInvoker;
+    private resilience!: ProviderResilience;
     private registry!: ModelRegistry;
     private router!: ModelRouter;
 
@@ -123,10 +127,13 @@ export class InferenceSubsystem {
 
         // 1. Provider (Ollama connection)
         this.provider = createLocalInferenceProvider(this.config.provider, this.eventBus);
+        this.resilience = new ProviderResilience(this.config.resilience);
         this.credentialedInvoker = new CredentialedProviderInvoker(
             this.provider,
             this.credentialRegistry,
             this.eventBus,
+            undefined,
+            this.resilience,
         );
 
         // 2. Check Ollama health
@@ -244,6 +251,7 @@ export class InferenceSubsystem {
     getProvider(): LocalInferenceProvider { return this.provider; }
     getCredentialRegistry(): CredentialRegistry { return this.credentialRegistry; }
     getCredentialedInvoker(): CredentialedProviderInvoker { return this.credentialedInvoker; }
+    getResilience(): ProviderResilience { return this.resilience; }
     getRegistry(): ModelRegistry { return this.registry; }
     getRouter(): ModelRouter { return this.router; }
     getPolicy(): PolicyEngine { return this.policy; }

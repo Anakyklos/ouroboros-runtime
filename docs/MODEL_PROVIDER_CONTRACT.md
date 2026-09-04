@@ -68,14 +68,16 @@ Falhas do contrato são instâncias de `ModelProviderError`. Cada erro informa u
 | HTTP 403 | `authorization` | Não | Não |
 | HTTP 400 ou 422 | `invalid_request` | Não | Não |
 | HTTP 429 | `rate_limit` | Sim | Sim |
-| Deadline ou timeout da chamada | `timeout` | Não | Sim |
+| Deadline ou timeout da chamada | `timeout` | Conforme `retryable` explícito | Sim |
 | Abort do chamador | `cancellation` | Não | Não |
 | Falha de conexão ou `fetch` | `network` | Sim | Sim |
 | HTTP 5xx | `http_unavailable` | Sim | Sim |
 | Resposta sem o shape obrigatório | `malformed_response` | Não | Sim |
 | Erro específico não classificado | `provider` | Não | Sim |
 
-O adapter não executa retry dentro do novo método `complete`; ele devolve os hints tipados para a camada de orquestração futura decidir com base em quota, scheduler e estado durável. A API legada `chat` mantém seus retries e seu formato público existente para não alterar o comportamento atual.
+O adapter continua sem executar retry dentro do método `complete`; ele devolve os hints tipados para a camada superior. Quando a chamada passa por `CredentialedProviderInvoker` com `ProviderResilience`, a camada de boundary aplica uma política comum e limitada: somente erros `ModelProviderError` explicitamente retryable podem repetir, `maxAttempts` inclui a chamada inicial, `Retry-After` tem precedência sobre o backoff configurado e o `AbortSignal` interrompe espera e novas chamadas. Erros permanentes, autenticação, configuração e cancelamento saem sem repetição. A API legada `chat` mantém seus retries e seu formato público existente para não alterar o comportamento atual.
+
+`ProviderResilience` também mantém um token bucket por `credentialScope` e um circuit breaker por `(providerId, credentialScope)`. Os snapshots contêm somente scopes opacos, contagens, timestamps, cooldowns e estados; a aplicação hospedeira decide quando persistir e restaurar esse estado. Não há scheduler ou fila durável nesta camada.
 
 ## Cancelamento e duração da tarefa
 
@@ -89,6 +91,10 @@ O novo caminho não registra prompt, resposta integral, credencial ou referênci
 
 A implementação mantém `chat`, `embed`, a factory e o provider default existentes. `complete` prova a adaptação de exatamente um provider, enquanto os consumidores atuais continuam usando suas APIs públicas legadas.
 
+## Eventos de observabilidade
+
+Os eventos opcionais da política carregam somente `providerId`, `credentialScope`, timestamps, tentativa, motivo de espera e categoria tipada do erro. Não carregam prompt, resposta, `credentialRef`, segredo ou headers. O snapshot de resiliência segue a mesma regra de dados mínimos.
+
 ## Fora de escopo
 
-A Issue #44 não implementa o provider NVIDIA, BYOK completo, limiter, circuit breaker, scheduler durável, migração de todos os providers ou troca do provider padrão. Também não define contrato para embeddings, reranking, visão ou agentes externos.
+A Issue #44 não implementa o provider NVIDIA, BYOK completo, limiter, circuit breaker, scheduler durável, migração de todos os providers ou troca do provider padrão. Nesta base, a política de limiter/circuit breaker/retry comum é adicionada pela Issue #47 no `CredentialedProviderInvoker`; scheduler, fila durável e a decisão final de retomada continuam fora deste contrato. Também não se define contrato para embeddings, reranking, visão ou agentes externos.
