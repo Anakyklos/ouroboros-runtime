@@ -48,8 +48,13 @@ const missionEvent: DaemonMissionEventData = {
   kind: "state_changed",
   missionId: "mission-1",
   state: "executing",
+  source: "mission_control",
   currentPlanRevisionId: "revision-1",
+  createdAt: "2026-09-04T00:00:00.000Z",
   updatedAt: "2026-09-04T00:00:00.000Z",
+  recoveryCount: 0,
+  invocationIds: [],
+  pendingApprovalCount: 0,
 };
 
 class FakeClient implements ProjectionClient {

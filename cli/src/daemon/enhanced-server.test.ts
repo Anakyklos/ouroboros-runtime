@@ -225,8 +225,13 @@ describe("DaemonServer", () => {
         kind: "state_changed",
         missionId: "mission-server-1",
         state: "waiting_for_provider",
+        source: "cli",
         currentPlanRevisionId: "revision-server-1",
+        createdAt: "2026-09-04T00:00:00.000Z",
         updatedAt: "2026-09-04T00:00:00.000Z",
+        recoveryCount: 1,
+        invocationIds: [],
+        pendingApprovalCount: 0,
       });
       const message = await nextMessage();
 

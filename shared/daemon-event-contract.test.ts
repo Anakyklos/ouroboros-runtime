@@ -33,8 +33,13 @@ const validMissionEnvelope = {
     kind: "state_changed",
     missionId: "mission-1",
     state: "waiting_for_provider",
+    source: "mission_control",
     currentPlanRevisionId: null,
+    createdAt: "2026-09-04T00:00:00.000Z",
     updatedAt: "2026-09-04T00:00:00.000Z",
+    recoveryCount: 0,
+    invocationIds: [],
+    pendingApprovalCount: 0,
   },
   timestamp: "2026-09-04T00:00:00.000Z",
   missionId: "mission-1",
@@ -108,6 +113,13 @@ describe("daemon event contract", () => {
     })).toEqual({ ok: false, code: "invalid_payload" });
   });
 
+  it("requires a complete sanitized Mission projection for Mission events", () => {
+    const { source: _source, ...withoutSource } = validMissionEnvelope.data;
+    expect(validate({
+      ...validMissionEnvelope,
+      data: withoutSource,
+    })).toEqual({ ok: false, code: "invalid_payload" });
+  });
   it("rejects malformed envelope fields without throwing", () => {
     const malformed = [
       { ...validMissionEnvelope, eventId: "" },

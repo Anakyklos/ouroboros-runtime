@@ -170,8 +170,13 @@ export interface DaemonMissionEventData {
   kind: "created" | "updated" | "state_changed";
   missionId: string;
   state: DaemonMissionState;
+  source: "katherine" | "mission_control" | "cli" | "api" | "operator";
   currentPlanRevisionId: string | null;
+  createdAt: string;
   updatedAt: string;
+  recoveryCount: number;
+  invocationIds: string[];
+  pendingApprovalCount: number;
 }
 
 export interface DaemonPlanRevisionEventData {
@@ -199,9 +204,14 @@ export interface DaemonCapabilityInvocationEventData {
   stepId: string;
   capabilityId: string;
   moduleOwner: string;
+  planRevisionId: string;
   status: DaemonInvocationStatus;
   deliveryState: DaemonDeliveryState;
+  ownerVerificationState: DaemonOwnerVerificationState;
+  createdAt: string;
   updatedAt: string;
+  dispatchedAt?: string;
+  completedAt?: string;
 }
 
 export interface DaemonCapabilityAvailabilityEventData {
@@ -501,12 +511,29 @@ function isSnapshot(value: unknown): value is DaemonSnapshot {
 
 function isMissionEventData(value: unknown): value is DaemonMissionEventData {
   if (!isRecord(value)) return false;
-  return hasExactKeys(value, ["kind", "missionId", "state", "currentPlanRevisionId", "updatedAt"])
+  return hasExactKeys(value, [
+    "kind",
+    "missionId",
+    "state",
+    "source",
+    "currentPlanRevisionId",
+    "createdAt",
+    "updatedAt",
+    "recoveryCount",
+    "invocationIds",
+    "pendingApprovalCount",
+  ])
     && isOneOf(value.kind, ["created", "updated", "state_changed"] as const)
     && isNonEmptyString(value.missionId)
     && isOneOf(value.state, DAEMON_MISSION_STATES)
+    && isOneOf(value.source, ["katherine", "mission_control", "cli", "api", "operator"] as const)
     && (value.currentPlanRevisionId === null || isNonEmptyString(value.currentPlanRevisionId))
-    && isValidTimestamp(value.updatedAt);
+    && isValidTimestamp(value.createdAt)
+    && isValidTimestamp(value.updatedAt)
+    && isSafeInteger(value.recoveryCount)
+    && Array.isArray(value.invocationIds)
+    && value.invocationIds.every((id) => isNonEmptyString(id))
+    && isSafeInteger(value.pendingApprovalCount);
 }
 
 function isPlanRevisionEventData(value: unknown): value is DaemonPlanRevisionEventData {
@@ -540,19 +567,27 @@ function isCapabilityInvocationEventData(value: unknown): value is DaemonCapabil
     "stepId",
     "capabilityId",
     "moduleOwner",
+    "planRevisionId",
     "status",
     "deliveryState",
+    "ownerVerificationState",
+    "createdAt",
     "updatedAt",
-  ])
+  ], ["dispatchedAt", "completedAt"])
     && isOneOf(value.kind, ["started", "waiting", "completed", "failed", "cancelled", "updated"] as const)
     && isNonEmptyString(value.invocationId)
     && isNonEmptyString(value.missionId)
     && isNonEmptyString(value.stepId)
     && isNonEmptyString(value.capabilityId)
     && isSafePublicText(value.moduleOwner, 128)
+    && isNonEmptyString(value.planRevisionId)
     && isOneOf(value.status, DAEMON_INVOCATION_STATUSES)
     && isOneOf(value.deliveryState, DAEMON_DELIVERY_STATES)
-    && isValidTimestamp(value.updatedAt);
+    && isOneOf(value.ownerVerificationState, DAEMON_OWNER_VERIFICATION_STATES)
+    && isValidTimestamp(value.createdAt)
+    && isValidTimestamp(value.updatedAt)
+    && (value.dispatchedAt === undefined || isValidTimestamp(value.dispatchedAt))
+    && (value.completedAt === undefined || isValidTimestamp(value.completedAt));
 }
 
 function isCapabilityAvailabilityEventData(value: unknown): value is DaemonCapabilityAvailabilityEventData {
