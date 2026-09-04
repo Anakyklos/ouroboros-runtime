@@ -52,6 +52,13 @@ export class DaemonEventStream {
     return this._cursor;
   }
 
+  /** Start a fresh transport generation; the next snapshot is authoritative. */
+  resetForConnection(): void {
+    this._cursor = 0;
+    this.awaitingResync = false;
+    this.rememberedEventIds.clear();
+  }
+
   accept(value: unknown): StreamDecision {
     const validation = validateDaemonEventEnvelope(value);
     if (!validation.ok) {

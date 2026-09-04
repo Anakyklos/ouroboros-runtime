@@ -84,8 +84,7 @@ export class DaemonProjection {
     try {
       snapshot = await this.snapshot(snapshotSequence);
     } catch {
-      this.removeClient(client);
-      this.report("invalid_payload");
+      this.closeClient(client, "invalid_payload");
       return;
     }
 

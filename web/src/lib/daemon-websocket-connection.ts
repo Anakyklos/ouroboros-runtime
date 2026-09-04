@@ -115,6 +115,7 @@ export class DaemonWebSocketConnection {
       return;
     }
 
+    this.stream.resetForConnection();
     let socket: WebSocketLike;
     try {
       socket = this.createWebSocket(this.url);

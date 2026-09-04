@@ -136,6 +136,21 @@ describe("DaemonProjection", () => {
     expect(readEnvelope(client.messages, 1).event).toBe("mission");
   });
 
+  it("closes a client when the authoritative snapshot cannot be read", async () => {
+    const diagnostics: string[] = [];
+    const client = new FakeClient();
+    const projection = new DaemonProjection({
+      snapshot: async () => { throw new Error("private store failure"); },
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic.code),
+    });
+
+    await projection.connectClient(client);
+
+    expect(client.closeCalls).toBe(1);
+    expect(projection.connectedClientCount).toBe(0);
+    expect(diagnostics).toEqual(["invalid_payload"]);
+  });
+
   it("closes a handshake whose bounded pending buffer is exceeded", async () => {
     let releaseSnapshot!: () => void;
     const snapshotReady = new Promise<void>((resolve) => { releaseSnapshot = resolve; });

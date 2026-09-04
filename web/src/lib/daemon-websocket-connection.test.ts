@@ -211,6 +211,37 @@ describe("DaemonWebSocketConnection", () => {
     expect(timers).toHaveLength(1);
   });
 
+  it("resets the cursor when reconnecting to a new daemon process", () => {
+    const sockets: FakeSocket[] = [];
+    const timers: Array<() => void> = [];
+    const snapshots: DaemonSnapshot[] = [];
+    const connection = new DaemonWebSocketConnection({
+      url: "ws://daemon.test/ws",
+      createWebSocket: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      setTimeout: (callback) => {
+        timers.push(callback);
+        return timers.length;
+      },
+      clearTimeout: () => {},
+      onSnapshot: (snapshot) => snapshots.push(snapshot),
+    });
+
+    connection.start();
+    sockets[0]!.open();
+    sockets[0]!.message(JSON.stringify(snapshotEnvelope(5, "executing")));
+    sockets[0]!.closeFromPeer();
+    timers[0]!();
+    sockets[1]!.open();
+    sockets[1]!.message(JSON.stringify(snapshotEnvelope(1, "executing")));
+
+    expect(snapshots).toHaveLength(2);
+    expect(connection.cursor).toBe(1);
+  });
+
   it("never replays a command or effect on reconnect", () => {
     const sockets: FakeSocket[] = [];
     const timers: Array<() => void> = [];
