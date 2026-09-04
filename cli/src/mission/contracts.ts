@@ -529,11 +529,18 @@ export function isInvocationDue(
     return nextEligibleAt === null || Date.parse(typeof now === "string" ? now : now.toISOString()) >= Date.parse(nextEligibleAt);
 }
 
+/**
+ * A FAILED attempt is retryable only when the declared retry policy allows it.
+ * An attested negative owner verdict is a definitive rejection of this
+ * invocation, not an ordinary transient failure, so it is never eligible for
+ * another attempt.
+ */
 export function isSafeRetryEligible(
-    invocation: Pick<CapabilityInvocation, "status" | "retry" | "delivery" | "attempts" | "idempotency">,
+    invocation: Pick<CapabilityInvocation, "status" | "retry" | "delivery" | "attempts" | "idempotency" | "ownerVerification">,
     now: string | Date,
 ): boolean {
-    return invocation.status === InvocationStatus.FAILED
+    return invocation.ownerVerification?.verified !== false
+        && invocation.status === InvocationStatus.FAILED
         && invocation.retry.attempt < invocation.retry.maxAttempts
         && invocation.idempotency.mode === "idempotent"
         && !hasUncertainDelivery(invocation)

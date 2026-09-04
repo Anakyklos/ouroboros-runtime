@@ -116,7 +116,9 @@ function createEngine(store: SqliteMissionStore, ids: FakeIdGenerator): MissionE
     });
 }
 
-function createRegistry(): CapabilityRegistry {
+function createRegistry(options: {
+    reviewRetry?: { maxAttempts: number; backoff: RetryBackoff };
+} = {}): CapabilityRegistry {
     const registry = new CapabilityRegistry();
     registry.register(defineCapabilityDescriptor({
         capabilityId: "lifeos.query",
@@ -136,8 +138,43 @@ function createRegistry(): CapabilityRegistry {
         allowedInputRefPrefixes: ["refs/runstead/"],
         requiresOwnerVerification: true,
         ownsStorage: false,
+        retry: options.reviewRetry,
     }));
     return registry;
+}
+
+async function acceptReviewMission(engine: MissionEngine): Promise<Mission> {
+    const mission = await engine.createMission({
+        intent: {
+            requestId: "request-owner-rejection-retry",
+            source: "cli",
+            originalIntent: "Review the pending Runstead change",
+            constraints: [],
+            acceptanceCriteria: ["review complete"],
+        },
+        allowedCapabilityScope: {
+            capabilityIds: ["runstead.code-review"],
+            allowedEffectClasses: [EffectClass.EXECUTION],
+            allowedRefPrefixes: ["refs/runstead/"],
+        },
+    });
+    const proposal = await engine.proposePlan(mission.missionId, {
+        planId: "owner-rejection-retry-plan",
+        missionId: mission.missionId,
+        plannerNote: "owner rejection retry regression",
+        steps: [{
+            stepId: "review",
+            desiredOutcome: "Review the pending Runstead change",
+            dependencyIds: [],
+            capabilityRequirement: "runstead.code-review",
+            inputRefs: ["refs/runstead/pr/42"],
+            expectedAcceptance: ["review complete"],
+            effectClass: EffectClass.EXECUTION,
+        }],
+    });
+    if (!proposal.ok) throw new Error("owner rejection retry plan was rejected");
+    await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+    return mission;
 }
 
 describe("MissionScheduler", () => {
@@ -911,6 +948,70 @@ describe("MissionScheduler", () => {
         expect(invocations[0].status).toBe(InvocationStatus.COMPLETED);
     });
 
+    it("does not retry an attested owner rejection through the seam or scheduler", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const clock = new FakeClock(BASE_TIME);
+        const engine = createEngine(store, new FakeIdGenerator("owner-rejection"));
+        const mission = await acceptReviewMission(engine);
+        const registry = createRegistry({
+            reviewRetry: { maxAttempts: 2, backoff: RetryBackoff.NONE },
+        });
+        const seam = new ConnectorDispatchSeam(engine, registry, clock);
+        let invokes = 0;
+        seam.registerConnector("runstead.code-review", {
+            connectorContractVersion: 1,
+            capabilityId: "runstead.code-review",
+            describe: () => registry.requireDescriptor("runstead.code-review"),
+            invoke: async (request) => {
+                invokes++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "owner rejected the review",
+                    evidence: [],
+                    ownerVerification: {
+                        owner: "runstead",
+                        verified: false,
+                        reason: "review findings reject the proposed change",
+                    },
+                };
+            },
+        });
+        const scheduler = new MissionScheduler({ engine, store, seam, clock });
+
+        const first = await scheduler.runOnce();
+        expect(first.dispatchedInvocationIds).toHaveLength(1);
+        expect(invokes).toBe(1);
+        const invocation = (await store.listInvocations(mission.missionId))[0];
+        expect(invocation.status).toBe(InvocationStatus.FAILED);
+        expect(invocation.ownerVerification?.verified).toBe(false);
+        expect(invocation.ownerVerificationState).toBe("rejected");
+        expect(invocation.attempts).toHaveLength(1);
+        expect(invocation.attempts[0].state).toBe("failed");
+        expect(invocation.retry).toMatchObject({ maxAttempts: 2, attempt: 1, nextEligibleAt: null });
+        expect(invocation.delivery.state).toBe("failed");
+
+        const verification = await engine.verifyMission(mission.missionId);
+        expect(verification.satisfied).toBe(false);
+        expect(verification.ownerBlocked).toBe(true);
+
+        await expect(engine.prepareInvocationRetry(invocation.invocationId)).rejects.toThrow(
+            /attested owner rejection|owner verification.*cannot be retried/i,
+        );
+
+        const second = await scheduler.runOnce();
+        expect(second.dispatchedInvocationIds).toEqual([]);
+        expect(invokes).toBe(1);
+        const preserved = await store.getInvocation(invocation.invocationId);
+        expect(preserved?.status).toBe(InvocationStatus.FAILED);
+        expect(preserved?.ownerVerification?.verified).toBe(false);
+        expect(preserved?.ownerVerificationState).toBe("rejected");
+        expect(preserved?.attempts).toHaveLength(1);
+        expect(preserved?.retry.attempt).toBe(1);
+        await store.close();
+    });
+
     it("does not starve later reconciliation or hide its future wake behind permanent blockers", async () => {
         const store = new SqliteMissionStore(":memory:");
         await store.initialize();
@@ -1567,6 +1668,7 @@ describe("MissionScheduler", () => {
             evidenceRefs: [],
             completedAt: BASE_TIME,
         });
+        expect((await store.getInvocation(invocation.invocationId))?.ownerVerification).toBeUndefined();
         await engine.prepareInvocationRetry(invocation.invocationId, { backoffMs: 60 * 60 * 1000 });
 
         const registry = createRegistry();

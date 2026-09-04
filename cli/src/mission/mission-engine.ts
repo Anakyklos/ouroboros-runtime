@@ -1159,6 +1159,14 @@ export class MissionEngine {
         options: InvocationRetryOptions = {},
     ): Promise<CapabilityInvocation> {
         const invocation = await this.requireInvocation(invocationId);
+        if (invocation.ownerVerification?.verified === false) {
+            throw new InvalidStateTransitionError(
+                invocation.missionId,
+                invocation.status,
+                InvocationStatus.PENDING,
+                "attested owner rejection is definitive; this invocation cannot be retried",
+            );
+        }
         const now = this.clock.isoNow();
         if (!isSafeRetryEligible(invocation, now)) {
             throw new InvalidStateTransitionError(
