@@ -10,9 +10,15 @@ import websocket from '@fastify/websocket';
 import { EventBus, globalEventBus } from './event-bus.js';
 import { RpcGateway } from './rpc-gateway.js';
 import { DaemonProjection, type ProjectionClient } from './daemon-projection.js';
-import { isAllowedDaemonEvent } from '../../../shared/daemon-event-contract.js';
+import {
+    isAllowedDaemonEvent,
+    isDaemonEventData,
+    type AllowedDaemonEvent,
+    type DaemonEventDataMap,
+} from '../../../shared/daemon-event-contract.js';
 import { GatewayOrchestrator } from '../orchestration/GatewayOrchestrator.js';
 import type { StoragePort } from '../ports/storage.port.js';
+import type { MissionStore } from '../mission/ports.js';
 
 export interface DaemonConfig {
     port: number;
@@ -40,7 +46,8 @@ export class DaemonServer {
     constructor(
         storage: StoragePort,
         config: Partial<DaemonConfig> = {},
-        eventBus: EventBus = globalEventBus
+        eventBus: EventBus = globalEventBus,
+        missionStore?: MissionStore,
     ) {
         this.config = { ...DEFAULT_CONFIG, ...config };
         this.eventBus = eventBus;
@@ -50,10 +57,16 @@ export class DaemonServer {
             this.gatewayOrchestrator.initialize(this.config.apiKey);
         }
         
-        this.rpcGateway = new RpcGateway(this.gatewayOrchestrator, storage, eventBus, this.config.apiKey);
+        this.rpcGateway = new RpcGateway(
+            this.gatewayOrchestrator,
+            storage,
+            eventBus,
+            this.config.apiKey,
+            missionStore,
+        );
         this.projection = new DaemonProjection({
-            snapshot: (cursor) => ({
-                ...this.rpcGateway.getProjectionSnapshot(),
+            snapshot: async (cursor) => ({
+                ...await this.rpcGateway.getProjectionSnapshot(),
                 cursor,
             }),
             onDiagnostic: (diagnostic) => {
@@ -84,8 +97,31 @@ export class DaemonServer {
             if (!isAllowedDaemonEvent(forwarded.event) || forwarded.event === 'snapshot') {
                 return;
             }
-            this.projection.broadcast(forwarded.event, forwarded.data);
+            this.forwardPublicEvent(forwarded.event, forwarded.data);
         });
+    }
+
+    private forwardPublicEvent<E extends Exclude<AllowedDaemonEvent, 'snapshot'>>(
+        event: E,
+        data: unknown,
+    ): void {
+        if (event === 'log') {
+            if (!data || typeof data !== 'object') return;
+            const log = data as { level?: unknown; message?: unknown; source?: unknown };
+            const normalized: DaemonEventDataMap['log'] = {
+                level: log.level as DaemonEventDataMap['log']['level'],
+                message: log.message as string,
+                ...(typeof log.source === 'string' ? { source: log.source } : {}),
+            };
+            if (isDaemonEventData('log', normalized)) {
+                this.projection.broadcast('log', normalized);
+            }
+            return;
+        }
+
+        if (isDaemonEventData(event, data)) {
+            this.projection.broadcast(event, data);
+        }
     }
 
     private cleanupTransport(): void {
