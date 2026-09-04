@@ -2000,4 +2000,105 @@ describe("ContextCompiler — honest restart recomposition (round 2)", () => {
         expect((conflict as Error)?.name).toBe("InvocationConflictError");
         await harness.close();
     });
+
+    it("does not re-acquire context content through STATUS_REPLAY", async () => {
+        const descriptor = makeContextDescriptor("lifeos", {
+            reconciliationSupport: "status_replay",
+        });
+        const harness = await createSeamHarness({ descriptors: [descriptor] });
+        const { mission, stepId } = await harness.acceptContextPlan(
+            descriptor,
+            "refs/lifeos/journal/2026-08",
+        );
+        let invokes = 0;
+        let reconciliations = 0;
+        harness.seam.registerConnector(descriptor.capabilityId, {
+            connectorContractVersion: 1,
+            capabilityId: descriptor.capabilityId,
+            describe: () => descriptor,
+            invoke: async (request) => {
+                invokes++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "initial context read",
+                    evidence: [],
+                    contextRows: journalRows(),
+                };
+            },
+            reconcile: async (requestId) => {
+                reconciliations++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId,
+                    summary: "status-only reconciliation",
+                    evidence: [],
+                    contextRows: journalRows(),
+                };
+            },
+        });
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
+        const first = await reader.read(mission, request, { dispatchStepId: stepId });
+        expect(first?.reads).toHaveLength(1);
+
+        const reacquired = await reader.read(mission, request, { dispatchStepId: stepId });
+        expect(reacquired?.reads).toEqual([]);
+        expect(reacquired?.unresolved).toHaveLength(1);
+        expect(reacquired?.unresolved[0].status).toBe(SourceStatus.UNSUPPORTED);
+        expect(invokes).toBe(1);
+        expect(reconciliations).toBe(0);
+        await harness.close();
+    });
+
+    it("re-acquires a completed external context read through FULL_REPLAY after restart", async () => {
+        const descriptor = makeContextDescriptor("lifeos", {
+            reconciliationSupport: "full_replay",
+        });
+        const harness = await createSeamHarness({ descriptors: [descriptor] });
+        const { mission, stepId } = await harness.acceptContextPlan(
+            descriptor,
+            "refs/lifeos/journal/2026-08",
+        );
+        let invokes = 0;
+        let reconciliations = 0;
+        harness.seam.registerConnector(descriptor.capabilityId, {
+            connectorContractVersion: 1,
+            capabilityId: descriptor.capabilityId,
+            describe: () => descriptor,
+            invoke: async (request) => {
+                invokes++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "initial context read",
+                    evidence: [],
+                    contextRows: journalRows(),
+                };
+            },
+            reconcile: async (requestId) => {
+                reconciliations++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId,
+                    summary: "reacquired context read",
+                    evidence: [],
+                    contextRows: journalRows(),
+                };
+            },
+        });
+        const reader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const request = makeContextRequest({ ownerHint: "lifeos", missionId: mission.missionId });
+        const first = await reader.read(mission, request, { dispatchStepId: stepId });
+        expect(first?.reads).toHaveLength(1);
+
+        // A new reader/runtime after restart must use the durable completed
+        // invocation identity and owner reconciliation, never invoke again.
+        const restartedReader = new SeamBoundContextReader(harness.engine, harness.seam, harness.registry);
+        const reacquired = await restartedReader.read(mission, request, { dispatchStepId: stepId });
+        expect(reacquired?.reads).toHaveLength(1);
+        expect(invokes).toBe(1);
+        expect(reconciliations).toBe(1);
+        await harness.close();
+    });
 });

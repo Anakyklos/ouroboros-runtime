@@ -65,6 +65,8 @@ const REVIEW_DESCRIPTOR = defineCapabilityDescriptor({
     effectClass: EffectClass.EXECUTION,
     allowedInputRefPrefixes: ["refs/runstead/"],
     requiresOwnerVerification: true,
+    cancellationSupport: "cooperative" as const,
+    reconciliationSupport: "full_replay" as const,
 });
 
 // ownsStorage mirrors the default #62 catalog contract for this id: policy
@@ -263,6 +265,148 @@ describe("ConnectorDispatchSeam", () => {
         expect(stored?.ownerVerification?.verified).toBe(true);
     });
 
+    it("persists the submitted delivery boundary before connector.invoke", async () => {
+        const missionId = await acceptTwoStepMission(harness);
+        const counters = { describe: 0, invoke: 0 };
+        let observedDelivery: string | undefined;
+        harness.seam.registerConnector(
+            REVIEW_DESCRIPTOR.capabilityId,
+            makeSeamConnector(REVIEW_DESCRIPTOR, counters, {
+                invoke: async (request) => {
+                    const invocation = (await harness.store.getInvocation(request.requestId));
+                    observedDelivery = invocation?.delivery.state;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId: request.requestId,
+                        summary: "done",
+                        evidence: [],
+                        ownerVerification: {
+                            owner: REVIEW_DESCRIPTOR.moduleOwner,
+                            verified: true,
+                            reason: "verified by fixture owner",
+                        },
+                    };
+                },
+            }),
+        );
+
+        await harness.seam.dispatchThroughSeam(missionId, "step-good");
+
+        expect(observedDelivery).toBe("submitted");
+        expect(counters.invoke).toBe(0);
+        const stored = await harness.store.getInvocation(
+            (await harness.store.listInvocations(missionId))[0].invocationId,
+        );
+        expect(stored?.cancellation.support).toBe("cooperative");
+        expect(stored?.reconciliation.support).toBe("full_replay");
+    });
+
+    it("resumes a durable not-submitted invocation without minting a second row", async () => {
+        const missionId = await acceptTwoStepMission(harness);
+        const invocation = await harness.engine.dispatchStep(missionId, "step-good", {
+            descriptor: {
+                contractVersion: 1,
+                moduleOwner: "runstead",
+                idempotency: { mode: "idempotent", keyScope: "request" },
+                retry: { maxAttempts: 0, backoff: "none" },
+                cancellationSupport: "cooperative",
+                reconciliationSupport: "full_replay",
+            },
+        });
+        const counters = { describe: 0, invoke: 0 };
+        harness.seam.registerConnector(
+            REVIEW_DESCRIPTOR.capabilityId,
+            makeSeamConnector(REVIEW_DESCRIPTOR, counters),
+        );
+
+        const outcome = await harness.seam.dispatchPersistedInvocation(invocation.invocationId);
+
+        expect(outcome.recordedStatus).toBe(InvocationStatus.COMPLETED);
+        expect(counters.invoke).toBe(1);
+        expect(await harness.store.listInvocations(missionId)).toHaveLength(1);
+    });
+
+    it("reconciles uncertain delivery by request identity without invoking again", async () => {
+        const missionId = await acceptTwoStepMission(harness);
+        const counters = { describe: 0, invoke: 0, reconcile: 0 };
+        let reconciledRequestId: string | undefined;
+        harness.seam.registerConnector(
+            REVIEW_DESCRIPTOR.capabilityId,
+            makeSeamConnector(REVIEW_DESCRIPTOR, counters, {
+                invoke: async () => {
+                    counters.invoke++;
+                    throw new Error("ack lost after submission");
+                },
+                reconcile: async (requestId) => {
+                    counters.reconcile++;
+                    reconciledRequestId = requestId;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId,
+                        summary: "owner confirms completion",
+                        evidence: [],
+                        ownerVerification: {
+                            owner: REVIEW_DESCRIPTOR.moduleOwner,
+                            verified: true,
+                            reason: "reconciled by owner",
+                        },
+                    };
+                },
+            }),
+        );
+
+        await expect(harness.seam.dispatchThroughSeam(missionId, "step-good")).rejects.toThrow(/uncertain/);
+        const uncertain = (await harness.store.listInvocations(missionId))[0];
+        const reconciled = await harness.seam.reconcileInvocation(uncertain.invocationId);
+
+        expect(counters.invoke).toBe(1);
+        expect(counters.reconcile).toBe(1);
+        expect(reconciled.recordedStatus).toBe(InvocationStatus.COMPLETED);
+        expect(reconciledRequestId).toBe(uncertain.requestId);
+        expect((await harness.store.getInvocation(uncertain.invocationId))?.status).toBe(
+            InvocationStatus.COMPLETED,
+        );
+        const duplicate = await harness.seam.reconcileInvocation(uncertain.invocationId);
+        expect(duplicate.recordedStatus).toBe(InvocationStatus.COMPLETED);
+        expect(duplicate.result).toBeNull();
+        expect(counters.reconcile).toBe(1);
+    });
+
+    it("blocks conservatively and never re-invokes when reconciliation is unsupported", async () => {
+        const missionId = await acceptMission(harness, [
+            makeStep({
+                stepId: "step-query",
+                capabilityRequirement: "lifeos.query",
+                inputRefs: ["refs/lifeos/status"],
+                effectClass: EffectClass.READ,
+            }),
+        ]);
+        const counters = { describe: 0, invoke: 0, reconcile: 0 };
+        harness.seam.registerConnector(
+            QUERY_DESCRIPTOR.capabilityId,
+            makeSeamConnector(QUERY_DESCRIPTOR, counters, {
+                invoke: async () => {
+                    counters.invoke++;
+                    throw new Error("owner disconnected");
+                },
+                reconcile: async () => {
+                    counters.reconcile++;
+                    return null;
+                },
+            }),
+        );
+
+        await expect(harness.seam.dispatchThroughSeam(missionId, "step-query")).rejects.toThrow(/uncertain/);
+        const uncertain = (await harness.store.listInvocations(missionId))[0];
+        const reconciled = await harness.seam.reconcileInvocation(uncertain.invocationId);
+
+        expect(counters.invoke).toBe(1);
+        expect(counters.reconcile).toBe(0);
+        expect(reconciled.recordedStatus).toBe(InvocationStatus.BLOCKED);
+        expect(reconciled.invocation.reconciliation.state).toBe("unsupported");
+        expect(reconciled.invocation.reconciliation.nextAction).toMatch(/blind replay/i);
+    });
+
     it("rejects dispatch with NO connector registered — pre-mint, no invocation exists", async () => {
         const missionId = await acceptTwoStepMission(harness);
         await expect(harness.seam.dispatchThroughSeam(missionId, "step-good")).rejects.toThrow(
@@ -371,6 +515,115 @@ describe("ConnectorDispatchSeam", () => {
         expect(stored?.completedAt).toBeUndefined();
     });
 
+    it("persists the owner operation handle and requests active cancellation without invoking again", async () => {
+        const missionId = await acceptTwoStepMission(harness);
+        const counters = { describe: 0, invoke: 0 };
+        let cancelledHandle: string | undefined;
+        harness.seam.registerConnector(
+            REVIEW_DESCRIPTOR.capabilityId,
+            makeSeamConnector(REVIEW_DESCRIPTOR, counters, {
+                invoke: async (request) => {
+                    counters.invoke++;
+                    return {
+                        status: CapabilityResultStatus.STILL_RUNNING,
+                        requestId: request.requestId,
+                        summary: "review running",
+                        evidence: [],
+                        ownerOperationRef: "owner-operation-1",
+                        ownerVerification: {
+                            owner: REVIEW_DESCRIPTOR.moduleOwner,
+                            verified: true,
+                            reason: "owner accepted the running operation",
+                        },
+                    };
+                },
+                cancel: async (ownerOperationRef) => {
+                    cancelledHandle = ownerOperationRef;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId: (await harness.store.listInvocations(missionId))[0].requestId,
+                        summary: "cancellation accepted",
+                        evidence: [],
+                    };
+                },
+            }),
+        );
+
+        const dispatched = await harness.seam.dispatchThroughSeam(missionId, "step-good");
+        await harness.engine.cancelMission(missionId, "operator stopped the active review", "operator-1");
+        const outcome = await harness.seam.cancelInvocation(dispatched.invocation.invocationId);
+        const stored = await harness.store.getInvocation(dispatched.invocation.invocationId);
+
+        expect(counters.invoke).toBe(1);
+        expect(cancelledHandle).toBe("owner-operation-1");
+        expect(outcome.recordedStatus).toBe(InvocationStatus.RUNNING);
+        expect(stored?.status).toBe(InvocationStatus.RUNNING);
+        expect(stored?.delivery.remoteOperationHandle).toBe("owner-operation-1");
+        expect(stored?.cancellation).toMatchObject({
+            requested: true,
+            requestedBy: "operator-1",
+            state: "acknowledged",
+        });
+        expect(stored?.reconciliation).toMatchObject({ state: "pending" });
+    });
+
+    it("reacquires a completed external result through reconciliation without a second submission", async () => {
+        const missionId = await acceptMission(harness, [
+            makeStep({
+                stepId: "step-review",
+                capabilityRequirement: REVIEW_DESCRIPTOR.capabilityId,
+                inputRefs: ["refs/runstead/pr/42"],
+                effectClass: EffectClass.EXECUTION,
+            }),
+        ]);
+        const counters = { describe: 0, invoke: 0, reconcile: 0 };
+        harness.seam.registerConnector(
+            REVIEW_DESCRIPTOR.capabilityId,
+            makeSeamConnector(REVIEW_DESCRIPTOR, counters, {
+                invoke: async (request) => {
+                    counters.invoke++;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId: request.requestId,
+                        summary: "initial read",
+                        evidence: [],
+                        ownerVerification: {
+                            owner: REVIEW_DESCRIPTOR.moduleOwner,
+                            verified: true,
+                            reason: "owner completed the review",
+                        },
+                    };
+                },
+                reconcile: async (requestId) => {
+                    counters.reconcile++;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId,
+                        summary: "reacquired read",
+                        evidence: [],
+                        ownerVerification: {
+                            owner: REVIEW_DESCRIPTOR.moduleOwner,
+                            verified: true,
+                            reason: "owner confirmed the review",
+                        },
+                    };
+                },
+            }),
+        );
+
+        const first = await harness.seam.dispatchThroughSeam(missionId, "step-review");
+        const reacquired = await harness.seam.reacquireCompletedInvocation(first.invocation.invocationId);
+
+        expect(counters.invoke).toBe(1);
+        expect(counters.reconcile).toBe(1);
+        expect(reacquired.recordedStatus).toBe(InvocationStatus.COMPLETED);
+        expect(reacquired.result?.summary).toBe("reacquired read");
+        expect(await harness.store.listInvocations(missionId)).toHaveLength(1);
+        expect((await harness.store.getInvocation(first.invocation.invocationId))?.status).toBe(
+            InvocationStatus.COMPLETED,
+        );
+    });
+
     it("records UNKNOWN as uncertain (BLOCKED, never completed) through the real seam", async () => {
         const missionId = await acceptTwoStepMission(harness);
         const counters = { describe: 0, invoke: 0 };
@@ -394,6 +647,53 @@ describe("ConnectorDispatchSeam", () => {
         const stored = await harness.store.getInvocation(outcome.invocation.invocationId);
         expect(stored?.status).toBe(InvocationStatus.BLOCKED);
         expect(stored?.completedAt).toBeUndefined();
+    });
+
+    it("uses persisted ownerOperationRef with observeStatus when reconcile is not exposed", async () => {
+        const missionId = await acceptTwoStepMission(harness);
+        const counters = { describe: 0, invoke: 0, observe: 0 };
+        harness.seam.registerConnector(
+            REVIEW_DESCRIPTOR.capabilityId,
+            makeSeamConnector(REVIEW_DESCRIPTOR, counters, {
+                invoke: async (request) => {
+                    counters.invoke++;
+                    return {
+                        status: CapabilityResultStatus.STILL_RUNNING,
+                        requestId: request.requestId,
+                        summary: "review running",
+                        evidence: [],
+                        ownerOperationRef: "owner-operation-observe",
+                    };
+                },
+                observeStatus: async (ownerOperationRef) => {
+                    counters.observe++;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId: (await harness.store.listInvocations(missionId))[0].requestId,
+                        summary: `observed ${ownerOperationRef}`,
+                        evidence: [],
+                        ownerVerification: {
+                            owner: REVIEW_DESCRIPTOR.moduleOwner,
+                            verified: true,
+                            reason: "owner confirmed completion",
+                        },
+                    };
+                },
+            }),
+        );
+
+        const running = await harness.seam.dispatchThroughSeam(missionId, "step-good");
+        expect((await harness.store.getInvocation(running.invocation.invocationId))?.delivery.remoteOperationHandle).toBe(
+            "owner-operation-observe",
+        );
+        const reconciled = await harness.seam.reconcileInvocation(running.invocation.invocationId);
+
+        expect(counters.invoke).toBe(1);
+        expect(counters.observe).toBe(1);
+        expect(reconciled.recordedStatus).toBe(InvocationStatus.COMPLETED);
+        expect((await harness.store.getInvocation(running.invocation.invocationId))?.status).toBe(
+            InvocationStatus.COMPLETED,
+        );
     });
 
     it("enforces the declarative inputSchema BEFORE invoke: zero calls, durable FAILED record (blocker 2)", async () => {

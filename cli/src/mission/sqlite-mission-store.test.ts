@@ -14,11 +14,14 @@
  */
 
 import { describe, it, expect, afterEach } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
     EffectClass,
+    CapabilityInvocation,
+    CapabilityInvocationRef,
     InvocationStatus,
     MISSION_CONTRACT_VERSION,
     Mission,
@@ -26,6 +29,12 @@ import {
     MissionState,
     PlanStep,
 } from "./contracts.js";
+import {
+    CancellationSupport,
+    IdempotencyMode,
+    ReconciliationSupport,
+    RetryBackoff,
+} from "../capabilities/contracts.js";
 import { SqliteMissionStore } from "./sqlite-mission-store.js";
 import { MissionEngine } from "./mission-engine.js";
 import { PlanPolicyValidator } from "./policy.js";
@@ -107,6 +116,77 @@ function makeEngineFactory(): EngineFactory {
 }
 
 const buildEngine = makeEngineFactory();
+
+const INVOCATION_TIME = "2026-08-30T12:00:00.000Z";
+
+function makeFullInvocation(
+    missionId: string,
+    overrides: Partial<CapabilityInvocation> = {},
+): CapabilityInvocation {
+    return {
+        invocationId: "invocation-full-1",
+        missionId,
+        stepId: "step-1",
+        capabilityId: "runstead.code-review",
+        planRevisionId: "revision-1",
+        effectFingerprint: "fingerprint-1",
+        contractVersion: 7,
+        moduleOwner: "runstead",
+        effectClass: EffectClass.EXECUTION,
+        status: InvocationStatus.PENDING,
+        requestId: "request-1",
+        inputRefs: ["refs/runstead/pr/42"],
+        idempotency: { mode: IdempotencyMode.IDEMPOTENT, key: "idempotency-1" },
+        retry: {
+            maxAttempts: 3,
+            attempt: 0,
+            backoff: RetryBackoff.FIXED,
+            backoffMs: 5_000,
+            nextEligibleAt: "2026-08-30T12:05:00.000Z",
+        },
+        attempts: [
+            {
+                attempt: 0,
+                correlationId: "correlation-1",
+                state: "prepared",
+                startedAt: INVOCATION_TIME,
+            },
+        ],
+        delivery: {
+            state: "acknowledged",
+            acknowledgedAt: INVOCATION_TIME,
+            remoteOperationHandle: "remote-operation-1",
+        },
+        cancellation: {
+            support: CancellationSupport.COOPERATIVE,
+            requested: false,
+            state: "not_requested",
+        },
+        reconciliation: {
+            support: ReconciliationSupport.STATUS_REPLAY,
+            state: "not_required",
+        },
+        resultRefs: [
+            {
+                refId: "evidence-1",
+                owner: "runstead",
+                externalRef: "refs/runstead/review/1",
+                label: "review result",
+            },
+        ],
+        ownerVerification: {
+            invocationId: "invocation-full-1",
+            verified: true,
+            reason: "owner accepted",
+            owner: "runstead",
+            verifiedAt: INVOCATION_TIME,
+        },
+        ownerVerificationState: "verified",
+        createdAt: INVOCATION_TIME,
+        updatedAt: INVOCATION_TIME,
+        ...overrides,
+    };
+}
 
 // ---------------------------------------------------------------------
 // Suite
@@ -208,6 +288,7 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         await engine1.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
         const invocation = await engine1.dispatchStep(mission.missionId, "step-1");
+        await engine1.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
         await engine1.recordInvocationResult(
             invocation.invocationId,
             {
@@ -450,6 +531,7 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         await engine1.acceptPlan(mission.missionId, proposal.revision.revisionId);
 
         const invocation = await engine1.dispatchStep(mission.missionId, "step-1");
+        await engine1.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
         await engine1.recordInvocationResult(
             invocation.invocationId,
             {
@@ -564,8 +646,22 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         expect(recovered!.invocationRefs[0].invocationId).toBe(invocation.invocationId);
         expect(recovered!.invocationRefs[0].stepId).toBe(tableRows[0].stepId);
         expect(recovered!.invocationRefs[0].status).toBe(tableRows[0].status);
-        // The Mission view and the table cannot diverge after restart.
-        expect(recovered!.invocationRefs).toEqual(tableRows);
+        // The Mission view and the table cannot diverge after restart, while
+        // retaining the deliberate minimal/full entity boundary.
+        expect(recovered!.invocationRefs).toEqual(
+            tableRows.map(({ invocationId, missionId, stepId, capabilityId, status, dispatchedAt, completedAt, resultRefs, ownerVerification, error }) => ({
+                invocationId,
+                missionId,
+                stepId,
+                capabilityId,
+                status,
+                dispatchedAt,
+                completedAt,
+                resultRefs,
+                ownerVerification,
+                error,
+            })),
+        );
 
         await store2.close();
     });
@@ -644,6 +740,7 @@ describe("SqliteMissionStore (durability + recovery)", () => {
 
         // Inject secrets through every free-form persisted path.
         const invocation = await engine.dispatchStep(mission.missionId, "step-1");
+        await engine.markInvocationHandoff(invocation.invocationId, { deliveryState: "acknowledged" });
         await engine.recordInvocationResult(
             invocation.invocationId,
             {
@@ -932,6 +1029,329 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         expect(revisions[0].steps[0].inputRefs).toEqual(inputRefs);
         expect(revisions[0].steps[0].approvalRequirement?.approvalId).toBe(approvalId);
         expect(revisions[0].steps[0].fallbacks?.[0].capabilityRequirement).toBe(fallbackCap);
+
+        await store.close();
+    });
+
+    it("round-trips every full invocation field while keeping Mission refs minimal", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const mission = await buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-a"), store).createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+        const invocation = makeFullInvocation(mission.missionId);
+
+        await store.saveInvocation(invocation);
+
+        const recovered = await store.getInvocation(invocation.invocationId);
+        expect(recovered).toEqual(invocation);
+        expect((await store.listInvocations(mission.missionId))[0]).toEqual(invocation);
+        const projected = (await store.getMission(mission.missionId))!.invocationRefs[0];
+        expect(projected).toEqual({
+            invocationId: invocation.invocationId,
+            missionId: invocation.missionId,
+            stepId: invocation.stepId,
+            capabilityId: invocation.capabilityId,
+            status: invocation.status,
+            resultRefs: invocation.resultRefs,
+            dispatchedAt: undefined,
+            completedAt: undefined,
+            ownerVerification: invocation.ownerVerification,
+        });
+        expect(projected).not.toHaveProperty("planRevisionId");
+        expect(projected).not.toHaveProperty("retry");
+
+        await store.close();
+    });
+
+    it("migrates the old schema idempotently and persists safe pause metadata defaults", async () => {
+        const dir = track(makeTempDir("mission-migration-"));
+        const dbPath = join(dir.path, "missions.db");
+        const legacy = new Database(dbPath);
+        legacy.exec(`
+            CREATE TABLE missions (
+                mission_id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL, source TEXT NOT NULL,
+                sanitized_original_intent TEXT NOT NULL, original_intent_ref TEXT NOT NULL,
+                interpreted_objective TEXT NOT NULL, constraints TEXT NOT NULL, acceptance_criteria TEXT NOT NULL,
+                budget_policy TEXT NOT NULL, allowed_capability_scope TEXT NOT NULL, approval_requirements TEXT NOT NULL,
+                context_refs TEXT NOT NULL, state TEXT NOT NULL, current_plan_revision_id TEXT,
+                evidence_refs TEXT NOT NULL, criterion_verifications TEXT NOT NULL, unresolved_questions TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, recovery_metadata TEXT NOT NULL
+            );
+            CREATE TABLE mission_invocations (
+                invocation_id TEXT PRIMARY KEY, mission_id TEXT NOT NULL, step_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL, status TEXT NOT NULL, dispatched_at TEXT, completed_at TEXT,
+                result_refs TEXT NOT NULL, owner_verification TEXT, error TEXT
+            );
+            INSERT INTO missions VALUES (
+                'legacy-mission', 1, 'cli', 'legacy', 'legacy-ref', 'legacy objective', '[]', '[]', '{}', '{}',
+                '[]', '[]', 'ready', NULL, '[]', '[]', '[]', '2026-08-30T12:00:00.000Z',
+                '2026-08-30T12:00:00.000Z', '{}'
+            );
+            INSERT INTO mission_invocations VALUES (
+                'legacy-invocation', 'legacy-mission', 'step-1', 'runstead.code-review', 'dispatched',
+                '2026-08-30T12:00:00.000Z', NULL, '[]', NULL, NULL
+            );
+            INSERT INTO mission_invocations VALUES (
+                'legacy-dispatched-without-time', 'legacy-mission', 'step-2', 'runstead.code-review', 'dispatched',
+                NULL, NULL, '[]', NULL, NULL
+            );
+        `);
+        legacy.close();
+
+        const first = new SqliteMissionStore(dbPath);
+        await first.initialize();
+        await first.close();
+        const second = new SqliteMissionStore(dbPath);
+        await second.initialize();
+        await second.initialize();
+
+        const inspector = new Database(dbPath);
+        const missionColumns = inspector.query("PRAGMA table_info(missions)").all() as Array<{ name: string }>;
+        inspector.close();
+        expect(missionColumns.some((column) => column.name === "pause_metadata")).toBe(true);
+        const migrated = await second.getInvocation("legacy-invocation");
+        expect(migrated?.effectFingerprint).toBe("legacy:legacy-invocation");
+        const persisted = new Database(dbPath)
+            .query("SELECT effect_fingerprint FROM mission_invocations WHERE invocation_id = ?")
+            .get("legacy-invocation") as { effect_fingerprint: string };
+        expect(persisted.effect_fingerprint).toBe("legacy:legacy-invocation");
+        expect(await second.findInvocationByEffectFingerprint("legacy-mission", "legacy:legacy-invocation")).toEqual(migrated);
+        expect(migrated?.delivery.state).toBe("uncertain");
+        expect(migrated?.retry.nextEligibleAt).toBeNull();
+        expect(migrated?.attempts).toEqual([]);
+        expect(migrated?.resultRefs).toEqual([]);
+        expect(migrated?.reconciliation.state).toBe("unsupported");
+        expect(await second.listDueInvocations("2026-08-30T13:00:00.000Z", 10)).toEqual([]);
+        expect((await second.getInvocation("legacy-dispatched-without-time"))?.delivery.state).toBe("uncertain");
+        expect((await second.getInvocation("legacy-dispatched-without-time"))?.reconciliation.state).toBe("unsupported");
+
+        await second.close();
+    });
+
+    it("orders due invocations deterministically and applies the SQL limit", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const mission = await buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-a"), store).createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+        await store.saveInvocation(makeFullInvocation(mission.missionId, {
+            invocationId: "due-late",
+            effectFingerprint: "effect-due-late",
+            delivery: { state: "not_submitted" },
+            retry: { maxAttempts: 3, attempt: 0, backoff: RetryBackoff.FIXED, backoffMs: 1, nextEligibleAt: "2026-08-30T12:30:00.000Z" },
+        }));
+        await store.saveInvocation(makeFullInvocation(mission.missionId, {
+            invocationId: "due-early",
+            effectFingerprint: "effect-due-early",
+            delivery: { state: "not_submitted" },
+            retry: { maxAttempts: 3, attempt: 0, backoff: RetryBackoff.FIXED, backoffMs: 1, nextEligibleAt: "2026-08-30T12:10:00.000Z" },
+        }));
+        await store.saveInvocation(makeFullInvocation(mission.missionId, {
+            invocationId: "due-now",
+            effectFingerprint: "effect-due-now",
+            delivery: { state: "not_submitted" },
+            retry: { maxAttempts: 3, attempt: 0, backoff: RetryBackoff.NONE, backoffMs: 0, nextEligibleAt: null },
+        }));
+        await store.saveInvocation(makeFullInvocation(mission.missionId, {
+            invocationId: "future",
+            effectFingerprint: "effect-future",
+            delivery: { state: "not_submitted" },
+            retry: { maxAttempts: 3, attempt: 0, backoff: RetryBackoff.FIXED, backoffMs: 1, nextEligibleAt: "2026-08-30T14:00:00.000Z" },
+        }));
+        await store.saveInvocation(makeFullInvocation(mission.missionId, {
+            invocationId: "completed",
+            effectFingerprint: "effect-completed",
+            status: InvocationStatus.COMPLETED,
+            completedAt: INVOCATION_TIME,
+            retry: { maxAttempts: 3, attempt: 1, backoff: RetryBackoff.NONE, backoffMs: 0, nextEligibleAt: null },
+        }));
+
+        const due = await store.listDueInvocations("2026-08-30T13:00:00.000Z", 2);
+        expect(due.map((invocation) => invocation.invocationId)).toEqual(["due-now", "due-early"]);
+        expect((await store.listNonTerminalInvocations(2)).map((invocation) => invocation.invocationId)).toEqual([
+            "due-early",
+            "due-late",
+        ]);
+        expect((await store.listRecoverableInvocations(2)).map((invocation) => invocation.invocationId)).toEqual([
+            "due-early",
+            "due-late",
+        ]);
+        expect(await store.listNonTerminalInvocations(0)).toEqual([]);
+        expect(await store.listRecoverableInvocations(Number.MAX_SAFE_INTEGER + 1)).toEqual([]);
+
+        await store.close();
+    });
+
+    it("excludes definitive owner rejections before due limits and from the next wake", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const mission = await buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-owner-filter"), store).createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+
+        const failed = (
+            invocationId: string,
+            createdAt: string,
+            ownerVerificationState: CapabilityInvocation["ownerVerificationState"],
+            nextEligibleAt: string | null,
+            ownerVerification?: CapabilityInvocation["ownerVerification"],
+        ): CapabilityInvocation => makeFullInvocation(mission.missionId, {
+            invocationId,
+            effectFingerprint: `fingerprint-${invocationId}`,
+            status: InvocationStatus.FAILED,
+            completedAt: createdAt,
+            retry: {
+                maxAttempts: 3,
+                attempt: 1,
+                backoff: RetryBackoff.NONE,
+                backoffMs: 0,
+                nextEligibleAt,
+            },
+            attempts: [{
+                attempt: 0,
+                correlationId: `correlation-${invocationId}`,
+                state: "failed",
+                startedAt: createdAt,
+                finishedAt: createdAt,
+            }],
+            delivery: { state: "failed" },
+            reconciliation: {
+                support: ReconciliationSupport.NONE,
+                state: "resolved",
+                outcome: "not_performed",
+            },
+            ownerVerificationState,
+            ownerVerification,
+            createdAt,
+            updatedAt: createdAt,
+        });
+
+        await store.saveInvocation(failed(
+            "owner-rejected-a",
+            "2026-08-30T12:00:00.000Z",
+            "rejected",
+            null,
+            {
+                invocationId: "owner-rejected-a",
+                verified: false,
+                reason: "owner rejected",
+                owner: "runstead",
+                verifiedAt: "2026-08-30T12:00:00.000Z",
+            },
+        ));
+        await store.saveInvocation(failed(
+            "owner-rejected-b",
+            "2026-08-30T12:01:00.000Z",
+            "rejected",
+            null,
+            {
+                invocationId: "owner-rejected-b",
+                verified: false,
+                reason: "owner rejected",
+                owner: "runstead",
+                verifiedAt: "2026-08-30T12:01:00.000Z",
+            },
+        ));
+        await store.saveInvocation(failed(
+            "malformed-owner-state",
+            "2026-08-30T11:59:00.000Z",
+            "legacy" as CapabilityInvocation["ownerVerificationState"],
+            null,
+        ));
+        await store.saveInvocation(failed(
+            "ordinary-retry-c",
+            "2026-08-30T12:02:00.000Z",
+            "not_required",
+            null,
+            undefined,
+        ));
+        await store.saveInvocation(failed(
+            "owner-rejected-future",
+            "2026-08-30T12:03:00.000Z",
+            "rejected",
+            "2026-08-30T14:00:00.000Z",
+            {
+                invocationId: "owner-rejected-future",
+                verified: false,
+                reason: "owner rejected",
+                owner: "runstead",
+                verifiedAt: "2026-08-30T12:03:00.000Z",
+            },
+        ));
+        await store.saveInvocation(failed(
+            "ordinary-future",
+            "2026-08-30T12:04:00.000Z",
+            "not_required",
+            "2026-08-30T15:00:00.000Z",
+            undefined,
+        ));
+
+        expect((await store.listDueInvocations(BASE_TIME, 2)).map((invocation) => invocation.invocationId)).toEqual([
+            "ordinary-retry-c",
+        ]);
+        expect(await store.getNextInvocationWakeAt(BASE_TIME)).toBe("2026-08-30T15:00:00.000Z");
+
+        await store.close();
+    });
+
+    it("finds an effect fingerprint and prevents terminal replay or evidence multiplication", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const mission = await buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-a"), store).createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+        const completed = makeFullInvocation(mission.missionId, {
+            status: InvocationStatus.COMPLETED,
+            completedAt: INVOCATION_TIME,
+        });
+        await store.saveInvocation(completed);
+        await store.updateInvocation(completed.invocationId, {
+            status: InvocationStatus.RUNNING,
+            resultRefs: [...completed.resultRefs, ...completed.resultRefs],
+            updatedAt: "2026-08-30T12:10:00.000Z",
+        });
+
+        const recovered = await store.getInvocation(completed.invocationId);
+        expect(recovered?.status).toBe(InvocationStatus.COMPLETED);
+        expect(recovered?.resultRefs).toEqual(completed.resultRefs);
+        expect(await store.findInvocationByEffectFingerprint(mission.missionId, completed.effectFingerprint)).toEqual(completed);
+        expect(await store.listInvocations(mission.missionId)).toHaveLength(1);
+
+        const cancelled = makeFullInvocation(mission.missionId, {
+            invocationId: "cancelled",
+            effectFingerprint: "fingerprint-cancelled",
+            status: InvocationStatus.CANCELLED,
+            completedAt: INVOCATION_TIME,
+        });
+        await store.saveInvocation(cancelled);
+        await store.updateInvocation(cancelled.invocationId, { status: InvocationStatus.PENDING });
+        expect((await store.getInvocation(cancelled.invocationId))?.status).toBe(InvocationStatus.CANCELLED);
+
+        const legacyRef: CapabilityInvocationRef = {
+            invocationId: "legacy-ref-invocation",
+            missionId: mission.missionId,
+            stepId: "step-legacy",
+            capabilityId: "runstead.code-review",
+            status: InvocationStatus.PENDING,
+            resultRefs: [],
+        };
+        await store.saveInvocation(legacyRef);
+        const normalized = await store.getInvocation(legacyRef.invocationId);
+        expect(normalized?.planRevisionId).toBe("");
+        expect(normalized?.contractVersion).toBe(0);
+        expect(normalized?.idempotency.mode).toBe(IdempotencyMode.UNKNOWN);
+        expect(normalized?.delivery.state).toBe("not_submitted");
+        expect(normalized?.retry.nextEligibleAt).toBeNull();
+        await expect(store.saveInvocation({
+            ...legacyRef,
+            missionId: "another-mission",
+        })).rejects.toThrow(/identity field "missionId" is immutable/i);
+        expect((await store.getInvocation(legacyRef.invocationId))?.missionId).toBe(mission.missionId);
 
         await store.close();
     });

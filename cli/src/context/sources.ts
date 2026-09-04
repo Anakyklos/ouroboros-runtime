@@ -51,7 +51,12 @@ import type { SeamDispatchOutcome } from "../capabilities/dispatch-seam.js";
 import { CapabilityUnavailableError, DispatchSeamError } from "../capabilities/dispatch-seam.js";
 import type { MissionEngine } from "../mission/mission-engine.js";
 import type { Mission } from "../mission/contracts.js";
-import { EffectClass } from "../mission/contracts.js";
+import {
+    computeEffectFingerprint,
+    EffectClass,
+    MissionState,
+    TERMINAL_STATES,
+} from "../mission/contracts.js";
 import { containsRawSecret, sanitizeText } from "../mission/sanitize.js";
 import type {
     CompiledSourceRead,
@@ -478,6 +483,21 @@ export class SeamBoundContextReader {
                 ),
             );
         }
+        if (
+            current.state !== MissionState.READY
+            && current.state !== MissionState.EXECUTING
+        ) {
+            return refuse(
+                unresolvedRecord(
+                    requestedRef,
+                    label,
+                    TERMINAL_STATES.has(current.state)
+                        ? SourceStatus.UNSUPPORTED
+                        : SourceStatus.UNAVAILABLE,
+                    `Mission is in state "${current.state}"; external context is not reacquired while paused or waiting`,
+                ),
+            );
+        }
         const step = revision.steps.find((s) => s.stepId === stepId);
         if (!step) {
             return refuse(
@@ -520,6 +540,49 @@ export class SeamBoundContextReader {
                     revoked.detail,
                 ),
             };
+        }
+
+        // A completed read is executive memory, not owner content. After a
+        // restart (or a repeated request), reacquire the same logical effect
+        // through the connector's reconciliation operation instead of
+        // creating a second invocation or blindly invoking again.
+        const effectFingerprint = computeEffectFingerprint({
+            capabilityId: step.capabilityRequirement,
+            effectClass: step.effectClass,
+            inputRefs: step.inputRefs,
+            outcome: step.desiredOutcome,
+        });
+        const completed = (await this.engine.listInvocations(current.missionId)).find(
+            (invocation) => invocation.status === "completed"
+                && invocation.effectFingerprint === effectFingerprint,
+        );
+        if (completed) {
+            try {
+                const reacquired = await this.seam.reacquireCompletedInvocation(completed.invocationId);
+                if (!reacquired.result) {
+                    throw new DispatchSeamError("completed invocation reconciliation returned no result");
+                }
+                return this.packageOutcome(current, request, step, {
+                    invocation: reacquired.invocation,
+                    result: reacquired.result,
+                    recordedStatus: reacquired.recordedStatus,
+                });
+            } catch (error) {
+                return refuse(
+                    unresolvedRecord(
+                        requestedRef,
+                        contextOwnerFromStep(step),
+                        error instanceof CapabilityUnavailableError
+                            ? SourceStatus.UNAVAILABLE
+                            : SourceStatus.UNSUPPORTED,
+                        sanitizeDetail(
+                            error instanceof Error
+                                ? error.message
+                                : String(error),
+                        ),
+                    ),
+                );
+            }
         }
 
         // Dispatch through the ONE seam. Refusals BEFORE invoke leave no

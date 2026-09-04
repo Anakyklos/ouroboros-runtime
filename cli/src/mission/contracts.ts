@@ -1,4 +1,10 @@
 import { createHash } from "node:crypto";
+import type {
+    CancellationSupport,
+    IdempotencyMode,
+    ReconciliationSupport,
+    RetryBackoff,
+} from "../capabilities/contracts.js";
 
 /**
  * 🎯 Mission Contracts (Issue #62)
@@ -31,6 +37,7 @@ export enum MissionState {
     WAITING_FOR_PROVIDER = "waiting_for_provider",
     WAITING_FOR_BUDGET = "waiting_for_budget",
     VERIFYING = "verifying",
+    PAUSED = "paused",
     COMPLETED = "completed",
     BLOCKED = "blocked",
     FAILED_TERMINAL = "failed_terminal",
@@ -328,10 +335,9 @@ export interface InvocationResult {
     /** Optional evidence refs produced by the invocation. */
     evidenceRefs: EvidenceRef[];
     /**
-     * When the invocation reached a TERMINAL status. Required for
-     * COMPLETED/FAILED/CANCELLED; absent (undefined) for non-terminal
-     * states (RUNNING/BLOCKED) — a non-terminal invocation has not
-     * completed, and fabricating a completion timestamp would be a lie.
+     * When this result was produced. Required for COMPLETED/CANCELLED and for
+     * FAILED attempt outcomes. FAILED describes a definitive attempt failure,
+     * but remains retryable when the invocation retry metadata permits it.
      */
     completedAt?: string;
 }
@@ -381,6 +387,226 @@ export interface CapabilityInvocationRef {
     ownerVerification?: OwnerVerification;
     /** Sanitized error (no raw provider dump). */
     error?: string;
+}
+
+/** A durable attempt made against a capability connector. */
+export interface CapabilityInvocationAttempt {
+    attempt: number;
+    correlationId: string;
+    state: "prepared" | "submitted" | "acknowledged" | "failed" | "uncertain";
+    startedAt: string;
+    finishedAt?: string;
+    error?: string;
+}
+
+/** Durable delivery state, kept separate from the logical invocation status. */
+export interface CapabilityInvocationDelivery {
+    /** The connector handoff began, but no owner acknowledgement exists yet. */
+    state: "not_submitted" | "submitted" | "acknowledged" | "running" | "failed" | "uncertain";
+    acknowledgedAt?: string;
+    remoteOperationHandle?: string;
+}
+
+/** Connector idempotency identity and declared retry policy. */
+export interface CapabilityInvocationIdempotency {
+    mode: IdempotencyMode;
+    key?: string;
+}
+
+export interface CapabilityInvocationRetry {
+    maxAttempts: number;
+    attempt: number;
+    backoff: RetryBackoff;
+    backoffMs: number;
+    nextEligibleAt: string | null;
+}
+
+export interface CapabilityInvocationCancellation {
+    support: CancellationSupport;
+    requested: boolean;
+    requestedAt?: string;
+    requestedBy?: string;
+    state: "not_requested" | "requested" | "acknowledged" | "unsupported";
+    reason?: string;
+}
+
+export interface CapabilityInvocationReconciliation {
+    support: ReconciliationSupport;
+    state: "not_required" | "pending" | "resolved" | "unsupported";
+    lastCheckedAt?: string;
+    outcome?: "performed" | "not_performed" | "unknown";
+    nextAction?: string;
+}
+
+export type OwnerVerificationState = "not_required" | "pending" | "verified" | "rejected";
+
+/**
+ * Canonical durable invocation record. `CapabilityInvocationRef` intentionally
+ * remains the minimal Mission projection and is source-compatible with #62.
+ */
+export interface CapabilityInvocation extends CapabilityInvocationRef {
+    planRevisionId: string;
+    contractVersion: number;
+    moduleOwner: string;
+    /** Effect semantics copied from the authorized plan/capability contract. */
+    effectClass?: EffectClass;
+    requestId: string;
+    effectFingerprint: string;
+    inputRefs: string[];
+    idempotency: CapabilityInvocationIdempotency;
+    retry: CapabilityInvocationRetry;
+    attempts: CapabilityInvocationAttempt[];
+    delivery: CapabilityInvocationDelivery;
+    cancellation: CapabilityInvocationCancellation;
+    reconciliation: CapabilityInvocationReconciliation;
+    ownerVerificationState: OwnerVerificationState;
+    createdAt: string;
+    updatedAt: string;
+}
+
+/**
+ * Validate the identity-bearing portion of a full invocation before a durable
+ * write. Opaque refs are rejected when malformed, never silently redacted.
+ * Secret detection remains the store's recursive fail-closed responsibility.
+ */
+export function assertValidInvocationIdentity(
+    invocation: Pick<CapabilityInvocation, "invocationId" | "missionId" | "stepId" | "capabilityId" | "requestId" | "effectFingerprint" | "inputRefs">,
+): void {
+    const identityFields: Array<[string, string]> = [
+        ["invocationId", invocation.invocationId],
+        ["missionId", invocation.missionId],
+        ["stepId", invocation.stepId],
+        ["capabilityId", invocation.capabilityId],
+        ["requestId", invocation.requestId],
+        ["effectFingerprint", invocation.effectFingerprint],
+    ];
+    for (const [name, value] of identityFields) {
+        if (typeof value !== "string" || value.length === 0) {
+            throw new Error(`Invalid invocation identity field "${name}"; opaque identities must be non-empty strings`);
+        }
+    }
+    if (!Array.isArray(invocation.inputRefs) || invocation.inputRefs.some((ref) => typeof ref !== "string")) {
+        throw new Error("Invalid invocation identity field \"inputRefs\"; opaque refs must be a string array");
+    }
+}
+
+/** Explicit pause information for a Mission that is not cancelled. */
+export interface MissionPauseMetadata {
+    previousState: MissionState;
+    reason: string;
+    pausedAt: string;
+    pausedBy?: string;
+}
+
+/** Only COMPLETED and CANCELLED are immutable invocation terminal states. */
+export function isInvocationTerminal(invocation: Pick<CapabilityInvocationRef, "status">): boolean {
+    return invocation.status === InvocationStatus.COMPLETED
+        || invocation.status === InvocationStatus.CANCELLED;
+}
+
+export function hasUncertainDelivery(invocation: Pick<CapabilityInvocation, "delivery" | "attempts">): boolean {
+    return invocation.delivery.state === "uncertain"
+        || invocation.attempts.some((attempt) => attempt.state === "uncertain");
+}
+
+/**
+ * Legacy rows cannot always be bound to a current plan effect. Their
+ * migration marker is deliberately a replay barrier, not an effect identity:
+ * a caller must never treat missing legacy information as permission to
+ * submit the step again.
+ */
+export function isLegacyReplayBarrier(
+    invocation: Pick<CapabilityInvocation, "effectFingerprint">,
+): boolean {
+    return invocation.effectFingerprint.startsWith("legacy:");
+}
+
+export function isInvocationDue(
+    invocation: Pick<CapabilityInvocation, "retry">,
+    now: string | Date,
+): boolean {
+    const nextEligibleAt = invocation.retry.nextEligibleAt;
+    return nextEligibleAt === null || Date.parse(typeof now === "string" ? now : now.toISOString()) >= Date.parse(nextEligibleAt);
+}
+
+/**
+ * A FAILED attempt is retryable only when the declared retry policy allows it.
+ * An attested negative owner verdict is a definitive rejection of this
+ * invocation, not an ordinary transient failure, so it is never eligible for
+ * another attempt.
+ */
+export function isSafeRetryEligible(
+    invocation: Pick<CapabilityInvocation, "status" | "retry" | "delivery" | "attempts" | "idempotency" | "ownerVerification">,
+    now: string | Date,
+): boolean {
+    return invocation.ownerVerification?.verified !== false
+        && invocation.status === InvocationStatus.FAILED
+        && invocation.retry.attempt < invocation.retry.maxAttempts
+        && invocation.idempotency.mode === "idempotent"
+        && !hasUncertainDelivery(invocation)
+        && isInvocationDue(invocation, now);
+}
+
+/** FAILED is an attempt outcome; retry metadata controls an explicit retry transition. */
+export function isInvocationUpdateAllowed(
+    current: Pick<CapabilityInvocationRef, "status">,
+    next: Pick<CapabilityInvocationRef, "status">,
+): boolean {
+    if (current.status === next.status) return true;
+    const allowed: Record<InvocationStatus, ReadonlySet<InvocationStatus>> = {
+        [InvocationStatus.PENDING]: new Set([
+            InvocationStatus.DISPATCHED,
+            InvocationStatus.RUNNING,
+            InvocationStatus.COMPLETED,
+            InvocationStatus.FAILED,
+            InvocationStatus.BLOCKED,
+            InvocationStatus.CANCELLED,
+        ]),
+        [InvocationStatus.DISPATCHED]: new Set([
+            InvocationStatus.RUNNING,
+            InvocationStatus.COMPLETED,
+            InvocationStatus.FAILED,
+            InvocationStatus.BLOCKED,
+            InvocationStatus.CANCELLED,
+        ]),
+        [InvocationStatus.RUNNING]: new Set([
+            InvocationStatus.COMPLETED,
+            InvocationStatus.FAILED,
+            InvocationStatus.BLOCKED,
+            InvocationStatus.CANCELLED,
+        ]),
+        [InvocationStatus.FAILED]: new Set([InvocationStatus.PENDING]),
+        [InvocationStatus.BLOCKED]: new Set([
+            InvocationStatus.RUNNING,
+            InvocationStatus.COMPLETED,
+            InvocationStatus.FAILED,
+            InvocationStatus.CANCELLED,
+        ]),
+        [InvocationStatus.COMPLETED]: new Set(),
+        [InvocationStatus.CANCELLED]: new Set(),
+    };
+    return allowed[current.status].has(next.status);
+}
+
+/** Merge a result without mutating an immutable terminal record or duplicating refs. */
+export function mergeInvocationResult(
+    invocation: CapabilityInvocation,
+    result: InvocationResult,
+): CapabilityInvocation {
+    if (isInvocationTerminal(invocation)) return invocation;
+    const refs = new Map(invocation.resultRefs.map((ref) => [ref.refId, ref]));
+    for (const ref of result.evidenceRefs) refs.set(ref.refId, ref);
+    return {
+        ...invocation,
+        status: isInvocationTerminal(invocation) ? invocation.status : result.status,
+        completedAt: result.completedAt ?? invocation.completedAt,
+        resultRefs: [...refs.values()],
+        updatedAt: result.completedAt ?? invocation.updatedAt,
+    };
+}
+
+export function computeInvocationEffectFingerprint(input: EffectFingerprintInput): string {
+    return computeEffectFingerprint(input);
 }
 
 /** Durable Mission entity — the first-class contract of this issue. */
@@ -438,6 +664,8 @@ export interface Mission {
         /** Last recovery timestamp (undefined until first recovery). */
         lastRecoveredAt?: string;
     };
+    /** Present only while a Mission is paused. */
+    pauseMetadata?: MissionPauseMetadata;
 }
 
 /** Result of deterministic plan validation. */

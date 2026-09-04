@@ -21,3 +21,4 @@ export * from "./ports.js";
 export * from "./policy.js";
 export * from "./mission-engine.js";
 export * from "./sqlite-mission-store.js";
+export * from "./mission-scheduler.js";

@@ -58,11 +58,16 @@
 
 import { MissionEngine } from "../mission/mission-engine.js";
 import {
+    MissionState,
     InvocationStatus,
+    computeEffectFingerprint,
+    isInvocationDue,
+    type CapabilityInvocation,
     type CapabilityInvocationRef,
     type OwnerVerification,
 } from "../mission/contracts.js";
-import type { CapabilityAvailability } from "./contracts.js";
+import type { CapabilityAvailability, CapabilityDescriptor } from "./contracts.js";
+import { createReconciliationAuthority } from "../mission/reconciliation-authority.js";
 import {
     assertConnectorMatchesDescriptor,
     authorizationProjection,
@@ -227,6 +232,24 @@ export interface SeamDispatchOutcome {
     recordedStatus: InvocationStatus;
 }
 
+/** Result of reconciling a prior handoff; no new effect is submitted. */
+export interface SeamReconciliationOutcome {
+    invocation: CapabilityInvocationRef;
+    result: CapabilityResult | null;
+    recordedStatus: InvocationStatus;
+}
+
+/** Result of a cancellation request; cancellation is not invocation replay. */
+export interface SeamCancellationOutcome {
+    invocation: CapabilityInvocationRef;
+    result: CapabilityResult | null;
+    recordedStatus: InvocationStatus;
+}
+
+interface PersistedDispatchOptions {
+    invocationId?: string;
+}
+
 /**
  * The narrow, deterministic dispatch seam.
  *
@@ -236,6 +259,7 @@ export interface SeamDispatchOutcome {
  */
 export class ConnectorDispatchSeam {
     private readonly connectors = new Map<string, CapabilityConnector>();
+    #reconciliationAuthority = createReconciliationAuthority();
 
     constructor(
         private readonly engine: MissionEngine,
@@ -277,9 +301,21 @@ export class ConnectorDispatchSeam {
      * identity-verified, availability-gated, split-brain-checked,
      * version-gated connector is invoked, or nothing is.
      */
-    async dispatchThroughSeam(missionId: string, stepId: string): Promise<SeamDispatchOutcome> {
+    async dispatchThroughSeam(
+        missionId: string,
+        stepId: string,
+        options: PersistedDispatchOptions = {},
+    ): Promise<SeamDispatchOutcome> {
         // ── Pre-mint resolution (data-only; zero connector calls so far) ──
-        const capabilityId = await this.capabilityIdFor(missionId, stepId);
+        const persisted = options.invocationId
+            ? await this.engine.getInvocation(options.invocationId)
+            : null;
+        if (options.invocationId && (!persisted || persisted.missionId !== missionId || persisted.stepId !== stepId)) {
+            throw new DispatchSeamError(
+                `durable invocation "${options.invocationId}" does not belong to mission "${missionId}" step "${stepId}"; dispatch fails closed`,
+            );
+        }
+        const capabilityId = persisted?.capabilityId ?? await this.capabilityIdFor(missionId, stepId);
         const descriptor = this.registry.requireDescriptor(capabilityId);
 
         // (1) Connector presence + identity, from declarations only.
@@ -320,12 +356,23 @@ export class ConnectorDispatchSeam {
         // version check; describe() must match the registered descriptor).
         assertConnectorMatchesDescriptor(connector, descriptor);
 
-        // ── Mint (engine-only authority; single dispatch is spent here) ──
-        const invocation = await this.engine.dispatchStep(missionId, stepId);
+        // ── Mint or resume (engine-only authority) ──
+        const invocation = options.invocationId
+            ? await this.persistedInvocationForDispatch(options.invocationId, missionId, stepId, descriptor)
+            : await this.engine.dispatchStep(missionId, stepId, {
+                  descriptor: {
+                      contractVersion: descriptor.contractVersion,
+                      moduleOwner: descriptor.moduleOwner,
+                      idempotency: descriptor.idempotency,
+                      retry: descriptor.retry,
+                      cancellationSupport: descriptor.cancellationSupport,
+                      reconciliationSupport: descriptor.reconciliationSupport,
+                  },
+              });
 
         // (6) Input schema enforcement BEFORE invoke().
         const request: ConnectorRequest = {
-            requestId: invocation.invocationId,
+            requestId: invocation.requestId,
             inputRefs: await this.stepInputRefs(invocation),
             desiredOutcome: await this.stepDesiredOutcome(invocation),
         };
@@ -346,6 +393,14 @@ export class ConnectorDispatchSeam {
             );
             throw new ConnectorInputSchemaError(capabilityId, inputCheck.errors);
         }
+
+        // Persist the handoff boundary before entering connector code. A
+        // process crash after this write is conservatively recoverable: the
+        // invocation is known to have crossed the seam and must be observed
+        // or reconciled, never blindly invoked a second time.
+        await this.engine.markInvocationHandoff(invocation.invocationId, {
+            deliveryState: "submitted",
+        });
 
         // (7) The authorized handoff — the ONLY effectful connector call.
         // rawResult is kept untouched: the schema gate below must run on the
@@ -399,6 +454,24 @@ export class ConnectorDispatchSeam {
         // malformed for a NON-verifying capability, the seam discards it —
         // the honest status then flows without the unusable verdict.
         let result = rawResult as CapabilityResult;
+
+        // Long-running owners return an opaque operation identity. Persist it
+        // before result handling so cancellation/reconciliation after a crash
+        // can address the same owner operation without a second invoke().
+        if (
+            result.ownerOperationRef !== undefined
+            && invocation.delivery.remoteOperationHandle === undefined
+        ) {
+            const deliveryState = result.status === CapabilityResultStatus.STILL_RUNNING
+                ? "running" as const
+                : result.status === CapabilityResultStatus.COMPLETED
+                    ? "acknowledged" as const
+                    : "uncertain" as const;
+            await this.engine.markInvocationHandoff(invocation.invocationId, {
+                deliveryState,
+                remoteOperationHandle: result.ownerOperationRef,
+            });
+        }
 
         // (9) Evidence items are structurally re-gated before ANY dereference
         // (round 4, blocker 1). The default resultSchema now constrains the
@@ -458,13 +531,13 @@ export class ConnectorDispatchSeam {
         // (10) requestId echo: the reconciliation key. A connector that
         // returns a result under a different key leaves OUR invocation
         // unattributable → UNCERTAIN, never "failed".
-        if (result.requestId !== invocation.invocationId) {
+        if (result.requestId !== invocation.requestId) {
             await this.recordUncertain(
                 invocation,
-                `connector returned result for requestId "${result.requestId}" while dispatching invocation "${invocation.invocationId}"; result is unattributable and the outcome is uncertain`,
+                `connector returned result for requestId "${result.requestId}" while dispatching request "${invocation.requestId}"; result is unattributable and the outcome is uncertain`,
             );
             throw new DispatchSeamError(
-                `connector requestId echo mismatch: expected "${invocation.invocationId}", got "${result.requestId}"`,
+                `connector requestId echo mismatch: expected "${invocation.requestId}", got "${result.requestId}"`,
             );
         }
 
@@ -595,6 +668,566 @@ export class ConnectorDispatchSeam {
         return { invocation, result, recordedStatus: mapped };
     }
 
+    /**
+     * Continue a durable invocation that was minted before a process restart.
+     * This path never calls `MissionEngine.dispatchStep()` and therefore cannot
+     * create a second invocation row or reset its request identity.
+     */
+    async dispatchPersistedInvocation(invocationId: string): Promise<SeamDispatchOutcome> {
+        const invocation = await this.engine.getInvocation(invocationId);
+        if (!invocation) {
+            throw new DispatchSeamError(`invocation "${invocationId}" is not durable; dispatch fails closed`);
+        }
+        return this.dispatchThroughSeam(invocation.missionId, invocation.stepId, { invocationId });
+    }
+
+    /**
+     * Re-acquire data for a completed external invocation after restart. This
+     * is a read-only owner reconciliation: it never changes the terminal
+     * invocation and never calls invoke(). It exists for Context Compiler
+     * recovery, where prior owner rows are intentionally not stored in the
+     * executive database.
+     */
+    async reacquireCompletedInvocation(invocationId: string): Promise<SeamReconciliationOutcome> {
+        const invocation = await this.engine.getInvocation(invocationId);
+        if (!invocation) {
+            throw new DispatchSeamError(`invocation "${invocationId}" is not durable; reacquisition fails closed`);
+        }
+        if (invocation.status !== InvocationStatus.COMPLETED) {
+            throw new DispatchSeamError(
+                `invocation "${invocationId}" is not completed; external content cannot be reacquired as a terminal fact`,
+            );
+        }
+        const descriptor = this.registry.requireDescriptor(invocation.capabilityId);
+        const connector = this.connectors.get(invocation.capabilityId);
+        if (!connector) throw new ConnectorNotRegisteredError(invocation.capabilityId);
+        const canObserve = typeof connector.observeStatus === "function"
+            && invocation.delivery.remoteOperationHandle !== undefined;
+        if (
+            descriptor.reconciliationSupport !== "full_replay"
+            || (typeof connector.reconcile !== "function" && !canObserve)
+        ) {
+            throw new DispatchSeamError(
+                `capability "${invocation.capabilityId}" does not declare FULL_REPLAY for completed-result reconciliation; external content remains unavailable`,
+            );
+        }
+        if (descriptor.availability !== "available") {
+            throw new CapabilityUnavailableError(
+                invocation.capabilityId,
+                descriptor.availability,
+                descriptor.availabilityDetail,
+            );
+        }
+        try {
+            this.assertPersistedDescriptorSemantics(invocation, descriptor);
+            assertConnectorMatchesDescriptor(connector, descriptor);
+        } catch (error) {
+            await this.recordReconciliationProblem(
+                invocation,
+                `persisted capability semantics no longer match the registered descriptor: ${sanitizeText(error instanceof Error ? error.message : String(error))}`,
+            );
+            throw error;
+        }
+
+        let rawResult: unknown;
+        try {
+            rawResult = typeof connector.reconcile === "function"
+                ? await connector.reconcile(invocation.requestId)
+                : await connector.observeStatus!(invocation.delivery.remoteOperationHandle!);
+        } catch (error) {
+            throw new DispatchSeamError(
+                `completed invocation "${invocationId}" could not be reacquired: ${sanitizeText(error instanceof Error ? error.message : String(error))}`,
+            );
+        }
+        const result = this.validateConnectorResult(
+            invocation,
+            descriptor,
+            rawResult,
+        );
+        if (invocationStatusFor(result) !== InvocationStatus.COMPLETED) {
+            throw new DispatchSeamError(
+                `completed invocation "${invocationId}" was reacquired with status "${result.status}"; terminal content was not accepted`,
+            );
+        }
+        if (result.ownerVerification?.verified === false) {
+            throw new DispatchSeamError(
+                `completed invocation "${invocationId}" was reacquired with a negative owner verification; content was not accepted`,
+            );
+        }
+        return { invocation, result, recordedStatus: InvocationStatus.COMPLETED };
+    }
+
+    /**
+     * Request cancellation of an active invocation through the registered
+     * connector. This path never calls invoke(). Cooperative cancellation is
+     * only an acknowledgement of the request and therefore remains pending
+     * until reconciliation. Hard cancellation may safely become CANCELLED.
+     */
+    async cancelInvocation(invocationId: string): Promise<SeamCancellationOutcome> {
+        const invocation = await this.engine.getInvocation(invocationId);
+        if (!invocation) {
+            throw new DispatchSeamError(`invocation "${invocationId}" is not durable; cancellation fails closed`);
+        }
+        if (invocation.status === InvocationStatus.COMPLETED || invocation.status === InvocationStatus.CANCELLED) {
+            return { invocation, result: null, recordedStatus: invocation.status };
+        }
+        if (!invocation.cancellation.requested) {
+            throw new DispatchSeamError(
+                `invocation "${invocationId}" has no persisted cancellation request; cancellation must be authorized first`,
+            );
+        }
+        if (invocation.cancellation.state !== "requested") {
+            return { invocation, result: null, recordedStatus: invocation.status };
+        }
+        if (invocation.delivery.state === "not_submitted") {
+            return { invocation, result: null, recordedStatus: invocation.status };
+        }
+
+        const descriptor = this.registry.requireDescriptor(invocation.capabilityId);
+        const connector = this.connectors.get(invocation.capabilityId);
+        if (
+            descriptor.cancellationSupport === "none"
+            || descriptor.cancellationSupport === "unsupported"
+            || typeof connector?.cancel !== "function"
+            || !invocation.delivery.remoteOperationHandle
+        ) {
+            const updated = await this.engine.recordInvocationCancellationOutcome(invocationId, {
+                state: "unsupported",
+                reconciliationState: "pending",
+                nextAction: "connector cancellation is unavailable; reconcile conservatively before any further action",
+            });
+            return { invocation: updated, result: null, recordedStatus: updated.status };
+        }
+        if (descriptor.availability !== "available") {
+            throw new CapabilityUnavailableError(
+                invocation.capabilityId,
+                descriptor.availability,
+                descriptor.availabilityDetail,
+            );
+        }
+        this.assertPersistedDescriptorSemantics(invocation, descriptor);
+        assertConnectorMatchesDescriptor(connector, descriptor);
+
+        let rawResult: unknown;
+        try {
+            rawResult = await connector.cancel(invocation.delivery.remoteOperationHandle);
+        } catch (error) {
+            const updated = await this.engine.recordInvocationCancellationOutcome(invocationId, {
+                state: "requested",
+                status: InvocationStatus.BLOCKED,
+                deliveryState: "uncertain",
+                reconciliationState: "pending",
+                nextAction: `connector cancellation outcome is uncertain: ${sanitizeText(error instanceof Error ? error.message : String(error))}`,
+            });
+            return { invocation: updated, result: null, recordedStatus: updated.status };
+        }
+
+        let result: CapabilityResult;
+        try {
+            result = this.validateConnectorResult(invocation, descriptor, rawResult, {
+                requireOwnerVerification: false,
+            });
+        } catch (error) {
+            const updated = await this.engine.recordInvocationCancellationOutcome(invocationId, {
+                state: "requested",
+                status: InvocationStatus.BLOCKED,
+                deliveryState: "uncertain",
+                reconciliationState: "pending",
+                nextAction: `connector cancellation returned an unusable result: ${sanitizeText(error instanceof Error ? error.message : String(error))}`,
+            });
+            return { invocation: updated, result: null, recordedStatus: updated.status };
+        }
+
+        let updated: CapabilityInvocation;
+        const activeDeliveryState = invocation.delivery.state === "submitted"
+            ? "running" as const
+            : invocation.delivery.state;
+        if (result.status === CapabilityResultStatus.COMPLETED) {
+            updated = await this.engine.recordInvocationCancellationOutcome(invocationId,
+                descriptor.cancellationSupport === "hard"
+                    ? {
+                          state: "acknowledged",
+                          status: InvocationStatus.CANCELLED,
+                          deliveryState: "failed",
+                          reconciliationState: "resolved",
+                          outcome: "not_performed",
+                          nextAction: "hard cancellation acknowledged by owner",
+                      }
+                    : {
+                          state: "acknowledged",
+                          deliveryState: activeDeliveryState,
+                          reconciliationState: "pending",
+                          outcome: "unknown",
+                          nextAction: "cooperative cancellation acknowledged; reconcile the owner operation",
+                      },
+            );
+        } else if (result.status === CapabilityResultStatus.UNKNOWN) {
+            updated = await this.engine.recordInvocationCancellationOutcome(invocationId, {
+                state: "requested",
+                status: InvocationStatus.BLOCKED,
+                deliveryState: "uncertain",
+                reconciliationState: "pending",
+                outcome: "unknown",
+                nextAction: "cancellation status unknown; reconcile the owner operation",
+            });
+        } else {
+            updated = await this.engine.recordInvocationCancellationOutcome(invocationId, {
+                state: "requested",
+                deliveryState: result.status === CapabilityResultStatus.STILL_RUNNING
+                    ? "running"
+                    : activeDeliveryState,
+                reconciliationState: "pending",
+                outcome: "unknown",
+                nextAction: result.status === CapabilityResultStatus.STILL_RUNNING
+                    ? "cancellation is still running; reconcile the owner operation"
+                    : "owner did not acknowledge cancellation; reconcile before any retry",
+            });
+        }
+        return { invocation: updated, result, recordedStatus: updated.status };
+    }
+
+    /**
+     * Reconcile a prior handoff using only its durable request identity. The
+     * connector's `reconcile()` path is the only operation reachable here;
+     * this method never falls back to `invoke()`.
+     */
+    async reconcileInvocation(invocationId: string): Promise<SeamReconciliationOutcome> {
+        const invocation = await this.engine.getInvocation(invocationId);
+        if (!invocation) {
+            throw new DispatchSeamError(`invocation "${invocationId}" is not durable; reconciliation fails closed`);
+        }
+        if (invocation.status === InvocationStatus.COMPLETED || invocation.status === InvocationStatus.CANCELLED) {
+            return {
+                invocation,
+                result: null,
+                recordedStatus: invocation.status,
+            };
+        }
+        if (invocation.reconciliation.state !== "pending") {
+            throw new DispatchSeamError(
+                `invocation "${invocationId}" has no pending reconciliation; refusing an unsolicited owner status`,
+            );
+        }
+        const descriptor = this.registry.requireDescriptor(invocation.capabilityId);
+        const connector = this.connectors.get(invocation.capabilityId);
+        if (!connector) {
+            await this.recordReconciliationProblem(
+                invocation,
+                "connector is unavailable after restart; no replay is permitted",
+            );
+            throw new ConnectorNotRegisteredError(invocation.capabilityId);
+        }
+        const canObserve = typeof connector.observeStatus === "function"
+            && invocation.delivery.remoteOperationHandle !== undefined;
+        if (
+            descriptor.reconciliationSupport === "none"
+            || (typeof connector.reconcile !== "function" && !canObserve)
+        ) {
+            const status = invocation.status === InvocationStatus.FAILED
+                ? InvocationStatus.FAILED
+                : InvocationStatus.BLOCKED;
+            await this.engine.markInvocationReconciliation(invocationId, {
+                state: "unsupported",
+                outcome: "unknown",
+                deliveryState: "uncertain",
+                status,
+                nextAction: "operator reconciliation required; blind replay is forbidden",
+                lastCheckedAt: this.isoNow(),
+            });
+            const blocked = await this.engine.getInvocation(invocationId);
+            if (!blocked) throw new DispatchSeamError(`invocation "${invocationId}" disappeared during reconciliation`);
+            return { invocation: blocked, result: null, recordedStatus: blocked.status };
+        }
+        if (descriptor.availability !== "available") {
+            await this.recordReconciliationProblem(
+                invocation,
+                `capability unavailable during reconciliation: ${descriptor.availability}`,
+            );
+            throw new CapabilityUnavailableError(
+                invocation.capabilityId,
+                descriptor.availability,
+                descriptor.availabilityDetail,
+            );
+        }
+        try {
+            this.assertPersistedDescriptorSemantics(invocation, descriptor);
+            assertConnectorMatchesDescriptor(connector, descriptor);
+        } catch (error) {
+            await this.recordReconciliationProblem(
+                invocation,
+                `reconciliation contract/conformance failed: ${sanitizeText(error instanceof Error ? error.message : String(error))}`,
+            );
+            throw error;
+        }
+
+        let rawResult: unknown;
+        try {
+            rawResult = typeof connector.reconcile === "function"
+                ? await connector.reconcile(invocation.requestId)
+                : await connector.observeStatus!(invocation.delivery.remoteOperationHandle!);
+        } catch (error) {
+            await this.engine.markInvocationReconciliation(invocationId, {
+                state: "pending",
+                outcome: "unknown",
+                deliveryState: "uncertain",
+                status: InvocationStatus.BLOCKED,
+                nextAction: `reconciliation failed: ${sanitizeText(error instanceof Error ? error.message : String(error))}`,
+                lastCheckedAt: this.isoNow(),
+            });
+            const blocked = await this.engine.getInvocation(invocationId);
+            if (!blocked) throw error;
+            return { invocation: blocked, result: null, recordedStatus: blocked.status };
+        }
+        if (rawResult === null) {
+            await this.engine.markInvocationReconciliation(invocationId, {
+                state: "pending",
+                outcome: "unknown",
+                deliveryState: "uncertain",
+                status: InvocationStatus.BLOCKED,
+                nextAction: "owner returned no status; reconcile again or request operator action",
+                lastCheckedAt: this.isoNow(),
+            });
+            const blocked = await this.engine.getInvocation(invocationId);
+            if (!blocked) throw new DispatchSeamError(`invocation "${invocationId}" disappeared during reconciliation`);
+            return { invocation: blocked, result: null, recordedStatus: blocked.status };
+        }
+        const resultSchema = descriptor.resultSchema;
+        if (!isDeclarativeSchema(resultSchema)) {
+            await this.engine.markInvocationReconciliation(invocationId, {
+                state: "pending",
+                outcome: "unknown",
+                deliveryState: "uncertain",
+                status: InvocationStatus.BLOCKED,
+                nextAction: "reconciliation result schema is not declarative",
+                lastCheckedAt: this.isoNow(),
+            });
+            throw new DispatchSeamError(`descriptor resultSchema for "${invocation.capabilityId}" is not declarative`);
+        }
+        const resultCheck = evaluateDeclarativeSchema(resultSchema, rawResult);
+        if (!resultCheck.valid) {
+            await this.engine.markInvocationReconciliation(invocationId, {
+                state: "pending",
+                outcome: "unknown",
+                deliveryState: "uncertain",
+                status: InvocationStatus.BLOCKED,
+                nextAction: `malformed reconciliation result: ${resultCheck.errors.join("; ")}`,
+                lastCheckedAt: this.isoNow(),
+            });
+            throw new ConnectorResultSchemaError(invocation.capabilityId, resultCheck.errors);
+        }
+        let result = rawResult as CapabilityResult;
+        const evidenceProblem = this.guardEvidenceItems(result.evidence);
+        if (evidenceProblem) {
+            await this.engine.markInvocationReconciliation(invocationId, {
+                state: "pending",
+                outcome: "unknown",
+                deliveryState: "uncertain",
+                status: InvocationStatus.BLOCKED,
+                nextAction: `malformed reconciliation evidence: ${evidenceProblem}`,
+                lastCheckedAt: this.isoNow(),
+            });
+            throw new DispatchSeamError(`reconciliation evidence violates the EvidenceReference contract: ${evidenceProblem}`);
+        }
+        if (result.requestId !== invocation.requestId) {
+            await this.engine.markInvocationReconciliation(invocationId, {
+                state: "pending",
+                outcome: "unknown",
+                deliveryState: "uncertain",
+                status: InvocationStatus.BLOCKED,
+                nextAction: "reconciliation returned an unattributable request identity",
+                lastCheckedAt: this.isoNow(),
+            });
+            throw new DispatchSeamError(
+                `reconciliation requestId mismatch: expected "${invocation.requestId}", got "${result.requestId}"`,
+            );
+        }
+        if (result.ownerVerification !== undefined) {
+            const verificationProblem = this.guardOwnerVerificationOutcome(result.ownerVerification);
+            if (verificationProblem) {
+                if (descriptor.requiresOwnerVerification) {
+                    await this.engine.markInvocationReconciliation(invocationId, {
+                        state: "pending",
+                        outcome: "unknown",
+                        deliveryState: "uncertain",
+                        status: InvocationStatus.BLOCKED,
+                        nextAction: `malformed owner verification: ${verificationProblem}`,
+                        lastCheckedAt: this.isoNow(),
+                    });
+                    throw new DispatchSeamError(`reconciliation owner verification is malformed: ${verificationProblem}`);
+                }
+                result = { ...result, ownerVerification: undefined };
+            }
+        }
+        if (
+            descriptor.requiresOwnerVerification
+            && (!result.ownerVerification || result.ownerVerification.verified === null)
+        ) {
+            await this.engine.markInvocationReconciliation(invocationId, {
+                state: "pending",
+                outcome: "unknown",
+                deliveryState: "uncertain",
+                status: InvocationStatus.BLOCKED,
+                nextAction: "reconciliation returned no mandatory owner verification",
+                lastCheckedAt: this.isoNow(),
+            });
+            const blocked = await this.engine.getInvocation(invocationId);
+            if (!blocked) throw new DispatchSeamError(`invocation "${invocationId}" disappeared during reconciliation`);
+            return { invocation: blocked, result, recordedStatus: blocked.status };
+        }
+        const mapped = invocationStatusFor(result);
+        const ownerClaim = result.ownerVerification?.verified === true || result.ownerVerification?.verified === false
+            ? this.ownerVerificationOf(invocation, result)
+            : undefined;
+        // STATUS_REPLAY is authoritative for execution state only. It must
+        // not leak owner payloads to a caller that needs content; only the
+        // explicit FULL_REPLAY contract can carry result/evidence/context
+        // content across restart.
+        const fullReplay = descriptor.reconciliationSupport === "full_replay";
+        const consumerResult: CapabilityResult = fullReplay
+            ? result
+            : {
+                  ...result,
+                  evidence: [],
+                  contextRows: undefined,
+              };
+        const invocationResult = {
+            invocationId,
+            status: mapped,
+            summary: result.summary,
+            evidenceRefs: fullReplay ? this.evidenceRefsOf(result) : [],
+            completedAt: isTerminalInvocationStatus(mapped) ? this.isoNow() : undefined,
+        } as const;
+        try {
+            await this.engine.recordReconciledInvocationResult(
+                invocationId,
+                invocationResult,
+                ownerClaim,
+                this.#reconciliationAuthority,
+            );
+        } catch (error) {
+            // A positive owner verdict is supplementary when the capability
+            // does not require owner verification. If that optional claim
+            // cannot be attested after restart, discard only the claim and
+            // preserve the connector's typed status. Required/negative
+            // verdicts remain fail-closed and stay in reconciliation.
+            if (ownerClaim?.verified === true && !descriptor.requiresOwnerVerification) {
+                try {
+                    await this.engine.recordReconciledInvocationResult(
+                        invocationId,
+                        invocationResult,
+                        undefined,
+                        this.#reconciliationAuthority,
+                    );
+                } catch (fallbackError) {
+                    await this.engine.markInvocationReconciliation(invocationId, {
+                        state: "pending",
+                        outcome: "unknown",
+                        deliveryState: "uncertain",
+                        status: InvocationStatus.BLOCKED,
+                        nextAction: `reconciliation result was not accepted: ${sanitizeText(fallbackError instanceof Error ? fallbackError.message : String(fallbackError))}`,
+                        lastCheckedAt: this.isoNow(),
+                    });
+                    throw fallbackError;
+                }
+            } else {
+                await this.engine.markInvocationReconciliation(invocationId, {
+                    state: "pending",
+                    outcome: "unknown",
+                    deliveryState: "uncertain",
+                    status: InvocationStatus.BLOCKED,
+                    nextAction: `reconciliation result was not accepted: ${sanitizeText(error instanceof Error ? error.message : String(error))}`,
+                    lastCheckedAt: this.isoNow(),
+                });
+                throw error;
+            }
+        }
+        const updated = await this.engine.getInvocation(invocationId);
+        if (!updated) throw new DispatchSeamError(`invocation "${invocationId}" disappeared after reconciliation`);
+        return { invocation: updated, result: consumerResult, recordedStatus: updated.status };
+    }
+
+    /** Persist a conservative reconciliation observation without replay. */
+    private async recordReconciliationProblem(
+        invocation: CapabilityInvocation,
+        reason: string,
+    ): Promise<CapabilityInvocation> {
+        const current = await this.engine.getInvocation(invocation.invocationId);
+        if (!current) throw new DispatchSeamError(`invocation "${invocation.invocationId}" disappeared during reconciliation`);
+        if (current.status === InvocationStatus.COMPLETED || current.status === InvocationStatus.CANCELLED) return current;
+        const status = current.status === InvocationStatus.FAILED
+            ? InvocationStatus.FAILED
+            : InvocationStatus.BLOCKED;
+        try {
+            return await this.engine.markInvocationReconciliation(current.invocationId, {
+                state: "pending",
+                outcome: "unknown",
+                deliveryState: "uncertain",
+                status,
+                nextAction: sanitizeText(reason),
+                lastCheckedAt: this.isoNow(),
+            });
+        } catch {
+            return this.engine.getInvocation(current.invocationId).then((latest) => {
+                if (!latest) throw new DispatchSeamError(`invocation "${current.invocationId}" disappeared during reconciliation`);
+                return latest;
+            });
+        }
+    }
+
+    /**
+     * Validate a result before any caller consumes its fields. This helper is
+     * used by non-invoking lifecycle operations as well as completed-result
+     * reacquisition, so malformed adapter values cannot escape as TypeErrors.
+     */
+    private validateConnectorResult(
+        invocation: CapabilityInvocation,
+        descriptor: CapabilityDescriptor,
+        rawResult: unknown,
+        options: { requireOwnerVerification?: boolean } = {},
+    ): CapabilityResult {
+        const resultSchema = descriptor.resultSchema;
+        if (!isDeclarativeSchema(resultSchema)) {
+            throw new DispatchSeamError(
+                `descriptor resultSchema for "${invocation.capabilityId}" is not declarative; result cannot be consumed`,
+            );
+        }
+        const resultCheck = evaluateDeclarativeSchema(resultSchema, rawResult);
+        if (!resultCheck.valid) {
+            throw new ConnectorResultSchemaError(invocation.capabilityId, resultCheck.errors);
+        }
+        let result = rawResult as CapabilityResult;
+        const evidenceProblem = this.guardEvidenceItems(result.evidence);
+        if (evidenceProblem) {
+            throw new DispatchSeamError(`connector result evidence violates the EvidenceReference contract: ${evidenceProblem}`);
+        }
+        if (result.ownerVerification !== undefined) {
+            const verificationProblem = this.guardOwnerVerificationOutcome(result.ownerVerification);
+            if (verificationProblem) {
+                if (descriptor.requiresOwnerVerification && options.requireOwnerVerification !== false) {
+                    throw new DispatchSeamError(`connector owner verification is malformed: ${verificationProblem}`);
+                }
+                result = { ...result, ownerVerification: undefined };
+            }
+        }
+        const requiresOwnerVerification = options.requireOwnerVerification ?? descriptor.requiresOwnerVerification;
+        const persistedOwnerVerification = invocation.ownerVerification?.verified === true;
+        if (
+            requiresOwnerVerification
+            && !persistedOwnerVerification
+            && (result.ownerVerification === undefined || result.ownerVerification.verified === null)
+        ) {
+            throw new DispatchSeamError(
+                `capability "${invocation.capabilityId}" returned no attested owner verification`,
+            );
+        }
+        if (result.requestId !== invocation.requestId) {
+            throw new DispatchSeamError(
+                `connector result requestId mismatch: expected "${invocation.requestId}", got "${result.requestId}"`,
+            );
+        }
+        return result;
+    }
+
     /** Deterministic evidence mapping (engine sanitizes on write). */
     private evidenceRefsOf(result: CapabilityResult) {
         return result.evidence.map((ref, index) => ({
@@ -721,6 +1354,112 @@ export class ConnectorDispatchSeam {
         return revision.step.capabilityRequirement;
     }
 
+    private async persistedInvocationForDispatch(
+        invocationId: string,
+        missionId: string,
+        stepId: string,
+        descriptor: CapabilityDescriptor,
+    ) {
+        const invocation = await this.engine.getInvocation(invocationId);
+        if (!invocation || invocation.missionId !== missionId || invocation.stepId !== stepId) {
+            throw new DispatchSeamError(
+                `durable invocation "${invocationId}" does not belong to mission "${missionId}" step "${stepId}"; dispatch fails closed`,
+            );
+        }
+        if (invocation.status === InvocationStatus.COMPLETED || invocation.status === InvocationStatus.CANCELLED) {
+            throw new DispatchSeamError(
+                `invocation "${invocationId}" is terminal; completed effects are never re-dispatched`,
+            );
+        }
+        const mission = await this.engine.getMission(missionId);
+        if (mission.state !== MissionState.READY && mission.state !== MissionState.EXECUTING) {
+            throw new DispatchSeamError(
+                `mission "${missionId}" is in state "${mission.state}"; persisted dispatch is paused or waiting and cannot cross the seam`,
+            );
+        }
+        if (invocation.cancellation.requested) {
+            throw new DispatchSeamError(
+                `invocation "${invocationId}" has a persisted cancellation request; dispatch is forbidden`,
+            );
+        }
+        if (invocation.delivery.state !== "not_submitted") {
+            throw new DispatchSeamError(
+                `invocation "${invocationId}" has delivery state "${invocation.delivery.state}"; reconcile before dispatch`,
+            );
+        }
+        if (invocation.status !== InvocationStatus.PENDING && invocation.status !== InvocationStatus.DISPATCHED) {
+            throw new DispatchSeamError(
+                `invocation "${invocationId}" is in status "${invocation.status}"; only prepared work may cross the seam`,
+            );
+        }
+        if (!isInvocationDue(invocation, this.isoNow())) {
+            throw new DispatchSeamError(
+                `invocation "${invocationId}" is not yet eligible for dispatch at its persisted nextEligibleAt`,
+            );
+        }
+        this.assertPersistedDescriptorSemantics(invocation, descriptor);
+        if (invocation.planRevisionId) {
+            const revision = await this.engine.getPlanRevision(invocation.planRevisionId);
+            const step = revision?.steps.find((candidate) => candidate.stepId === invocation.stepId);
+            const effectFingerprint = step
+                ? computeEffectFingerprint({
+                      capabilityId: step.capabilityRequirement,
+                      effectClass: step.effectClass,
+                      inputRefs: step.inputRefs,
+                      outcome: step.desiredOutcome,
+                  })
+                : undefined;
+            if (
+                !revision
+                || revision.missionId !== missionId
+                || !step
+                || step.capabilityRequirement !== invocation.capabilityId
+                || effectFingerprint !== invocation.effectFingerprint
+                || (invocation.effectClass !== undefined && invocation.effectClass !== step.effectClass)
+            ) {
+                throw new DispatchSeamError(
+                    `invocation "${invocationId}" cannot be rebound to its persisted plan revision; dispatch fails closed`,
+                );
+            }
+        }
+        return invocation;
+    }
+
+    /**
+     * Recovery and cancellation must use the same immutable capability
+     * semantics that authorized the invocation. A current descriptor may
+     * change only through an explicit versioned registration, but this guard
+     * still fails closed if an old row and the live registry disagree.
+     */
+    private assertPersistedDescriptorSemantics(
+        invocation: CapabilityInvocation,
+        descriptor: CapabilityDescriptor,
+    ): void {
+        const expectedIdempotencyKey = descriptor.idempotency.keyScope === "request"
+            ? invocation.requestId
+            : descriptor.idempotency.keyScope === "effect"
+                ? invocation.effectFingerprint
+                : undefined;
+        const mismatches = [
+            invocation.contractVersion !== descriptor.contractVersion ? "contractVersion" : undefined,
+            invocation.moduleOwner !== descriptor.moduleOwner ? "moduleOwner" : undefined,
+            invocation.effectClass !== undefined && invocation.effectClass !== descriptor.effectClass
+                ? "effectClass"
+                : undefined,
+            invocation.idempotency.mode !== descriptor.idempotency.mode ? "idempotency.mode" : undefined,
+            invocation.idempotency.key !== expectedIdempotencyKey ? "idempotency.key" : undefined,
+            invocation.retry.maxAttempts !== descriptor.retry.maxAttempts ? "retry.maxAttempts" : undefined,
+            invocation.retry.backoff !== descriptor.retry.backoff ? "retry.backoff" : undefined,
+            invocation.reconciliation.support !== descriptor.reconciliationSupport ? "reconciliationSupport" : undefined,
+            invocation.cancellation.support !== descriptor.cancellationSupport ? "cancellationSupport" : undefined,
+        ].filter((field): field is string => field !== undefined);
+        if (mismatches.length > 0) {
+            throw new DispatchSeamError(
+                `invocation "${invocation.invocationId}" contract semantics no longer match the registered capability (${mismatches.join(", ")}); operation fails closed`,
+            );
+        }
+    }
+
     /**
      * Step data comes from the accepted plan revision (deterministic data,
      * no planner re-consultation).
@@ -749,14 +1488,35 @@ export class ConnectorDispatchSeam {
 
     /** Step inputRefs come from the accepted plan revision. */
     private async stepInputRefs(invocation: CapabilityInvocationRef): Promise<string[]> {
-        const { step } = await this.currentRevisionFor(invocation.missionId, invocation.stepId);
+        const { step } = await this.revisionForInvocation(invocation);
         return [...step.inputRefs];
     }
 
     /** Declarative desired outcome from the accepted plan revision. */
     private async stepDesiredOutcome(invocation: CapabilityInvocationRef): Promise<string> {
-        const { step } = await this.currentRevisionFor(invocation.missionId, invocation.stepId);
+        const { step } = await this.revisionForInvocation(invocation);
         return step.desiredOutcome;
+    }
+
+    /**
+     * New invocations use the current accepted revision. A persisted retry or
+     * continuation uses the revision that authorized that invocation, so a
+     * later planner revision cannot silently rewrite an already-authorized
+     * request's input identity or desired outcome.
+     */
+    private async revisionForInvocation(invocation: CapabilityInvocationRef) {
+        const planRevisionId = (invocation as Partial<CapabilityInvocation>).planRevisionId;
+        if (planRevisionId) {
+            const revision = await this.engine.getPlanRevision(planRevisionId);
+            const step = revision?.steps.find((candidate) => candidate.stepId === invocation.stepId);
+            if (!revision || revision.missionId !== invocation.missionId || !step) {
+                throw new DispatchSeamError(
+                    `invocation "${invocation.invocationId}" cannot read its persisted plan revision; dispatch fails closed`,
+                );
+            }
+            return { revision, step };
+        }
+        return this.currentRevisionFor(invocation.missionId, invocation.stepId);
     }
 }
 

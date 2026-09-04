@@ -7,6 +7,7 @@
 
 import type {
     CapabilityContract,
+    CapabilityInvocation,
     CapabilityInvocationRef,
     CriterionVerification,
     Mission,
@@ -49,14 +50,37 @@ export interface MissionStore {
         reason?: string,
     ): Promise<void>;
 
-    // Invocation references
-    saveInvocation(invocation: CapabilityInvocationRef): Promise<CapabilityInvocationRef>;
-    getInvocation(invocationId: string): Promise<CapabilityInvocationRef | null>;
-    listInvocations(missionId: string): Promise<CapabilityInvocationRef[]>;
+    // Full invocation durability is authoritative in mission_invocations.
+    // Mission.invocationRefs remains the separate minimal projection.
+    saveInvocation(invocation: CapabilityInvocation | CapabilityInvocationRef): Promise<CapabilityInvocationRef>;
+    getInvocation(invocationId: string): Promise<CapabilityInvocation | null>;
+    listInvocations(missionId: string): Promise<CapabilityInvocation[]>;
     updateInvocation(
         invocationId: string,
-        updates: Partial<CapabilityInvocationRef>,
+        updates: Partial<CapabilityInvocation> | Partial<CapabilityInvocationRef>,
     ): Promise<void>;
+
+    /** Full-entity recovery queries over the authoritative invocation table. */
+    listRecoverableInvocations(limit: number): Promise<CapabilityInvocation[]>;
+    /** All invocations that have not reached an immutable terminal state. */
+    listNonTerminalInvocations(limit: number): Promise<CapabilityInvocation[]>;
+    /**
+     * Bounded recovery work only: handoffs awaiting reconciliation or active
+     * cancellation. Permanent unsupported/blocked rows are not allowed to
+     * occupy the front of the recovery cursor forever.
+     */
+    listActionableInvocations(limit: number): Promise<CapabilityInvocation[]>;
+    /** Due invocations ordered by eligibility, bounded by the caller. */
+    listDueInvocations(now: string, limit: number): Promise<CapabilityInvocation[]>;
+    /** Earliest future retry wake, queried directly without a batch scan. */
+    getNextInvocationWakeAt(now: string): Promise<string | null>;
+    /** Atomically claim a Mission-local effect fingerprint before handoff. */
+    claimInvocation(invocation: CapabilityInvocation): Promise<boolean>;
+    /** Preserve completed effects across plan revisions and duplicate requests. */
+    findInvocationByEffectFingerprint(
+        missionId: string,
+        effectFingerprint: string,
+    ): Promise<CapabilityInvocation | null>;
 }
 
 /** ------------------------------------------------------------------ */
