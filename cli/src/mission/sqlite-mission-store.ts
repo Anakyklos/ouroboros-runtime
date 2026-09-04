@@ -116,6 +116,14 @@ function parseJson<T>(raw: string | null | undefined, fallback: T): T {
 
 const LEGACY_EPOCH = "1970-01-01T00:00:00.000Z";
 
+// Due-work selection is deliberately allowlisted rather than expressed as
+// `owner_verification_state != 'rejected'`: NULL, legacy, and malformed states
+// must not become authorization to retry when durable provenance is absent.
+// Both due work and wake calculation use this same predicate so a definitive
+// owner rejection cannot consume a bounded batch or manufacture a wakeup.
+const RETRYABLE_OWNER_VERIFICATION_STATES_SQL =
+    "owner_verification_state IN ('not_required', 'pending', 'verified')";
+
 function uniqueByRef<T extends { refId: string }>(refs: T[]): T[] {
     const seen = new Set<string>();
     return refs.filter((ref) => {
@@ -987,6 +995,7 @@ export class SqliteMissionStore implements MissionStore {
                AND json_extract(delivery, '$.state') IN ('not_submitted', 'failed')
                AND COALESCE(json_extract(cancellation, '$.requested'), 0) = 0
                AND json_extract(reconciliation, '$.state') NOT IN ('pending', 'unsupported')
+               AND ${RETRYABLE_OWNER_VERIFICATION_STATES_SQL}
                AND (json_extract(retry, '$.nextEligibleAt') IS NULL
                     OR json_extract(retry, '$.nextEligibleAt') <= ?)
              ORDER BY
@@ -1009,6 +1018,7 @@ export class SqliteMissionStore implements MissionStore {
                AND json_extract(delivery, '$.state') IN ('not_submitted', 'failed')
                AND COALESCE(json_extract(cancellation, '$.requested'), 0) = 0
                AND json_extract(reconciliation, '$.state') NOT IN ('pending', 'unsupported')
+               AND ${RETRYABLE_OWNER_VERIFICATION_STATES_SQL}
                AND json_extract(retry, '$.nextEligibleAt') IS NOT NULL
                AND json_extract(retry, '$.nextEligibleAt') > ?`,
         ).get(now) as { next_eligible_at: string | null } | null;

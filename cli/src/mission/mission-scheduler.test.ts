@@ -1012,6 +1012,181 @@ describe("MissionScheduler", () => {
         await store.close();
     });
 
+    it("filters owner rejections before a small due batch so ordinary retries make progress", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const clock = new FakeClock(BASE_TIME);
+        const resolver = new FakeCapabilityResolver();
+        resolver.registerMany(makeDefaultCapabilityCatalog());
+        const engine = new MissionEngine({
+            store,
+            policy: new PlanPolicyValidator(resolver),
+            clock,
+            ids: new FakeIdGenerator("due-starvation"),
+            interpreter: (intent) => intent.originalIntent,
+            verificationAuthority: new FakeVerificationAuthority(),
+        });
+        const mission = await engine.createMission({
+            intent: {
+                requestId: "request-due-starvation",
+                source: "cli",
+                originalIntent: "Process owner rejections without starving ordinary retries",
+                constraints: [],
+                acceptanceCriteria: ["retry progress"],
+            },
+            allowedCapabilityScope: {
+                capabilityIds: ["runstead.code-review", "lifeos.query"],
+                allowedEffectClasses: [EffectClass.EXECUTION, EffectClass.READ],
+                allowedRefPrefixes: ["refs/runstead/", "refs/lifeos/"],
+            },
+        });
+        const proposal = await engine.proposePlan(mission.missionId, {
+            planId: "due-starvation-plan",
+            missionId: mission.missionId,
+            plannerNote: "owner rejection due filtering regression",
+            steps: [
+                {
+                    stepId: "owner-rejected-a",
+                    desiredOutcome: "Reject the first owner review",
+                    dependencyIds: [],
+                    capabilityRequirement: "runstead.code-review",
+                    inputRefs: ["refs/runstead/rejected-a"],
+                    expectedAcceptance: ["retry progress"],
+                    effectClass: EffectClass.EXECUTION,
+                },
+                {
+                    stepId: "owner-rejected-b",
+                    desiredOutcome: "Reject the second owner review",
+                    dependencyIds: [],
+                    capabilityRequirement: "runstead.code-review",
+                    inputRefs: ["refs/runstead/rejected-b"],
+                    expectedAcceptance: ["retry progress"],
+                    effectClass: EffectClass.EXECUTION,
+                },
+                {
+                    stepId: "ordinary-retry-c",
+                    desiredOutcome: "Retry the ordinary status read",
+                    dependencyIds: [],
+                    capabilityRequirement: "lifeos.query",
+                    inputRefs: ["refs/lifeos/ordinary-c"],
+                    expectedAcceptance: ["retry progress"],
+                    effectClass: EffectClass.READ,
+                },
+            ],
+        });
+        if (!proposal.ok) throw new Error("due starvation plan was rejected");
+        await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+        const reviewDispatch = {
+            descriptor: {
+                contractVersion: 1,
+                moduleOwner: "runstead",
+                idempotency: { mode: IdempotencyMode.IDEMPOTENT, keyScope: "request" as const },
+                retry: { maxAttempts: 3, backoff: RetryBackoff.NONE },
+                cancellationSupport: CancellationSupport.NONE,
+                reconciliationSupport: ReconciliationSupport.NONE,
+            },
+        };
+        const readDispatch = {
+            descriptor: {
+                contractVersion: 1,
+                moduleOwner: "lifeos",
+                idempotency: { mode: IdempotencyMode.IDEMPOTENT, keyScope: "request" as const },
+                retry: { maxAttempts: 3, backoff: RetryBackoff.FIXED },
+                cancellationSupport: CancellationSupport.NONE,
+                reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
+            },
+        };
+        const firstOwnerRejected = await engine.dispatchStep(mission.missionId, "owner-rejected-a", reviewDispatch);
+        await clock.advance(60_000);
+        const secondOwnerRejected = await engine.dispatchStep(mission.missionId, "owner-rejected-b", reviewDispatch);
+        await clock.advance(60_000);
+        const ordinaryRetry = await engine.dispatchStep(mission.missionId, "ordinary-retry-c", readDispatch);
+
+        const registry = createRegistry({
+            reviewRetry: { maxAttempts: 3, backoff: RetryBackoff.NONE },
+        });
+        const seam = new ConnectorDispatchSeam(engine, registry, clock);
+        const invokes = new Map<string, number>();
+        seam.registerConnector("runstead.code-review", {
+            connectorContractVersion: 1,
+            capabilityId: "runstead.code-review",
+            describe: () => registry.requireDescriptor("runstead.code-review"),
+            invoke: async (request) => {
+                const count = (invokes.get(request.inputRefs[0]) ?? 0) + 1;
+                invokes.set(request.inputRefs[0], count);
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "owner rejected",
+                    evidence: [],
+                    ownerVerification: {
+                        owner: "runstead",
+                        verified: false,
+                        reason: "review rejected",
+                    },
+                };
+            },
+        });
+        seam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => registry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                const count = (invokes.get(request.inputRefs[0]) ?? 0) + 1;
+                invokes.set(request.inputRefs[0], count);
+                return {
+                    status: count === 1 ? CapabilityResultStatus.FAILED : CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: count === 1 ? "ordinary transient failure" : "ordinary retry completed",
+                    evidence: [],
+                };
+            },
+        });
+
+        await seam.dispatchPersistedInvocation(firstOwnerRejected.invocationId);
+        await seam.dispatchPersistedInvocation(secondOwnerRejected.invocationId);
+        await seam.dispatchPersistedInvocation(ordinaryRetry.invocationId);
+
+        const dueBeforeScheduler = await store.listDueInvocations(clock.isoNow(), 2);
+        expect(dueBeforeScheduler.map((invocation) => invocation.invocationId)).toEqual([ordinaryRetry.invocationId]);
+
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam,
+            clock,
+            recoveryBatchSize: 2,
+        });
+        const report = await scheduler.runOnce();
+        expect(report.dispatchedInvocationIds).toEqual([ordinaryRetry.invocationId]);
+        expect(invokes.get("refs/runstead/rejected-a")).toBe(1);
+        expect(invokes.get("refs/runstead/rejected-b")).toBe(1);
+        expect(invokes.get("refs/lifeos/ordinary-c")).toBe(2);
+
+        const rejectedA = await store.getInvocation(firstOwnerRejected.invocationId);
+        const rejectedB = await store.getInvocation(secondOwnerRejected.invocationId);
+        const completedC = await store.getInvocation(ordinaryRetry.invocationId);
+        expect(rejectedA).toMatchObject({
+            status: InvocationStatus.FAILED,
+            ownerVerificationState: "rejected",
+            retry: { attempt: 1 },
+        });
+        expect(rejectedA?.attempts).toHaveLength(1);
+        expect(rejectedB).toMatchObject({
+            status: InvocationStatus.FAILED,
+            ownerVerificationState: "rejected",
+            retry: { attempt: 1 },
+        });
+        expect(rejectedB?.attempts).toHaveLength(1);
+        expect(completedC).toMatchObject({
+            status: InvocationStatus.COMPLETED,
+            retry: { attempt: 1 },
+        });
+        expect(completedC?.attempts).toHaveLength(2);
+        await store.close();
+    });
+
     it("does not starve later reconciliation or hide its future wake behind permanent blockers", async () => {
         const store = new SqliteMissionStore(":memory:");
         await store.initialize();

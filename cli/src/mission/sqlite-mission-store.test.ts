@@ -1185,6 +1185,119 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         await store.close();
     });
 
+    it("excludes definitive owner rejections before due limits and from the next wake", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const mission = await buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("id-owner-filter"), store).createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+
+        const failed = (
+            invocationId: string,
+            createdAt: string,
+            ownerVerificationState: CapabilityInvocation["ownerVerificationState"],
+            nextEligibleAt: string | null,
+            ownerVerification?: CapabilityInvocation["ownerVerification"],
+        ): CapabilityInvocation => makeFullInvocation(mission.missionId, {
+            invocationId,
+            effectFingerprint: `fingerprint-${invocationId}`,
+            status: InvocationStatus.FAILED,
+            completedAt: createdAt,
+            retry: {
+                maxAttempts: 3,
+                attempt: 1,
+                backoff: RetryBackoff.NONE,
+                backoffMs: 0,
+                nextEligibleAt,
+            },
+            attempts: [{
+                attempt: 0,
+                correlationId: `correlation-${invocationId}`,
+                state: "failed",
+                startedAt: createdAt,
+                finishedAt: createdAt,
+            }],
+            delivery: { state: "failed" },
+            reconciliation: {
+                support: ReconciliationSupport.NONE,
+                state: "resolved",
+                outcome: "not_performed",
+            },
+            ownerVerificationState,
+            ownerVerification,
+            createdAt,
+            updatedAt: createdAt,
+        });
+
+        await store.saveInvocation(failed(
+            "owner-rejected-a",
+            "2026-08-30T12:00:00.000Z",
+            "rejected",
+            null,
+            {
+                invocationId: "owner-rejected-a",
+                verified: false,
+                reason: "owner rejected",
+                owner: "runstead",
+                verifiedAt: "2026-08-30T12:00:00.000Z",
+            },
+        ));
+        await store.saveInvocation(failed(
+            "owner-rejected-b",
+            "2026-08-30T12:01:00.000Z",
+            "rejected",
+            null,
+            {
+                invocationId: "owner-rejected-b",
+                verified: false,
+                reason: "owner rejected",
+                owner: "runstead",
+                verifiedAt: "2026-08-30T12:01:00.000Z",
+            },
+        ));
+        await store.saveInvocation(failed(
+            "malformed-owner-state",
+            "2026-08-30T11:59:00.000Z",
+            "legacy" as CapabilityInvocation["ownerVerificationState"],
+            null,
+        ));
+        await store.saveInvocation(failed(
+            "ordinary-retry-c",
+            "2026-08-30T12:02:00.000Z",
+            "not_required",
+            null,
+            undefined,
+        ));
+        await store.saveInvocation(failed(
+            "owner-rejected-future",
+            "2026-08-30T12:03:00.000Z",
+            "rejected",
+            "2026-08-30T14:00:00.000Z",
+            {
+                invocationId: "owner-rejected-future",
+                verified: false,
+                reason: "owner rejected",
+                owner: "runstead",
+                verifiedAt: "2026-08-30T12:03:00.000Z",
+            },
+        ));
+        await store.saveInvocation(failed(
+            "ordinary-future",
+            "2026-08-30T12:04:00.000Z",
+            "not_required",
+            "2026-08-30T15:00:00.000Z",
+            undefined,
+        ));
+
+        expect((await store.listDueInvocations(BASE_TIME, 2)).map((invocation) => invocation.invocationId)).toEqual([
+            "ordinary-retry-c",
+        ]);
+        expect(await store.getNextInvocationWakeAt(BASE_TIME)).toBe("2026-08-30T15:00:00.000Z");
+
+        await store.close();
+    });
+
     it("finds an effect fingerprint and prevents terminal replay or evidence multiplication", async () => {
         const store = new SqliteMissionStore(":memory:");
         await store.initialize();
