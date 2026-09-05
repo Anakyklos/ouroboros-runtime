@@ -12,6 +12,8 @@ import { GatewayOrchestrator } from '../orchestration/GatewayOrchestrator.js';
 import type { StoragePort } from '../ports/storage.port.js';
 import type { EventBus } from './event-bus.js';
 import type { DaemonSnapshot } from '../../../shared/daemon-event-contract.js';
+import { projectDaemonStatus, readDurableProjection } from './durable-projection.js';
+import type { MissionStore } from '../mission/ports.js';
 import type { GeminiModel } from '../bridges/GeminiCliBridge.js';
 import { createAgent } from '../providers/agent-loop.js';
 import { readFileSync, existsSync } from 'fs';
@@ -29,15 +31,18 @@ export class RpcGateway implements RpcPort {
     private gatewayOrchestrator: GatewayOrchestrator;
     private sessionManager: SessionManager;
     private eventBus: EventBus;
+    private readonly missionStore?: MissionStore;
 
     constructor(
         gatewayOrchestrator: GatewayOrchestrator,
         storage: StoragePort,
         eventBus: EventBus,
-        apiKey?: string
+        apiKey?: string,
+        missionStore?: MissionStore,
     ) {
         this.gatewayOrchestrator = gatewayOrchestrator;
         this.eventBus = eventBus;
+        this.missionStore = missionStore;
         this.sessionManager = new SessionManager(storage, eventBus, apiKey);
         this.registerSystemMethods();
         this.registerSessionMethods();
@@ -53,12 +58,45 @@ export class RpcGateway implements RpcPort {
      * Authoritative, transport-safe projection for WebSocket handshake/resync.
      * The status contract already excludes prompt and response content.
      */
-    getProjectionSnapshot(): DaemonSnapshot {
-        const status = this.sessionManager.getStatusSnapshot();
+    async getProjectionSnapshot(): Promise<DaemonSnapshot> {
+        const status = projectDaemonStatus(this.sessionManager.getStatusSnapshot());
+        const durable = this.missionStore
+            ? await readDurableProjection(this.missionStore)
+            : {
+                missions: [],
+                invocations: [],
+                completeness: {
+                    missions: {
+                        liveIncluded: 0,
+                        liveOmitted: 0,
+                        historicalIncluded: 0,
+                        historicalOmitted: 0,
+                        truncated: false,
+                    },
+                    invocations: {
+                        liveIncluded: 0,
+                        liveOmitted: 0,
+                        historicalIncluded: 0,
+                        historicalOmitted: 0,
+                        truncated: false,
+                    },
+                },
+            };
         return {
+            protocolVersion: 1,
+            transportCapabilities: {
+                orderedEvents: true,
+                authoritativeSnapshot: true,
+                resync: true,
+                durableMissions: Boolean(this.missionStore?.readProjection),
+                durableInvocations: Boolean(this.missionStore?.readProjection),
+            },
             cursor: 0,
             status,
             capabilities: status.capabilities,
+            missions: durable.missions,
+            invocations: durable.invocations,
+            completeness: durable.completeness,
         };
     }
 

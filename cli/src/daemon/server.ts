@@ -10,9 +10,16 @@ import websocket from '@fastify/websocket';
 import { EventBus, globalEventBus } from './event-bus.js';
 import { RpcGateway } from './rpc-gateway.js';
 import { DaemonProjection, type ProjectionClient } from './daemon-projection.js';
-import { isAllowedDaemonEvent } from '../../../shared/daemon-event-contract.js';
+import { projectInvocation, projectMission } from './durable-projection.js';
+import {
+    isAllowedDaemonEvent,
+    isDaemonEventData,
+    type AllowedDaemonEvent,
+    type DaemonEventDataMap,
+} from '../../../shared/daemon-event-contract.js';
 import { GatewayOrchestrator } from '../orchestration/GatewayOrchestrator.js';
 import type { StoragePort } from '../ports/storage.port.js';
+import type { MissionMutation, MissionStore } from '../mission/ports.js';
 
 export interface DaemonConfig {
     port: number;
@@ -34,13 +41,15 @@ export class DaemonServer {
     private gatewayOrchestrator: GatewayOrchestrator;
     private projection: DaemonProjection;
     private eventForwardingUnsubscribe: (() => void) | null = null;
+    private missionMutationUnsubscribe: (() => void) | null = null;
     private isRunning = false;
     private initialized = false;
 
     constructor(
         storage: StoragePort,
         config: Partial<DaemonConfig> = {},
-        eventBus: EventBus = globalEventBus
+        eventBus: EventBus = globalEventBus,
+        missionStore?: MissionStore,
     ) {
         this.config = { ...DEFAULT_CONFIG, ...config };
         this.eventBus = eventBus;
@@ -50,16 +59,25 @@ export class DaemonServer {
             this.gatewayOrchestrator.initialize(this.config.apiKey);
         }
         
-        this.rpcGateway = new RpcGateway(this.gatewayOrchestrator, storage, eventBus, this.config.apiKey);
+        this.rpcGateway = new RpcGateway(
+            this.gatewayOrchestrator,
+            storage,
+            eventBus,
+            this.config.apiKey,
+            missionStore,
+        );
         this.projection = new DaemonProjection({
-            snapshot: (cursor) => ({
-                ...this.rpcGateway.getProjectionSnapshot(),
+            snapshot: async (cursor) => ({
+                ...await this.rpcGateway.getProjectionSnapshot(),
                 cursor,
             }),
             onDiagnostic: (diagnostic) => {
                 this.eventBus.log('warn', `WebSocket protocol diagnostic: ${diagnostic.code}`, 'DaemonServer');
             },
         });
+        this.missionMutationUnsubscribe = missionStore?.onMutation?.((mutation) => {
+            this.forwardDurableMutation(mutation);
+        }) ?? null;
 
         this.app = Fastify({
             logger: false,
@@ -84,11 +102,67 @@ export class DaemonServer {
             if (!isAllowedDaemonEvent(forwarded.event) || forwarded.event === 'snapshot') {
                 return;
             }
-            this.projection.broadcast(forwarded.event, forwarded.data);
+            this.forwardPublicEvent(forwarded.event, forwarded.data);
         });
     }
 
+    private forwardPublicEvent<E extends Exclude<AllowedDaemonEvent, 'snapshot'>>(
+        event: E,
+        data: unknown,
+    ): void {
+        if (event === 'log') {
+            if (!data || typeof data !== 'object') return;
+            const log = data as { level?: unknown; message?: unknown; source?: unknown };
+            const normalized: DaemonEventDataMap['log'] = {
+                level: log.level as DaemonEventDataMap['log']['level'],
+                message: log.message as string,
+                ...(typeof log.source === 'string' ? { source: log.source } : {}),
+            };
+            if (isDaemonEventData('log', normalized)) {
+                this.projection.broadcast('log', normalized);
+            }
+            return;
+        }
+
+        if (isDaemonEventData(event, data)) {
+            this.projection.broadcast(event, data);
+        }
+    }
+
+    private forwardDurableMutation(mutation: MissionMutation): void {
+        try {
+            if (mutation.entity === 'mission') {
+                this.eventBus.emit('mission', {
+                    ...projectMission(mutation.mission),
+                    kind: mutation.kind,
+                });
+                return;
+            }
+
+            const invocation = projectInvocation(mutation.invocation);
+            const kind = mutation.kind === 'created'
+                ? invocation.status === 'running' || invocation.status === 'dispatched'
+                    ? 'started'
+                    : 'waiting'
+                : invocation.status === 'completed'
+                    ? 'completed'
+                    : invocation.status === 'failed'
+                        ? 'failed'
+                        : invocation.status === 'cancelled'
+                            ? 'cancelled'
+                            : invocation.status === 'running'
+                                ? 'started'
+                                : 'updated';
+            this.eventBus.emit('capability_invocation', { ...invocation, kind });
+        } catch {
+            // A malformed durable row is never guessed onto the wire.
+            this.eventBus.log('warn', 'Durable projection update omitted', 'DaemonServer');
+        }
+    }
+
     private cleanupTransport(): void {
+        this.missionMutationUnsubscribe?.();
+        this.missionMutationUnsubscribe = null;
         this.eventForwardingUnsubscribe?.();
         this.eventForwardingUnsubscribe = null;
         this.projection.closeClients();
