@@ -147,9 +147,23 @@ export interface DaemonInvocationProjection {
   completedAt?: string;
 }
 
+export interface DaemonProjectionCompletenessEntry {
+  liveIncluded: number;
+  liveOmitted: number;
+  historicalIncluded: number;
+  historicalOmitted: number;
+  truncated: boolean;
+}
+
+export interface DaemonProjectionCompleteness {
+  missions: DaemonProjectionCompletenessEntry;
+  invocations: DaemonProjectionCompletenessEntry;
+}
+
 export interface DaemonDurableProjection {
   missions: DaemonMissionProjection[];
   invocations: DaemonInvocationProjection[];
+  completeness: DaemonProjectionCompleteness;
 }
 
 export interface DaemonSnapshot extends DaemonDurableProjection {
@@ -471,6 +485,32 @@ function isInvocationProjection(value: unknown): value is DaemonInvocationProjec
     && (value.completedAt === undefined || isValidTimestamp(value.completedAt));
 }
 
+function isProjectionCompletenessEntry(value: unknown): value is DaemonProjectionCompletenessEntry {
+  if (!isRecord(value)) return false;
+  if (!hasExactKeys(value, [
+    "liveIncluded",
+    "liveOmitted",
+    "historicalIncluded",
+    "historicalOmitted",
+    "truncated",
+  ])) return false;
+  if (
+    !isSafeInteger(value.liveIncluded)
+    || !isSafeInteger(value.liveOmitted)
+    || !isSafeInteger(value.historicalIncluded)
+    || !isSafeInteger(value.historicalOmitted)
+    || typeof value.truncated !== "boolean"
+  ) return false;
+  return value.truncated === (value.liveOmitted > 0 || value.historicalOmitted > 0);
+}
+
+function isProjectionCompleteness(value: unknown): value is DaemonProjectionCompleteness {
+  if (!isRecord(value)) return false;
+  return hasExactKeys(value, ["missions", "invocations"])
+    && isProjectionCompletenessEntry(value.missions)
+    && isProjectionCompletenessEntry(value.invocations);
+}
+
 function isTransportCapabilities(value: unknown): value is DaemonTransportCapabilities {
   if (!isRecord(value)) return false;
   return hasExactKeys(value, [
@@ -497,6 +537,7 @@ function isSnapshot(value: unknown): value is DaemonSnapshot {
     "capabilities",
     "missions",
     "invocations",
+    "completeness",
   ])
     && value.protocolVersion === DAEMON_EVENT_VERSION
     && isTransportCapabilities(value.transportCapabilities)
@@ -506,7 +547,8 @@ function isSnapshot(value: unknown): value is DaemonSnapshot {
     && Array.isArray(value.missions)
     && value.missions.every(isMissionProjection)
     && Array.isArray(value.invocations)
-    && value.invocations.every(isInvocationProjection);
+    && value.invocations.every(isInvocationProjection)
+    && isProjectionCompleteness(value.completeness);
 }
 
 function isMissionEventData(value: unknown): value is DaemonMissionEventData {

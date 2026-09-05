@@ -179,9 +179,111 @@ describe("durable daemon projection", () => {
     ) => Promise<{ missions: unknown[]; invocations: unknown[] }>;
     const projected = await readDurableProjection(store, { maxMissions: 1, maxInvocations: 1 });
 
-    expect(projected.missions).toHaveLength(1);
-    expect(projected.invocations).toHaveLength(1);
+    expect(projected.missions).toHaveLength(2);
+    expect(projected.invocations).toHaveLength(2);
+    expect(projected.completeness).toEqual({
+      missions: {
+        liveIncluded: 2,
+        liveOmitted: 0,
+        historicalIncluded: 0,
+        historicalOmitted: 0,
+        truncated: false,
+      },
+      invocations: {
+        liveIncluded: 2,
+        liveOmitted: 0,
+        historicalIncluded: 0,
+        historicalOmitted: 0,
+        truncated: false,
+      },
+    });
     expect(JSON.stringify(projected)).not.toContain("Authorization");
     expect(JSON.stringify(projected)).not.toContain("provider-private-handle");
+  });
+
+  it("retains old live entities ahead of historical rows and exposes truncation", async () => {
+    const module = await loadProjectionModule();
+    expect(module).not.toBeNull();
+    if (!module) return;
+
+    const store = new SqliteMissionStore(":memory:");
+    stores.push(store);
+    await store.initialize();
+
+    const liveMission = {
+      ...makeMission("mission-old-live", MissionState.EXECUTING, ["invocation-live"]),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    await store.createMission(liveMission);
+
+    for (let index = 0; index < 3; index += 1) {
+      await store.createMission({
+        ...makeMission(`mission-history-${index}`, MissionState.COMPLETED),
+        createdAt: `2026-09-0${index + 1}T00:00:00.000Z`,
+        updatedAt: `2026-09-0${index + 1}T00:00:00.000Z`,
+      });
+    }
+
+    const liveInvocation = makeInvocation("invocation-live", liveMission.missionId);
+    liveInvocation.createdAt = liveMission.createdAt;
+    liveInvocation.updatedAt = liveMission.updatedAt;
+    delete liveInvocation.error;
+    await store.saveInvocation(liveInvocation);
+
+    for (let index = 0; index < 3; index += 1) {
+      const historicalInvocation = makeInvocation(
+        `invocation-history-${index}`,
+        `mission-history-${index}`,
+        InvocationStatus.COMPLETED,
+      );
+      historicalInvocation.createdAt = `2026-09-0${index + 1}T00:00:00.000Z`;
+      historicalInvocation.updatedAt = historicalInvocation.createdAt;
+      historicalInvocation.completedAt = historicalInvocation.createdAt;
+      delete historicalInvocation.error;
+      await store.saveInvocation(historicalInvocation);
+    }
+
+    const boundedStore = store as SqliteMissionStore & {
+      listMissions: () => Promise<never>;
+    };
+    boundedStore.listMissions = async () => {
+      throw new Error("projection must not materialize the full Mission history");
+    };
+
+    const readDurableProjection = module.readDurableProjection as (
+      store: SqliteMissionStore,
+      limits?: { maxMissions?: number; maxInvocations?: number },
+    ) => Promise<{
+      missions: Array<{ missionId: string }>;
+      invocations: Array<{ invocationId: string }>;
+      completeness: {
+        missions: Record<string, number | boolean>;
+        invocations: Record<string, number | boolean>;
+      };
+    }>;
+    const projected = await readDurableProjection(boundedStore, {
+      maxMissions: 1,
+      maxInvocations: 1,
+    });
+
+    expect(projected.missions.map((mission) => mission.missionId)).toContain("mission-old-live");
+    expect(projected.invocations.map((invocation) => invocation.invocationId)).toContain("invocation-live");
+    expect(projected.completeness).toEqual({
+      missions: {
+        liveIncluded: 1,
+        liveOmitted: 0,
+        historicalIncluded: 1,
+        historicalOmitted: 2,
+        truncated: true,
+      },
+      invocations: {
+        liveIncluded: 1,
+        liveOmitted: 0,
+        historicalIncluded: 1,
+        historicalOmitted: 2,
+        truncated: true,
+      },
+    });
   });
 });
