@@ -34,7 +34,13 @@ import {
     ReconciliationSupport,
     RetryBackoff,
 } from "../capabilities/contracts.js";
-import type { MissionStore } from "./ports.js";
+import type {
+    MissionMutation,
+    MissionMutationListener,
+    MissionProjectionLimits,
+    MissionProjectionRead,
+    MissionStore,
+} from "./ports.js";
 import { assertNoRawSecrets } from "./sanitize.js";
 
 interface MissionRow {
@@ -123,6 +129,10 @@ const LEGACY_EPOCH = "1970-01-01T00:00:00.000Z";
 // owner rejection cannot consume a bounded batch or manufacture a wakeup.
 const RETRYABLE_OWNER_VERIFICATION_STATES_SQL =
     "owner_verification_state IN ('not_required', 'pending', 'verified')";
+const LIVE_MISSION_STATES_SQL = "state NOT IN ('completed', 'failed_terminal', 'cancelled')";
+const HISTORICAL_MISSION_STATES_SQL = "state IN ('completed', 'failed_terminal', 'cancelled')";
+const LIVE_INVOCATION_STATES_SQL = "status NOT IN ('completed', 'cancelled')";
+const HISTORICAL_INVOCATION_STATES_SQL = "status IN ('completed', 'cancelled')";
 
 function uniqueByRef<T extends { refId: string }>(refs: T[]): T[] {
     const seen = new Set<string>();
@@ -182,6 +192,8 @@ export class SqliteMissionStore implements MissionStore {
     private readonly dbPath: string;
     private readonly statements: Record<string, ReturnType<Database["prepare"]>> = {};
     private transactionQueue: Promise<void> = Promise.resolve();
+    private readonly mutationListeners = new Set<MissionMutationListener>();
+    private pendingMutations: MissionMutation[] | null = null;
 
     constructor(dbPath: string = ".ouroboros/missions.db") {
         this.dbPath = dbPath;
@@ -574,8 +586,37 @@ export class SqliteMissionStore implements MissionStore {
     async close(): Promise<void> {
         this.db?.close();
         this.db = null;
+        this.pendingMutations = null;
+        this.mutationListeners.clear();
         for (const key of Object.keys(this.statements)) {
             delete this.statements[key];
+        }
+    }
+
+    /** Subscribe to committed durable facts without making the observer authoritative. */
+    onMutation(listener: MissionMutationListener): () => void {
+        this.mutationListeners.add(listener);
+        return () => this.mutationListeners.delete(listener);
+    }
+
+    private publishMutation(mutation: MissionMutation): void {
+        if (this.pendingMutations) {
+            this.pendingMutations.push(mutation);
+            return;
+        }
+        this.dispatchMutations([mutation]);
+    }
+
+    private dispatchMutations(mutations: readonly MissionMutation[]): void {
+        for (const mutation of mutations) {
+            for (const listener of [...this.mutationListeners]) {
+                try {
+                    listener(mutation);
+                } catch {
+                    // Observer failures must never change a committed fact or
+                    // interrupt an unrelated durable operation.
+                }
+            }
         }
     }
 
@@ -584,6 +625,10 @@ export class SqliteMissionStore implements MissionStore {
     // ------------------------------------------------------------------
 
     async createMission(mission: Mission): Promise<Mission> {
+        const previous = this.stmt(
+            "missionStateForMutation",
+            "SELECT state FROM missions WHERE mission_id = ?",
+        ).get(mission.missionId) as { state: string } | null;
         // Fail-closed durable boundary: the persisted payload must not
         // contain any raw secret pattern. The raw originalIntent is an
         // in-memory value that is NEVER written; only the sanitized snapshot
@@ -645,6 +690,15 @@ export class SqliteMissionStore implements MissionStore {
             JSON.stringify(mission.recoveryMetadata),
             JSON.stringify(mission.pauseMetadata ?? {}),
         );
+        this.publishMutation({
+            entity: "mission",
+            kind: previous === null
+                ? "created"
+                : previous.state === mission.state
+                    ? "updated"
+                    : "state_changed",
+            mission,
+        });
         return mission;
     }
 
@@ -695,6 +749,103 @@ export class SqliteMissionStore implements MissionStore {
             else byMission.set(inv.mission_id, [inv]);
         }
         return rows.map((row) => this.rowToMission(row, byMission.get(row.mission_id) ?? []));
+    }
+
+    /**
+     * Read the transport projection without loading the complete history.
+     * Every live Mission and Invocation is selected first; only terminal
+     * history consumes the caller's finite retention budgets.
+     */
+    async readProjection(limits: MissionProjectionLimits): Promise<MissionProjectionRead> {
+        if (
+            !Number.isSafeInteger(limits.maxHistoricalMissions)
+            || limits.maxHistoricalMissions <= 0
+            || !Number.isSafeInteger(limits.maxHistoricalInvocations)
+            || limits.maxHistoricalInvocations <= 0
+        ) {
+            throw new Error("Projection retention limits must be positive safe integers");
+        }
+
+        return this.withTransaction(async () => {
+            const countRows = (key: string, sql: string): number => {
+                const row = this.stmt(key, sql).get() as { count: number };
+                if (!Number.isSafeInteger(row.count) || row.count < 0) {
+                    throw new Error("Projection row count is invalid");
+                }
+                return row.count;
+            };
+            const liveMissionCount = countRows(
+                "countLiveMissionsForProjection",
+                `SELECT COUNT(*) AS count FROM missions WHERE ${LIVE_MISSION_STATES_SQL}`,
+            );
+            const historicalMissionCount = countRows(
+                "countHistoricalMissionsForProjection",
+                `SELECT COUNT(*) AS count FROM missions WHERE ${HISTORICAL_MISSION_STATES_SQL}`,
+            );
+            const liveInvocationCount = countRows(
+                "countLiveInvocationsForProjection",
+                `SELECT COUNT(*) AS count FROM mission_invocations WHERE ${LIVE_INVOCATION_STATES_SQL}`,
+            );
+            const historicalInvocationCount = countRows(
+                "countHistoricalInvocationsForProjection",
+                `SELECT COUNT(*) AS count FROM mission_invocations WHERE ${HISTORICAL_INVOCATION_STATES_SQL}`,
+            );
+
+            const liveMissionRows = liveMissionCount === 0
+                ? []
+                : this.stmt(
+                    "listLiveMissionsForProjection",
+                    `SELECT * FROM missions
+                     WHERE ${LIVE_MISSION_STATES_SQL}
+                     ORDER BY updated_at DESC, created_at DESC, mission_id ASC
+                     LIMIT ?`,
+                ).all(liveMissionCount) as unknown as MissionRow[];
+            const historicalMissionRows = this.stmt(
+                "listHistoricalMissionsForProjection",
+                `SELECT * FROM missions
+                 WHERE ${HISTORICAL_MISSION_STATES_SQL}
+                 ORDER BY updated_at DESC, created_at DESC, mission_id ASC
+                 LIMIT ?`,
+            ).all(limits.maxHistoricalMissions) as unknown as MissionRow[];
+
+            const liveInvocationRows = liveInvocationCount === 0
+                ? []
+                : this.stmt(
+                    "listLiveInvocationsForProjection",
+                    `SELECT * FROM mission_invocations
+                     WHERE ${LIVE_INVOCATION_STATES_SQL}
+                     ORDER BY updated_at DESC, created_at DESC, invocation_id ASC
+                     LIMIT ?`,
+                ).all(liveInvocationCount) as unknown as InvocationRow[];
+            const historicalInvocationRows = this.stmt(
+                "listHistoricalInvocationsForProjection",
+                `SELECT * FROM mission_invocations
+                 WHERE ${HISTORICAL_INVOCATION_STATES_SQL}
+                 ORDER BY updated_at DESC, created_at DESC, invocation_id ASC
+                 LIMIT ?`,
+            ).all(limits.maxHistoricalInvocations) as unknown as InvocationRow[];
+
+            const selectedInvocationRows = [
+                ...liveInvocationRows,
+                ...historicalInvocationRows,
+            ];
+            const byMission = new Map<string, InvocationRow[]>();
+            for (const invocation of selectedInvocationRows) {
+                const list = byMission.get(invocation.mission_id);
+                if (list) list.push(invocation);
+                else byMission.set(invocation.mission_id, [invocation]);
+            }
+            return {
+                liveMissions: liveMissionRows.map((row) => this.rowToMission(row, byMission.get(row.mission_id) ?? [])),
+                historicalMissions: historicalMissionRows.map((row) => this.rowToMission(row, byMission.get(row.mission_id) ?? [])),
+                liveInvocations: liveInvocationRows.map((row) => this.rowToInvocation(row)),
+                historicalInvocations: historicalInvocationRows.map((row) => this.rowToInvocation(row)),
+                liveMissionCount,
+                historicalMissionCount,
+                liveInvocationCount,
+                historicalInvocationCount,
+            };
+        });
     }
 
     async deleteMission(missionId: string): Promise<void> {
@@ -887,6 +1038,11 @@ export class SqliteMissionStore implements MissionStore {
             effective.createdAt,
             effective.updatedAt,
         );
+        this.publishMutation({
+            entity: "invocation",
+            kind: current === null ? "created" : "updated",
+            invocation: effective,
+        });
         return this.toInvocationRef(effective);
     }
 
@@ -1067,6 +1223,11 @@ export class SqliteMissionStore implements MissionStore {
                 normalized.createdAt,
                 normalized.updatedAt,
             );
+            this.publishMutation({
+                entity: "invocation",
+                kind: "created",
+                invocation: normalized,
+            });
             return true;
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -1271,12 +1432,18 @@ export class SqliteMissionStore implements MissionStore {
         });
         await previous;
         db.exec("BEGIN");
+        const previousMutations = this.pendingMutations;
+        const mutations: MissionMutation[] = [];
+        this.pendingMutations = mutations;
         try {
             const result = await fn();
             db.exec("COMMIT");
+            this.pendingMutations = previousMutations;
+            this.dispatchMutations(mutations);
             return result;
         } catch (e) {
             db.exec("ROLLBACK");
+            this.pendingMutations = previousMutations;
             throw e;
         } finally {
             release();

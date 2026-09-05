@@ -14,6 +14,7 @@ import {
   type DaemonStatusProjection,
   type DaemonCapabilitiesProjection,
   type DaemonTransportCapabilities,
+  type DaemonProjectionCompleteness,
   type DaemonMissionProjection,
   type DaemonInvocationProjection,
 } from "../../../shared/daemon-event-contract";
@@ -23,6 +24,7 @@ export interface DaemonProjectionState {
   status: DaemonStatusProjection | null;
   capabilities: DaemonCapabilitiesProjection | null;
   transportCapabilities: DaemonTransportCapabilities | null;
+  completeness: DaemonProjectionCompleteness | null;
   missions: Record<string, DaemonMissionProjection>;
   invocations: Record<string, DaemonInvocationProjection>;
   planRevisions: Record<string, DaemonPlanRevisionEventData>;
@@ -40,6 +42,7 @@ export const initialDaemonProjectionState: DaemonProjectionState = {
   status: null,
   capabilities: null,
   transportCapabilities: null,
+  completeness: null,
   missions: {},
   invocations: {},
   planRevisions: {},
@@ -76,6 +79,10 @@ export function replaceFromSnapshot(snapshot: DaemonSnapshot): DaemonProjectionS
     status: { ...snapshot.status },
     capabilities: { ...snapshot.capabilities, supportedModes: [...snapshot.capabilities.supportedModes] },
     transportCapabilities: { ...snapshot.transportCapabilities },
+    completeness: {
+      missions: { ...snapshot.completeness.missions },
+      invocations: { ...snapshot.completeness.invocations },
+    },
     missions: indexById(snapshot.missions, (mission) => mission.missionId),
     invocations: indexById(snapshot.invocations, (invocation) => invocation.invocationId),
   };

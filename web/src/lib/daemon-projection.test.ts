@@ -68,6 +68,10 @@ function snapshotWithMission(state: "executing" | "waiting_for_provider"): Daemo
     capabilities,
     missions: [{ ...mission, state }],
     invocations: [invocation],
+    completeness: {
+      missions: { liveIncluded: 1, liveOmitted: 0, historicalIncluded: 0, historicalOmitted: 0, truncated: false },
+      invocations: { liveIncluded: 1, liveOmitted: 0, historicalIncluded: 0, historicalOmitted: 0, truncated: false },
+    },
   };
 }
 

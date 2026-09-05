@@ -2,6 +2,7 @@ import type {
   DaemonDurableProjection,
   DaemonInvocationProjection,
   DaemonMissionProjection,
+  DaemonProjectionCompletenessEntry,
   DaemonStatusProjection,
 } from "../../../shared/daemon-event-contract.js";
 import type {
@@ -90,6 +91,45 @@ export function projectInvocation(invocation: CapabilityInvocation): DaemonInvoc
   };
 }
 
+function emptyCompleteness(): DaemonProjectionCompletenessEntry {
+  return {
+    liveIncluded: 0,
+    liveOmitted: 0,
+    historicalIncluded: 0,
+    historicalOmitted: 0,
+    truncated: false,
+  };
+}
+
+function completenessFor(
+  liveTotal: number,
+  liveIncluded: number,
+  historicalTotal: number,
+  historicalIncluded: number,
+): DaemonProjectionCompletenessEntry {
+  const liveOmitted = Math.max(0, liveTotal - liveIncluded);
+  const historicalOmitted = Math.max(0, historicalTotal - historicalIncluded);
+  return {
+    liveIncluded,
+    liveOmitted,
+    historicalIncluded,
+    historicalOmitted,
+    truncated: liveOmitted > 0 || historicalOmitted > 0,
+  };
+}
+
+function projectCollection<T, P>(values: readonly T[], project: (value: T) => P): P[] {
+  const projected: P[] = [];
+  for (const value of values) {
+    try {
+      projected.push(project(value));
+    } catch {
+      // Invalid durable rows are omitted and reflected by completeness.
+    }
+  }
+  return projected;
+}
+
 /**
  * Read the existing durable MissionStore and return a finite public projection.
  * Invalid rows are omitted rather than turned into guessed operational state.
@@ -100,35 +140,54 @@ export async function readDurableProjection(
 ): Promise<DaemonDurableProjection> {
   const maxMissions = boundedLimit(limits.maxMissions, DEFAULT_MAX_PROJECTED_MISSIONS);
   const maxInvocations = boundedLimit(limits.maxInvocations, DEFAULT_MAX_PROJECTED_INVOCATIONS);
-  const storedMissions = await store.listMissions();
-  const missions: DaemonMissionProjection[] = [];
-  const invocations: DaemonInvocationProjection[] = [];
-
-  for (const mission of storedMissions.slice(0, maxMissions)) {
-    try {
-      missions.push(projectMission(mission));
-    } catch {
-      continue;
-    }
+  if (!store.readProjection) {
+    return {
+      missions: [],
+      invocations: [],
+      completeness: {
+        missions: emptyCompleteness(),
+        invocations: emptyCompleteness(),
+      },
+    };
   }
 
-  for (const mission of storedMissions.slice(0, maxMissions)) {
-    if (invocations.length >= maxInvocations) break;
-    let storedInvocations: CapabilityInvocation[];
-    try {
-      storedInvocations = await store.listInvocations(mission.missionId);
-    } catch {
-      continue;
-    }
-    for (const invocation of storedInvocations) {
-      if (invocations.length >= maxInvocations) break;
-      try {
-        invocations.push(projectInvocation(invocation));
-      } catch {
-        continue;
-      }
-    }
-  }
+  const read = await store.readProjection({
+    maxHistoricalMissions: maxMissions,
+    maxHistoricalInvocations: maxInvocations,
+  });
+  const liveMissions = projectCollection(
+    read.liveMissions.slice(0, read.liveMissionCount),
+    projectMission,
+  );
+  const historicalMissions = projectCollection(
+    read.historicalMissions.slice(0, maxMissions),
+    projectMission,
+  );
+  const liveInvocations = projectCollection(
+    read.liveInvocations.slice(0, read.liveInvocationCount),
+    projectInvocation,
+  );
+  const historicalInvocations = projectCollection(
+    read.historicalInvocations.slice(0, maxInvocations),
+    projectInvocation,
+  );
 
-  return { missions, invocations };
+  return {
+    missions: [...liveMissions, ...historicalMissions],
+    invocations: [...liveInvocations, ...historicalInvocations],
+    completeness: {
+      missions: completenessFor(
+        read.liveMissionCount,
+        liveMissions.length,
+        read.historicalMissionCount,
+        historicalMissions.length,
+      ),
+      invocations: completenessFor(
+        read.liveInvocationCount,
+        liveInvocations.length,
+        read.historicalInvocationCount,
+        historicalInvocations.length,
+      ),
+    },
+  };
 }

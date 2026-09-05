@@ -41,6 +41,10 @@ function createSnapshot(cursor: number): DaemonSnapshot {
     },
     missions: [],
     invocations: [],
+    completeness: {
+      missions: { liveIncluded: 0, liveOmitted: 0, historicalIncluded: 0, historicalOmitted: 0, truncated: false },
+      invocations: { liveIncluded: 0, liveOmitted: 0, historicalIncluded: 0, historicalOmitted: 0, truncated: false },
+    },
   };
 }
 

@@ -62,21 +62,41 @@ export class RpcGateway implements RpcPort {
         const status = projectDaemonStatus(this.sessionManager.getStatusSnapshot());
         const durable = this.missionStore
             ? await readDurableProjection(this.missionStore)
-            : { missions: [], invocations: [] };
+            : {
+                missions: [],
+                invocations: [],
+                completeness: {
+                    missions: {
+                        liveIncluded: 0,
+                        liveOmitted: 0,
+                        historicalIncluded: 0,
+                        historicalOmitted: 0,
+                        truncated: false,
+                    },
+                    invocations: {
+                        liveIncluded: 0,
+                        liveOmitted: 0,
+                        historicalIncluded: 0,
+                        historicalOmitted: 0,
+                        truncated: false,
+                    },
+                },
+            };
         return {
             protocolVersion: 1,
             transportCapabilities: {
                 orderedEvents: true,
                 authoritativeSnapshot: true,
                 resync: true,
-                durableMissions: Boolean(this.missionStore),
-                durableInvocations: Boolean(this.missionStore),
+                durableMissions: Boolean(this.missionStore?.readProjection),
+                durableInvocations: Boolean(this.missionStore?.readProjection),
             },
             cursor: 0,
             status,
             capabilities: status.capabilities,
             missions: durable.missions,
             invocations: durable.invocations,
+            completeness: durable.completeness,
         };
     }
 

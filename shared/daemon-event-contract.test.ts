@@ -76,6 +76,10 @@ const validSnapshotEnvelope = {
       },
     ],
     invocations: [],
+    completeness: {
+      missions: { liveIncluded: 1, liveOmitted: 0, historicalIncluded: 0, historicalOmitted: 0, truncated: false },
+      invocations: { liveIncluded: 0, liveOmitted: 0, historicalIncluded: 0, historicalOmitted: 0, truncated: false },
+    },
   },
   timestamp: "2026-09-04T00:00:00.000Z",
 };

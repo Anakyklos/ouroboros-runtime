@@ -54,6 +54,10 @@ function snapshotEnvelope(
       pendingApprovalCount: 0,
     }],
     invocations: [],
+    completeness: {
+      missions: { liveIncluded: 1, liveOmitted: 0, historicalIncluded: 0, historicalOmitted: 0, truncated: false },
+      invocations: { liveIncluded: 0, liveOmitted: 0, historicalIncluded: 0, historicalOmitted: 0, truncated: false },
+    },
   };
   return {
     version: 1,
