@@ -184,6 +184,60 @@ future missions benefit from evidence
 
 ---
 
+## Mission Canvas direction
+
+Status: Direction. This is a Mission Control projection, not a new execution engine.
+
+Mission Control may adopt a spatial/canvas interaction model inspired by visual agent workbenches, but the semantics are constrained by Ouroboros authority:
+
+~~~text
+authoritative Ouroboros Mission / CapabilityInvocation state
+                       |
+                       v
+             versioned event/projection contract
+                       |
+                       v
+                Mission Control
+                 Mission Canvas
+~~~
+
+The canvas may visualize Missions, plan steps, capability invocations, owners, waits/blockers, approvals, evidence and results. It may also provide bounded operator actions when the runtime contract explicitly supports them.
+
+Hard boundaries:
+
+- node position, edges, visual grouping, terminal panes and drag/drop are never authority;
+- the UI never owns a second Mission graph or scheduler;
+- a node marked completed visually is not evidence unless the authoritative runtime says the underlying state/evidence gate passed;
+- the UI does not invoke Runstead or shell/processes behind Ouroboros policy;
+- the UI does not read Runstead private state or another module database;
+- closing/restarting Mission Control does not cancel durable Missions;
+- reconnect must rebuild the complete meaningful view from runtime/module contracts;
+- hidden chain-of-thought, raw provider responses, secrets and private module internals are not canvas data.
+
+### Runstead boundary
+
+For software work, Ouroboros consumes a Runstead-owned versioned capability contract. Runstead remains responsible for its task lifecycle, repository effects, provider use, recovery and technical verification. Ouroboros remains responsible for deciding whether that verified software result satisfies the larger Mission.
+
+Ouroboros must not create a duplicate coding runtime or call Codex CLI, Claude Code, OpenCode, Antigravity or other coding CLIs as an internal shortcut around Runstead. If Runstead is unavailable, software-work capability is unavailable/degraded until policy can choose another explicitly owned capability; absence is not permission to duplicate the owner.
+
+### Unlock gate for Mission Canvas
+
+Canvas implementation remains blocked until the runtime exposes enough stable facts to make the UI reconstructable and honest. At minimum:
+
+1. durable Mission identity/state;
+2. Capability Registry + versioned CapabilityInvocation semantics;
+3. event/state projection with reconnect/reconciliation;
+4. typed waits, approvals, blockers, cancellation and results;
+5. evidence/result references with owner provenance;
+6. versioned local interface/IPC;
+7. failure/degraded states that do not require UI inference.
+
+Issues #68 and #70 remain the product/UI tracking points and retain their dependency gates, including #62/#63/#38.
+
+The cross-project normative decision is Anakyklos/architecture ADR 0004.
+
+---
+
 ## Current (comportamento comprovado hoje)
 
 O que o repositório implementa e testa atualmente:

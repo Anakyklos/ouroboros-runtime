@@ -162,6 +162,14 @@ pipeline de criação do runtime.
 
 ---
 
+## Mission Canvas boundary
+
+Mission Control may evolve toward a spatial Mission Canvas for visualizing Mission structure, capability execution, waits, approvals and evidence. The canvas is strictly a projection/input surface over Ouroboros contracts: it is not a scheduler, second state store, coding runtime or source of execution truth.
+
+For software work, the owner remains Runstead. Ouroboros invokes the public Runstead capability contract and consumes its verified result/evidence; it does not bypass Runstead through direct vendor coding CLIs or private Runstead state.
+
+Canvas product work remains gated by the durable Mission/Capability/event contracts tracked by #62/#63/#38 and the UI/product issues #68/#70. See docs/ARCHITECTURE.md and Anakyklos/architecture ADR 0004.
+
 ## Quickstart (baseline)
 
 ```bash
