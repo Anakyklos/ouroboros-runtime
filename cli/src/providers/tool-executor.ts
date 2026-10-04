@@ -1,16 +1,23 @@
 /**
  * 🔧 ToolExecutor
- * 
- * Executa ferramentas locais para o subagente Z.AI.
- * Implementa: read_file, write_file, run_command, list_directory, grep_search
- * 
- * ⚠️ IMPORTANTE: Estas são NOSSAS tools, não as do Z.AI.
- * O function calling é ilimitado - só a execução roda aqui.
+ *
+ * Read-only local tools for the legacy AgentLoop.
+ * Implements: read_file, list_directory, grep_search
+ *
+ * ⚠️ SECURITY (#85): effectful model-controlled tools (`write_file`,
+ * `run_command`) are retired from the model-facing path. A tool call
+ * naming them fails closed before dispatch — no host process is spawned
+ * and no file is created or modified. Effectful work belongs to
+ * deterministic policy / Capability Registry / capability owners
+ * (Runstead for software work), never to a raw model tool call.
+ *
+ * Surviving read-only tools are deterministically confined to the
+ * authorized workspace: external absolute paths, `../` traversal and
+ * symlinks that escape the workspace are rejected.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { spawn } from 'node:child_process';
 import { EventBus, globalEventBus } from '../daemon/event-bus.js';
 import type { ToolCall, ToolDefinition } from './direct-zai.js';
 
@@ -20,8 +27,6 @@ import type { ToolCall, ToolDefinition } from './direct-zai.js';
 
 export interface ToolExecutorConfig {
     workingDirectory: string;
-    allowedCommands?: string[]; // Allowlist for run_command
-    commandTimeout?: number; // ms
     maxOutputSize?: number; // chars
     verbose?: boolean;
     concurrencyLimit?: number; // Max concurrent FS operations
@@ -34,7 +39,7 @@ export interface ToolResult {
 }
 
 // ============================================================
-// Tool Definitions (for Z.AI function calling)
+// Tool Definitions (for provider function calling)
 // ============================================================
 
 const TOOL_DEFINITIONS: ToolDefinition[] = [
@@ -42,7 +47,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
         type: 'function',
         function: {
             name: 'read_file',
-            description: 'Read the contents of a file. Returns the file content as text.',
+            description: 'Read the contents of a file within the authorized workspace. Returns the file content as text.',
             parameters: {
                 type: 'object',
                 properties: {
@@ -57,38 +62,8 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     {
         type: 'function',
         function: {
-            name: 'write_file',
-            description: 'Write content to a file. Creates directories if they do not exist.',
-            parameters: {
-                type: 'object',
-                properties: {
-                    path: { type: 'string', description: 'Path to the file to write' },
-                    content: { type: 'string', description: 'Content to write' }
-                },
-                required: ['path', 'content']
-            }
-        }
-    },
-    {
-        type: 'function',
-        function: {
-            name: 'run_command',
-            description: 'Run a shell command.',
-            parameters: {
-                type: 'object',
-                properties: {
-                    command: { type: 'string', description: 'Command to run' },
-                    cwd: { type: 'string', description: 'Optional working directory' }
-                },
-                required: ['command']
-            }
-        }
-    },
-    {
-        type: 'function',
-        function: {
             name: 'list_directory',
-            description: 'List contents of a directory.',
+            description: 'List contents of a directory within the authorized workspace.',
             parameters: {
                 type: 'object',
                 properties: {
@@ -103,7 +78,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
         type: 'function',
         function: {
             name: 'grep_search',
-            description: 'Search for a text pattern in files.',
+            description: 'Search for a text pattern in files within the authorized workspace.',
             parameters: {
                 type: 'object',
                 properties: {
@@ -116,6 +91,14 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
         }
     }
 ];
+
+// Effectful model-controlled tools are denied by name before handler
+// lookup, so a synthetic provider response can never reach a host
+// effect — even if a handler were registered later. (#85)
+const EFFECTFUL_TOOLS: ReadonlySet<string> = new Set([
+    'write_file',
+    'run_command',
+]);
 
 // ============================================================
 // Concurrency Limiter
@@ -157,7 +140,6 @@ export class ToolExecutor {
 
     constructor(config: ToolExecutorConfig) {
         this.config = {
-            commandTimeout: 30000,
             maxOutputSize: 100000,
             verbose: false,
             ...config
@@ -166,10 +148,8 @@ export class ToolExecutor {
         this.handlers = new Map();
         this.concurrencyLimiter = new ConcurrencyLimiter(this.config.concurrencyLimit ?? 10);
 
-        // Register tools
+        // Read-only tools only. Effectful tools are intentionally absent. (#85)
         this.registerHandler('read_file', this.handleReadFile.bind(this));
-        this.registerHandler('write_file', this.handleWriteFile.bind(this));
-        this.registerHandler('run_command', this.handleRunCommand.bind(this));
         this.registerHandler('list_directory', this.handleListDirectory.bind(this));
         this.registerHandler('grep_search', this.handleGrepSearch.bind(this));
     }
@@ -179,23 +159,38 @@ export class ToolExecutor {
     }
 
     /**
-     * Returns tool definitions for Z.AI function calling
+     * Returns tool definitions for provider function calling.
+     * Read-only tools only; effectful tools are never advertised. (#85)
      */
     getToolDefinitions(): ToolDefinition[] {
         return TOOL_DEFINITIONS;
     }
 
     /**
-     * Executes a tool call from Z.AI response
+     * Executes a tool call from a provider response.
+     * Effectful and unknown tools fail closed before any host effect. (#85)
      */
     async execute(call: ToolCall): Promise<ToolResult> {
-        const handler = this.handlers.get(call.function.name);
+        const toolName = call.function.name;
+
+        // Fail closed: model-controlled shell/filesystem effects are not
+        // permitted, regardless of what the provider response claims. (#85)
+        if (EFFECTFUL_TOOLS.has(toolName)) {
+            this.log('warn', `Refused effectful tool call: ${toolName}`);
+            return {
+                success: false,
+                output: '',
+                error: `Tool '${toolName}' is disabled: model-controlled shell/filesystem effects are not permitted in this runtime (#85)`,
+            };
+        }
+
+        const handler = this.handlers.get(toolName);
 
         if (!handler) {
             return {
                 success: false,
                 output: '',
-                error: `Unknown tool: ${call.function.name}`,
+                error: `Unknown tool: ${toolName}`,
             };
         }
 
@@ -203,14 +198,16 @@ export class ToolExecutor {
         try {
             args = JSON.parse(call.function.arguments);
         } catch {
+            // Do not echo raw arguments back: they are model-supplied and
+            // may contain sensitive content. (#85)
             return {
                 success: false,
                 output: '',
-                error: `Invalid arguments JSON: ${call.function.arguments}`,
+                error: 'Invalid arguments JSON',
             };
         }
 
-        this.log('debug', `Executing tool: ${call.function.name}`);
+        this.log('debug', `Executing tool: ${toolName}`);
 
         try {
             const result = await handler(args);
@@ -218,7 +215,7 @@ export class ToolExecutor {
             // Truncate if too large
             if (result.output.length > this.config.maxOutputSize!) {
                 result.output = result.output.slice(0, this.config.maxOutputSize!) +
-                    `\n\n[Output truncated at ${this.config.maxOutputSize!} bytes]`;
+                    `\n\n[Output truncated at ${this.config.maxOutputSize!} characters]`;
             }
 
             return result;
@@ -232,13 +229,20 @@ export class ToolExecutor {
     }
 
     // ============================================================
-    // Tool Handlers
+    // Tool Handlers (read-only)
     // ============================================================
 
     private async handleReadFile(args: Record<string, unknown>): Promise<ToolResult> {
-        const filePath = this.resolvePath(args.path as string);
+        const inputPath = args.path as string;
         const startLine = args.start_line as number | undefined;
         const endLine = args.end_line as number | undefined;
+
+        let filePath: string;
+        try {
+            filePath = await this.confinePath(inputPath);
+        } catch (err) {
+            return { success: false, output: '', error: err instanceof Error ? err.message : String(err) };
+        }
 
         try {
             let content = await fs.promises.readFile(filePath, 'utf-8');
@@ -251,96 +255,31 @@ export class ToolExecutor {
                 content = lines.slice(start, end).join('\n');
             }
 
-            this.log('debug', `Read ${content.length} chars from ${filePath}`);
+            this.log('debug', `Read ${content.length} chars from workspace path: ${inputPath}`);
             return { success: true, output: content };
         } catch (error) {
             const err = error as NodeJS.ErrnoException;
             if (err.code === 'ENOENT') {
-                return { success: false, output: '', error: `File not found: ${filePath}` };
+                return { success: false, output: '', error: `File not found: ${inputPath}` };
             }
             if (err.code === 'EISDIR') {
-                return { success: false, output: '', error: `Path is a directory: ${filePath}` };
+                return { success: false, output: '', error: `Path is a directory: ${inputPath}` };
             }
             return { success: false, output: '', error: `Error reading file: ${err.message}` };
         }
     }
 
-    private async handleWriteFile(args: Record<string, unknown>): Promise<ToolResult> {
-        const filePath = this.resolvePath(args.path as string);
-        const content = args.content as string;
-
-        // Create parent directories
-        const dir = path.dirname(filePath);
-
-        // Check if exists to avoid mkdir overhead if possible
-        try {
-            await fs.promises.access(dir);
-        } catch {
-            await fs.promises.mkdir(dir, { recursive: true });
-        }
-
-        await fs.promises.writeFile(filePath, content, 'utf-8');
-
-        this.log('info', `Wrote ${content.length} chars to ${filePath}`);
-        return { success: true, output: `File written: ${filePath}` };
-    }
-
-    private async handleRunCommand(args: Record<string, unknown>): Promise<ToolResult> {
-        const command = args.command as string;
-        const cwd = args.cwd ? this.resolvePath(args.cwd as string) : this.config.workingDirectory;
-
-        this.log('debug', `Running: ${command}`);
-
-        return new Promise((resolve) => {
-            const proc = spawn(command, [], {
-                shell: true,
-                cwd,
-            });
-
-            let stdout = '';
-            let stderr = '';
-
-            proc.stdout.on('data', (data) => {
-                stdout += data.toString();
-            });
-
-            proc.stderr.on('data', (data) => {
-                stderr += data.toString();
-            });
-
-            const timeout = setTimeout(() => {
-                proc.kill();
-                resolve({
-                    success: false,
-                    output: stdout,
-                    error: `Command timed out after ${this.config.commandTimeout!}ms`,
-                });
-            }, this.config.commandTimeout);
-
-            proc.on('close', (code) => {
-                clearTimeout(timeout);
-                resolve({
-                    success: code === 0,
-                    output: stdout + (stderr ? `\n[stderr]\n${stderr}` : ''),
-                    error: code !== 0 ? `Exit code: ${code}` : undefined,
-                });
-            });
-
-            proc.on('error', (err) => {
-                clearTimeout(timeout);
-                resolve({
-                    success: false,
-                    output: '',
-                    error: err.message,
-                });
-            });
-        });
-    }
-
     private async handleListDirectory(args: Record<string, unknown>): Promise<ToolResult> {
-        const dirPath = this.resolvePath(args.path as string);
+        const inputPath = args.path as string;
         const recursive = args.recursive as boolean ?? false;
         const CONCURRENCY_LIMIT = 10;
+
+        let dirPath: string;
+        try {
+            dirPath = await this.confinePath(inputPath);
+        } catch (err) {
+            return { success: false, output: '', error: err instanceof Error ? err.message : String(err) };
+        }
 
         const list = async (dir: string, prefix = ''): Promise<string[]> => {
             const items = await fs.promises.readdir(dir, { withFileTypes: true });
@@ -387,15 +326,22 @@ export class ToolExecutor {
 
     private async handleGrepSearch(args: Record<string, unknown>): Promise<ToolResult> {
         const pattern = args.pattern as string;
-        const searchPath = this.resolvePath(args.path as string);
+        const inputPath = args.path as string;
         const include = args.include as string | undefined;
+
+        let searchPath: string;
+        try {
+            searchPath = await this.confinePath(inputPath);
+        } catch (err) {
+            return { success: false, output: '', error: err instanceof Error ? err.message : String(err) };
+        }
 
         let stat: fs.Stats;
         try {
             stat = await fs.promises.stat(searchPath);
         } catch (error: any) {
              if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) {
-                return { success: false, output: '', error: `Path not found: ${searchPath}` };
+                return { success: false, output: '', error: `Path not found: ${inputPath}` };
             }
             throw error;
         }
@@ -439,7 +385,7 @@ export class ToolExecutor {
                              await searchFile(fullPath);
                          }
                      }
-                })));
+                 })));
             };
 
             await processDir(searchPath);
@@ -464,11 +410,31 @@ export class ToolExecutor {
         return this.concurrencyLimiter.run(task);
     }
 
-    private resolvePath(inputPath: string): string {
-        if (path.isAbsolute(inputPath)) {
-            return inputPath;
+    /**
+     * Resolves a model-supplied path inside the authorized workspace.
+     * Rejects external absolute paths, `../` traversal that escapes the
+     * workspace, and symlinks whose real target leaves the workspace. (#85)
+     */
+    private async confinePath(inputPath: string): Promise<string> {
+        const workspace = path.resolve(this.config.workingDirectory);
+        const workspaceReal = await fs.promises.realpath(workspace);
+
+        const candidate = path.isAbsolute(inputPath)
+            ? path.resolve(inputPath)
+            : path.resolve(workspace, inputPath);
+
+        let real: string;
+        try {
+            real = await fs.promises.realpath(candidate);
+        } catch {
+            throw new Error(`Path not found: ${inputPath}`);
         }
-        return path.join(this.config.workingDirectory, inputPath);
+
+        if (real !== workspaceReal && !real.startsWith(workspaceReal + path.sep)) {
+            throw new Error(`Path outside authorized workspace: ${inputPath}`);
+        }
+
+        return real;
     }
 
     private matchGlob(filename: string, pattern: string): boolean {
