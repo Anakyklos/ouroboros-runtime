@@ -202,9 +202,12 @@ export class AgentLoop {
                     await waitUntilRunnable();
                     throwIfAborted();
                     this.log('debug', `Tool: ${call.function.name}`);
+                    // Bounded metadata only: raw tool arguments are
+                    // model-supplied and may contain secrets, so they
+                    // are never emitted as telemetry. (#85)
                     this.emitThought('tool_call', `Calling ${call.function.name}`, {
                         toolName: call.function.name,
-                        args: call.function.arguments,
+                        argumentChars: call.function.arguments.length,
                     });
 
                     const result = await this.executor.execute(call);

@@ -4,16 +4,23 @@
  * Read-only local tools for the legacy AgentLoop.
  * Implements: read_file, list_directory, grep_search
  *
- * ⚠️ SECURITY (#85): effectful model-controlled tools (`write_file`,
- * `run_command`) are retired from the model-facing path. A tool call
- * naming them fails closed before dispatch — no host process is spawned
- * and no file is created or modified. Effectful work belongs to
- * deterministic policy / Capability Registry / capability owners
- * (Runstead for software work), never to a raw model tool call.
+ * ⚠️ SECURITY (#85): the model may only invoke a fixed allowlist of
+ * read-only tools (`read_file`, `list_directory`, `grep_search`).
+ * Effectful tools (`write_file`, `run_command`), unknown names and
+ * dynamically registered handlers all fail closed before dispatch —
+ * no host process is spawned and no file is created or modified.
+ * Effectful work belongs to deterministic policy / Capability
+ * Registry / capability owners (Runstead for software work), never
+ * to a raw model tool call.
  *
  * Surviving read-only tools are deterministically confined to the
  * authorized workspace: external absolute paths, `../` traversal and
  * symlinks that escape the workspace are rejected.
+ *
+ * ⚠️ SECURITY (#85): credential sources (`.secrets`, legacy
+ * `Apikeys`, `.env` and `.env.*` variants) are denied on their
+ * canonical path, so relative, absolute and symlink aliases cannot
+ * read them, and recursive grep skips them during traversal.
  */
 
 import * as fs from 'node:fs';
@@ -92,13 +99,30 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     }
 ];
 
-// Effectful model-controlled tools are denied by name before handler
-// lookup, so a synthetic provider response can never reach a host
-// effect — even if a handler were registered later. (#85)
-const EFFECTFUL_TOOLS: ReadonlySet<string> = new Set([
-    'write_file',
-    'run_command',
+// Fixed allowlist of the read-only tools the model is authorized to
+// invoke. Everything else — effectful, unknown, or dynamically
+// registered under an arbitrary name — fails closed before handler
+// lookup, so no registration can turn model output into new
+// authority. (#85)
+const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+    'read_file',
+    'list_directory',
+    'grep_search',
 ]);
+
+// Credential sources used by this runtime (rpc-gateway loadZAIKey
+// reads `.secrets` and legacy `Apikeys`; dotenv loads `.env` and
+// its variants). Model-controlled read-only tools must never
+// return their content. (#85)
+const SENSITIVE_FILE_NAMES: ReadonlySet<string> = new Set([
+    '.secrets',
+    'Apikeys',
+    '.env',
+]);
+
+function isSensitiveFileName(basename: string): boolean {
+    return SENSITIVE_FILE_NAMES.has(basename) || basename.startsWith('.env.');
+}
 
 // ============================================================
 // Concurrency Limiter
@@ -154,6 +178,11 @@ export class ToolExecutor {
         this.registerHandler('grep_search', this.handleGrepSearch.bind(this));
     }
 
+    /**
+     * Registers a handler. Registration alone does NOT grant model
+     * authority: `execute()` only dispatches names on the fixed
+     * read-only allowlist. (#85)
+     */
     registerHandler(name: string, handler: (args: Record<string, unknown>) => Promise<ToolResult>): void {
         this.handlers.set(name, handler);
     }
@@ -173,14 +202,16 @@ export class ToolExecutor {
     async execute(call: ToolCall): Promise<ToolResult> {
         const toolName = call.function.name;
 
-        // Fail closed: model-controlled shell/filesystem effects are not
-        // permitted, regardless of what the provider response claims. (#85)
-        if (EFFECTFUL_TOOLS.has(toolName)) {
-            this.log('warn', `Refused effectful tool call: ${toolName}`);
+        // Fail closed against the fixed allowlist: effectful, unknown
+        // and dynamically registered names are all unreachable from
+        // model output, regardless of what the provider response
+        // claims. (#85)
+        if (!READ_ONLY_TOOLS.has(toolName)) {
+            this.log('warn', `Refused tool call outside read-only allowlist: ${toolName}`);
             return {
                 success: false,
                 output: '',
-                error: `Tool '${toolName}' is disabled: model-controlled shell/filesystem effects are not permitted in this runtime (#85)`,
+                error: `Tool '${toolName}' is not permitted in this runtime: only read-only workspace tools are authorized (#85)`,
             };
         }
 
@@ -190,7 +221,7 @@ export class ToolExecutor {
             return {
                 success: false,
                 output: '',
-                error: `Unknown tool: ${toolName}`,
+                error: `Tool '${toolName}' has no handler`,
             };
         }
 
@@ -352,6 +383,11 @@ export class ToolExecutor {
 
         const searchFile = async (filePath: string) => {
             try {
+                // Skip credential sources during recursive traversal so
+                // their content never reaches grep output. (#85)
+                if (isSensitiveFileName(path.basename(filePath))) {
+                    return;
+                }
                 const content = await fs.promises.readFile(filePath, 'utf-8');
                 const lines = content.split('\n');
 
@@ -427,11 +463,20 @@ export class ToolExecutor {
         try {
             real = await fs.promises.realpath(candidate);
         } catch {
-            throw new Error(`Path not found: ${inputPath}`);
+            // Generic: never echo model-supplied input back, it
+            // may itself carry sensitive content. (#85)
+            throw new Error('Path not found');
         }
 
         if (real !== workspaceReal && !real.startsWith(workspaceReal + path.sep)) {
-            throw new Error(`Path outside authorized workspace: ${inputPath}`);
+            throw new Error('Path outside authorized workspace');
+        }
+
+        // Credential-source denial on the canonical path: defeats
+        // relative, absolute and symlink aliases alike. The error is
+        // generic — no content, no resolved path. (#85)
+        if (isSensitiveFileName(path.basename(real))) {
+            throw new Error('Access denied: sensitive paths are not readable by this runtime (#85)');
         }
 
         return real;

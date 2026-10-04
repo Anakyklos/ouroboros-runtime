@@ -29,6 +29,7 @@ import {
     type ToolCall,
     type ToolDefinition,
 } from './direct-zai';
+import { EventBus, type ThoughtEvent } from '../daemon/event-bus.js';
 import { createToolExecutor, ToolExecutor } from './tool-executor';
 
 let callCounter = 0;
@@ -115,7 +116,7 @@ describe('ToolExecutor fail-close (issue #85)', () => {
             toolCall('run_command', { command: `touch ${marker}` })
         );
         expect(result.success).toBe(false);
-        expect(result.error).toContain('disabled');
+        expect(result.error).toContain('not permitted');
         expect(fs.existsSync(marker)).toBe(false);
     });
 
@@ -161,7 +162,7 @@ describe('ToolExecutor fail-close (issue #85)', () => {
         const toolMessages = followUp.filter(m => m.role === 'tool');
         expect(toolMessages.length).toBe(2);
         for (const message of toolMessages) {
-            expect(message.content).toContain('disabled');
+            expect(message.content).toContain('not permitted');
         }
     });
 
@@ -188,18 +189,31 @@ describe('ToolExecutor fail-close (issue #85)', () => {
         expect(fs.existsSync(parserMarker)).toBe(false);
     });
 
-    test('unknown and forbidden tools fail closed', async () => {
+    test('unknown, forbidden and dynamically registered names fail closed', async () => {
         const unknown = await executor.execute(
             toolCall('delete_everything', { path: workspace })
         );
         expect(unknown.success).toBe(false);
-        expect(unknown.error).toContain('Unknown tool');
+        expect(unknown.error).toContain('not permitted');
 
         const forbidden = await executor.execute(
             toolCall('write_file', { path: path.join(workspace, 'x.txt'), content: 'x' })
         );
         expect(forbidden.success).toBe(false);
-        expect(forbidden.error).toContain('disabled');
+        expect(forbidden.error).toContain('not permitted');
+
+        // A handler registered under an arbitrary name must never
+        // become model authority: the allowlist gate precedes dispatch.
+        executor.registerHandler('custom_admin', async () => ({
+            success: true,
+            output: 'pwned',
+        }));
+        const registered = await executor.execute(
+            toolCall('custom_admin', {})
+        );
+        expect(registered.success).toBe(false);
+        expect(registered.error).toContain('not permitted');
+        expect(registered.output).not.toContain('pwned');
     });
 
     test('refusal diagnostics do not echo model-supplied arguments', async () => {
@@ -307,5 +321,184 @@ describe('ToolExecutor read-only workspace confinement (issue #85)', () => {
         );
         expect(grep.success).toBe(true);
         expect(grep.output).toContain('inside.txt');
+    });
+});
+
+describe('ToolExecutor sensitive-path policy (issue #85)', () => {
+    let workspace: string;
+    let executor: ToolExecutor;
+    const fakeSecret = 'fake-secret-85-sensitive-path';
+
+    beforeAll(() => {
+        workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ouroboros-sensitive-'));
+        fs.writeFileSync(path.join(workspace, '.secrets'), `z.ai api key: ${fakeSecret}\n`);
+        fs.writeFileSync(path.join(workspace, 'Apikeys'), `z.ai api key: ${fakeSecret}\n`);
+        fs.writeFileSync(path.join(workspace, '.env'), `GROQ_API_KEY=${fakeSecret}\n`);
+        fs.writeFileSync(path.join(workspace, '.env.local'), `GOOGLE_API_KEY=${fakeSecret}\n`);
+        fs.writeFileSync(path.join(workspace, 'normal.txt'), 'normal-content');
+        fs.mkdirSync(path.join(workspace, 'subdir'));
+        fs.writeFileSync(path.join(workspace, 'subdir', 'nested.txt'), 'nested-content');
+        executor = createToolExecutor({ workingDirectory: workspace });
+    });
+
+    afterAll(() => {
+        fs.rmSync(workspace, { recursive: true, force: true });
+    });
+
+    test('.secrets inside the workspace cannot be read via relative path', async () => {
+        const result = await executor.execute(toolCall('read_file', { path: '.secrets' }));
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('denied');
+        expect(result.output).toBe('');
+        expect(result.error).not.toContain(fakeSecret);
+    });
+
+    test('.secrets cannot be read via absolute path (alias equivalent)', async () => {
+        const result = await executor.execute(
+            toolCall('read_file', { path: path.join(workspace, '.secrets') })
+        );
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('denied');
+        expect(result.output).toBe('');
+        expect(result.error).not.toContain(fakeSecret);
+    });
+
+    test('Apikeys (legacy credential source) cannot be read', async () => {
+        const relative = await executor.execute(toolCall('read_file', { path: 'Apikeys' }));
+        expect(relative.success).toBe(false);
+        expect(relative.error).toContain('denied');
+        expect(relative.output).not.toContain(fakeSecret);
+
+        const absolute = await executor.execute(
+            toolCall('read_file', { path: path.join(workspace, 'Apikeys') })
+        );
+        expect(absolute.success).toBe(false);
+        expect(absolute.error).toContain('denied');
+        expect(absolute.output).not.toContain(fakeSecret);
+    });
+
+    test('.env and .env.* variants cannot be read', async () => {
+        const dotenv = await executor.execute(toolCall('read_file', { path: '.env' }));
+        expect(dotenv.success).toBe(false);
+        expect(dotenv.error).toContain('denied');
+        expect(dotenv.output).not.toContain(fakeSecret);
+
+        const dotenvLocal = await executor.execute(
+            toolCall('read_file', { path: '.env.local' })
+        );
+        expect(dotenvLocal.success).toBe(false);
+        expect(dotenvLocal.error).toContain('denied');
+        expect(dotenvLocal.output).not.toContain(fakeSecret);
+    });
+
+    test('grep_search over the workspace does not return .secrets content', async () => {
+        const result = await executor.execute(
+            toolCall('grep_search', { pattern: fakeSecret, path: '.' })
+        );
+        expect(result.success).toBe(true);
+        expect(result.output).not.toContain(fakeSecret);
+        expect(result.output).not.toContain('.secrets');
+    });
+
+    test('recursive grep skips sensitive files but still searches normal files', async () => {
+        const result = await executor.execute(
+            toolCall('grep_search', { pattern: 'nested-content', path: '.' })
+        );
+        expect(result.success).toBe(true);
+        expect(result.output).toContain('nested.txt');
+        expect(result.output).not.toContain(fakeSecret);
+        expect(result.output).not.toContain('Apikeys');
+    });
+
+    test('symlink inside the workspace pointing to .secrets does not expose content', async () => {
+        const link = path.join(workspace, 'alias.txt');
+        fs.symlinkSync(path.join(workspace, '.secrets'), link);
+        try {
+            const viaSymlink = await executor.execute(
+                toolCall('read_file', { path: 'alias.txt' })
+            );
+            expect(viaSymlink.success).toBe(false);
+            expect(viaSymlink.error).toContain('denied');
+            expect(viaSymlink.output).not.toContain(fakeSecret);
+
+            // Symlink target via absolute path is also blocked.
+            const viaAbsolute = await executor.execute(
+                toolCall('read_file', { path: link })
+            );
+            expect(viaAbsolute.success).toBe(false);
+            expect(viaAbsolute.output).not.toContain(fakeSecret);
+        } finally {
+            fs.rmSync(link, { force: true });
+        }
+    });
+
+    test('normal files inside the workspace remain readable', async () => {
+        const result = await executor.execute(toolCall('read_file', { path: 'normal.txt' }));
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('normal-content');
+    });
+
+    test('synthetic provider response requesting the secret does not leak it into the next chat history', async () => {
+        const provider = new SyntheticResponseProvider([
+            toolCallsResponse([toolCall('read_file', { path: '.secrets' }, 'call-secret')], 'resp-1'),
+            stopResponse('done', 'resp-2'),
+        ]);
+        const agent = new AgentLoop(
+            provider,
+            createToolExecutor({ workingDirectory: workspace }),
+            { maxIterations: 3 }
+        );
+        const result = await agent.run('read the secrets file');
+        expect(result.success).toBe(true);
+
+        // The tool result fed back into history is the refusal, never the secret.
+        const followUp = provider.chats[1] ?? [];
+        expect(JSON.stringify(followUp)).not.toContain(fakeSecret);
+        const toolMessages = followUp.filter(m => m.role === 'tool');
+        expect(toolMessages.length).toBe(1);
+        expect(toolMessages[0].content).toContain('denied');
+    });
+});
+
+describe('AgentLoop telemetry bounds (issue #85)', () => {
+    test('raw tool arguments never appear in thought events', async () => {
+        const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ouroboros-telemetry-'));
+        try {
+            const fakeSecret = 'fake-secret-85-telemetry';
+            const bus = new EventBus();
+            const thoughts: ThoughtEvent[] = [];
+            bus.on('thought', (event) => {
+                thoughts.push(event);
+            });
+
+            const provider = new SyntheticResponseProvider([
+                toolCallsResponse(
+                    [toolCall('read_file', { path: fakeSecret }, 'call-tel')],
+                    'resp-1'
+                ),
+                stopResponse('done', 'resp-2'),
+            ]);
+            const agent = new AgentLoop(
+                provider,
+                createToolExecutor({ workingDirectory: workspace }),
+                { maxIterations: 3 },
+                bus
+            );
+            await agent.run('telemetry probe');
+
+            // No observed event carries the sensitive argument value.
+            const serialized = JSON.stringify(thoughts);
+            expect(serialized).not.toContain(fakeSecret);
+
+            // tool_call thought still carries bounded metadata:
+            // tool name + argument character count, never raw args.
+            const callThought = thoughts.find(t => t.type === 'tool_call');
+            expect(callThought).toBeDefined();
+            expect(callThought?.metadata?.toolName).toBe('read_file');
+            expect(typeof callThought?.metadata?.argumentChars).toBe('number');
+            expect(callThought?.metadata?.args).toBeUndefined();
+        } finally {
+            fs.rmSync(workspace, { recursive: true, force: true });
+        }
     });
 });
