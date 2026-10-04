@@ -2,6 +2,7 @@
 > **Status: Legacy (Draft histórico)** — Classificado em [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
 > Esta spec descreve o sandbox Python legado (SandboxRunner/SandboxTool/
 > PersistentPythonREPL, classificação: RETIRE, itens 2-4 da matriz).
+> SandboxRunner, SandboxTool e SandboxPathUtils foram removidos do core em #83.
 > Ouroboros não é executor irrestrito de Python/shell (#60).
 > A direção usa capability contracts e module owners (#63).
 >
