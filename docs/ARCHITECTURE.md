@@ -256,8 +256,6 @@ O que o repositório implementa e testa atualmente:
 - **Web frontend** Vite/React (Mission Control, Swiss, settings, terminal pane,
   memory panel, Council quadrants)
 - **SelfModifyingEngine** com mutations, backup, rollback, git commit
-- **SandboxRunner** / **SandboxTool** / **PersistentPythonREPL** (Python
-  sandboxed execution)
 - **PromotionManager** / **Anti-Vibe workflow** (playground → src gates)
 - **Bridges** diretas: Antigravity, Gemini CLI, Jules, local inference
 - **Ralph loop** (opencode automation)
@@ -326,8 +324,8 @@ vinculante de cada subsistema está em [LEGACY_MATRIX.md](LEGACY_MATRIX.md).
 
 **Exemplos de conceitos legados:**
 - Self-modifying engine (SelfModifyingEngine, modifySelf())
-- Python sandbox como capacidade central (SandboxRunner, SandboxTool,
-  PersistentPythonREPL)
+- Python sandbox como capacidade central (SandboxRunner/SandboxTool removidos
+  do core em #83; PersistentPythonREPL permanece como follow-up #61-followup-2)
 - Council/personas como arquitetura central (Vision, Architect, Guardian,
   Kinetic)
 - Fixed persona ArchitectClient

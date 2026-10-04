@@ -98,8 +98,7 @@ verde): `scripts/quarantine-manifest.json`. Dívida de recuperação: issue **#4
 
 ### Legacy (não é direção)
 
-SelfModifyingEngine, PersistentPythonREPL, SandboxRunner/SandboxTool,
-Council/personas, ArchitectClient (persona), WaveExecutor ("agent wave"),
+SelfModifyingEngine, PersistentPythonREPL, Council/personas, ArchitectClient (persona), WaveExecutor ("agent wave"),
 Anti-Vibe como code gate, bridges diretas (Antigravity/Gemini/Jules), Ralph,
 MCP/SkillLoader, Council/Memory/Terminal UI, Electron (direção), TUI React/Ink.
 Classificação completa: [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).

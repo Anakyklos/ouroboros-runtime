@@ -7,7 +7,7 @@ This document describes the **reproducible validation gate** for Ouroboros. It i
 | Tool | Version |
 |------|---------|
 | Bun  | **1.3.9** (pinned in CI via `packageManager` / workflow) |
-| Python | Optional for sandbox E2E; **not** required for mandatory CI |
+| Python | Not required for mandatory CI (legacy Python sandbox retired in #83) |
 
 Use Bun lockfiles only:
 
@@ -96,7 +96,6 @@ Properties:
 ## What CI does **not** cover
 
 - Live daemon RPC against real models  
-- Sandbox / Python venv E2E security suites (quarantined)  
 - Full `bun test` including quarantined files  
 - TUI interactive runs  
 - Web runtime E2E in a browser  
@@ -131,22 +130,16 @@ Current quarantined files (summary):
 
 | File | Classification |
 |------|----------------|
-| `cli/src/runtime/SandboxE2E.test.ts` | test-bug + environment |
-| `cli/src/runtime/SandboxRunner.test.ts` | environment / CI |
-| `cli/src/runtime/SandboxEscapeTests.test.ts` | environment / load failure |
-| `cli/src/runtime/SandboxResourceLimits.test.ts` | environment / load failure |
-| `cli/src/runtime/SandboxSecurity.test.ts` | environment / CI |
 | `cli/src/orchestration/AntiVibeWorkflow.test.ts` | product/test partial fail |
 | `cli/src/orchestration/PromotionManager.test.ts` | product partial fail |
 | `cli/src/orchestration/QualityGateRegistry.test.ts` | product/test partial fail |
 | `cli/src/orchestration/SkillLoader.test.ts` | external path dependency |
 | `cli/src/providers/tool-executor.test.ts` | broken syntax (merge damage) |
-| `web/src/stores/mission-control-store.test.ts` | stale/store mismatch |
 
 ## Known limitations
 
 1. **Root `tsc` does not include `web/`** — by design; web has its own `tsconfig` and `check:web`.  
-2. **Sandbox suites need Python venv** — not part of mandatory CI until hermetic.  
+2. **Legacy sandbox suites removed (#83)** — `SandboxRunner`/`SandboxTool`/`SandboxPathUtils` and their five quarantined suites were retired from the core; they are no longer part of the baseline.
 3. **Several orchestration promotion tests fail** against current product status transitions — tracked as quarantine, not fixed in #35.  
 4. **`tool-executor.test.ts` is syntactically corrupted** — must be rebuilt before re-entry.  
 5. **README feature claims** are not all `verified` by this baseline; only compile + mandatory tests are.

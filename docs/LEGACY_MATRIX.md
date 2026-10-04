@@ -342,7 +342,7 @@
 ## Follow-ups recomendados (para o mantenedor criar após merge)
 
 1. **#61-followup-1**: Remover SelfModifyingEngine do runtime core; avaliar extração de primitives backup/rollback para Cadinho/Runstead.
-2. **#61-followup-2**: Remover PersistentPythonREPL, SandboxRunner, SandboxTool do runtime core. Os testes de sandbox que estão na quarentena #41 (SandboxE2E, SandboxEscapeTests, SandboxResourceLimits, SandboxRunner, SandboxSecurity) são consequência da decisão RETIRE.
+2. **#61-followup-2**: Remover PersistentPythonREPL do runtime core. SandboxRunner e SandboxTool já foram removidos em #83, junto com `SandboxPathUtils` (órfã comprovada) e as cinco suites de sandbox da quarentena #41 (SandboxE2E, SandboxEscapeTests, SandboxResourceLimits, SandboxRunner, SandboxSecurity).
 3. **#61-followup-3**: Migration map do Orchestrator (#62) — remover personas/ESCALATION_CHAIN como abstração first-class.
 4. **#61-followup-4**: GatewayOrchestrator (#63) — remover bridges hardcoded em favor de Capability Registry/connectors.
 5. **#61-followup-5**: MemoryManager/MemoryRetriever → Context Compiler (#64) com provenance.
