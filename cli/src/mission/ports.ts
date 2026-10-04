@@ -26,6 +26,20 @@ export interface MissionStore {
     close(): Promise<void>;
 
     /**
+     * Read a transport projection without materializing the complete history.
+     * Implementations must retain every live entity and bound only historical
+     * rows. This is optional for compatibility with non-daemon stores; callers
+     * must not claim durable snapshot support when it is absent.
+     */
+    readProjection?(limits: MissionProjectionLimits): Promise<MissionProjectionRead>;
+
+    /**
+     * Observe committed durable mutations. Notifications are facts only: the
+     * store remains the authority and observers must not mutate it from here.
+     */
+    onMutation?(listener: MissionMutationListener): () => void;
+
+    /**
      * Execute a function inside a single database transaction. If `fn`
      * throws, every write it performed is rolled back atomically.
      * Used to keep multi-record transitions (mission + invocation,
@@ -82,6 +96,38 @@ export interface MissionStore {
         effectFingerprint: string,
     ): Promise<CapabilityInvocation | null>;
 }
+
+export interface MissionProjectionLimits {
+    /** Retention budget for terminal/historical Mission rows. */
+    maxHistoricalMissions: number;
+    /** Retention budget for terminal/historical Invocation rows. */
+    maxHistoricalInvocations: number;
+}
+
+export interface MissionProjectionRead {
+    liveMissions: Mission[];
+    historicalMissions: Mission[];
+    liveInvocations: CapabilityInvocation[];
+    historicalInvocations: CapabilityInvocation[];
+    liveMissionCount: number;
+    historicalMissionCount: number;
+    liveInvocationCount: number;
+    historicalInvocationCount: number;
+}
+
+export type MissionMutation =
+    | {
+        entity: "mission";
+        kind: "created" | "updated" | "state_changed";
+        mission: Mission;
+    }
+    | {
+        entity: "invocation";
+        kind: "created" | "updated";
+        invocation: CapabilityInvocation;
+    };
+
+export type MissionMutationListener = (mutation: MissionMutation) => void;
 
 /** ------------------------------------------------------------------ */
 /**  PlannerPort — advisory proposal generator.                        */

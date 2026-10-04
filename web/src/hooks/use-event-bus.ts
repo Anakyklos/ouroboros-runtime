@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLogStore } from "@/stores/log-store";
 import { useMissionControlStore, type DaemonCapabilities } from "@/stores/mission-control-store";
+import { useDaemonProjectionStore } from "@/stores/daemon-projection-store";
 import { DaemonWebSocketConnection } from "@/lib/daemon-websocket-connection";
 import type {
+  AllowedDaemonEvent,
   DaemonEventEnvelope,
+  DaemonEventDataMap,
   DaemonSnapshot,
   ProtocolDiagnostic,
 } from "../../../shared/daemon-event-contract";
@@ -31,8 +34,16 @@ function metricValue(metric: DaemonSnapshot["status"]["activeTasks"]): number | 
   return metric.available ? metric.value : undefined;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+export function toDaemonEventDetail(envelope: DaemonEventEnvelope): {
+  event: AllowedDaemonEvent;
+  data: DaemonEventEnvelope["data"];
+  envelope: DaemonEventEnvelope;
+} {
+  return {
+    event: envelope.event,
+    data: envelope.data,
+    envelope,
+  };
 }
 
 export function useEventBus(options: UseEventBusOptions = {}) {
@@ -48,9 +59,12 @@ export function useEventBus(options: UseEventBusOptions = {}) {
   const setDaemonConnected = useMissionControlStore((state) => state.setDaemonConnected);
   const setCapabilities = useMissionControlStore((state) => state.setCapabilities);
   const applyDaemonMetrics = useMissionControlStore((state) => state.applyDaemonMetrics);
+  const replaceDaemonProjection = useDaemonProjectionStore((state) => state.replaceFromSnapshot);
+  const applyDaemonProjectionEnvelope = useDaemonProjectionStore((state) => state.applyEnvelope);
 
   const handleSnapshot = useCallback((snapshot: DaemonSnapshot) => {
     const status = snapshot.status;
+    replaceDaemonProjection(snapshot);
     setCapabilities(toStoreCapabilities(snapshot));
     applyDaemonMetrics({
       mode: status.mode,
@@ -59,31 +73,26 @@ export function useEventBus(options: UseEventBusOptions = {}) {
       uptimeSeconds: status.uptimeSeconds,
       tokens: status.tokensUsed.available ? status.tokensUsed.value : null,
     });
-  }, [applyDaemonMetrics, setCapabilities]);
+  }, [applyDaemonMetrics, replaceDaemonProjection, setCapabilities]);
 
   const handleEnvelope = useCallback((envelope: DaemonEventEnvelope) => {
-    const payload = envelope.data;
-    const detail = isRecord(payload)
-      ? { type: envelope.event, ...payload, data: payload, envelope }
-      : { type: envelope.event, data: payload, envelope };
+    applyDaemonProjectionEnvelope(envelope);
 
-    if (envelope.event === "log" && isRecord(payload)) {
-      const level = payload.level;
-      const message = payload.message;
-      const source = payload.source;
-      if (
-        (level === "debug" || level === "info" || level === "warn" || level === "error") &&
-        typeof message === "string" &&
-        typeof source === "string"
-      ) {
-        addLogEntry({ level, message, source });
-      }
+    if (envelope.event === "log") {
+      const payload = envelope.data as DaemonEventDataMap["log"];
+      addLogEntry({
+        level: payload.level,
+        message: payload.message,
+        source: payload.source ?? "daemon",
+      });
     }
 
     if (envelope.event !== "snapshot") {
-      window.dispatchEvent(new CustomEvent("daemon:event", { detail }));
+      window.dispatchEvent(new CustomEvent("daemon:event", {
+        detail: toDaemonEventDetail(envelope),
+      }));
     }
-  }, [addLogEntry]);
+  }, [addLogEntry, applyDaemonProjectionEnvelope]);
 
   const handleDiagnostic = useCallback((diagnostic: ProtocolDiagnostic) => {
     console.warn(`[EventBus] WebSocket protocol diagnostic: ${diagnostic.code}`);

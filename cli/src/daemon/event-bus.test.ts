@@ -42,6 +42,12 @@ describe("EventBus", () => {
     expect(received.length).toBe(2);
   });
 
+  it("should expose listener counts for deterministic lifecycle checks", () => {
+    const unsubscribe = eventBus.on("*", () => {});
+    expect(eventBus.listenerCount("*")).toBe(1);
+    unsubscribe();
+    expect(eventBus.listenerCount("*")).toBe(0);
+  });
   it("should unsubscribe correctly", () => {
     const received: unknown[] = [];
 

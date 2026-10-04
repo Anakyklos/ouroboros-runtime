@@ -8,6 +8,7 @@
 
 import { DaemonServer, globalEventBus } from './index.js';
 import { SqliteAdapter } from '../adapters/sqlite.adapter.js';
+import { SqliteMissionStore } from '../mission/sqlite-mission-store.js';
 import { mkdir } from 'fs/promises';
 import { dirname } from 'path';
 
@@ -47,6 +48,8 @@ async function main() {
     // Initialize storage
     const storage = new SqliteAdapter(DB_PATH);
     await storage.initialize();
+    const missionStore = new SqliteMissionStore();
+    await missionStore.initialize();
 
     // Check for existing active sessions
     const activeSessions = await storage.listSessions({ status: 'active' });
@@ -60,13 +63,14 @@ async function main() {
     }
 
     // Create and start server
-    const server = new DaemonServer(storage, { port: PORT });
+    const server = new DaemonServer(storage, { port: PORT }, globalEventBus, missionStore);
 
     // Handle graceful shutdown
     const shutdown = async () => {
         console.log('\n🛑 Shutting down...');
         await server.stop();
         await storage.close();
+        await missionStore.close();
         process.exit(0);
     };
 

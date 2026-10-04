@@ -6,6 +6,16 @@
  */
 
 import { redactText, redactValue } from "../inference/redaction.js";
+import type {
+    DaemonApprovalEventData,
+    DaemonCapabilityAvailabilityEventData,
+    DaemonCapabilityInvocationEventData,
+    DaemonContextRequestEventData,
+    DaemonHumanDecisionEventData,
+    DaemonMissionEventData,
+    DaemonMissionVerificationEventData,
+    DaemonPlanRevisionEventData,
+} from "../../../shared/daemon-event-contract.js";
 
 type EventCallback<T = unknown> = (data: T) => void;
 type RedactionLifecycleCallback = (secret: string, active: boolean) => void;
@@ -78,6 +88,14 @@ export type EventMap = {
     thought: ThoughtEvent;
     wave: WaveEvent;
     budget: BudgetEvent;
+    mission: DaemonMissionEventData;
+    plan_revision: DaemonPlanRevisionEventData;
+    approval: DaemonApprovalEventData;
+    capability_invocation: DaemonCapabilityInvocationEventData;
+    capability_availability: DaemonCapabilityAvailabilityEventData;
+    context_request: DaemonContextRequestEventData;
+    human_decision: DaemonHumanDecisionEventData;
+    mission_verification: DaemonMissionVerificationEventData;
     '*': unknown; // Wildcard listener support
 };
 
@@ -151,6 +169,11 @@ export class EventBus {
     revokeRedactionSecret(secret: string): void {
         if (!this.redactionSecrets.delete(secret)) return;
         this.redactionLifecycleListeners.forEach(callback => callback(secret, false));
+    }
+
+    /** Return the number of listeners currently registered for a channel. */
+    listenerCount<K extends keyof EventMap>(event: K): number {
+        return this.listeners.get(event)?.size ?? 0;
     }
 
     /**
