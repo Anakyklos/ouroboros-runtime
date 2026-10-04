@@ -132,7 +132,6 @@ Current quarantined files (summary):
 |------|----------------|
 | `cli/src/orchestration/AntiVibeWorkflow.test.ts` | product/test partial fail |
 | `cli/src/orchestration/PromotionManager.test.ts` | product partial fail |
-| `cli/src/orchestration/QualityGateRegistry.test.ts` | product/test partial fail |
 | `cli/src/orchestration/SkillLoader.test.ts` | external path dependency |
 
 ## Known limitations
@@ -141,7 +140,8 @@ Current quarantined files (summary):
 2. **Legacy sandbox suites removed (#83)** — `SandboxRunner`/`SandboxTool`/`SandboxPathUtils` and their five quarantined suites were retired from the core; they are no longer part of the baseline.
 3. **Several orchestration promotion tests fail** against current product status transitions — tracked as quarantine, not fixed in #35.  
 4. **`tool-executor.test.ts` reconstructed (#85)** — the merge-corrupted suite was rebuilt against the fail-close contract and re-entered the mandatory gate.
-5. **README feature claims** are not all `verified` by this baseline; only compile + mandatory tests are.
+5. **`QualityGateRegistry.test.ts` reactivated (#41)** — the two failing cases were assertion-API bugs (`await expect(promise).toThrow()` instead of `.rejects.toThrow()`); the registry already throws distinct `not registered` vs `disabled` errors and fails closed on required-gate failure/exception. The timeout case was made deterministic (strategy-owned timeout, no real sleep) and the suite now runs in the mandatory gate.
+6. **README feature claims** are not all `verified` by this baseline; only compile + mandatory tests are.
 
 ## Negative test expectations
 

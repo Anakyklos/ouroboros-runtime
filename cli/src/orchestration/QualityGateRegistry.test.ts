@@ -1,11 +1,4 @@
 /**
- * QUARANTINED — excluded from `bun run check:tests` (baseline gate).
- * Recovery debt: https://github.com/RenyEnnos/ouroboros-runtime/issues/41
- * Manifest: scripts/quarantine-manifest.json
- * Do not delete/rename this file to make CI green; fix or keep listed in the manifest.
- */
-
-/**
  * 🚦 QualityGateRegistry Unit Tests
  *
  * Tests for the quality gate registry system.
@@ -23,7 +16,7 @@ class MockValidationStrategy implements ValidationStrategy {
     private shouldPass: boolean;
     private executionTimeMs: number;
 
-    constructor(name: string, shouldPass: boolean, executionTimeMs = 100) {
+    constructor(name: string, shouldPass: boolean, executionTimeMs = 1) {
         this.name = name;
         this.shouldPass = shouldPass;
         this.executionTimeMs = executionTimeMs;
@@ -465,30 +458,33 @@ describe("QualityGateRegistry", () => {
     });
 
     describe("Timeout Handling", () => {
-        it("should handle timeout during gate execution", async () => {
+        it("should report a strategy-owned timeout as a failed required gate", async () => {
             const registry = new QualityGateRegistry(false);
 
-            class SlowValidationStrategy implements ValidationStrategy {
-                readonly name = "SLOW";
+            // In the current contract, timeout enforcement is the
+            // strategy's responsibility: QualityGateRegistry awaits the
+            // strategy and faithfully reports its outcome — it does not
+            // itself enforce timeoutMs. This strategy deterministically
+            // simulates a deadline breach (no real sleeping) and fails.
+            class TimeoutValidationStrategy implements ValidationStrategy {
+                readonly name = "TIMEOUT";
 
                 async validate(context: ValidationContext): Promise<ValidationResult> {
-                    // Simulate slow validation
-                    await new Promise(resolve => setTimeout(resolve, 2000));
                     return {
-                        isValid: true,
-                        exitCode: 0,
-                        message: "Finally passed",
+                        isValid: false,
+                        exitCode: 1,
+                        message: "Strategy timed out before deadline",
                     };
                 }
             }
 
             registry.registerGate({
                 type: QualityGateType.TEST,
-                strategy: new SlowValidationStrategy(),
+                strategy: new TimeoutValidationStrategy(),
                 required: true,
                 priority: 1,
                 enabled: true,
-                timeoutMs: 100, // Very short timeout
+                timeoutMs: 100,
             });
 
             const context: ValidationContext = {
@@ -499,9 +495,12 @@ describe("QualityGateRegistry", () => {
 
             const report = await registry.runAllGates(context);
 
-            // Should complete (the mock doesn't actually enforce timeout)
-            // In real implementation, timeout would be handled by the strategy
+            // Fail-closed: a required gate whose strategy reports a
+            // timeout must fail the report, never approve it.
+            expect(report.passed).toBe(false);
             expect(report.results).toHaveLength(1);
+            expect(report.results[0].result.isValid).toBe(false);
+            expect(report.results[0].result.message).toContain("timed out");
         });
     });
 
@@ -806,7 +805,7 @@ describe("QualityGateRegistry", () => {
 
             await expect(
                 registry.runGate(QualityGateType.TEST, context)
-            ).toThrow("Quality gate not registered: TEST");
+            ).rejects.toThrow("Quality gate not registered: TEST");
         });
 
         it("should throw error when running disabled gate", async () => {
@@ -827,7 +826,7 @@ describe("QualityGateRegistry", () => {
 
             await expect(
                 registry.runGate(QualityGateType.TEST, context)
-            ).toThrow("Quality gate is disabled: TEST");
+            ).rejects.toThrow("Quality gate is disabled: TEST");
         });
     });
 
