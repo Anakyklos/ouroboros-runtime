@@ -29,7 +29,12 @@ import {
     type ToolCall,
     type ToolDefinition,
 } from './direct-zai';
-import { EventBus, type ThoughtEvent } from '../daemon/event-bus.js';
+import {
+    EventBus,
+    globalEventBus,
+    type LogEvent,
+    type ThoughtEvent,
+} from '../daemon/event-bus.js';
 import { createToolExecutor, ToolExecutor } from './tool-executor';
 
 let callCounter = 0;
@@ -497,6 +502,88 @@ describe('AgentLoop telemetry bounds (issue #85)', () => {
             expect(callThought?.metadata?.toolName).toBe('read_file');
             expect(typeof callThought?.metadata?.argumentChars).toBe('number');
             expect(callThought?.metadata?.args).toBeUndefined();
+        } finally {
+            fs.rmSync(workspace, { recursive: true, force: true });
+        }
+    });
+});
+
+describe('ToolExecutor verbose telemetry bounds (issue #85)', () => {
+    test('verbose=true logs never carry raw model-supplied arguments', async () => {
+        const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ouroboros-verbose-'));
+        try {
+            const fakeSecret = 'fake-secret-85-verbose-telemetry';
+            // File whose name embeds the fake secret: reading it
+            // previously logged the raw path, and failing to read
+            // it previously echoed the raw path in the error.
+            const leakyName = `${fakeSecret}.txt`;
+            fs.writeFileSync(path.join(workspace, leakyName), 'verbose-fixture-content');
+
+            // Observe the same globalEventBus the ToolExecutor logs to
+            // under production (daemon.delegate passes verbose: true).
+            const logs: LogEvent[] = [];
+            const onLog = (event: LogEvent) => {
+                logs.push(event);
+            };
+            globalEventBus.on('log', onLog);
+            try {
+                const executor = createToolExecutor({
+                    workingDirectory: workspace,
+                    verbose: true,
+                });
+
+                // Success path: previously logged
+                // `Read N chars from workspace path: <inputPath>`.
+                const ok = await executor.execute(toolCall('read_file', { path: leakyName }));
+                expect(ok.success).toBe(true);
+                expect(ok.output).toBe('verbose-fixture-content');
+
+                // Failure paths: previously echoed the raw path.
+                const missing = await executor.execute(
+                    toolCall('read_file', { path: `${fakeSecret}-missing.txt` })
+                );
+                expect(missing.success).toBe(false);
+                expect(missing.error).toBe('Path not found');
+
+                const escaping = await executor.execute(
+                    toolCall('read_file', { path: `../${fakeSecret}` })
+                );
+                expect(escaping.success).toBe(false);
+                // Generic fixed category (realpath or containment
+                // gate, whichever fires first) — never the input.
+                expect(['Path not found', 'Path outside authorized workspace'])
+                    .toContain(escaping.error);
+                expect(escaping.error).not.toContain(fakeSecret);
+
+                // grep with the secret as pattern and as search target.
+                const grep = await executor.execute(
+                    toolCall('grep_search', { pattern: fakeSecret, path: leakyName })
+                );
+                expect(grep.success).toBe(true);
+
+                // Invalid regex previously threw a SyntaxError that
+                // echoed the raw pattern through the executor catch-all.
+                const badPattern = await executor.execute(
+                    toolCall('grep_search', { pattern: '(unclosed', path: '.' })
+                );
+                expect(badPattern.success).toBe(false);
+                expect(badPattern.error).toBe('Invalid search pattern');
+            } finally {
+                globalEventBus.off('log', onLog);
+            }
+
+            // Verbose logging did fire (proves the observation path
+            // worked) and is bounded: char counts and tool names only.
+            expect(logs.length).toBeGreaterThan(0);
+            expect(
+                logs.some(log => log.message.includes('chars'))
+            ).toBe(true);
+
+            // No observed log carries the fake secret, the raw file
+            // name, or any other model-supplied argument value.
+            const serialized = JSON.stringify(logs);
+            expect(serialized).not.toContain(fakeSecret);
+            expect(serialized).not.toContain(leakyName);
         } finally {
             fs.rmSync(workspace, { recursive: true, force: true });
         }

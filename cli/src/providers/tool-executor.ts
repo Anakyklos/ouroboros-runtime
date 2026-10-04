@@ -21,6 +21,13 @@
  * `Apikeys`, `.env` and `.env.*` variants) are denied on their
  * canonical path, so relative, absolute and symlink aliases cannot
  * read them, and recursive grep skips them during traversal.
+ *
+ * ⚠️ SECURITY (#85): telemetry is bounded at the source. Logs
+ * and returned errors carry only tool name, success/failure,
+ * character counts, result counts and fixed error categories —
+ * never a model-supplied path, pattern, include or other raw
+ * argument (which would reach the global EventBus under
+ * verbose=true and the chat history via tool_result).
  */
 
 import * as fs from 'node:fs';
@@ -286,17 +293,20 @@ export class ToolExecutor {
                 content = lines.slice(start, end).join('\n');
             }
 
-            this.log('debug', `Read ${content.length} chars from workspace path: ${inputPath}`);
+            // Bounded telemetry: char count only, never the
+            // model-supplied path. (#85)
+            this.log('debug', `Read ${content.length} chars from workspace file`);
             return { success: true, output: content };
         } catch (error) {
             const err = error as NodeJS.ErrnoException;
             if (err.code === 'ENOENT') {
-                return { success: false, output: '', error: `File not found: ${inputPath}` };
+                return { success: false, output: '', error: 'Path is not a readable file' };
             }
             if (err.code === 'EISDIR') {
-                return { success: false, output: '', error: `Path is a directory: ${inputPath}` };
+                return { success: false, output: '', error: 'Path is not a readable file' };
             }
-            return { success: false, output: '', error: `Error reading file: ${err.message}` };
+            // err.message may echo the canonical path; fixed category. (#85)
+            return { success: false, output: '', error: 'Error reading file' };
         }
     }
 
@@ -346,11 +356,12 @@ export class ToolExecutor {
         try {
             const entries = await list(dirPath);
             return { success: true, output: entries.join('\n') };
-        } catch (err) {
+        } catch {
+            // err.message may echo the canonical path; fixed category. (#85)
             return {
                 success: false,
                 output: '',
-                error: `Error listing directory: ${err instanceof Error ? err.message : String(err)}`
+                error: 'Error listing directory'
             };
         }
     }
@@ -370,16 +381,21 @@ export class ToolExecutor {
         let stat: fs.Stats;
         try {
             stat = await fs.promises.stat(searchPath);
-        } catch (error: any) {
-             if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) {
-                return { success: false, output: '', error: `Path not found: ${inputPath}` };
-            }
-            throw error;
+        } catch {
+            // Fixed category: never echo the model-supplied path or
+            // the canonical path from fs error messages. (#85)
+            return { success: false, output: '', error: 'Path not found' };
         }
 
         const results: string[] = [];
         // Use 'i' flag only (case-insensitive) to avoid stateful regex issues with 'g'
-        const regex = new RegExp(pattern, 'i');
+        let regex: RegExp;
+        try {
+            regex = new RegExp(pattern, 'i');
+        } catch {
+            // SyntaxError messages echo the raw pattern; fixed category. (#85)
+            return { success: false, output: '', error: 'Invalid search pattern' };
+        }
 
         const searchFile = async (filePath: string) => {
             try {
@@ -404,27 +420,32 @@ export class ToolExecutor {
             }
         };
 
-        if (stat.isFile()) {
-            await searchFile(searchPath);
-        } else {
-            const processDir = async (dir: string) => {
-                // Enqueue readdir to respect global concurrency limit
-                const items = await this.enqueueFsTask(() => fs.promises.readdir(dir, { withFileTypes: true }));
+        const processDir = async (dir: string) => {
+            // Enqueue readdir to respect global concurrency limit
+            const items = await this.enqueueFsTask(() => fs.promises.readdir(dir, { withFileTypes: true }));
 
-                await Promise.all(items.map(item => this.enqueueFsTask(async () => {
-                     const fullPath = path.join(dir, item.name);
+            await Promise.all(items.map(item => this.enqueueFsTask(async () => {
+                 const fullPath = path.join(dir, item.name);
 
-                     if (item.isDirectory()) {
-                         await processDir(fullPath);
-                     } else if (item.isFile()) {
-                         if (!include || this.matchGlob(item.name, include)) {
-                             await searchFile(fullPath);
-                         }
+                 if (item.isDirectory()) {
+                     await processDir(fullPath);
+                 } else if (item.isFile()) {
+                     if (!include || this.matchGlob(item.name, include)) {
+                         await searchFile(fullPath);
                      }
-                 })));
-            };
+                 }
+             })));
+        };
 
-            await processDir(searchPath);
+        try {
+            if (stat.isFile()) {
+                await searchFile(searchPath);
+            } else {
+                await processDir(searchPath);
+            }
+        } catch {
+            // Fixed category: fs error messages echo canonical paths. (#85)
+            return { success: false, output: '', error: 'Error searching workspace' };
         }
 
         // Sort results for deterministic output
