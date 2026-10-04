@@ -1,222 +1,591 @@
 /**
- * QUARANTINED — excluded from `bun run check:tests` (baseline gate).
- * Recovery debt: https://github.com/RenyEnnos/ouroboros-runtime/issues/41
- * Manifest: scripts/quarantine-manifest.json
- * Do not delete/rename this file to make CI green; fix or keep listed in the manifest.
+ * ToolExecutor contract tests — fail-close of model-controlled effects (#85).
+ *
+ * Covers the final contract:
+ * - effectful model tool calls (run_command/write_file) are never offered
+ *   to the model and never execute: no host process, no file write;
+ * - a synthetic provider response containing effectful tool calls, processed
+ *   through AgentLoop (the daemon.delegate(glm) and wave-parser shape),
+ *   produces no host effect — the central negative gate;
+ * - unknown and forbidden tools fail closed;
+ * - surviving read-only tools are deterministically confined to the
+ *   authorized workspace (external absolute path, ../ traversal, symlink
+ *   escape);
+ * - refusal diagnostics do not echo model-supplied arguments.
+ *
+ * Deterministic: temp workspaces under os.tmpdir() and a synthetic provider
+ * with a dummy key. No network, no real API key, no secrets.
  */
 
-import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { ToolExecutor } from "./tool-executor";
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { AgentLoop } from './agent-loop';
+import {
+    DirectZAIProvider,
+    type ChatResponse,
+    type Message,
+    type ToolCall,
+    type ToolDefinition,
+} from './direct-zai';
+import {
+    EventBus,
+    globalEventBus,
+    type LogEvent,
+    type ThoughtEvent,
+} from '../daemon/event-bus.js';
+import { createToolExecutor, ToolExecutor } from './tool-executor';
 
-describe("ToolExecutor.handleListDirectory (Optimized)", () => {
-    const testDir = path.join(process.cwd(), "test_list_dir_v2");
+let callCounter = 0;
+
+function toolCall(
+    name: string,
+    args: Record<string, unknown>,
+    id = `call-${++callCounter}`
+): ToolCall {
+    return { id, type: 'function', function: { name, arguments: JSON.stringify(args) } };
+}
+
+/**
+ * Provider stub that replays scripted responses instead of hitting the
+ * network. Records every chat invocation so tests can assert what was
+ * fed back to the model.
+ */
+class SyntheticResponseProvider extends DirectZAIProvider {
+    public readonly chats: Message[][] = [];
+    private readonly script: ChatResponse[];
+    private step = 0;
+
+    constructor(script: ChatResponse[]) {
+        super({ apiKey: 'dummy-key-not-used-no-network' });
+        this.script = script;
+    }
+
+    override async chat(
+        messages: Message[],
+        _tools?: ToolDefinition[],
+        _options?: { temperature?: number; max_tokens?: number; signal?: AbortSignal }
+    ): Promise<ChatResponse> {
+        this.chats.push([...messages]);
+        const response = this.script[Math.min(this.step, this.script.length - 1)];
+        this.step += 1;
+        return response;
+    }
+}
+
+function toolCallsResponse(calls: ToolCall[], id: string): ChatResponse {
+    return {
+        id,
+        choices: [{
+            index: 0,
+            finish_reason: 'tool_calls',
+            message: { role: 'assistant', tool_calls: calls },
+        }],
+    };
+}
+
+function stopResponse(content: string, id: string): ChatResponse {
+    return {
+        id,
+        choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content } }],
+    };
+}
+
+describe('ToolExecutor fail-close (issue #85)', () => {
+    let workspace: string;
+    let executor: ToolExecutor;
 
     beforeAll(() => {
-        if (!fs.existsSync(testDir)) {
-            fs.mkdirSync(testDir, { recursive: true });
-        }
-        fs.mkdirSync(path.join(testDir, "subdir1"), { recursive: true });
-        fs.mkdirSync(path.join(testDir, "subdir2"), { recursive: true });
-        fs.writeFileSync(path.join(testDir, "file1.txt"), "content1");
-        fs.writeFileSync(path.join(testDir, "subdir1", "file2.txt"), "content2");
+        workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ouroboros-tool-executor-'));
+        fs.writeFileSync(path.join(workspace, 'existing.txt'), 'original');
+        executor = createToolExecutor({ workingDirectory: workspace });
     });
 
     afterAll(() => {
-        if (fs.existsSync(testDir)) {
-            fs.rmSync(testDir, { recursive: true, force: true });
-        }
+        fs.rmSync(workspace, { recursive: true, force: true });
     });
 
-    test("should list directory non-recursively", async () => {
-        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
-        const result = await (executor as any).handleListDirectory({ path: "test_list_dir_v2", recursive: false });
-
-        expect(result.success).toBe(true);
-        const entries = result.output.split("\n").sort();
-        expect(entries).toContain("file1.txt");
-        expect(entries).toContain("subdir1/");
-        expect(entries).toContain("subdir2/");
+    test('model is never offered effectful tools', () => {
+        const names = executor.getToolDefinitions().map(d => d.function.name);
+        expect(names).toContain('read_file');
+        expect(names).toContain('list_directory');
+        expect(names).toContain('grep_search');
+        expect(names).not.toContain('write_file');
+        expect(names).not.toContain('run_command');
     });
 
-    test("should list directory recursively", async () => {
-        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
-        const result = await (executor as any).handleListDirectory({ path: "test_list_dir_v2", recursive: true });
-
-        expect(result.success).toBe(true);
-        const entries = result.output.split("\n").sort();
-        expect(entries).toContain("file1.txt");
-        expect(entries).toContain("subdir1/");
-        expect(entries).toContain("subdir2/");
-        expect(entries).toContain("subdir1/file2.txt");
-    });
-
-    test("should return error if directory does not exist", async () => {
-        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
-        const result = await (executor as any).handleListDirectory({ path: "non_existent_dir_123", recursive: false });
-
+    test('effectful run_command tool call does not execute a host process', async () => {
+        const marker = path.join(workspace, 'shell-marker.txt');
+        const result = await executor.execute(
+            toolCall('run_command', { command: `touch ${marker}` })
+        );
         expect(result.success).toBe(false);
-        expect(result.error).toContain("Error listing directory");
+        expect(result.error).toContain('not permitted');
+        expect(fs.existsSync(marker)).toBe(false);
     });
 
-    test("should handle inaccessible subdirectories gracefully", async () => {
-        const restrictedDir = path.join(testDir, "restricted");
-        if (!fs.existsSync(restrictedDir)) {
-            fs.mkdirSync(restrictedDir, { recursive: true, mode: 0o000 });
-        }
+    test('effectful write_file tool call does not create or modify files', async () => {
+        const target = path.join(workspace, 'injected.txt');
+        const created = await executor.execute(
+            toolCall('write_file', { path: target, content: 'injected' })
+        );
+        expect(created.success).toBe(false);
+        expect(fs.existsSync(target)).toBe(false);
 
-        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
-        const result = await (executor as any).handleListDirectory({ path: "test_list_dir_v2", recursive: true });
+        const overwritten = await executor.execute(
+            toolCall('write_file', { path: path.join(workspace, 'existing.txt'), content: 'tampered' })
+        );
+        expect(overwritten.success).toBe(false);
+        expect(fs.readFileSync(path.join(workspace, 'existing.txt'), 'utf-8')).toBe('original');
+    });
+
+    test('synthetic provider response with effectful tool calls produces no host effect (AgentLoop negative gate)', async () => {
+        const loopMarker = path.join(workspace, 'loop-marker.txt');
+        const loopInjected = path.join(workspace, 'loop-injected.txt');
+        const provider = new SyntheticResponseProvider([
+            toolCallsResponse([
+                toolCall('run_command', { command: `touch ${loopMarker}` }, 'call-run'),
+                toolCall('write_file', { path: loopInjected, content: 'injected' }, 'call-write'),
+            ], 'resp-1'),
+            stopResponse('done', 'resp-2'),
+        ]);
+
+        const agent = new AgentLoop(provider, createToolExecutor({ workingDirectory: workspace }), {
+            maxIterations: 5,
+        });
+        const result = await agent.run('synthesize an effectful response');
+
+        // Loop completed; the effectful calls were processed but refused.
+        expect(result.success).toBe(true);
+        expect(result.toolCallsCount).toBe(2);
+        expect(fs.existsSync(loopMarker)).toBe(false);
+        expect(fs.existsSync(loopInjected)).toBe(false);
+
+        // Fail closed is explicit, not silent: refusals are fed back to the model.
+        const followUp = provider.chats[1] ?? [];
+        const toolMessages = followUp.filter(m => m.role === 'tool');
+        expect(toolMessages.length).toBe(2);
+        for (const message of toolMessages) {
+            expect(message.content).toContain('not permitted');
+        }
+    });
+
+    test('wave parser shape: parser-built executor cannot possess shell or write effects', async () => {
+        // parseWaveTasks (rpc-gateway) builds its parser via createAgent, which
+        // always constructs the executor through createToolExecutor.
+        const parserExecutor = createToolExecutor({ workingDirectory: workspace });
+        const names = parserExecutor.getToolDefinitions().map(d => d.function.name);
+        expect(names).not.toContain('run_command');
+        expect(names).not.toContain('write_file');
+
+        // A parser-style synthetic response that asks for effects stays effect-free.
+        const parserMarker = path.join(workspace, 'parser-marker.txt');
+        const provider = new SyntheticResponseProvider([
+            toolCallsResponse([
+                toolCall('run_command', { command: `touch ${parserMarker}` }, 'call-parser'),
+            ], 'resp-1'),
+            stopResponse('[]', 'resp-2'),
+        ]);
+        const agent = new AgentLoop(provider, parserExecutor, { maxIterations: 3 });
+        const result = await agent.run('WAVE: parse this prompt into tasks');
 
         expect(result.success).toBe(true);
-        const entries = result.output.split("\n").sort();
-        expect(entries).toContain("restricted/");
-        // Cleanup restricted dir for afterAll
-        fs.chmodSync(restrictedDir, 0o755);
+        expect(fs.existsSync(parserMarker)).toBe(false);
+    });
+
+    test('unknown, forbidden and dynamically registered names fail closed', async () => {
+        const unknown = await executor.execute(
+            toolCall('delete_everything', { path: workspace })
+        );
+        expect(unknown.success).toBe(false);
+        expect(unknown.error).toContain('not permitted');
+
+        const forbidden = await executor.execute(
+            toolCall('write_file', { path: path.join(workspace, 'x.txt'), content: 'x' })
+        );
+        expect(forbidden.success).toBe(false);
+        expect(forbidden.error).toContain('not permitted');
+
+        // A handler registered under an arbitrary name must never
+        // become model authority: the allowlist gate precedes dispatch.
+        executor.registerHandler('custom_admin', async () => ({
+            success: true,
+            output: 'pwned',
+        }));
+        const registered = await executor.execute(
+            toolCall('custom_admin', {})
+        );
+        expect(registered.success).toBe(false);
+        expect(registered.error).toContain('not permitted');
+        expect(registered.output).not.toContain('pwned');
+    });
+
+    test('refusal diagnostics do not echo model-supplied arguments', async () => {
+        const fakeSecret = 'fake-secret-token-85';
+        const refused = await executor.execute(
+            toolCall('run_command', { command: `echo ${fakeSecret}` })
+        );
+        expect(refused.success).toBe(false);
+        expect(refused.error).not.toContain(fakeSecret);
+        expect(refused.error).not.toContain('echo');
+
+        const badArgs = await executor.execute({
+            id: 'call-bad',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{not-valid-json' },
+        });
+        expect(badArgs.success).toBe(false);
+        expect(badArgs.error).not.toContain('not-valid-json');
     });
 });
 
-describe("ToolExecutor.handleReadFile", () => {
-    const testDir = path.join(process.cwd(), "test_read_file");
-    const testFile = path.join(testDir, "test.txt");
-    const multiLineFile = path.join(testDir, "multiline.txt");
+describe('ToolExecutor read-only workspace confinement (issue #85)', () => {
+    let workspace: string;
+    let outsideDir: string;
+    let outsideFile: string;
+    let executor: ToolExecutor;
 
     beforeAll(() => {
-        if (!fs.existsSync(testDir)) {
-            fs.mkdirSync(testDir, { recursive: true });
-        }
-        fs.writeFileSync(testFile, "Hello, world!");
-        fs.writeFileSync(multiLineFile, "Line 1\nLine 2\nLine 3\nLine 4\nLine 5");
-describe("ToolExecutor.handleGrepSearch", () => {
-    const testDir = path.join(process.cwd(), "test_grep_dir");
-
-    beforeAll(() => {
-        if (fs.existsSync(testDir)) {
-            fs.rmSync(testDir, { recursive: true, force: true });
-        }
-        fs.mkdirSync(testDir, { recursive: true });
-        fs.mkdirSync(path.join(testDir, "subdir1"), { recursive: true });
-
-        fs.writeFileSync(path.join(testDir, "file1.txt"), "This is a test file with pattern.");
-        fs.writeFileSync(path.join(testDir, "file2.js"), "This is a js file with pattern.");
-        fs.writeFileSync(path.join(testDir, "subdir1", "file3.txt"), "Nested file with pattern inside.");
-        fs.writeFileSync(path.join(testDir, "subdir1", "file4.txt"), "No match here.");
+        workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ouroboros-confine-'));
+        outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ouroboros-confine-outside-'));
+        outsideFile = path.join(outsideDir, 'secret.txt');
+        fs.writeFileSync(outsideFile, 'outside-content');
+        fs.writeFileSync(path.join(workspace, 'inside.txt'), 'inside-content');
+        executor = createToolExecutor({ workingDirectory: workspace });
     });
 
     afterAll(() => {
-        if (fs.existsSync(testDir)) {
-            fs.rmSync(testDir, { recursive: true, force: true });
+        fs.rmSync(workspace, { recursive: true, force: true });
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+    });
+
+    test('reads a file inside the workspace via relative path', async () => {
+        const result = await executor.execute(toolCall('read_file', { path: 'inside.txt' }));
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('inside-content');
+    });
+
+    test('reads a file inside the workspace via absolute path', async () => {
+        const result = await executor.execute(
+            toolCall('read_file', { path: path.join(workspace, 'inside.txt') })
+        );
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('inside-content');
+    });
+
+    test('rejects an absolute path outside the workspace', async () => {
+        const result = await executor.execute(toolCall('read_file', { path: outsideFile }));
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('outside authorized workspace');
+        expect(result.output).toBe('');
+    });
+
+    test('rejects ../ traversal that escapes the workspace', async () => {
+        // workspace and outsideDir are siblings under os.tmpdir()
+        const traversal = path.join('..', path.basename(outsideDir), 'secret.txt');
+        const result = await executor.execute(toolCall('read_file', { path: traversal }));
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('outside authorized workspace');
+        expect(fs.existsSync(outsideFile)).toBe(true); // untouched
+    });
+
+    test('rejects a symlink whose target escapes the workspace', async () => {
+        const link = path.join(workspace, 'escape-link.txt');
+        fs.symlinkSync(outsideFile, link);
+        try {
+            const result = await executor.execute(toolCall('read_file', { path: 'escape-link.txt' }));
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('outside authorized workspace');
+        } finally {
+            fs.rmSync(link, { force: true });
         }
     });
 
-    test("should read file successfully", async () => {
-        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
-        const result = await (executor as any).handleReadFile({ path: path.relative(process.cwd(), testFile) });
-
-        expect(result.success).toBe(true);
-        expect(result.output).toBe("Hello, world!");
-    });
-
-    test("should read file with line range (start_line)", async () => {
-        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
-        const result = await (executor as any).handleReadFile({
-            path: path.relative(process.cwd(), multiLineFile),
-            start_line: 2
-        });
-
-        expect(result.success).toBe(true);
-        expect(result.output).toBe("Line 2\nLine 3\nLine 4\nLine 5");
-    });
-
-    test("should read file with line range (end_line)", async () => {
-        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
-        const result = await (executor as any).handleReadFile({
-            path: path.relative(process.cwd(), multiLineFile),
-            end_line: 3
-        });
-
-        expect(result.success).toBe(true);
-        expect(result.output).toBe("Line 1\nLine 2\nLine 3");
-    });
-
-    test("should read file with specific range", async () => {
-        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
-        const result = await (executor as any).handleReadFile({
-            path: path.relative(process.cwd(), multiLineFile),
-            start_line: 2,
-            end_line: 4
-        });
-
-        expect(result.success).toBe(true);
-        expect(result.output).toBe("Line 2\nLine 3\nLine 4");
-    });
-
-    test("should return error if file does not exist", async () => {
-        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
-        const result = await (executor as any).handleReadFile({ path: "non_existent_file.txt" });
-
+    test('rejects list_directory outside the workspace', async () => {
+        const result = await executor.execute(toolCall('list_directory', { path: outsideDir }));
         expect(result.success).toBe(false);
-        expect(result.error).toContain("File not found");
+        expect(result.error).toContain('outside authorized workspace');
     });
 
-    test("should return error if path is a directory", async () => {
-        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
-        const result = await (executor as any).handleReadFile({ path: path.relative(process.cwd(), testDir) });
-
+    test('rejects grep_search outside the workspace', async () => {
+        const result = await executor.execute(
+            toolCall('grep_search', { pattern: 'secret', path: outsideDir })
+        );
         expect(result.success).toBe(false);
-        // Expect failure, specific error message depends on implementation details
+        expect(result.error).toContain('outside authorized workspace');
+    });
+
+    test('surviving read-only tools still work inside the workspace', async () => {
+        const list = await executor.execute(toolCall('list_directory', { path: '.' }));
+        expect(list.success).toBe(true);
+        expect(list.output).toContain('inside.txt');
+
+        const grep = await executor.execute(
+            toolCall('grep_search', { pattern: 'inside-content', path: '.' })
+        );
+        expect(grep.success).toBe(true);
+        expect(grep.output).toContain('inside.txt');
+    });
+});
+
+describe('ToolExecutor sensitive-path policy (issue #85)', () => {
+    let workspace: string;
+    let executor: ToolExecutor;
+    const fakeSecret = 'fake-secret-85-sensitive-path';
+
+    beforeAll(() => {
+        workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ouroboros-sensitive-'));
+        fs.writeFileSync(path.join(workspace, '.secrets'), `z.ai api key: ${fakeSecret}\n`);
+        fs.writeFileSync(path.join(workspace, 'Apikeys'), `z.ai api key: ${fakeSecret}\n`);
+        fs.writeFileSync(path.join(workspace, '.env'), `GROQ_API_KEY=${fakeSecret}\n`);
+        fs.writeFileSync(path.join(workspace, '.env.local'), `GOOGLE_API_KEY=${fakeSecret}\n`);
+        fs.writeFileSync(path.join(workspace, 'normal.txt'), 'normal-content');
+        fs.mkdirSync(path.join(workspace, 'subdir'));
+        fs.writeFileSync(path.join(workspace, 'subdir', 'nested.txt'), 'nested-content');
+        executor = createToolExecutor({ workingDirectory: workspace });
+    });
+
+    afterAll(() => {
+        fs.rmSync(workspace, { recursive: true, force: true });
+    });
+
+    test('.secrets inside the workspace cannot be read via relative path', async () => {
+        const result = await executor.execute(toolCall('read_file', { path: '.secrets' }));
         expect(result.success).toBe(false);
-    test("should find pattern in files recursively", async () => {
-        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
-        const result = await (executor as any).handleGrepSearch({
-            path: "test_grep_dir",
-            pattern: "pattern"
-        });
-
-        expect(result.success).toBe(true);
-        const output = result.output;
-        expect(output).toContain("file1.txt");
-        expect(output).toContain("file2.js");
-        expect(output).toContain("subdir1/file3.txt");
-        expect(output).not.toContain("file4.txt");
+        expect(result.error).toContain('denied');
+        expect(result.output).toBe('');
+        expect(result.error).not.toContain(fakeSecret);
     });
 
-    test("should filter by include glob", async () => {
-        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
-        const result = await (executor as any).handleGrepSearch({
-            path: "test_grep_dir",
-            pattern: "pattern",
-            include: "*.txt"
-        });
-
-        expect(result.success).toBe(true);
-        const output = result.output;
-        expect(output).toContain("file1.txt");
-        expect(output).not.toContain("file2.js"); // JS file should be excluded
-        expect(output).toContain("subdir1/file3.txt");
-    });
-
-    test("should handle non-existent path gracefully", async () => {
-        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
-        const result = await (executor as any).handleGrepSearch({
-            path: "non_existent_grep_path",
-            pattern: "pattern"
-        });
-
+    test('.secrets cannot be read via absolute path (alias equivalent)', async () => {
+        const result = await executor.execute(
+            toolCall('read_file', { path: path.join(workspace, '.secrets') })
+        );
         expect(result.success).toBe(false);
-        expect(result.error).toContain("Path not found");
+        expect(result.error).toContain('denied');
+        expect(result.output).toBe('');
+        expect(result.error).not.toContain(fakeSecret);
     });
 
-    test("should search specific file if path is a file", async () => {
-        const executor = new ToolExecutor({ workingDirectory: process.cwd() });
-        const result = await (executor as any).handleGrepSearch({
-            path: "test_grep_dir/file1.txt",
-            pattern: "pattern"
-        });
+    test('Apikeys (legacy credential source) cannot be read', async () => {
+        const relative = await executor.execute(toolCall('read_file', { path: 'Apikeys' }));
+        expect(relative.success).toBe(false);
+        expect(relative.error).toContain('denied');
+        expect(relative.output).not.toContain(fakeSecret);
 
+        const absolute = await executor.execute(
+            toolCall('read_file', { path: path.join(workspace, 'Apikeys') })
+        );
+        expect(absolute.success).toBe(false);
+        expect(absolute.error).toContain('denied');
+        expect(absolute.output).not.toContain(fakeSecret);
+    });
+
+    test('.env and .env.* variants cannot be read', async () => {
+        const dotenv = await executor.execute(toolCall('read_file', { path: '.env' }));
+        expect(dotenv.success).toBe(false);
+        expect(dotenv.error).toContain('denied');
+        expect(dotenv.output).not.toContain(fakeSecret);
+
+        const dotenvLocal = await executor.execute(
+            toolCall('read_file', { path: '.env.local' })
+        );
+        expect(dotenvLocal.success).toBe(false);
+        expect(dotenvLocal.error).toContain('denied');
+        expect(dotenvLocal.output).not.toContain(fakeSecret);
+    });
+
+    test('grep_search over the workspace does not return .secrets content', async () => {
+        const result = await executor.execute(
+            toolCall('grep_search', { pattern: fakeSecret, path: '.' })
+        );
         expect(result.success).toBe(true);
-        expect(result.output).toContain("file1.txt");
-        expect(result.output).not.toContain("file2.js");
+        expect(result.output).not.toContain(fakeSecret);
+        expect(result.output).not.toContain('.secrets');
+    });
+
+    test('recursive grep skips sensitive files but still searches normal files', async () => {
+        const result = await executor.execute(
+            toolCall('grep_search', { pattern: 'nested-content', path: '.' })
+        );
+        expect(result.success).toBe(true);
+        expect(result.output).toContain('nested.txt');
+        expect(result.output).not.toContain(fakeSecret);
+        expect(result.output).not.toContain('Apikeys');
+    });
+
+    test('symlink inside the workspace pointing to .secrets does not expose content', async () => {
+        const link = path.join(workspace, 'alias.txt');
+        fs.symlinkSync(path.join(workspace, '.secrets'), link);
+        try {
+            const viaSymlink = await executor.execute(
+                toolCall('read_file', { path: 'alias.txt' })
+            );
+            expect(viaSymlink.success).toBe(false);
+            expect(viaSymlink.error).toContain('denied');
+            expect(viaSymlink.output).not.toContain(fakeSecret);
+
+            // Symlink target via absolute path is also blocked.
+            const viaAbsolute = await executor.execute(
+                toolCall('read_file', { path: link })
+            );
+            expect(viaAbsolute.success).toBe(false);
+            expect(viaAbsolute.output).not.toContain(fakeSecret);
+        } finally {
+            fs.rmSync(link, { force: true });
+        }
+    });
+
+    test('normal files inside the workspace remain readable', async () => {
+        const result = await executor.execute(toolCall('read_file', { path: 'normal.txt' }));
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('normal-content');
+    });
+
+    test('synthetic provider response requesting the secret does not leak it into the next chat history', async () => {
+        const provider = new SyntheticResponseProvider([
+            toolCallsResponse([toolCall('read_file', { path: '.secrets' }, 'call-secret')], 'resp-1'),
+            stopResponse('done', 'resp-2'),
+        ]);
+        const agent = new AgentLoop(
+            provider,
+            createToolExecutor({ workingDirectory: workspace }),
+            { maxIterations: 3 }
+        );
+        const result = await agent.run('read the secrets file');
+        expect(result.success).toBe(true);
+
+        // The tool result fed back into history is the refusal, never the secret.
+        const followUp = provider.chats[1] ?? [];
+        expect(JSON.stringify(followUp)).not.toContain(fakeSecret);
+        const toolMessages = followUp.filter(m => m.role === 'tool');
+        expect(toolMessages.length).toBe(1);
+        expect(toolMessages[0].content).toContain('denied');
+    });
+});
+
+describe('AgentLoop telemetry bounds (issue #85)', () => {
+    test('raw tool arguments never appear in thought events', async () => {
+        const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ouroboros-telemetry-'));
+        try {
+            const fakeSecret = 'fake-secret-85-telemetry';
+            const bus = new EventBus();
+            const thoughts: ThoughtEvent[] = [];
+            bus.on('thought', (event) => {
+                thoughts.push(event);
+            });
+
+            const provider = new SyntheticResponseProvider([
+                toolCallsResponse(
+                    [toolCall('read_file', { path: fakeSecret }, 'call-tel')],
+                    'resp-1'
+                ),
+                stopResponse('done', 'resp-2'),
+            ]);
+            const agent = new AgentLoop(
+                provider,
+                createToolExecutor({ workingDirectory: workspace }),
+                { maxIterations: 3 },
+                bus
+            );
+            await agent.run('telemetry probe');
+
+            // No observed event carries the sensitive argument value.
+            const serialized = JSON.stringify(thoughts);
+            expect(serialized).not.toContain(fakeSecret);
+
+            // tool_call thought still carries bounded metadata:
+            // tool name + argument character count, never raw args.
+            const callThought = thoughts.find(t => t.type === 'tool_call');
+            expect(callThought).toBeDefined();
+            expect(callThought?.metadata?.toolName).toBe('read_file');
+            expect(typeof callThought?.metadata?.argumentChars).toBe('number');
+            expect(callThought?.metadata?.args).toBeUndefined();
+        } finally {
+            fs.rmSync(workspace, { recursive: true, force: true });
+        }
+    });
+});
+
+describe('ToolExecutor verbose telemetry bounds (issue #85)', () => {
+    test('verbose=true logs never carry raw model-supplied arguments', async () => {
+        const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ouroboros-verbose-'));
+        try {
+            const fakeSecret = 'fake-secret-85-verbose-telemetry';
+            // File whose name embeds the fake secret: reading it
+            // previously logged the raw path, and failing to read
+            // it previously echoed the raw path in the error.
+            const leakyName = `${fakeSecret}.txt`;
+            fs.writeFileSync(path.join(workspace, leakyName), 'verbose-fixture-content');
+
+            // Observe the same globalEventBus the ToolExecutor logs to
+            // under production (daemon.delegate passes verbose: true).
+            const logs: LogEvent[] = [];
+            const onLog = (event: LogEvent) => {
+                logs.push(event);
+            };
+            globalEventBus.on('log', onLog);
+            try {
+                const executor = createToolExecutor({
+                    workingDirectory: workspace,
+                    verbose: true,
+                });
+
+                // Success path: previously logged
+                // `Read N chars from workspace path: <inputPath>`.
+                const ok = await executor.execute(toolCall('read_file', { path: leakyName }));
+                expect(ok.success).toBe(true);
+                expect(ok.output).toBe('verbose-fixture-content');
+
+                // Failure paths: previously echoed the raw path.
+                const missing = await executor.execute(
+                    toolCall('read_file', { path: `${fakeSecret}-missing.txt` })
+                );
+                expect(missing.success).toBe(false);
+                expect(missing.error).toBe('Path not found');
+
+                const escaping = await executor.execute(
+                    toolCall('read_file', { path: `../${fakeSecret}` })
+                );
+                expect(escaping.success).toBe(false);
+                // Generic fixed category (realpath or containment
+                // gate, whichever fires first) — never the input.
+                expect(['Path not found', 'Path outside authorized workspace'])
+                    .toContain(escaping.error);
+                expect(escaping.error).not.toContain(fakeSecret);
+
+                // grep with the secret as pattern and as search target.
+                const grep = await executor.execute(
+                    toolCall('grep_search', { pattern: fakeSecret, path: leakyName })
+                );
+                expect(grep.success).toBe(true);
+
+                // Invalid regex previously threw a SyntaxError that
+                // echoed the raw pattern through the executor catch-all.
+                const badPattern = await executor.execute(
+                    toolCall('grep_search', { pattern: '(unclosed', path: '.' })
+                );
+                expect(badPattern.success).toBe(false);
+                expect(badPattern.error).toBe('Invalid search pattern');
+            } finally {
+                globalEventBus.off('log', onLog);
+            }
+
+            // Verbose logging did fire (proves the observation path
+            // worked) and is bounded: char counts and tool names only.
+            expect(logs.length).toBeGreaterThan(0);
+            expect(
+                logs.some(log => log.message.includes('chars'))
+            ).toBe(true);
+
+            // No observed log carries the fake secret, the raw file
+            // name, or any other model-supplied argument value.
+            const serialized = JSON.stringify(logs);
+            expect(serialized).not.toContain(fakeSecret);
+            expect(serialized).not.toContain(leakyName);
+        } finally {
+            fs.rmSync(workspace, { recursive: true, force: true });
+        }
     });
 });

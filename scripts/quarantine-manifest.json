@@ -27,15 +27,8 @@
     {
       "path": "cli/src/orchestration/SkillLoader.test.ts",
       "classification": "external dependency",
-      "reason": "Hard-coded path outside repo: ../engenharia reversa /AionUi/_adapted/skills — not available in CI or clean clones.",
+      "reason": "Hard-coded path outside repo: ../engenharia reversa /AionUi/_adapted/skills \u2014 not available in CI or clean clones.",
       "reactivate_when": "Fixtures ship inside the repository or tests use a temp skills dir under the repo.",
-      "tracking_issue": 41
-    },
-    {
-      "path": "cli/src/providers/tool-executor.test.ts",
-      "classification": "broken test file (syntax)",
-      "reason": "File is merge-corrupted (nested describe mid-block, Unexpected end of file). Cannot load under bun test.",
-      "reactivate_when": "File is reconstructed into valid suites and all cases pass against ToolExecutor.",
       "tracking_issue": 41
     }
   ]
