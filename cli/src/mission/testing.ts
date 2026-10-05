@@ -27,6 +27,7 @@ import type {
     PlannerPort,
     VerificationAuthority,
 } from "./ports.js";
+import type { ProgressiveContextPack } from "../context/progressive.js";
 
 /** ------------------------------------------------------------------ */
 /**  FakeCapabilityResolver — in-memory capability catalog.             */
@@ -91,22 +92,21 @@ export class FakePlannerPort implements PlannerPort {
         this.rejectOnPropose = null;
     }
 
-    async proposePlan(_mission: Mission, _context?: unknown): Promise<PlanCandidate> {
+    async proposePlan(_context: ProgressiveContextPack): Promise<PlanCandidate> {
         if (this.rejectOnPropose) {
             throw new Error(this.rejectOnPropose);
         }
-        return { ...this.candidate, missionId: _mission.missionId };
+        return { ...this.candidate, missionId: _context.missionId };
     }
 
     async replan(
-        _mission: Mission,
+        _context: ProgressiveContextPack,
         _previousRejection: string,
-        _context?: unknown,
     ): Promise<PlanCandidate> {
         if (this.rejectOnPropose) {
             throw new Error(this.rejectOnPropose);
         }
-        return { ...this.candidate, missionId: _mission.missionId };
+        return { ...this.candidate, missionId: _context.missionId };
     }
 }
 

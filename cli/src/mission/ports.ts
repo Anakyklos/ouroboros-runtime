@@ -17,6 +17,7 @@ import type {
     PlanRevision,
     PlanRevisionStatus,
 } from "./contracts.js";
+import type { ProgressiveContextPack } from "../context/progressive.js";
 
 /** ------------------------------------------------------------------ */
 /**  MissionStore — durability for Missions and their plan revisions.   */
@@ -139,21 +140,20 @@ export type MissionMutationListener = (mutation: MissionMutation) => void;
 /** ------------------------------------------------------------------ */
 export interface PlannerPort {
     /**
-     * Given a Mission and optional context, propose a PlanCandidate.
-     * The planner is advisory — it does NOT confer authority.
-     * Implementation may be an LLM, a deterministic algorithm, or a fake.
+     * Propose from the bounded, provenance-carrying Context Pack only.
+     * The planner is advisory — it does NOT confer authority. Implementations
+     * may be a provider, deterministic algorithm, or fake; none receive a
+     * Mission, store handle, or arbitrary context object.
      */
-    proposePlan(mission: Mission, context?: unknown): Promise<PlanCandidate>;
+    proposePlan(context: ProgressiveContextPack): Promise<PlanCandidate>;
 
     /**
-     * Given a Mission and a rejection reason, produce a revised proposal.
-     * The planner does NOT bypass policy — the revised candidate will
-     * be validated again.
+     * Given a freshly compiled bounded Context Pack and sanitized rejection
+     * reason, produce a revised proposal. The candidate is validated again.
      */
     replan(
-        mission: Mission,
+        context: ProgressiveContextPack,
         previousRejection: string,
-        context?: unknown,
     ): Promise<PlanCandidate>;
 }
 

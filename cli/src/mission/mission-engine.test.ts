@@ -33,7 +33,6 @@ import {
     FakeCapabilityResolver,
     FakeClock,
     FakeIdGenerator,
-    FakePlannerPort,
     FakeVerificationAuthority,
     makeDefaultCapabilityCatalog,
 } from "./testing.js";
@@ -95,7 +94,6 @@ interface EngineHarness {
     engine: MissionEngine;
     store: SqliteMissionStore;
     resolver: FakeCapabilityResolver;
-    planner: FakePlannerPort;
     clock: FakeClock;
     ids: FakeIdGenerator;
     authority: FakeVerificationAuthority;
@@ -109,7 +107,6 @@ function createHarness(
     const store = new SqliteMissionStore(":memory:");
     const resolver = new FakeCapabilityResolver();
     resolver.registerMany(makeDefaultCapabilityCatalog());
-    const planner = new FakePlannerPort();
     const ids = new FakeIdGenerator("mission-id");
     const policy = new PlanPolicyValidator(resolver);
     const authority = new FakeVerificationAuthority();
@@ -128,7 +125,6 @@ function createHarness(
         engine,
         store,
         resolver,
-        planner,
         clock,
         ids,
         authority,
@@ -1090,15 +1086,14 @@ describe("MissionEngine", () => {
             expect(revisions[0].status).toBe("accepted");
         });
 
-        it("proves the advisory-planner loop through PlannerPort: proposal rejected, replan accepted, intent preserved", async () => {
+        it("keeps policy authoritative across a rejected and revised planner candidate", async () => {
             const intent = makeIntent("cli");
             const mission = await engine.createMission({
                 intent,
                 allowedCapabilityScope: DEFAULT_SCOPE,
             });
 
-            // Planner (via PlannerPort) first proposes an unauthorized capability.
-            harness.planner.setCandidate(makeCandidate(mission.missionId, {
+            const firstProposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId, {
                 steps: [
                     makeStep({
                         capabilityRequirement: "tecer.health-check", // NOT in DEFAULT_SCOPE
@@ -1106,21 +1101,12 @@ describe("MissionEngine", () => {
                     }),
                 ],
             }));
-            const firstProposal = await engine.proposePlan(
-                mission.missionId,
-                await harness.planner.proposePlan(mission),
-            );
             expect(firstProposal.ok).toBe(false);
 
-            // Planner replans with an authorized capability.
-            harness.planner.setCandidate(makeCandidate(mission.missionId, {
+            const secondProposal = await engine.proposePlan(mission.missionId, makeCandidate(mission.missionId, {
                 planId: "plan-2",
                 steps: [makeStep({ inputRefs: ["refs/runstead/pr/42"] })],
             }));
-            const secondProposal = await engine.proposePlan(
-                mission.missionId,
-                await harness.planner.replan(mission, "capability not authorized"),
-            );
             expect(secondProposal.ok).toBe(true);
             if (!secondProposal.ok) return;
             const accepted = await engine.acceptPlan(mission.missionId, secondProposal.revision.revisionId);
