@@ -1057,6 +1057,23 @@ export class ProviderResilience {
         this.circuitBreakers.restore(snapshot.circuitBreakers);
     }
 
+    /**
+     * One attempt of the retry policy, guarded by quota, the
+     * concurrency bound and the circuit breaker.
+     *
+     * Ordering is binding: NO circuit breaker permit may cross
+     * an async wait. The breaker is consulted only in the
+     * synchronous block immediately before the dispatch, so
+     * its authorization is always valid for the state at the
+     * moment of the provider call. A call that queued while
+     * the circuit was closed re-checks here and refuses to
+     * dispatch through a circuit that opened while it waited,
+     * and a HALF_OPEN probe is reserved only in that same
+     * synchronous block — it is always resolved by
+     * `executeOperation` (recordSuccess/recordFailure), so no
+     * probe can be orphaned by a cancellation or budget
+     * expiry that happens before the provider call starts.
+     */
     private async attemptWithGuards<T>(
         identity: ResilienceIdentity,
         signal: AbortSignal,
@@ -1068,35 +1085,10 @@ export class ProviderResilience {
         while (true) {
             throwIfAborted(signal);
             budget.assert();
-            const permit = breaker.beforeRequest();
-            if (!permit.allowed) {
-                const nextAttemptAt = permit.nextAttemptAt ?? this.clock() + 1;
-                this.emit({
-                    type: "waiting",
-                    providerId: identity.providerId,
-                    credentialScope: identity.credentialScope,
-                    at: this.clock(),
-                    attempt,
-                    reason: "circuit_open",
-                    nextAttemptAt,
-                });
-                await this.waitUntil(nextAttemptAt, signal, budget);
-                continue;
-            }
-            if (permit.state === "half_open") {
-                this.emit({
-                    type: "circuit_half_open",
-                    providerId: identity.providerId,
-                    credentialScope: identity.credentialScope,
-                    at: this.clock(),
-                    attempt,
-                });
-            }
 
             if (this.quota) {
                 const admission = this.quota.tryAcquire(identity.providerId, identity.credentialScope);
                 if (!admission.allowed) {
-                    if (permit.state === "half_open") breaker.cancelProbe();
                     const nextAttemptAt = admission.nextEligibleAt ?? this.clock() + 1;
                     this.emit({
                         type: "waiting",
@@ -1113,6 +1105,11 @@ export class ProviderResilience {
             }
 
             if (this.concurrency) {
+                // The slot is acquired WITHOUT any breaker permit:
+                // a permit must never cross this async wait, or a
+                // call queued while the circuit was closed would
+                // dispatch through a circuit that opened while it
+                // waited.
                 await this.concurrency.acquire(
                     identity.providerId,
                     identity.credentialScope,
@@ -1121,11 +1118,45 @@ export class ProviderResilience {
                 );
                 if (signal.aborted) {
                     // The abort raced with the slot handoff: give the slot
-                    // back and refuse to start the operation.
+                    // back and refuse to start the operation. No breaker
+                    // permit exists yet, so no probe can be orphaned.
                     this.concurrency.release(identity.providerId, identity.credentialScope);
                     throw new ProviderResilienceCancellationError();
                 }
             }
+
+            // Authorize with the circuit breaker immediately before
+            // the dispatch. Between this check and the provider call
+            // there is no await, so the permit cannot go stale.
+            const permit = breaker.beforeRequest();
+            if (!permit.allowed) {
+                const nextAttemptAt = permit.nextAttemptAt ?? this.clock() + 1;
+                this.emit({
+                    type: "waiting",
+                    providerId: identity.providerId,
+                    credentialScope: identity.credentialScope,
+                    at: this.clock(),
+                    attempt,
+                    reason: "circuit_open",
+                    nextAttemptAt,
+                });
+                // Give the slot back before the cooldown wait: no
+                // concurrency slot is retained during a circuit
+                // cooldown or backoff.
+                this.concurrency?.release(identity.providerId, identity.credentialScope);
+                await this.waitUntil(nextAttemptAt, signal, budget);
+                continue;
+            }
+            if (permit.state === "half_open") {
+                this.emit({
+                    type: "circuit_half_open",
+                    providerId: identity.providerId,
+                    credentialScope: identity.credentialScope,
+                    at: this.clock(),
+                    attempt,
+                });
+            }
+
             try {
                 return await this.executeOperation(identity, breaker, operation, attempt);
             } finally {

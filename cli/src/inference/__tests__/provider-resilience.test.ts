@@ -876,6 +876,404 @@ describe("provider resilience policy", () => {
         expect(await first).toBe("first");
     });
 
+    test("a queued call never dispatches through a circuit that opened while it waited", async () => {
+        let now = 1_000;
+        const events: ProviderResilienceEvent[] = [];
+        // The fake clock advances only for caller-owned waits
+        // (cooldown, Retry-After, backoff). The budget expiry
+        // timer's internal wait must not advance time: with a
+        // fully advancing clock a queued call would exhaust its
+        // budget the instant it queues.
+        const callerSignals = new Set<AbortSignal>();
+        const trackedSignal = (): AbortSignal => {
+            const signal = new AbortController().signal;
+            callerSignals.add(signal);
+            return signal;
+        };
+        const resilience = new ProviderResilience({
+            retry: { maxAttempts: 1 },
+            concurrency: { maxConcurrency: 1 },
+            circuitBreaker: { failureThreshold: 1, cooldownMs: 10_000 },
+            clock: () => now,
+            sleep: async (delayMs, sleepSignal) => {
+                if (callerSignals.has(sleepSignal)) now += delayMs;
+            },
+            onEvent: (event) => events.push(event),
+        });
+        const dispatchTimes: number[] = [];
+        let releaseFirst!: () => void;
+        let firstStarted!: () => void;
+        const firstStartedPromise = new Promise<void>((resolve) => {
+            firstStarted = resolve;
+        });
+        // Call A occupies the only slot while the circuit is closed.
+        const first = resilience.execute(planFor(identity), trackedSignal(), () => new Promise<string>((resolve, reject) => {
+            firstStarted();
+            releaseFirst = () => reject(providerError("network"));
+        }));
+        await firstStartedPromise;
+
+        // Call B queues for the single slot.
+        const queued = resilience.execute(planFor(identity), trackedSignal(), async () => {
+            dispatchTimes.push(now);
+            return "queued-dispatch";
+        });
+
+        // A fails retryable: recordFailure opens the circuit (threshold 1)
+        // and the queue hands the slot to B.
+        releaseFirst();
+        await expect(first).rejects.toThrow(ModelProviderError);
+
+        // B received the slot, but the circuit is OPEN: it must refuse
+        // to dispatch, give the slot back and wait out the cooldown.
+        // It only reaches the provider afterwards, as a half-open probe.
+        const result = await queued;
+        expect(result).toBe("queued-dispatch");
+        expect(dispatchTimes).toEqual([11_000]);
+        expect(events).toContainEqual(expect.objectContaining({
+            type: "waiting",
+            reason: "circuit_open",
+            nextAttemptAt: 11_000,
+        }));
+        expect(resilience.snapshot().circuitBreakers.breakers[0]).toMatchObject({
+            state: "closed",
+            probeInFlight: false,
+        });
+    });
+
+    test("admits exactly one half-open probe to the provider", async () => {
+        let now = 1_000;
+        const events: ProviderResilienceEvent[] = [];
+        // The fake clock advances only for caller-owned waits;
+        // the budget expiry timer's internal wait must not
+        // advance time.
+        const callerSignals = new Set<AbortSignal>();
+        const trackedSignal = (): AbortSignal => {
+            const signal = new AbortController().signal;
+            callerSignals.add(signal);
+            return signal;
+        };
+        const resilience = new ProviderResilience({
+            retry: { maxAttempts: 1 },
+            concurrency: { maxConcurrency: 1 },
+            circuitBreaker: { failureThreshold: 1, cooldownMs: 5_000 },
+            clock: () => now,
+            sleep: async (delayMs, sleepSignal) => {
+                if (callerSignals.has(sleepSignal)) now += delayMs;
+            },
+            onEvent: (event) => events.push(event),
+        });
+        const dispatchTimes: number[] = [];
+        const halfOpenDispatchTimes: number[] = [];
+        const trackDispatch = (): void => {
+            dispatchTimes.push(now);
+            const breaker = resilience.snapshot().circuitBreakers.breakers[0];
+            if (breaker.state === "half_open" && breaker.probeInFlight) {
+                halfOpenDispatchTimes.push(now);
+            }
+        };
+        let releaseBlocker!: () => void;
+        let blockerStarted!: () => void;
+        const blockerStartedPromise = new Promise<void>((resolve) => {
+            blockerStarted = resolve;
+        });
+        // A occupies the only slot while the circuit is closed.
+        const blocker = resilience.execute(planFor(identity), trackedSignal(), () => new Promise<string>((resolve, reject) => {
+            blockerStarted();
+            releaseBlocker = () => reject(providerError("network"));
+        }));
+        await blockerStartedPromise;
+
+        let releaseProbe!: () => void;
+        let probeStarted!: () => void;
+        const probeStartedPromise = new Promise<void>((resolve) => {
+            probeStarted = resolve;
+        });
+        // B queues for the single slot; A's retryable failure opens the
+        // circuit and the queue hands the slot to B.
+        const queued = resilience.execute(planFor(identity), trackedSignal(), () => new Promise<string>((resolve) => {
+            trackDispatch();
+            probeStarted();
+            releaseProbe = () => resolve("probe-result");
+        }));
+        releaseBlocker();
+        await expect(blocker).rejects.toThrow(ModelProviderError);
+
+        // B refused the open circuit, waited out the cooldown and is now
+        // the single authorized half-open probe, blocked in the provider call.
+        await probeStartedPromise;
+        expect(dispatchTimes).toEqual([6_000]);
+        expect(halfOpenDispatchTimes).toEqual([6_000]);
+
+        // Two concurrent calls race for the single probe: neither may
+        // reach the provider while the probe is in flight.
+        const first = resilience.execute(planFor(identity), trackedSignal(), async () => {
+            trackDispatch();
+            return "first";
+        });
+        const second = resilience.execute(planFor(identity), trackedSignal(), async () => {
+            trackDispatch();
+            return "second";
+        });
+
+        // The probe succeeds and closes the circuit; the queued calls
+        // then dispatch as normal closed-state calls.
+        releaseProbe();
+        await expect(queued).resolves.toBe("probe-result");
+        expect(await first).toBe("first");
+        expect(await second).toBe("second");
+        // Exactly one provider call ran while the circuit was half-open:
+        // the single authorized probe.
+        expect(halfOpenDispatchTimes).toEqual([6_000]);
+        expect(events.filter((event) => event.type === "circuit_half_open")).toHaveLength(1);
+        expect(resilience.snapshot().circuitBreakers.breakers[0]).toMatchObject({
+            state: "closed",
+            probeInFlight: false,
+        });
+    });
+
+    test("cancelling a queued half-open wait orphans no probe and never calls the provider", async () => {
+        let now = 1_000;
+        // The fake clock advances only for caller-owned waits;
+        // the budget expiry timer's internal wait must not
+        // advance time.
+        const callerSignals = new Set<AbortSignal>();
+        const trackedSignal = (): AbortSignal => {
+            const signal = new AbortController().signal;
+            callerSignals.add(signal);
+            return signal;
+        };
+        const resilience = new ProviderResilience({
+            retry: { maxAttempts: 1 },
+            concurrency: { maxConcurrency: 1 },
+            circuitBreaker: { failureThreshold: 1, cooldownMs: 10_000 },
+            clock: () => now,
+            sleep: async (delayMs, sleepSignal) => {
+                if (callerSignals.has(sleepSignal)) now += delayMs;
+            },
+        });
+        const dispatchTimes: number[] = [];
+        let releaseBlocker!: () => void;
+        let blockerStarted!: () => void;
+        const blockerStartedPromise = new Promise<void>((resolve) => {
+            blockerStarted = resolve;
+        });
+        // A occupies the only slot while the circuit is closed.
+        const blocker = resilience.execute(planFor(identity), trackedSignal(), () => new Promise<string>((resolve, reject) => {
+            blockerStarted();
+            releaseBlocker = () => reject(providerError("network"));
+        }));
+        await blockerStartedPromise;
+
+        let releaseProbe!: () => void;
+        let probeStarted!: () => void;
+        const probeStartedPromise = new Promise<void>((resolve) => {
+            probeStarted = resolve;
+        });
+        // B queues for the single slot; A's retryable failure opens the
+        // circuit and the queue hands the slot to B.
+        const queued = resilience.execute(planFor(identity), trackedSignal(), () => new Promise<string>((resolve) => {
+            dispatchTimes.push(now);
+            probeStarted();
+            releaseProbe = () => resolve("probe-result");
+        }));
+        releaseBlocker();
+        await expect(blocker).rejects.toThrow(ModelProviderError);
+
+        // B refused the open circuit, waited out the cooldown and is now
+        // the single authorized half-open probe, blocked in the provider call.
+        await probeStartedPromise;
+
+        // A third call queues behind the in-flight probe.
+        const candidateController = new AbortController();
+        callerSignals.add(candidateController.signal);
+        let candidateCalls = 0;
+        const candidate = resilience.execute(planFor(identity), candidateController.signal, async () => {
+            candidateCalls += 1;
+            return "must not run";
+        });
+        const candidateOutcome = candidate.then(
+            () => "must not resolve",
+            (error) => error,
+        );
+
+        // Cancelling the queued call must never call the provider and
+        // must leave no orphaned probe behind.
+        candidateController.abort();
+        expect(await candidateOutcome).toBeInstanceOf(ProviderResilienceCancellationError);
+        expect(candidateCalls).toBe(0);
+        // The only provider call is the in-flight probe, dispatched at
+        // the post-cooldown half-open moment — never through the open circuit.
+        expect(dispatchTimes).toEqual([11_000]);
+
+        // Recovery: the probe succeeds, closing the circuit.
+        releaseProbe();
+        await expect(queued).resolves.toBe("probe-result");
+        expect(resilience.snapshot().circuitBreakers.breakers[0]).toMatchObject({
+            state: "closed",
+            probeInFlight: false,
+        });
+
+        // Future calls work normally again.
+        const recovered = await resilience.execute(planFor(identity), trackedSignal(), async () => {
+            dispatchTimes.push(now);
+            return "recovered";
+        });
+        expect(recovered).toBe("recovered");
+        expect(dispatchTimes).toEqual([11_000, 11_000]);
+    });
+
+    test("expiring the budget of a queued half-open wait orphans no probe and never calls the provider", async () => {
+        let now = 1_000;
+        const resilience = new ProviderResilience({
+            retry: { maxAttempts: 1 },
+            concurrency: { maxConcurrency: 1 },
+            circuitBreaker: { failureThreshold: 1, cooldownMs: 10_000 },
+            timeBudgetMs: 500,
+            clock: () => now,
+            sleep: async (delayMs) => {
+                now += delayMs;
+            },
+        });
+        const dispatchTimes: number[] = [];
+
+        // Open the circuit with one counted failure. The opener
+        // acquires the slot immediately, so its budget timer is
+        // never armed against the queue.
+        await expect(resilience.execute(planFor(identity), new AbortController().signal, async () => {
+            dispatchTimes.push(now);
+            throw providerError("network");
+        })).rejects.toThrow(ModelProviderError);
+
+        // The cooldown elapses: the circuit is half-open eligible.
+        now += 10_000;
+
+        let releaseProbe!: () => void;
+        let probeStarted!: () => void;
+        const probeStartedPromise = new Promise<void>((resolve) => {
+            probeStarted = resolve;
+        });
+        // The next call acquires the free slot immediately and is
+        // authorized as the single half-open probe, blocked in the
+        // provider call.
+        const queued = resilience.execute(planFor(identity), new AbortController().signal, () => new Promise<string>((resolve) => {
+            dispatchTimes.push(now);
+            probeStarted();
+            releaseProbe = () => resolve("probe-result");
+        }));
+        await probeStartedPromise;
+        expect(dispatchTimes).toEqual([1_000, 11_000]);
+
+        // A third call queues behind the in-flight probe; its budget
+        // expires while it waits.
+        let candidateCalls = 0;
+        const candidate = resilience.execute(planFor(identity), new AbortController().signal, async () => {
+            candidateCalls += 1;
+            return "must not run";
+        });
+        const candidateOutcome = candidate.then(
+            () => "must not resolve",
+            (error) => error,
+        );
+
+        expect(await candidateOutcome).toBeInstanceOf(ProviderResilienceBudgetError);
+        expect(candidateCalls).toBe(0);
+        // The only post-cooldown provider call is the in-flight
+        // probe, dispatched at the half-open moment — the expired
+        // call never reached the provider, and no call crossed
+        // the open circuit at t=1000.
+        expect(dispatchTimes).toEqual([1_000, 11_000]);
+
+        // Recovery after the budget expiry: the probe still owns the
+        // breaker state and completes normally.
+        releaseProbe();
+        await expect(queued).resolves.toBe("probe-result");
+        expect(resilience.snapshot().circuitBreakers.breakers[0]).toMatchObject({
+            state: "closed",
+            probeInFlight: false,
+        });
+        const recovered = await resilience.execute(planFor(identity), new AbortController().signal, async () => {
+            dispatchTimes.push(now);
+            return "recovered";
+        });
+        expect(recovered).toBe("recovered");
+        expect(dispatchTimes).toEqual([1_000, 11_000, 11_500]);
+    });
+
+    test("closes the circuit after a valid half-open probe and resumes normal calls", async () => {
+        let now = 1_000;
+        const events: ProviderResilienceEvent[] = [];
+        // The fake clock advances only for caller-owned waits;
+        // the budget expiry timer's internal wait must not
+        // advance time.
+        const callerSignals = new Set<AbortSignal>();
+        const trackedSignal = (): AbortSignal => {
+            const signal = new AbortController().signal;
+            callerSignals.add(signal);
+            return signal;
+        };
+        const resilience = new ProviderResilience({
+            retry: { maxAttempts: 1 },
+            concurrency: { maxConcurrency: 1 },
+            circuitBreaker: { failureThreshold: 1, cooldownMs: 5_000 },
+            clock: () => now,
+            sleep: async (delayMs, sleepSignal) => {
+                if (callerSignals.has(sleepSignal)) now += delayMs;
+            },
+            onEvent: (event) => events.push(event),
+        });
+        const dispatchTimes: number[] = [];
+        let releaseBlocker!: () => void;
+        let blockerStarted!: () => void;
+        const blockerStartedPromise = new Promise<void>((resolve) => {
+            blockerStarted = resolve;
+        });
+        // A occupies the only slot while the circuit is closed.
+        const blocker = resilience.execute(planFor(identity), trackedSignal(), () => new Promise<string>((resolve, reject) => {
+            blockerStarted();
+            releaseBlocker = () => reject(providerError("network"));
+        }));
+        await blockerStartedPromise;
+
+        // B queues for the single slot; A's retryable failure opens the
+        // circuit and the queue hands the slot to B.
+        const queued = resilience.execute(planFor(identity), trackedSignal(), async () => {
+            dispatchTimes.push(now);
+            return "probe-result";
+        });
+        releaseBlocker();
+        await expect(blocker).rejects.toThrow(ModelProviderError);
+
+        // B refused the open circuit, waited out the cooldown and reached
+        // the provider as the single valid half-open probe; its success
+        // closes the circuit.
+        const probeResult = await queued;
+        expect(probeResult).toBe("probe-result");
+        expect(dispatchTimes).toEqual([6_000]);
+        expect(resilience.snapshot().circuitBreakers.breakers[0]).toMatchObject({
+            state: "closed",
+            consecutiveFailures: 0,
+            probeInFlight: false,
+        });
+        expect(events).toContainEqual(expect.objectContaining({
+            type: "circuit_half_open",
+            at: 6_000,
+        }));
+
+        // Future calls work normally again: no cooldown wait and no
+        // further probe — the circuit stays closed.
+        const halfOpenCount = events.filter((event) => event.type === "circuit_half_open").length;
+        const waitingCount = events.filter((event) => event.type === "waiting").length;
+        const recovered = await resilience.execute(planFor(identity), trackedSignal(), async () => {
+            dispatchTimes.push(now);
+            return "recovered";
+        });
+        expect(recovered).toBe("recovered");
+        expect(dispatchTimes).toEqual([6_000, 6_000]);
+        expect(events.filter((event) => event.type === "circuit_half_open")).toHaveLength(halfOpenCount);
+        expect(events.filter((event) => event.type === "waiting")).toHaveLength(waitingCount);
+    });
+
     test("bounds concurrent provider calls to the configured maximum", async () => {
         let now = 1_000;
         const resilience = new ProviderResilience({
