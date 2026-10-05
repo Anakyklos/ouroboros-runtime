@@ -618,6 +618,24 @@ describe("circuit breaker", () => {
         breaker.recordFailure(currentProbe, true);
         expect(breaker.snapshot()).toMatchObject({ state: "open", probeInFlight: false, nextAttemptAt: 4_000 });
     });
+
+    test("a half-open permit from before restore cannot close or release the restored generation's probe", () => {
+        let now = 1_000;
+        const breaker = new CircuitBreaker({ failureThreshold: 1, cooldownMs: 1_000, clock: () => now });
+        breaker.recordFailure(breaker.beforeRequest(), true);
+        now = 2_000;
+        const staleProbe = breaker.beforeRequest();
+
+        breaker.restore(breaker.snapshot());
+        now = 3_000;
+        const currentProbe = breaker.beforeRequest();
+        breaker.recordSuccess(staleProbe);
+
+        expect(breaker.snapshot()).toMatchObject({ state: "half_open", probeInFlight: true, nextAttemptAt: 3_000 });
+        expect(breaker.beforeRequest()).toMatchObject({ allowed: false, state: "half_open" });
+        breaker.recordFailure(currentProbe, true);
+        expect(breaker.snapshot()).toMatchObject({ state: "open", probeInFlight: false, nextAttemptAt: 4_000 });
+    });
 });
 
 describe("provider resilience policy", () => {
