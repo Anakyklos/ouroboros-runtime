@@ -106,7 +106,7 @@ Properties:
 
 Authoritative list: [`scripts/quarantine-manifest.json`](../scripts/quarantine-manifest.json).
 
-**Recovery debt tracker:** [issue #41](https://github.com/RenyEnnos/ouroboros-runtime/issues/41)  
+**Recovery debt tracker:** [issue #41](https://github.com/Anakyklos/ouroboros-runtime/issues/41)
 (field `tracking_issue` in the manifest). Issue **#35** only establishes the baseline gate; it must not be the sole tracker after close.
 
 Printed at the start of every `bun run check:tests` run. The runner **fails** if:
@@ -126,13 +126,12 @@ Rules for quarantine:
 - Mandatory suite size is not reduced just to keep CI green  
 - No `|| true`, `continue-on-error`, or broad silence filters on required checks
 
-Current quarantined files (summary):
+Exactly **2 suites remain quarantined** (summary):
 
 | File | Classification |
 |------|----------------|
 | `cli/src/orchestration/AntiVibeWorkflow.test.ts` | product/test partial fail |
 | `cli/src/orchestration/PromotionManager.test.ts` | product partial fail |
-| `cli/src/orchestration/SkillLoader.test.ts` | external path dependency |
 
 ## Known limitations
 
