@@ -475,10 +475,12 @@ describe("circuit breaker", () => {
     test("opens the circuit after consecutive transient failures", () => {
         const breaker = new CircuitBreaker({ failureThreshold: 2, cooldownMs: 1_000, clock: () => 1_000 });
 
-        expect(breaker.beforeRequest()).toMatchObject({ allowed: true, state: "closed" });
-        breaker.recordFailure(true);
+        const first = breaker.beforeRequest();
+        const second = breaker.beforeRequest();
+        expect(first).toMatchObject({ allowed: true, state: "closed" });
+        breaker.recordFailure(first, true);
         expect(breaker.snapshot()).toMatchObject({ state: "closed", consecutiveFailures: 1 });
-        breaker.recordFailure(true);
+        breaker.recordFailure(second, true);
 
         expect(breaker.beforeRequest()).toMatchObject({ allowed: false, state: "open", nextAttemptAt: 2_000 });
     });
@@ -486,25 +488,25 @@ describe("circuit breaker", () => {
     test("allows one half-open probe after cooldown and closes on success", () => {
         let now = 1_000;
         const breaker = new CircuitBreaker({ failureThreshold: 1, cooldownMs: 1_000, clock: () => now });
-        breaker.beforeRequest();
-        breaker.recordFailure(true);
+        breaker.recordFailure(breaker.beforeRequest(), true);
 
         now = 2_000;
-        expect(breaker.beforeRequest()).toMatchObject({ allowed: true, state: "half_open" });
+        const probe = breaker.beforeRequest();
+        expect(probe).toMatchObject({ allowed: true, state: "half_open" });
         expect(breaker.beforeRequest()).toMatchObject({ allowed: false, state: "half_open" });
-        breaker.recordSuccess();
+        breaker.recordSuccess(probe);
         expect(breaker.snapshot()).toMatchObject({ state: "closed", consecutiveFailures: 0 });
     });
 
     test("keeps the circuit open when the half-open probe fails", () => {
         let now = 1_000;
         const breaker = new CircuitBreaker({ failureThreshold: 1, cooldownMs: 1_000, clock: () => now });
-        breaker.beforeRequest();
-        breaker.recordFailure(true);
+        breaker.recordFailure(breaker.beforeRequest(), true);
 
         now = 2_000;
-        expect(breaker.beforeRequest()).toMatchObject({ allowed: true, state: "half_open" });
-        breaker.recordFailure(true);
+        const probe = breaker.beforeRequest();
+        expect(probe).toMatchObject({ allowed: true, state: "half_open" });
+        breaker.recordFailure(probe, true);
         expect(breaker.snapshot()).toMatchObject({ state: "open", nextAttemptAt: 3_000 });
         expect(breaker.beforeRequest()).toMatchObject({ allowed: false, state: "open" });
     });
@@ -513,8 +515,8 @@ describe("circuit breaker", () => {
         let now = 1_000;
         const registry = new CircuitBreakerRegistry({ failureThreshold: 1, cooldownMs: 1_000, clock: () => now });
 
-        registry.get("provider-a", "scope-a").beforeRequest();
-        registry.get("provider-a", "scope-a").recordFailure(true);
+        const breaker = registry.get("provider-a", "scope-a");
+        breaker.recordFailure(breaker.beforeRequest(), true);
         expect(registry.get("provider-a", "scope-a").beforeRequest().allowed).toBe(false);
         // Same scope, different provider: independent breaker.
         expect(registry.get("provider-b", "scope-a").beforeRequest().allowed).toBe(true);
@@ -526,8 +528,7 @@ describe("circuit breaker", () => {
         let now = 1_000;
         const registry = new CircuitBreakerRegistry({ failureThreshold: 1, cooldownMs: 5_000, clock: () => now });
         const breaker = registry.get("provider-a", "scope-a");
-        breaker.beforeRequest();
-        breaker.recordFailure(true);
+        breaker.recordFailure(breaker.beforeRequest(), true);
 
         const snapshot = registry.snapshot();
         const restored = new CircuitBreakerRegistry({ failureThreshold: 1, cooldownMs: 5_000, clock: () => now });
@@ -541,8 +542,8 @@ describe("circuit breaker", () => {
         // A half-open probe is process-local: it is restored as open
         // with a fresh cooldown so two processes never probe at once.
         const probeRegistry = new CircuitBreakerRegistry({ failureThreshold: 1, cooldownMs: 5_000, clock: () => now });
-        probeRegistry.get("provider-b", "scope-b").beforeRequest();
-        probeRegistry.get("provider-b", "scope-b").recordFailure(true);
+        const probeBreaker = probeRegistry.get("provider-b", "scope-b");
+        probeBreaker.recordFailure(probeBreaker.beforeRequest(), true);
         now = 6_000;
         expect(probeRegistry.get("provider-b", "scope-b").beforeRequest().state).toBe("half_open");
         const probeSnapshot = probeRegistry.snapshot();
@@ -563,6 +564,59 @@ describe("circuit breaker", () => {
         const registry = new CircuitBreakerRegistry({ failureThreshold: 1, cooldownMs: 1_000 });
         expect(() => registry.restore({ breakers: [{ providerId: "p", credentialScope: "s", state: "broken", consecutiveFailures: 0, probeInFlight: false }] })).toThrow();
         expect(() => registry.restore({ breakers: "nope" as unknown as CircuitBreakerRegistryEntry[] })).toThrow();
+    });
+
+    test("ignores a concurrent closed permit after another permit opens the circuit", () => {
+        let now = 1_000;
+        const breaker = new CircuitBreaker({ failureThreshold: 1, cooldownMs: 1_000, clock: () => now });
+        const first = breaker.beforeRequest();
+        const late = breaker.beforeRequest();
+
+        breaker.recordFailure(first, true);
+        breaker.recordSuccess(late);
+
+        expect(breaker.snapshot()).toMatchObject({
+            state: "open",
+            consecutiveFailures: 1,
+            nextAttemptAt: 2_000,
+        });
+        expect(breaker.beforeRequest()).toMatchObject({ allowed: false, state: "open", nextAttemptAt: 2_000 });
+        now = 2_000;
+        expect(breaker.beforeRequest()).toMatchObject({ allowed: true, state: "half_open" });
+    });
+
+    test("a stale closed success cannot close or release the current half-open probe", () => {
+        let now = 1_000;
+        const breaker = new CircuitBreaker({ failureThreshold: 1, cooldownMs: 1_000, clock: () => now });
+        const opener = breaker.beforeRequest();
+        const staleClosed = breaker.beforeRequest();
+        breaker.recordFailure(opener, true);
+
+        now = 2_000;
+        const probe = breaker.beforeRequest();
+        breaker.recordSuccess(staleClosed);
+
+        expect(breaker.snapshot()).toMatchObject({ state: "half_open", probeInFlight: true, nextAttemptAt: 2_000 });
+        expect(breaker.beforeRequest()).toMatchObject({ allowed: false, state: "half_open" });
+        breaker.recordSuccess(probe);
+        expect(breaker.snapshot()).toMatchObject({ state: "closed", probeInFlight: false });
+    });
+
+    test("a result from an older breaker generation cannot change a later generation", () => {
+        let now = 1_000;
+        const breaker = new CircuitBreaker({ failureThreshold: 1, cooldownMs: 1_000, clock: () => now });
+        const staleClosed = breaker.beforeRequest();
+        breaker.recordFailure(breaker.beforeRequest(), true);
+        now = 2_000;
+        const firstProbe = breaker.beforeRequest();
+        breaker.recordFailure(firstProbe, true);
+        now = 3_000;
+        const currentProbe = breaker.beforeRequest();
+
+        breaker.recordSuccess(staleClosed);
+        expect(breaker.snapshot()).toMatchObject({ state: "half_open", probeInFlight: true, nextAttemptAt: 3_000 });
+        breaker.recordFailure(currentProbe, true);
+        expect(breaker.snapshot()).toMatchObject({ state: "open", probeInFlight: false, nextAttemptAt: 4_000 });
     });
 });
 
@@ -939,6 +993,72 @@ describe("provider resilience policy", () => {
             state: "closed",
             probeInFlight: false,
         });
+    });
+
+    test("a late concurrent success keeps a third dispatch parked until the circuit cooldown", async () => {
+        let now = 1_000;
+        const events: ProviderResilienceEvent[] = [];
+        let releaseCooldown!: () => void;
+        let cooldownStarted!: () => void;
+        const cooldownStartedPromise = new Promise<void>((resolve) => {
+            cooldownStarted = resolve;
+        });
+        const resilience = new ProviderResilience({
+            retry: { maxAttempts: 1 },
+            concurrency: { maxConcurrency: 2 },
+            circuitBreaker: { failureThreshold: 1, cooldownMs: 10_000 },
+            clock: () => now,
+            sleep: async (delayMs) => {
+                cooldownStarted();
+                await new Promise<void>((resolve) => {
+                    releaseCooldown = () => {
+                        now += delayMs;
+                        resolve();
+                    };
+                });
+            },
+            onEvent: (event) => events.push(event),
+        });
+        const dispatchTimes: number[] = [];
+        let releaseA!: () => void;
+        let releaseB!: () => void;
+        let startedA!: () => void;
+        let startedB!: () => void;
+        const startedAPromise = new Promise<void>((resolve) => { startedA = resolve; });
+        const startedBPromise = new Promise<void>((resolve) => { startedB = resolve; });
+        const callA = resilience.execute(planFor(identity), new AbortController().signal, () => new Promise<string>((_resolve, reject) => {
+            dispatchTimes.push(now);
+            startedA();
+            releaseA = () => reject(providerError("network"));
+        }));
+        const callB = resilience.execute(planFor(identity), new AbortController().signal, () => new Promise<string>((resolve) => {
+            dispatchTimes.push(now);
+            startedB();
+            releaseB = () => resolve("late-success");
+        }));
+        await Promise.all([startedAPromise, startedBPromise]);
+
+        releaseA();
+        await expect(callA).rejects.toThrow(ModelProviderError);
+        const callC = resilience.execute(planFor(identity), new AbortController().signal, async () => {
+            dispatchTimes.push(now);
+            return "after-cooldown";
+        });
+        await cooldownStartedPromise;
+        expect(dispatchTimes).toEqual([1_000, 1_000]);
+
+        releaseB();
+        await expect(callB).resolves.toBe("late-success");
+        expect(resilience.snapshot().circuitBreakers.breakers[0]).toMatchObject({
+            state: "open",
+            nextAttemptAt: 11_000,
+        });
+        expect(dispatchTimes).toEqual([1_000, 1_000]);
+
+        releaseCooldown();
+        await expect(callC).resolves.toBe("after-cooldown");
+        expect(dispatchTimes).toEqual([1_000, 1_000, 11_000]);
+        expect(events.some((event) => event.type === "waiting" && event.reason === "circuit_open")).toBe(true);
     });
 
     test("admits exactly one half-open probe to the provider", async () => {
@@ -1792,6 +1912,7 @@ describe("provider resilience policy", () => {
             retry: { maxAttempts: 1 },
             concurrency: { maxConcurrency: 2 },
             circuitBreaker: { failureThreshold: 1, cooldownMs: 10_000 },
+            timeBudgetMs: 500,
             clock: () => now,
             sleep: async (delayMs) => {
                 now += delayMs;
@@ -1827,7 +1948,6 @@ describe("provider resilience policy", () => {
                 dispatchTimes.push(now);
                 return "never-dispatched";
             },
-            { timeBudgetMs: 500 },
         );
         for (let i = 0; i < 100; i += 1) {
             await Promise.resolve();

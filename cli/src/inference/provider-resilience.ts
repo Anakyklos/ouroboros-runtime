@@ -613,6 +613,9 @@ export class CircuitBreaker {
     private consecutiveFailures = 0;
     private nextAttemptAt?: number;
     private probeInFlight = false;
+    private generation = 0;
+    private activeProbe?: CircuitPermit;
+    private readonly leases = new WeakMap<CircuitPermit, { generation: number; mode: CircuitState }>();
     private transitionWaiters: Array<() => void> = [];
 
     constructor(options: CircuitBreakerOptions) {
@@ -625,36 +628,43 @@ export class CircuitBreaker {
 
     beforeRequest(): CircuitPermit {
         const now = this.clock();
-        if (this.state === "closed") return { allowed: true, state: "closed" };
+        if (this.state === "closed") return this.createPermit("closed");
         if (this.state === "open") {
             if (this.nextAttemptAt !== undefined && now < this.nextAttemptAt) {
                 return { allowed: false, state: "open", nextAttemptAt: this.nextAttemptAt };
             }
             this.state = "half_open";
             this.probeInFlight = true;
+            this.generation += 1;
+            this.activeProbe = this.createPermit("half_open");
             this.notifyTransition();
-            return { allowed: true, state: "half_open" };
+            return this.activeProbe;
         }
         if (this.probeInFlight) return { allowed: false, state: "half_open", nextAttemptAt: now };
         this.probeInFlight = true;
-        return { allowed: true, state: "half_open" };
+        this.activeProbe = this.createPermit("half_open");
+        return this.activeProbe;
     }
 
-    recordSuccess(): void {
+    recordSuccess(permit: CircuitPermit): void {
+        if (!this.consumePermit(permit)) return;
+        if (permit.state === "half_open") this.generation += 1;
         this.state = "closed";
         this.consecutiveFailures = 0;
         this.nextAttemptAt = undefined;
         this.probeInFlight = false;
+        this.activeProbe = undefined;
         this.notifyTransition();
     }
 
-    recordFailure(counted: boolean): void {
+    recordFailure(permit: CircuitPermit, counted: boolean): void {
+        if (!this.consumePermit(permit)) return;
         if (!counted) {
-            if (this.state === "half_open") this.closeAfterUncountedProbe();
+            if (permit.state === "half_open") this.closeAfterUncountedProbe();
             return;
         }
         const now = this.clock();
-        if (this.state === "half_open") {
+        if (permit.state === "half_open") {
             this.open(now);
             this.notifyTransition();
             return;
@@ -664,8 +674,8 @@ export class CircuitBreaker {
         this.notifyTransition();
     }
 
-    cancelProbe(): void {
-        if (this.state !== "half_open") return;
+    cancelProbe(permit: CircuitPermit): void {
+        if (!this.consumePermit(permit) || permit.state !== "half_open") return;
         this.open(this.clock());
         this.notifyTransition();
     }
@@ -681,9 +691,10 @@ export class CircuitBreaker {
      * woken event-driven so they re-evaluate the
      * (still eligible) probe immediately.
      */
-    releaseProbe(): void {
-        if (this.state !== "half_open" || !this.probeInFlight) return;
+    releaseProbe(permit: CircuitPermit): void {
+        if (!this.consumePermit(permit) || permit.state !== "half_open") return;
         this.probeInFlight = false;
+        this.activeProbe = undefined;
         this.notifyTransition();
     }
 
@@ -771,6 +782,8 @@ export class CircuitBreaker {
             && (!Number.isSafeInteger(snapshot.nextAttemptAt) || snapshot.nextAttemptAt < 0)) {
             throw new Error("Invalid circuit breaker cooldown timestamp");
         }
+        this.generation += 1;
+        this.activeProbe = undefined;
         this.consecutiveFailures = snapshot.consecutiveFailures;
         if (snapshot.state === "half_open") {
             // A half-open probe never survives a restart: only one process
@@ -788,17 +801,37 @@ export class CircuitBreaker {
     }
 
     private open(now: number): void {
+        this.generation += 1;
         this.state = "open";
         this.nextAttemptAt = now + this.cooldownMs;
         this.probeInFlight = false;
+        this.activeProbe = undefined;
     }
 
     private closeAfterUncountedProbe(): void {
+        this.generation += 1;
         this.state = "closed";
         this.consecutiveFailures = 0;
         this.nextAttemptAt = undefined;
         this.probeInFlight = false;
+        this.activeProbe = undefined;
         this.notifyTransition();
+    }
+
+    private createPermit(mode: CircuitState): CircuitPermit {
+        const permit: CircuitPermit = { allowed: true, state: mode };
+        this.leases.set(permit, { generation: this.generation, mode });
+        return permit;
+    }
+
+    /** A completion can affect state only once and only in its admitting generation. */
+    private consumePermit(permit: CircuitPermit): boolean {
+        const lease = this.leases.get(permit);
+        if (!lease) return false;
+        this.leases.delete(permit);
+        return lease.generation === this.generation
+            && lease.mode === this.state
+            && (lease.mode !== "half_open" || this.activeProbe === permit);
     }
 }
 
@@ -1290,7 +1323,7 @@ export class ProviderResilience {
                     // stays half-open-eligible) and give
                     // the slot back — no permit or slot
                     // crosses the quota wait.
-                    if (permit.state === "half_open") breaker.releaseProbe();
+                    if (permit.state === "half_open") breaker.releaseProbe(permit);
                     this.concurrency?.release(identity.providerId, identity.credentialScope);
                     const nextEligibleAt = admission.nextEligibleAt ?? this.clock() + 1;
                     this.emit({
@@ -1312,7 +1345,7 @@ export class ProviderResilience {
             // consumed token maps to exactly one
             // provider dispatch.
             try {
-                return await this.executeOperation(identity, breaker, operation, attempt);
+                return await this.executeOperation(identity, breaker, permit, operation, attempt);
             } finally {
                 this.concurrency?.release(identity.providerId, identity.credentialScope);
             }
@@ -1322,12 +1355,13 @@ export class ProviderResilience {
     private async executeOperation<T>(
         identity: ResilienceIdentity,
         breaker: CircuitBreaker,
+        permit: CircuitPermit,
         operation: (identity: ResilienceIdentity) => Promise<T>,
         attempt: number,
     ): Promise<T> {
         try {
             const result = await operation(identity);
-            breaker.recordSuccess();
+            breaker.recordSuccess(permit);
             this.emit({
                 type: "provider_success",
                 providerId: identity.providerId,
@@ -1357,7 +1391,7 @@ export class ProviderResilience {
                     });
                 }
             }
-            breaker.recordFailure(classification.retryable);
+            breaker.recordFailure(permit, classification.retryable);
             const snapshot = breaker.snapshot();
             this.emit({
                 type: snapshot.state === "open" ? "circuit_open" : "provider_failure",
