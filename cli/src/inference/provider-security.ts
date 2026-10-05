@@ -13,6 +13,7 @@ import type {
     ProviderCallContext,
 } from "./ModelProvider.js";
 import type { EventBus } from "../daemon/event-bus.js";
+import type { ProviderResilience } from "./provider-resilience.js";
 
 const SCOPE_SALT_ENV = "OUROBOROS_CREDENTIAL_SCOPE_SALT";
 const SCOPE_SALT_FILE = "credential-scope-salt";
@@ -242,6 +243,7 @@ export class CredentialedProviderInvoker {
         private readonly registry: CredentialRegistry,
         private readonly eventBus: EventBus,
         private readonly transport: CredentialedProviderTransport = defaultTransport,
+        private readonly resilience?: ProviderResilience,
     ) {}
 
     async complete(
@@ -263,7 +265,7 @@ export class CredentialedProviderInvoker {
 
         this.eventBus.registerRedactionSecret(resolved.secret);
         try {
-            return await this.transport.complete(
+            const callTransport = () => this.transport.complete(
                 this.provider,
                 request,
                 {
@@ -273,6 +275,18 @@ export class CredentialedProviderInvoker {
                 },
                 resolved.secret,
             );
+            // The invoker knows exactly one provider and one authorized
+            // credential selection, so its call plan carries a single
+            // identity: no fallback exists at this layer. A fallback,
+            // when configured, belongs to a higher layer that owns
+            // multiple authorized providers and is always explicit.
+            return await (this.resilience
+                ? this.resilience.execute(
+                    { primary: { providerId: this.provider.providerId, credentialScope: resolved.credentialScope } },
+                    context.signal,
+                    callTransport,
+                )
+                : callTransport());
         } catch (error) {
             throw redactError(error, [resolved.secret]);
         } finally {
