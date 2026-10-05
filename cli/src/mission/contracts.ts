@@ -683,7 +683,6 @@ export interface MissionContextAccounting {
     invocationIds: string[];
     requestIds: string[];
     tokenUsage: { value: number; provenance: "estimated"; method: "chars_div_4" };
-    calls: number;
     attempts: number;
     outcome: {
         state: MissionState;

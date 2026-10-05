@@ -558,7 +558,7 @@ export class ContextCompiler {
             packageId: "",
             contractVersion: CONTEXT_COMPILER_CONTRACT_VERSION,
             missionId: mission.missionId,
-            stepId: normalized.stepId,
+            ...(normalized.stepId === undefined ? {} : { stepId: normalized.stepId }),
             compiledAt: now,
             request: JSON.parse(JSON.stringify(normalized)) as ContextRequest,
             items: capped,
@@ -1052,12 +1052,12 @@ export class ContextCompiler {
             fetchedAt: row.fetchedAt ?? now,
             authorization: `capability:${descriptor.capabilityId}`,
             missionId: request.missionId,
-            stepId,
+            ...(stepId === undefined ? {} : { stepId }),
             purpose: sanitizeText(request.purpose),
-            expiresAt,
+            ...(expiresAt === undefined ? {} : { expiresAt }),
             sensitivity,
             origin: "external_owner",
-            evidenceRefId: row.evidenceRefId,
+            ...(row.evidenceRefId === undefined ? {} : { evidenceRefId: row.evidenceRefId }),
         };
     }
 }
@@ -1115,7 +1115,18 @@ function normalizeRequest(request: ContextRequest): ContextRequest {
             );
         }
     }
-    return { ...request, purpose: sanitizeText(request.purpose) };
+    return {
+        subject: request.subject,
+        purpose: sanitizeText(request.purpose),
+        missionId: request.missionId,
+        budget: { ...request.budget },
+        ...(request.ownerHint === undefined ? {} : { ownerHint: request.ownerHint }),
+        ...(request.stepId === undefined ? {} : { stepId: request.stepId }),
+        ...(request.maxAgeMs === undefined ? {} : { maxAgeMs: request.maxAgeMs }),
+        ...(request.requestedClasses === undefined
+            ? {}
+            : { requestedClasses: [...request.requestedClasses] }),
+    };
 }
 
 /**

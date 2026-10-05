@@ -35,4 +35,43 @@ describe("ResultArtifact", () => {
             transcript: "full model conversation",
         } as never)).toThrow(/unsupported field/i);
     });
+
+    it("preserves valid follow-up references exactly", () => {
+        const reference = "refs/Module/CaseSensitive%2Fhandoff-7";
+        const artifact = createResultArtifact({
+            missionId: "mission-1",
+            status: "completed",
+            artifactRefs: [],
+            facts: [],
+            decisions: [],
+            blockers: [],
+            unresolved: [],
+            followUpRefs: [reference],
+            diagnostics: [],
+        });
+
+        expect(JSON.parse(JSON.stringify(artifact)).followUpRefs).toEqual([reference]);
+        expect(artifact.followUpRefs[0]).toBe(reference);
+    });
+
+    it("rejects secret-bearing follow-up identities without rewriting the target", () => {
+        for (const reference of [
+            "refs/module/api_key=secret-value",
+            "refs/module/token=secret-value",
+            "refs/module/Bearer abcdefghijklmnop",
+            "refs/module/Authorization: Bearer abcdefghijklmnop",
+        ]) {
+            expect(() => createResultArtifact({
+                missionId: "mission-1",
+                status: "completed",
+                artifactRefs: [],
+                facts: [],
+                decisions: [],
+                blockers: [],
+                unresolved: [],
+                followUpRefs: [reference],
+                diagnostics: [],
+            })).toThrow();
+        }
+    });
 });

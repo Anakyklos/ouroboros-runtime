@@ -13,13 +13,13 @@
 
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { MissionState } from "./contracts.js";
 import type {
     Mission,
     PlanRevision,
     PlanRevisionStatus,
     CapabilityInvocation,
     CapabilityInvocationRef,
-    MissionState,
     MissionContextAccounting,
 } from "./contracts.js";
 import {
@@ -732,6 +732,38 @@ export class SqliteMissionStore implements MissionStore {
         await this.createMission(merged);
     }
 
+    /** Persist telemetry with a single state-guarded SQL write. */
+    async updateContextAccountingIfNonTerminal(
+        missionId: string,
+        accounting: NonNullable<Mission["contextAccounting"]>,
+    ): Promise<boolean> {
+        const previous = await this.getMission(missionId);
+        if (!previous || [MissionState.COMPLETED, MissionState.CANCELLED, MissionState.FAILED_TERMINAL]
+            .includes(previous.state)) return false;
+        const result = this.stmt(
+            "updateContextAccountingIfNonTerminal",
+            `UPDATE missions
+             SET context_accounting = ?, updated_at = ?
+             WHERE mission_id = ? AND state NOT IN (?, ?, ?)`,
+        ).run(
+            JSON.stringify(accounting),
+            new Date().toISOString(),
+            missionId,
+            MissionState.COMPLETED,
+            MissionState.CANCELLED,
+            MissionState.FAILED_TERMINAL,
+        );
+        if (result.changes !== 1) return false;
+        const updated = await this.getMission(missionId);
+        if (!updated) return false;
+        this.publishMutation({
+            entity: "mission",
+            kind: previous.state === updated.state ? "updated" : "state_changed",
+            mission: updated,
+        });
+        return true;
+    }
+
     async listMissions(filter?: { state?: MissionState }): Promise<Mission[]> {
         let rows: MissionRow[];
         if (filter?.state) {
@@ -1307,13 +1339,15 @@ export class SqliteMissionStore implements MissionStore {
                     : undefined;
             })(),
             contextAccounting: (() => {
-                const accounting = parseJson<MissionContextAccounting | Record<string, never>>(
+                const accounting = parseJson<Record<string, unknown>>(
                     row.context_accounting,
                     {},
                 );
-                return Object.keys(accounting).length > 0
-                    ? accounting as MissionContextAccounting
-                    : undefined;
+                if (Object.keys(accounting).length === 0) return undefined;
+                // Older snapshots exposed Invocation identity count as a
+                // `calls` metric. It was not a connector/provider call count.
+                delete accounting.calls;
+                return accounting as unknown as MissionContextAccounting;
             })(),
         };
     }

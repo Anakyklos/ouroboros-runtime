@@ -66,6 +66,12 @@ export function createResultArtifact(input: ResultArtifactInput): ResultArtifact
         if (containsRawSecret(sanitized)) throw new Error("ResultArtifact contains an unredactable secret");
         return sanitized;
     };
+    const identityRef = (value: string): string => {
+        if (typeof value !== "string" || !value || value.trim() !== value || containsRawSecret(value)) {
+            throw new Error("ResultArtifact follow-up reference identity is invalid");
+        }
+        return value;
+    };
     const artifactRefs = input.artifactRefs.map((ref) => {
         if (!ref || typeof ref !== "object" || Array.isArray(ref)) {
             throw new Error("ResultArtifact reference must be a data object");
@@ -93,7 +99,7 @@ export function createResultArtifact(input: ResultArtifactInput): ResultArtifact
         decisions: input.decisions.map(cleanText),
         blockers: input.blockers.map(cleanText),
         unresolved: input.unresolved.map(cleanText),
-        followUpRefs: input.followUpRefs.map(cleanText),
+        followUpRefs: input.followUpRefs.map(identityRef),
         diagnostics: input.diagnostics.map(cleanText),
     };
     const serialized = JSON.stringify(artifact);

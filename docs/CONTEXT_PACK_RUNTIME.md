@@ -64,9 +64,17 @@ using the existing Mission SQLite store:
   context items;
 - token usage is `estimated` with the local `chars_div_4` heuristic. No exact
   or provider-reported count is inferred when none is available;
-- requests, expansions, omissions, unresolved sources, durable Invocation ids,
-  calls and attempts are recorded without copying context contents;
-- request/expansion/call/attempt counters survive runtime recompilation from
+- `contextRequests` counts `expand()` calls that return a Context Pack,
+  including requests whose owner result is unresolved; rejected requests are
+  not persisted. `expansions` counts the cumulative expanded packs returned.
+  The mission-only initial compilation is not included in either count;
+- omissions and unresolved sources are counts in the latest package;
+- `invocationIds` contains unique durable Invocation ids associated with
+  successful expansions. It is an identity list, not a connector/provider
+  call count;
+- `attempts` is the count of durable attempt records on those associated
+  Invocations. No provider/model-call count is available here;
+- request/expansion/attempt accounting survives runtime recompilation from
   the stored Mission snapshot; initial/aggregate sizes describe the latest
   recomposed working set;
 - Mission completion updates the same snapshot with the Mission verification

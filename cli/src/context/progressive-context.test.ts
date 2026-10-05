@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { deepStrictEqual } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,9 +47,14 @@ describe("ProgressiveContextPackRuntime", () => {
             clock: fixedClock(),
         });
 
-        const pack = await runtime.compileInitial(mission.missionId, makeContextRequest({
+        const initialRequest = makeContextRequest({
             missionId: mission.missionId,
-        }));
+            ownerHint: undefined,
+            stepId: undefined,
+            maxAgeMs: undefined,
+            requestedClasses: undefined,
+        });
+        const pack = await runtime.compileInitial(mission.missionId, initialRequest);
 
         expect(pack.missionId).toBe(mission.missionId);
         expect(pack.initialPackageId).toMatch(/^pkg-/);
@@ -56,7 +62,13 @@ describe("ProgressiveContextPackRuntime", () => {
         expect(calls).toBe(0);
         expect(pack.accounting.expansions).toBe(0);
         expect(Object.isFrozen(pack)).toBe(true);
-        expect(JSON.parse(JSON.stringify(pack))).toEqual(pack);
+        const roundTripped = JSON.parse(JSON.stringify(pack));
+        expect(roundTripped).toEqual(pack);
+        deepStrictEqual(roundTripped, pack);
+        expect(Object.hasOwn(pack, "requesterInvocationId")).toBe(false);
+        expect(Object.hasOwn(pack.package, "stepId")).toBe(false);
+        expect(Object.hasOwn(pack.package.request, "stepId")).toBe(false);
+        expect(Object.hasOwn(pack.package.request, "ownerHint")).toBe(false);
         expect(pack.budget.observed.totalChars).toBeLessThanOrEqual(pack.budget.limits.maxTotalChars);
         await harness.close();
     });
@@ -113,6 +125,7 @@ describe("ProgressiveContextPackRuntime", () => {
         expect(expansion.package.items.length).toBeGreaterThan(0);
         expect(expansion.accounting.expansions).toBe(1);
         expect(expansion.accounting.contextRequests).toBe(1);
+        deepStrictEqual(JSON.parse(JSON.stringify(expansion)), expansion);
 
         const escalated = await runtime.expand(expansion, {
             correlationId: "outside-scope",
@@ -274,7 +287,8 @@ describe("ProgressiveContextPackRuntime", () => {
 
         expect(invokes).toBe(1);
         expect(reconciles).toBe(1);
-        expect(second.accounting.calls).toBe(1);
+        expect(second.accounting.invocationIds).toHaveLength(1);
+        expect(Object.hasOwn(second.accounting, "calls")).toBe(false);
         expect(second.accounting.attempts).toBe(1);
         expect(second.package.items.map((item) => item.content)).toContain("B".repeat(450));
         expect(second.package.items.map((item) => item.content)).not.toContain("A".repeat(450));
@@ -349,18 +363,6 @@ describe("ProgressiveContextPackRuntime", () => {
         expect(telemetry).not.toContain("never-persist-this-row");
         expect(expanded.package.items.every((item) => !item.content.includes("never-persist-this-row"))).toBe(true);
 
-        harness.registerCriterionAttestation(mission.missionId, mission.acceptanceCriteria[0]!, "lifeos");
-        await harness.engine.recordCriterionVerification(
-            mission.missionId,
-            mission.acceptanceCriteria[0]!,
-            true,
-            "lifeos",
-        );
-        await harness.engine.completeMission(mission.missionId);
-        const completed = await harness.store.getMission(mission.missionId);
-        expect(completed?.contextAccounting?.outcome.state).toBe("completed");
-        expect(completed?.contextAccounting?.outcome.verified).toBe(true);
-
         const runtime2 = new ProgressiveContextPackRuntime({
             store: harness.store, reader, compiler: new ContextCompiler({ clock: fixedClock() }), clock: fixedClock(),
         });
@@ -373,6 +375,18 @@ describe("ProgressiveContextPackRuntime", () => {
             correlationId: "old-pack-after-restart",
             request: makeContextRequest({ missionId: mission.missionId, ownerHint: "lifeos", stepId }),
         })).rejects.toThrow(/recompile after restart/i);
+
+        harness.registerCriterionAttestation(mission.missionId, mission.acceptanceCriteria[0]!, "lifeos");
+        await harness.engine.recordCriterionVerification(
+            mission.missionId,
+            mission.acceptanceCriteria[0]!,
+            true,
+            "lifeos",
+        );
+        await harness.engine.completeMission(mission.missionId);
+        const completed = await harness.store.getMission(mission.missionId);
+        expect(completed?.contextAccounting?.outcome.state).toBe("completed");
+        expect(completed?.contextAccounting?.outcome.verified).toBe(true);
         await harness.close();
     });
 
@@ -392,25 +406,109 @@ describe("ProgressiveContextPackRuntime", () => {
                 invocationIds: ["invocation-ctx-1"],
                 requestIds: ["a".repeat(64)],
                 tokenUsage: { value: 18, provenance: "estimated", method: "chars_div_4" },
-                calls: 1,
                 attempts: 1,
                 outcome: { state: MissionState.EXECUTING, verified: false, ownerBlocked: false, verifiedCriteria: 0 },
                 updatedAt: "2026-08-30T12:00:00.000Z",
             },
         });
+        const oldMissionSnapshot = {
+            ...mission,
+            contextAccounting: { ...mission.contextAccounting!, calls: 1 },
+        } as unknown as typeof mission;
         const firstStore = new SqliteMissionStore(dbPath);
         try {
             await firstStore.initialize();
-            await firstStore.createMission(mission);
+            await firstStore.createMission(oldMissionSnapshot);
             await firstStore.close();
             const restartedStore = new SqliteMissionStore(dbPath);
             await restartedStore.initialize();
             const recovered = await restartedStore.getMission(mission.missionId);
             expect(recovered?.contextAccounting).toEqual(mission.contextAccounting);
+            expect(Object.hasOwn(recovered?.contextAccounting ?? {}, "calls")).toBe(false);
             await restartedStore.close();
         } finally {
             await firstStore.close();
             rmSync(directory, { recursive: true, force: true });
         }
     });
+
+    for (const terminalState of [
+        MissionState.COMPLETED,
+        MissionState.CANCELLED,
+        MissionState.FAILED_TERMINAL,
+    ]) {
+        it(`rejects initial compilation and expansion for terminal Mission ${terminalState}`, async () => {
+            const descriptor = makeContextDescriptor("lifeos");
+            const harness = await createSeamHarness({ descriptors: [descriptor] });
+            const { mission, stepId } = await harness.acceptContextPlan(descriptor, "refs/lifeos/journal/week");
+            let connectorCalls = 0;
+            harness.seam.registerConnector(descriptor.capabilityId, {
+                ...makeContextConnector(descriptor, { rows: journalRows() }),
+                invoke: async (request) => {
+                    connectorCalls++;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId: request.requestId,
+                        summary: "context fetched",
+                        contextRows: journalRows(),
+                        evidence: [],
+                    };
+                },
+            });
+            const runtime = new ProgressiveContextPackRuntime({
+                store: harness.store,
+                reader: new SeamBoundContextReader(harness.engine, harness.seam, harness.registry),
+                compiler: new ContextCompiler({ clock: fixedClock() }),
+                clock: fixedClock(),
+            });
+            const pack = await runtime.compileInitial(mission.missionId, makeContextRequest({ missionId: mission.missionId }));
+
+            if (terminalState === MissionState.COMPLETED) {
+                await harness.updateMission(mission.missionId, {
+                    state: MissionState.COMPLETED,
+                    contextAccounting: {
+                        ...pack.accounting,
+                        outcome: {
+                            state: MissionState.COMPLETED,
+                            verified: true,
+                            ownerBlocked: false,
+                            verifiedCriteria: mission.acceptanceCriteria.length,
+                        },
+                    },
+                    updatedAt: "2026-08-30T12:01:00.000Z",
+                });
+            } else if (terminalState === MissionState.CANCELLED) {
+                await harness.engine.cancelMission(mission.missionId, "operator cancelled");
+            } else {
+                await harness.engine.failMission(mission.missionId, "fatal error");
+            }
+
+            const before = await harness.store.getMission(mission.missionId);
+            const invocationsBefore = await harness.store.listInvocations(mission.missionId);
+            expect(before?.state).toBe(terminalState);
+            await expect(runtime.compileInitial(mission.missionId, makeContextRequest({
+                missionId: mission.missionId,
+            }))).rejects.toThrow(/terminal/i);
+            await expect(runtime.expand(pack, {
+                correlationId: `terminal-${terminalState}`,
+                request: makeContextRequest({
+                    missionId: mission.missionId,
+                    ownerHint: "lifeos",
+                    stepId,
+                }),
+            })).rejects.toThrow(/terminal/i);
+            expect(await harness.store.updateContextAccountingIfNonTerminal(
+                mission.missionId,
+                before!.contextAccounting!,
+            )).toBe(false);
+
+            const after = await harness.store.getMission(mission.missionId);
+            expect(connectorCalls).toBe(0);
+            expect(await harness.store.listInvocations(mission.missionId)).toEqual(invocationsBefore);
+            expect(after?.contextAccounting).toEqual(before?.contextAccounting);
+            expect(after?.updatedAt).toBe(before?.updatedAt);
+            expect(after?.state).toBe(before?.state);
+            await harness.close();
+        });
+    }
 });

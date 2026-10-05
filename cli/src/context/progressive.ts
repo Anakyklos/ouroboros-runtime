@@ -2,6 +2,7 @@
 
 import { createHash } from "node:crypto";
 import type { Mission, MissionContextAccounting } from "../mission/contracts.js";
+import { TERMINAL_STATES } from "../mission/contracts.js";
 import type { MissionStore } from "../mission/ports.js";
 import { containsRawSecret, sanitizeText } from "../mission/sanitize.js";
 import {
@@ -90,6 +91,7 @@ export class ProgressiveContextPackRuntime {
         }
         const mission = await this.options.store.getMission(missionId);
         if (!mission) throw new ContextCompilerError("Mission does not exist in durable state");
+        assertMissionNonTerminal(mission);
         const projection = projectMission(mission);
         const core = JSON.stringify(projection);
         const coreChars = core.length;
@@ -123,7 +125,7 @@ export class ProgressiveContextPackRuntime {
             invocationIds: [...(priorAccounting?.invocationIds ?? [])],
             initial: { bytes: observed.bytes, chars: observed.totalChars, items: observed.items },
         });
-        await this.options.store.updateMission(missionId, { contextAccounting: pack.accounting });
+        await this.persistAccounting(missionId, pack.accounting);
         return pack;
     }
 
@@ -157,7 +159,11 @@ export class ProgressiveContextPackRuntime {
         if (!expansion.correlationId.trim() || containsRawSecret(expansion.correlationId)) {
             throw new ContextCompilerError("expansion correlationId must be non-empty and contain no secret");
         }
-        if (expansion.requesterInvocationId) {
+        if (expansion.requesterInvocationId !== undefined) {
+            if (!expansion.requesterInvocationId.trim()
+                || containsRawSecret(expansion.requesterInvocationId)) {
+                throw new ContextCompilerError("requesterInvocationId must be a non-secret Invocation identity");
+            }
             const requester = await this.options.store.getInvocation(expansion.requesterInvocationId);
             if (!requester || requester.missionId !== pack.missionId) {
                 throw new ContextCompilerError("requesting Invocation is not part of this Mission");
@@ -166,6 +172,7 @@ export class ProgressiveContextPackRuntime {
         assertRequestDoesNotWiden(pack.package.request, request, state.limits);
         const mission = await this.options.store.getMission(pack.missionId);
         if (!mission) throw new ContextCompilerError("Mission no longer exists in durable state");
+        assertMissionNonTerminal(mission);
 
         // Existing context content is rechecked by the compiler during merge;
         // a stale layer is removed before it reaches the new returned pack.
@@ -191,6 +198,9 @@ export class ProgressiveContextPackRuntime {
         const resolution = await this.options.reader.read(mission, boundedRequest, {
             dispatchStepId: request.stepId,
         });
+        const missionAfterRead = await this.options.store.getMission(pack.missionId);
+        if (!missionAfterRead) throw new ContextCompilerError("Mission no longer exists in durable state");
+        assertMissionNonTerminal(missionAfterRead);
         const expansionPackage = this.compiler.compile(mission, boundedRequest, resolution ? [resolution] : []);
         const combined = this.compiler.mergeExpansion(freshBase, expansionPackage);
         const observed = measure(currentProjection, combined);
@@ -240,7 +250,8 @@ export class ProgressiveContextPackRuntime {
             })),
         });
         const ids = [...new Set([...state.requestIds, requestIdentity])];
-        const latestMission = await this.options.store.getMission(pack.missionId) ?? mission;
+        const latestMission = missionAfterRead;
+        assertMissionNonTerminal(latestMission);
         const invocation = latestMission.invocationRefs.find((entry) => entry.stepId === request.stepId);
         const invocationIds = invocation
             ? [...new Set([...state.invocationIds, invocation.invocationId])]
@@ -263,7 +274,6 @@ export class ProgressiveContextPackRuntime {
             invocationIds,
             requestIds: ids,
             tokenUsage: { value: observed.estimatedTokens, provenance: "estimated", method: "chars_div_4" },
-            calls: invocationIds.length,
             attempts,
             outcome: missionOutcome(latestMission),
             updatedAt: this.clock().toISOString(),
@@ -285,8 +295,15 @@ export class ProgressiveContextPackRuntime {
             invocationIds,
         });
         this.states.delete(pack);
-        await this.options.store.updateMission(pack.missionId, { contextAccounting: accounting });
+        await this.persistAccounting(pack.missionId, accounting);
         return updated;
+    }
+
+    private async persistAccounting(missionId: string, accounting: MissionContextAccounting): Promise<void> {
+        if (await this.options.store.updateContextAccountingIfNonTerminal(missionId, accounting)) return;
+        const current = await this.options.store.getMission(missionId);
+        if (current) assertMissionNonTerminal(current);
+        throw new ContextCompilerError("Mission no longer exists in durable state");
     }
 
     private accounting(
@@ -309,7 +326,6 @@ export class ProgressiveContextPackRuntime {
             invocationIds,
             requestIds: [...(previous?.requestIds ?? [])],
             tokenUsage: { value: aggregate.estimatedTokens, provenance: "estimated", method: "chars_div_4" },
-            calls: previous?.calls ?? invocationIds.length,
             attempts: previous?.attempts ?? 0,
             outcome: missionOutcome(mission),
             updatedAt: this.clock().toISOString(),
@@ -335,7 +351,9 @@ export class ProgressiveContextPackRuntime {
         const payload = {
             contractVersion: 1 as const,
             missionId: input.mission.missionId,
-            requesterInvocationId: input.requesterInvocationId,
+            ...(input.requesterInvocationId === undefined
+                ? {}
+                : { requesterInvocationId: input.requesterInvocationId }),
             initialPackageId: input.initialPackageId,
             mission: input.projection,
             package: input.compiled,
@@ -347,6 +365,12 @@ export class ProgressiveContextPackRuntime {
             ...payload,
             packId: `pack-${hash(payload).slice(0, 24)}`,
         }) as ProgressiveContextPack;
+    }
+}
+
+function assertMissionNonTerminal(mission: Mission): void {
+    if (TERMINAL_STATES.has(mission.state)) {
+        throw new ContextCompilerError(`Mission is terminal (${mission.state}); Context Pack operations are refused`);
     }
 }
 
