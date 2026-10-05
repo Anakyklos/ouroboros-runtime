@@ -613,6 +613,7 @@ export class CircuitBreaker {
     private consecutiveFailures = 0;
     private nextAttemptAt?: number;
     private probeInFlight = false;
+    private transitionWaiters: Array<() => void> = [];
 
     constructor(options: CircuitBreakerOptions) {
         validatePositiveInteger("failureThreshold", options.failureThreshold);
@@ -631,6 +632,7 @@ export class CircuitBreaker {
             }
             this.state = "half_open";
             this.probeInFlight = true;
+            this.notifyTransition();
             return { allowed: true, state: "half_open" };
         }
         if (this.probeInFlight) return { allowed: false, state: "half_open", nextAttemptAt: now };
@@ -643,6 +645,7 @@ export class CircuitBreaker {
         this.consecutiveFailures = 0;
         this.nextAttemptAt = undefined;
         this.probeInFlight = false;
+        this.notifyTransition();
     }
 
     recordFailure(counted: boolean): void {
@@ -653,15 +656,99 @@ export class CircuitBreaker {
         const now = this.clock();
         if (this.state === "half_open") {
             this.open(now);
+            this.notifyTransition();
             return;
         }
         this.consecutiveFailures += 1;
         if (this.consecutiveFailures >= this.failureThreshold) this.open(now);
+        this.notifyTransition();
     }
 
     cancelProbe(): void {
         if (this.state !== "half_open") return;
         this.open(this.clock());
+        this.notifyTransition();
+    }
+
+    /**
+     * Release a reserved half-open probe that never
+     * reached the provider (e.g. quota admission was
+     * denied after the breaker authorized the call).
+     * The circuit stays half-open-eligible: the probe
+     * never ran, so no cooldown is consumed, but the
+     * reservation is released so the next authorized
+     * call may own the single probe. Waiters are
+     * woken event-driven so they re-evaluate the
+     * (still eligible) probe immediately.
+     */
+    releaseProbe(): void {
+        if (this.state !== "half_open" || !this.probeInFlight) return;
+        this.probeInFlight = false;
+        this.notifyTransition();
+    }
+
+    /**
+     * Wait event-driven for the breaker's next state
+     * transition: a probe resolving (recordSuccess /
+     * recordFailure), the circuit opening or closing, a
+     * probe being cancelled or released, or a restore.
+     * The promise resolves on the next transition and
+     * rejects with `ProviderResilienceCancellationError`
+     * when `signal` aborts or `ProviderResilienceBudgetError`
+     * when the execution budget expires. There is no
+     * polling and no timer of its own: the wait is woken
+     * by the transition itself (the budget's expiry timer
+     * only bounds the wait).
+     *
+     * The waiter is registered synchronously in the
+     * promise executor, so a caller that just observed
+     * a denied permit (a probe in flight) registers in
+     * the same synchronous turn — the transition cannot
+     * be missed between the observation and the
+     * registration.
+     */
+    waitForTransition(
+        signal: AbortSignal,
+        budget?: ResilienceExecutionBudget,
+    ): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            let settled = false;
+            let expiry: { promise: Promise<void>; cancel: () => void } | undefined;
+            const cleanup = () => {
+                signal.removeEventListener("abort", onAbort);
+                expiry?.cancel();
+                const index = this.transitionWaiters.indexOf(waiter);
+                if (index >= 0) this.transitionWaiters.splice(index, 1);
+            };
+            const settle = (fn: () => void) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                fn();
+            };
+            const waiter = () => settle(resolve);
+            const onAbort = () => settle(() => reject(new ProviderResilienceCancellationError()));
+            const onExpiry = () => settle(() => reject(new ProviderResilienceBudgetError()));
+            this.transitionWaiters.push(waiter);
+            signal.addEventListener("abort", onAbort, { once: true });
+            if (signal.aborted) {
+                onAbort();
+                return;
+            }
+            expiry = budget?.armExpiry(signal);
+            // Only a rejection expires the wait: a
+            // resolution means the sleep ended without the
+            // clock reaching the deadline (a no-op sleep),
+            // leaving the budget unexpired and the race to
+            // the transition itself.
+            if (expiry) expiry.promise.then(() => undefined, onExpiry);
+        });
+    }
+
+    /** Wake every waiter registered with waitForTransition. */
+    private notifyTransition(): void {
+        const waiters = this.transitionWaiters.splice(0);
+        for (const waiter of waiters) waiter();
     }
 
     snapshot(): CircuitBreakerSnapshot {
@@ -691,11 +778,13 @@ export class CircuitBreaker {
             this.state = "open";
             this.probeInFlight = false;
             this.nextAttemptAt = Math.max(snapshot.nextAttemptAt ?? 0, this.clock() + this.cooldownMs);
+            this.notifyTransition();
             return;
         }
         this.state = snapshot.state;
         this.nextAttemptAt = snapshot.nextAttemptAt;
         this.probeInFlight = false;
+        this.notifyTransition();
     }
 
     private open(now: number): void {
@@ -709,6 +798,7 @@ export class CircuitBreaker {
         this.consecutiveFailures = 0;
         this.nextAttemptAt = undefined;
         this.probeInFlight = false;
+        this.notifyTransition();
     }
 }
 
@@ -786,7 +876,16 @@ export type ProviderResilienceEvent =
         credentialScope: string;
         at: number;
         attempt?: number;
-        reason: "rate_limit" | "circuit_open";
+        /**
+         * `rate_limit`: waiting for a quota token or a
+         * provider-mandated `Retry-After`.
+         * `circuit_open`: waiting for the circuit
+         * cooldown to elapse.
+         * `circuit_probe`: a half-open probe is in
+         * flight and this call waits event-driven for
+         * its resolution (no polling).
+         */
+        reason: "rate_limit" | "circuit_open" | "circuit_probe";
         nextAttemptAt: number;
     }
     | {
@@ -1058,21 +1157,34 @@ export class ProviderResilience {
     }
 
     /**
-     * One attempt of the retry policy, guarded by quota, the
-     * concurrency bound and the circuit breaker.
+     * One attempt of the retry policy, guarded by the
+     * concurrency bound, the circuit breaker and the quota.
      *
-     * Ordering is binding: NO circuit breaker permit may cross
-     * an async wait. The breaker is consulted only in the
-     * synchronous block immediately before the dispatch, so
-     * its authorization is always valid for the state at the
-     * moment of the provider call. A call that queued while
-     * the circuit was closed re-checks here and refuses to
-     * dispatch through a circuit that opened while it waited,
-     * and a HALF_OPEN probe is reserved only in that same
-     * synchronous block — it is always resolved by
-     * `executeOperation` (recordSuccess/recordFailure), so no
-     * probe can be orphaned by a cancellation or budget
-     * expiry that happens before the provider call starts.
+     * Ordering is binding:
+     *
+     * 1. Acquire the concurrency slot WITHOUT a breaker
+     *    permit or a quota token: neither may cross an
+     *    async wait.
+     * 2. Authorize with the circuit breaker in the
+     *    synchronous block immediately before the
+     *    dispatch — its authorization is always valid
+     *    for the state at the moment of the provider
+     *    call, and a HALF_OPEN probe is reserved only
+     *    in that same block (always resolved by
+     *    `executeOperation`, so no probe can be
+     *    orphaned).
+     * 3. Admit quota: the token is consumed only now,
+     *    at real dispatch admission — never at queue
+     *    entry — and immediately before the provider
+     *    dispatch, so every consumed token maps to
+     *    exactly one provider call.
+     * 4. Dispatch with no `await` between admission
+     *    and the provider call.
+     *
+     * When the breaker denies, no token is consumed.
+     * When quota denies, the reserved probe is released
+     * and the slot is given back BEFORE the quota wait:
+     * no slot or permit crosses any wait.
      */
     private async attemptWithGuards<T>(
         identity: ResilienceIdentity,
@@ -1086,30 +1198,14 @@ export class ProviderResilience {
             throwIfAborted(signal);
             budget.assert();
 
-            if (this.quota) {
-                const admission = this.quota.tryAcquire(identity.providerId, identity.credentialScope);
-                if (!admission.allowed) {
-                    const nextAttemptAt = admission.nextEligibleAt ?? this.clock() + 1;
-                    this.emit({
-                        type: "waiting",
-                        providerId: identity.providerId,
-                        credentialScope: identity.credentialScope,
-                        at: this.clock(),
-                        attempt,
-                        reason: "rate_limit",
-                        nextAttemptAt,
-                    });
-                    await this.waitUntil(nextAttemptAt, signal, budget);
-                    continue;
-                }
-            }
-
             if (this.concurrency) {
-                // The slot is acquired WITHOUT any breaker permit:
-                // a permit must never cross this async wait, or a
-                // call queued while the circuit was closed would
-                // dispatch through a circuit that opened while it
-                // waited.
+                // 1. The slot is acquired WITHOUT any
+                // breaker permit or quota token: neither
+                // may cross this async wait, or a call
+                // queued while the circuit was closed
+                // would dispatch through a circuit that
+                // opened while it waited, or consume a
+                // quota token without dispatching.
                 await this.concurrency.acquire(
                     identity.providerId,
                     identity.credentialScope,
@@ -1117,34 +1213,56 @@ export class ProviderResilience {
                     budget,
                 );
                 if (signal.aborted) {
-                    // The abort raced with the slot handoff: give the slot
-                    // back and refuse to start the operation. No breaker
-                    // permit exists yet, so no probe can be orphaned.
+                    // The abort raced with the slot handoff:
+                    // give the slot back and refuse to start
+                    // the operation. No breaker permit or
+                    // quota token exists yet, so nothing can
+                    // be orphaned.
                     this.concurrency.release(identity.providerId, identity.credentialScope);
                     throw new ProviderResilienceCancellationError();
                 }
             }
 
-            // Authorize with the circuit breaker immediately before
-            // the dispatch. Between this check and the provider call
-            // there is no await, so the permit cannot go stale.
+            // 2. Authorize with the circuit breaker
+            // immediately before the dispatch. Between
+            // this check and the provider call there is
+            // no await, so the permit cannot go stale.
             const permit = breaker.beforeRequest();
             if (!permit.allowed) {
-                const nextAttemptAt = permit.nextAttemptAt ?? this.clock() + 1;
-                this.emit({
-                    type: "waiting",
-                    providerId: identity.providerId,
-                    credentialScope: identity.credentialScope,
-                    at: this.clock(),
-                    attempt,
-                    reason: "circuit_open",
-                    nextAttemptAt,
-                });
-                // Give the slot back before the cooldown wait: no
-                // concurrency slot is retained during a circuit
-                // cooldown or backoff.
+                // Not authorized: no provider call and no
+                // quota token. Give the slot back — no
+                // concurrency slot is retained during a
+                // circuit cooldown or a probe.
                 this.concurrency?.release(identity.providerId, identity.credentialScope);
-                await this.waitUntil(nextAttemptAt, signal, budget);
+                const nextAttemptAt = permit.nextAttemptAt ?? this.clock() + 1;
+                if (permit.state === "half_open" && nextAttemptAt <= this.clock()) {
+                    // A half-open probe is in flight: wait
+                    // EVENT-DRIVEN for its resolution. No
+                    // polling, no repeated timers — the
+                    // probe's recordSuccess/recordFailure
+                    // (or a probe release) wakes this call.
+                    this.emit({
+                        type: "waiting",
+                        providerId: identity.providerId,
+                        credentialScope: identity.credentialScope,
+                        at: this.clock(),
+                        attempt,
+                        reason: "circuit_probe",
+                        nextAttemptAt,
+                    });
+                    await breaker.waitForTransition(signal, budget);
+                } else {
+                    this.emit({
+                        type: "waiting",
+                        providerId: identity.providerId,
+                        credentialScope: identity.credentialScope,
+                        at: this.clock(),
+                        attempt,
+                        reason: "circuit_open",
+                        nextAttemptAt,
+                    });
+                    await this.waitUntil(nextAttemptAt, signal, budget);
+                }
                 continue;
             }
             if (permit.state === "half_open") {
@@ -1157,6 +1275,42 @@ export class ProviderResilience {
                 });
             }
 
+            if (this.quota) {
+                // 3. Quota admission: the token is
+                // consumed only now — at real dispatch
+                // admission, after the breaker authorized
+                // the call and immediately before the
+                // provider dispatch.
+                const admission = this.quota.tryAcquire(identity.providerId, identity.credentialScope);
+                if (!admission.allowed) {
+                    // Quota denied: no provider call
+                    // happens and no token was consumed.
+                    // Release the reserved half-open probe
+                    // (the probe never ran, so the circuit
+                    // stays half-open-eligible) and give
+                    // the slot back — no permit or slot
+                    // crosses the quota wait.
+                    if (permit.state === "half_open") breaker.releaseProbe();
+                    this.concurrency?.release(identity.providerId, identity.credentialScope);
+                    const nextEligibleAt = admission.nextEligibleAt ?? this.clock() + 1;
+                    this.emit({
+                        type: "waiting",
+                        providerId: identity.providerId,
+                        credentialScope: identity.credentialScope,
+                        at: this.clock(),
+                        attempt,
+                        reason: "rate_limit",
+                        nextAttemptAt: nextEligibleAt,
+                    });
+                    await this.waitUntil(nextEligibleAt, signal, budget);
+                    continue;
+                }
+            }
+
+            // 4. Dispatch: no await between quota
+            // admission and the provider call, so the
+            // consumed token maps to exactly one
+            // provider dispatch.
             try {
                 return await this.executeOperation(identity, breaker, operation, attempt);
             } finally {
