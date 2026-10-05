@@ -16,6 +16,7 @@ import {
 } from "../mission/contracts.js";
 import { MissionEngine } from "../mission/mission-engine.js";
 import { SqliteMissionStore } from "../mission/sqlite-mission-store.js";
+import type { MissionStore } from "../mission/ports.js";
 import { PlanPolicyValidator } from "../mission/policy.js";
 import {
     FakeCapabilityResolver,
@@ -30,12 +31,14 @@ import type { CapabilityDescriptor } from "../capabilities/contracts.js";
 import { makeContextContract } from "./fixtures.js";
 
 export interface SeamHarness {
+    store: MissionStore;
     engine: MissionEngine;
     registry: CapabilityRegistry;
     seam: ConnectorDispatchSeam;
     resolver: FakeCapabilityResolver;
     /** Update durable mission state for authorization-boundary tests. */
     updateMission: (missionId: string, updates: Partial<Mission>) => Promise<void>;
+    registerCriterionAttestation: (missionId: string, criterionId: string, source: string) => void;
     /** Create a mission + accepted READ plan; returns (mission, stepId). */
     acceptContextPlan: (
         descriptor: CapabilityDescriptor,
@@ -83,11 +86,14 @@ export async function createSeamHarness(options: {
     await store.initialize();
 
     return {
+        store,
         engine,
         registry,
         seam,
         resolver,
         updateMission: (missionId, updates) => store.updateMission(missionId, updates),
+        registerCriterionAttestation: (missionId, criterionId, source) =>
+            authority.registerCriterionAttestation(missionId, criterionId, source),
         acceptContextPlan: async (descriptor, subject, overrides = {}) => {
             const mission = await engine.createMission({
                 intent: {

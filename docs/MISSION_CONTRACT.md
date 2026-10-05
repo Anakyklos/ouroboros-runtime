@@ -74,6 +74,7 @@ Mission (`schemaVersion`), so mixed versions can coexist during migration.
 | `allowedCapabilityScope` | Authorized capability ids + effect classes + ref prefixes |
 | `approvalRequirements` | Approval requirements/state |
 | `contextRefs` | Authorized context references/provenance |
+| `contextAccounting` | Optional content-free scalar Context Pack telemetry (#78) |
 | `state` | Current durable Mission state |
 | `currentPlanRevisionId` | Current accepted plan revision |
 | `invocationRefs` | Child/capability invocation references |
@@ -226,6 +227,12 @@ Atomicity and single authority:
 
 Scope discipline: only the Mission contract is persisted. No scheduler
 state, provider state or private module state.
+
+The optional `contextAccounting` projection follows the same boundary: it
+stores only byte/character/item counts, explicitly attributed token estimates,
+hashed request identities, durable invocation references, and the Mission
+verification outcome. Context text and external owner data are never stored
+for measurement. See [`CONTEXT_PACK_RUNTIME.md`](CONTEXT_PACK_RUNTIME.md).
 
 ## Mission-level verification (fail-closed, typed, provenance-bound)
 

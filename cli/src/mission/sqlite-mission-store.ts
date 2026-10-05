@@ -20,6 +20,7 @@ import type {
     CapabilityInvocation,
     CapabilityInvocationRef,
     MissionState,
+    MissionContextAccounting,
 } from "./contracts.js";
 import {
     assertValidInvocationIdentity,
@@ -65,6 +66,7 @@ interface MissionRow {
     updated_at: string;
     recovery_metadata: string;
     pause_metadata: string | null;
+    context_accounting: string | null;
 }
 
 interface PlanRevisionRow {
@@ -240,7 +242,8 @@ export class SqliteMissionStore implements MissionStore {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 recovery_metadata TEXT NOT NULL DEFAULT '{}',
-                pause_metadata TEXT NOT NULL DEFAULT '{}'
+                pause_metadata TEXT NOT NULL DEFAULT '{}',
+                context_accounting TEXT NOT NULL DEFAULT '{}'
             );
 
             CREATE TABLE IF NOT EXISTS mission_plan_revisions (
@@ -292,6 +295,10 @@ export class SqliteMissionStore implements MissionStore {
             CREATE INDEX IF NOT EXISTS idx_plan_revisions_number ON mission_plan_revisions(mission_id, revision_number);
             CREATE INDEX IF NOT EXISTS idx_invocations_mission ON mission_invocations(mission_id);
         `);
+        const missionColumns = this.db.query("PRAGMA table_info(missions)").all() as Array<{ name: string }>;
+        if (!missionColumns.some((column) => column.name === "context_accounting")) {
+            this.db.exec("ALTER TABLE missions ADD COLUMN context_accounting TEXT NOT NULL DEFAULT '{}'");
+        }
         this.migrateSchema();
     }
 
@@ -644,8 +651,8 @@ export class SqliteMissionStore implements MissionStore {
                 constraints, acceptance_criteria, budget_policy, allowed_capability_scope,
                 approval_requirements, context_refs, state, current_plan_revision_id,
                 evidence_refs, criterion_verifications, unresolved_questions, created_at, updated_at,
-                recovery_metadata, pause_metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                recovery_metadata, pause_metadata, context_accounting
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(mission_id) DO UPDATE SET
                 schema_version = excluded.schema_version,
                 source = excluded.source,
@@ -666,7 +673,8 @@ export class SqliteMissionStore implements MissionStore {
                 created_at = excluded.created_at,
                 updated_at = excluded.updated_at,
                 recovery_metadata = excluded.recovery_metadata,
-                pause_metadata = excluded.pause_metadata`,
+                pause_metadata = excluded.pause_metadata,
+                context_accounting = excluded.context_accounting`,
         ).run(
             mission.missionId,
             mission.schemaVersion,
@@ -689,6 +697,7 @@ export class SqliteMissionStore implements MissionStore {
             mission.updatedAt,
             JSON.stringify(mission.recoveryMetadata),
             JSON.stringify(mission.pauseMetadata ?? {}),
+            JSON.stringify(mission.contextAccounting ?? {}),
         );
         this.publishMutation({
             entity: "mission",
@@ -1295,6 +1304,15 @@ export class SqliteMissionStore implements MissionStore {
                 const metadata = parseJson<Record<string, unknown>>(row.pause_metadata, {});
                 return Object.keys(metadata).length > 0
                     ? metadata as unknown as Mission["pauseMetadata"]
+                    : undefined;
+            })(),
+            contextAccounting: (() => {
+                const accounting = parseJson<MissionContextAccounting | Record<string, never>>(
+                    row.context_accounting,
+                    {},
+                );
+                return Object.keys(accounting).length > 0
+                    ? accounting as MissionContextAccounting
                     : undefined;
             })(),
         };

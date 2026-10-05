@@ -649,6 +649,8 @@ export interface Mission {
     invocationRefs: CapabilityInvocationRef[];
     /** Evidence/result references collected so far. */
     evidenceRefs: EvidenceRef[];
+    /** Sanitized, content-free Context Pack accounting (#78). */
+    contextAccounting?: MissionContextAccounting;
     /** Typed criterion-level verification results (completion authority). */
     criterionVerifications: CriterionVerification[];
     /** Unresolved questions (may require user/operator input). */
@@ -666,6 +668,30 @@ export interface Mission {
     };
     /** Present only while a Mission is paused. */
     pauseMetadata?: MissionPauseMetadata;
+}
+
+/** Durable scalar telemetry only; package/source content is never retained. */
+export interface MissionContextAccounting {
+    contractVersion: 1;
+    missionId: string;
+    initial: { bytes: number; chars: number; items: number };
+    aggregate: { bytes: number; chars: number; items: number };
+    contextRequests: number;
+    expansions: number;
+    omissions: number;
+    unresolvedSources: number;
+    invocationIds: string[];
+    requestIds: string[];
+    tokenUsage: { value: number; provenance: "estimated"; method: "chars_div_4" };
+    calls: number;
+    attempts: number;
+    outcome: {
+        state: MissionState;
+        verified: boolean;
+        ownerBlocked: boolean;
+        verifiedCriteria: number;
+    };
+    updatedAt: string;
 }
 
 /** Result of deterministic plan validation. */
