@@ -4,6 +4,23 @@
 `ContextCompiler` and #63 `SeamBoundContextReader`. It does not replace those
 contracts or own external module data.
 
+## Planner boundary (#78 slice)
+
+`ContextPlanningCoordinator` is the provider-neutral path from planning to
+policy: callers provide a Mission id and bounded, mission-only
+`ContextRequest`; the coordinator calls `compileInitial()` before invoking
+`PlannerPort`. The planner receives the typed `ProgressiveContextPack` only,
+never a `Mission`, raw `originalIntent`, store handle, or arbitrary context
+value. The returned `PlanCandidate` is passed to `MissionEngine.proposePlan()`
+and remains subject to `PlanPolicyValidator`.
+
+Replan always recompiles from durable Mission state and references, then
+passes a bounded, sanitized rejection reason. It does not reuse an earlier
+pack or model transcript. The coordinator does not expand context or invoke
+owners; any later expansion still requires the accepted READ step, owner,
+seam, and existing budgets. Context is data and grants no capability,
+permission, effect, or approval.
+
 ## Initial pack and expansion
 
 `compileInitial(missionId, request)` loads the durable Mission and compiles a
@@ -91,6 +108,7 @@ No provider token report, latency-to-first-action, context-quality score or
 baseline-versus-compiled comparison is available through the current runtime
 contracts, so this implementation does not claim those measurements. It adds
 no vector database, semantic retrieval, hidden cache, model call, or network
-path. Existing planner/provider consumers have not yet been wired to request
-these packs; this module establishes the operational API and deterministic
-proof path for that integration work.
+path. The provider-neutral `ContextPlanningCoordinator` now wires the Mission
+planning contract to initial packs; binding a concrete provider/model,
+provider-reported accounting, and later #78 artifact defaults remain future
+work. This slice does not complete Issue #78.

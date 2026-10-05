@@ -29,9 +29,14 @@ additional owner read requires an explicit correlation id plus an accepted
 Mission READ step. The current pack carries a mandatory sanitized Mission
 projection and aggregate budgets; expansion goes through the same sealed
 reader and replaces stale source material after re-acquisition. Content-free
-accounting is persisted on the Mission through `MissionStore`. See
+accounting is persisted on the Mission through `MissionStore`. The
+provider-neutral `ContextPlanningCoordinator` compiles a fresh initial pack
+before `PlannerPort`, then forwards its advisory candidate to
+`MissionEngine.proposePlan()` for deterministic policy validation. Replan
+recompiles from durable state and passes a sanitized reason. Concrete provider
+binding and other remaining #78 work are still pending. See
 [`CONTEXT_PACK_RUNTIME.md`](CONTEXT_PACK_RUNTIME.md) for the contract and its
-limits. Wiring planner/provider consumers remains #65/#66 work.
+limits.
 
 - **`SeamBoundContextReader`** (`cli/src/context/sources.ts`): the ONLY
   production path to external content. It validates the accepted plan step,

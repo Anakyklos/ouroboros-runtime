@@ -24,6 +24,8 @@ Ouroboros interpretation + durable creation
         ↓
 Mission
         ↓
+ContextPlanningCoordinator compiles a bounded Context Pack
+        ↓
 Planner (advisory proposal)
         ↓
 PlanCandidate
@@ -32,6 +34,14 @@ Deterministic validation / policy
         ↓
 future CapabilityInvocation
 ```
+
+`PlannerPort` accepts only the typed `ProgressiveContextPack`; it never
+receives the complete `Mission`, raw `originalIntent`, or `context?: unknown`.
+The coordinator recompiles from durable state for every proposal/replan and
+submits each returned candidate through `MissionEngine.proposePlan()` and
+`PlanPolicyValidator`. The pack is data, not authority. This provider-neutral
+wiring is one slice of #78; a concrete planner provider and later ResultArtifact
+defaults remain outside this contract update.
 
 ## `MissionIntent != Mission`
 
@@ -338,6 +348,7 @@ the durable boundary, not a manual field-by-field checklist:
 |---|---|
 | `cli/src/mission/contracts.ts` | Types: MissionIntent, Mission, PlanCandidate, PlanRevision, state enums, rejection codes |
 | `cli/src/mission/ports.ts` | Ports: MissionStore, PlannerPort, CapabilityResolver, ClockService, IdGenerator |
+| `cli/src/context/planner.ts` | Provider-neutral Context Pack to PlannerPort coordinator; candidates return through MissionEngine policy |
 | `cli/src/mission/policy.ts` | Deterministic PlanPolicyValidator |
 | `cli/src/mission/mission-engine.ts` | MissionEngine (creation, proposal, acceptance, dispatch refs, verification) |
 | `cli/src/mission/sqlite-mission-store.ts` | Durable SQLite store |
