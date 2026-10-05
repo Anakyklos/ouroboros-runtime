@@ -51,6 +51,11 @@ export interface MissionStore {
     createMission(mission: Mission): Promise<Mission>;
     getMission(missionId: string): Promise<Mission | null>;
     updateMission(missionId: string, updates: Partial<Mission>): Promise<void>;
+    /** Atomically persist context telemetry only while its Mission is non-terminal. */
+    updateContextAccountingIfNonTerminal(
+        missionId: string,
+        accounting: NonNullable<Mission["contextAccounting"]>,
+    ): Promise<boolean>;
     listMissions(filter?: { state?: MissionState }): Promise<Mission[]>;
     deleteMission(missionId: string): Promise<void>;
 

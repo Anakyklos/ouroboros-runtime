@@ -558,12 +558,122 @@ export class ContextCompiler {
             packageId: "",
             contractVersion: CONTEXT_COMPILER_CONTRACT_VERSION,
             missionId: mission.missionId,
-            stepId: normalized.stepId,
+            ...(normalized.stepId === undefined ? {} : { stepId: normalized.stepId }),
             compiledAt: now,
             request: JSON.parse(JSON.stringify(normalized)) as ContextRequest,
             items: capped,
             unresolved,
             budgetReport,
+        };
+        unfrozen.packageId = computePackageId(unfrozen);
+        return deepFreeze(unfrozen) as BoundedContextPackage;
+    }
+
+    /** Remove expired items before calculating room for another owner read. */
+    refreshFreshness(base: BoundedContextPackage): BoundedContextPackage {
+        const now = this.isoNow();
+        const stale = base.items.filter((item) => item.provenance.expiresAt
+            && Date.parse(item.provenance.expiresAt) < Date.parse(now));
+        if (stale.length === 0) return base;
+        const staleIds = new Set(stale.map((item) => item.itemId));
+        const items = base.items.filter((item) => !staleIds.has(item.itemId));
+        const chars = items.reduce((sum, item) => sum + item.content.length, 0);
+        const unresolved = [
+            ...base.unresolved,
+            ...stale.map((item) => ({
+                requestedRef: item.provenance.sourceRef,
+                owner: item.provenance.owner,
+                status: SourceStatus.STALE,
+                detail: "compiled source freshness expired; context was removed and must be re-acquired",
+            })),
+        ];
+        const unfrozen: Omit<BoundedContextPackage, "packageId"> & { packageId: string } = {
+            ...base,
+            packageId: "",
+            compiledAt: now,
+            items,
+            unresolved,
+            budgetReport: {
+                ...base.budgetReport,
+                observed: { items: items.length, totalChars: chars, estimatedTokens: estimateTokens(chars) },
+            },
+        };
+        unfrozen.packageId = computePackageId(unfrozen);
+        return deepFreeze(unfrozen) as BoundedContextPackage;
+    }
+
+    /** Merge a bounded expansion while retaining the initial package ceiling. */
+    mergeExpansion(base: BoundedContextPackage, expansion: BoundedContextPackage): BoundedContextPackage {
+        if (base.missionId !== expansion.missionId) {
+            throw new ContextCompilerError("cannot merge context packages from different Missions");
+        }
+        base = this.refreshFreshness(base);
+        const now = this.isoNow();
+        const stale = base.items.filter((item) => item.provenance.expiresAt
+            && Date.parse(item.provenance.expiresAt) < Date.parse(now));
+        const sourceKey = (item: ContextItem) => `${item.provenance.owner}\u0000${item.provenance.sourceRef}`;
+        const replacementKeys = new Set(expansion.items
+            .filter((item) => base.items.some((old) => sourceKey(old) === sourceKey(item)
+                && (old.provenance.sourceVersion !== item.provenance.sourceVersion
+                    || old.provenance.fetchedAt !== item.provenance.fetchedAt)))
+            .map(sourceKey));
+        const failedRefs = new Set(expansion.unresolved.map((entry) => entry.requestedRef));
+        const resolvedRefs = new Set(expansion.items.map((item) => item.provenance.sourceRef));
+        const removed = base.items.filter((item) => stale.includes(item)
+            || replacementKeys.has(sourceKey(item))
+            || failedRefs.has(item.provenance.sourceRef));
+        const removedIds = new Set(removed.map((item) => item.itemId));
+        const candidates = [...base.items.filter((item) => !removedIds.has(item.itemId)), ...expansion.items];
+        const items: ContextItem[] = [];
+        const seen = new Set<string>();
+        const excluded = [...base.budgetReport.excluded, ...expansion.budgetReport.excluded];
+        let chars = 0;
+        let tokens = 0;
+        for (const item of candidates) {
+            if (seen.has(item.itemId)) {
+                excluded.push({ itemId: item.itemId, reason: "duplicate" });
+                continue;
+            }
+            if (base.request.requestedClasses
+                && !base.request.requestedClasses.includes(item.epistemicClass)) {
+                excluded.push({ itemId: item.itemId, reason: "class_not_requested" });
+                continue;
+            }
+            const nextChars = chars + item.content.length;
+            const nextTokens = estimateTokens(nextChars);
+            if (items.length + 1 > base.budgetReport.limits.maxItems
+                || nextChars > base.budgetReport.limits.maxTotalChars
+                || nextTokens > base.budgetReport.limits.maxEstimatedTokens) {
+                excluded.push({ itemId: item.itemId, reason: "scope_exceeded" });
+                continue;
+            }
+            seen.add(item.itemId);
+            items.push(item);
+            chars = nextChars;
+            tokens = nextTokens;
+        }
+        const unresolved = [
+            ...base.unresolved.filter((record) => !resolvedRefs.has(record.requestedRef)
+                && !removed.some((item) => item.provenance.sourceRef === record.requestedRef)),
+            ...removed.map((item) => ({
+                requestedRef: item.provenance.sourceRef,
+                owner: item.provenance.owner,
+                status: SourceStatus.STALE,
+                detail: "compiled source version or freshness changed; old context was removed and must be re-acquired",
+            })),
+            ...expansion.unresolved.filter((record) => !resolvedRefs.has(record.requestedRef)),
+        ];
+        const unfrozen: Omit<BoundedContextPackage, "packageId"> & { packageId: string } = {
+            ...base,
+            packageId: "",
+            compiledAt: now,
+            items,
+            unresolved,
+            budgetReport: {
+                ...base.budgetReport,
+                observed: { items: items.length, totalChars: chars, estimatedTokens: tokens },
+                excluded,
+            },
         };
         unfrozen.packageId = computePackageId(unfrozen);
         return deepFreeze(unfrozen) as BoundedContextPackage;
@@ -942,12 +1052,12 @@ export class ContextCompiler {
             fetchedAt: row.fetchedAt ?? now,
             authorization: `capability:${descriptor.capabilityId}`,
             missionId: request.missionId,
-            stepId,
+            ...(stepId === undefined ? {} : { stepId }),
             purpose: sanitizeText(request.purpose),
-            expiresAt,
+            ...(expiresAt === undefined ? {} : { expiresAt }),
             sensitivity,
             origin: "external_owner",
-            evidenceRefId: row.evidenceRefId,
+            ...(row.evidenceRefId === undefined ? {} : { evidenceRefId: row.evidenceRefId }),
         };
     }
 }
@@ -1005,7 +1115,18 @@ function normalizeRequest(request: ContextRequest): ContextRequest {
             );
         }
     }
-    return { ...request, purpose: sanitizeText(request.purpose) };
+    return {
+        subject: request.subject,
+        purpose: sanitizeText(request.purpose),
+        missionId: request.missionId,
+        budget: { ...request.budget },
+        ...(request.ownerHint === undefined ? {} : { ownerHint: request.ownerHint }),
+        ...(request.stepId === undefined ? {} : { stepId: request.stepId }),
+        ...(request.maxAgeMs === undefined ? {} : { maxAgeMs: request.maxAgeMs }),
+        ...(request.requestedClasses === undefined
+            ? {}
+            : { requestedClasses: [...request.requestedClasses] }),
+    };
 }
 
 /**

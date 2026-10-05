@@ -1335,9 +1335,24 @@ export class MissionEngine {
                 verification.reasons.join("; "),
             );
         }
+        const completedAt = this.clock.isoNow();
+        const verifiedCriteria = mission.criterionVerifications.filter((criterion) => criterion.satisfied).length;
+        const contextAccounting = mission.contextAccounting
+            ? {
+                  ...mission.contextAccounting,
+                  outcome: {
+                      state: MissionState.COMPLETED,
+                      verified: true,
+                      ownerBlocked: false,
+                      verifiedCriteria,
+                  },
+                  updatedAt: completedAt,
+              }
+            : undefined;
         await this.store.updateMission(missionId, {
             state: MissionState.COMPLETED,
-            updatedAt: this.clock.isoNow(),
+            ...(contextAccounting ? { contextAccounting } : {}),
+            updatedAt: completedAt,
         });
         return this.requireMission(missionId);
     }

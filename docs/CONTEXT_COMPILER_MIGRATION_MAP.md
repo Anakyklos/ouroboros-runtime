@@ -21,6 +21,18 @@ ContextCompiler ◀── SeamContextResolution[] (sealed batches: ── packag
 BoundedContextPackage (deep-frozen inert DATA; items + unresolved + report)
 ```
 
+## Operational progression (#78)
+
+`cli/src/context/progressive.ts` now wraps that boundary in
+`ProgressiveContextPackRuntime`: the initial package is mission-only, and an
+additional owner read requires an explicit correlation id plus an accepted
+Mission READ step. The current pack carries a mandatory sanitized Mission
+projection and aggregate budgets; expansion goes through the same sealed
+reader and replaces stale source material after re-acquisition. Content-free
+accounting is persisted on the Mission through `MissionStore`. See
+[`CONTEXT_PACK_RUNTIME.md`](CONTEXT_PACK_RUNTIME.md) for the contract and its
+limits. Wiring planner/provider consumers remains #65/#66 work.
+
 - **`SeamBoundContextReader`** (`cli/src/context/sources.ts`): the ONLY
   production path to external content. It validates the accepted plan step,
   dispatches through the #63 seam, packages the outcome, and — after all
@@ -154,6 +166,8 @@ BoundedContextPackage (deep-frozen inert DATA; items + unresolved + report)
 - **#67 (Later):** retire `GeminiEmbeddingClient`/`EmbeddingEngine` from the
   context path once MemoryRetriever consumers compile through the boundary;
   keep them only where a module owner still wants semantic search internally.
-- **#50 (Later):** durable invocation/reconciliation records would allow
-  proving cross-restart result identity; until then the reader refuses any
-  caller-provided outcome path (fail-closed by design).
+- **#50 (Current):** durable invocation/reconciliation records allow a
+  completed external read to be reacquired through the connector's declared
+  reconciliation support. Restart still recomposes a package from Mission
+  state and references; a prior package is never authority and unsupported
+  reconciliation remains unresolved.
