@@ -2,6 +2,7 @@ import {
   DaemonUnavailableError,
   LocalControlPayloadError,
   LocalControlFailureError,
+  LocalControlCommandClient,
   LocalControlReadClient,
   LoopbackJsonRpcTransport,
   ProtocolVersionMismatchError,
@@ -9,7 +10,8 @@ import {
 } from "./local-control-client.js";
 
 export interface AdminCliDependencies {
-  client?: LocalControlReadClient;
+  client?: Pick<LocalControlReadClient, "read">;
+  commandClient?: Pick<LocalControlCommandClient, "execute">;
   stdout?: (text: string) => void;
   stderr?: (text: string) => void;
 }
@@ -25,6 +27,9 @@ function usage(): string {
     "  ouroboros status",
     "  ouroboros missions",
     "  ouroboros mission show <id>",
+    "  ouroboros mission pause <id> [reason]",
+    "  ouroboros mission resume <id>",
+    "  ouroboros mission cancel <id> [reason]",
     "  ouroboros capabilities",
     "  ouroboros tui",
   ].join("\n");
@@ -34,7 +39,11 @@ function usage(): string {
 export async function runAdminCli(args: readonly string[], dependencies: AdminCliDependencies = {}): Promise<number> {
   const stdout = dependencies.stdout ?? ((text) => process.stdout.write(text));
   const stderr = dependencies.stderr ?? ((text) => process.stderr.write(text));
-  const client = dependencies.client ?? new LocalControlReadClient(new LoopbackJsonRpcTransport());
+  const transport = new LoopbackJsonRpcTransport();
+  const client = dependencies.client ?? new LocalControlReadClient(transport);
+  const commandClient = dependencies.commandClient ?? new LocalControlCommandClient({
+    request: (params) => transport.call("local_control.command", params),
+  });
 
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h" || args[0] === "help") {
     stdout(`${usage()}\n`);
@@ -73,21 +82,43 @@ export async function runAdminCli(args: readonly string[], dependencies: AdminCl
         return 0;
       }
       case "mission": {
-        if (args.length !== 3 || args[1] !== "show" || !args[2]) break;
+        if (args[1] === "show") {
+          if (args.length !== 3 || !args[2]) break;
+          const missionId = args[2];
+          const response = await client.read({ operation: "mission.show", missionId });
+          if (!response.data.available) {
+            writeJson(stdout, { result: "projection unavailable", missionId });
+            stderr(`mission projection unavailable: ${missionId}\n`);
+            return 1;
+          }
+          if (response.data.item === null) {
+            writeJson(stdout, { result: "not found", missionId });
+            stderr(`mission not found: ${missionId}\n`);
+            return 1;
+          }
+          writeJson(stdout, { result: "found", mission: response.data.item });
+          return 0;
+        }
+
         const missionId = args[2];
-        const response = await client.read({ operation: "mission.show", missionId });
-        if (!response.data.available) {
-          writeJson(stdout, { result: "projection unavailable", missionId });
-          stderr(`mission projection unavailable: ${missionId}\n`);
-          return 1;
+        if (!missionId) break;
+        if (args[1] === "resume") {
+          if (args.length !== 3) break;
+          const response = await commandClient.execute({ operation: "mission.resume", missionId });
+          writeJson(stdout, response.data);
+          return 0;
         }
-        if (response.data.item === null) {
-          writeJson(stdout, { result: "not found", missionId });
-          stderr(`mission not found: ${missionId}\n`);
-          return 1;
+        if (args[1] === "pause" || args[1] === "cancel") {
+          if (args.length !== 3 && args.length !== 4) break;
+          const operation = args[1] === "pause" ? "mission.pause" : "mission.cancel";
+          const reason = args[3] ?? (operation === "mission.pause"
+            ? "operator requested pause via CLI"
+            : "operator requested cancel via CLI");
+          const response = await commandClient.execute({ operation, missionId, reason });
+          writeJson(stdout, response.data);
+          return 0;
         }
-        writeJson(stdout, { result: "found", mission: response.data.item });
-        return 0;
+        break;
       }
       case "capabilities": {
         if (args.length !== 1) break;
