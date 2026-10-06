@@ -8,15 +8,17 @@ const __dirname = path.dirname(__filename);
 
 // Going up from bin/ouroboros.js to root
 const rootDir = path.resolve(__dirname, '..');
-const mainScript = path.join(rootDir, 'cli', 'src', 'main.ts');
+const tuiScript = path.join(rootDir, 'cli', 'src', 'main.ts');
+const adminScript = path.join(rootDir, 'scripts', 'ouroboros-cli.ts');
 
-// Find local tsx
-const tsxBin = path.join(rootDir, 'node_modules', '.bin', process.platform === 'win32' ? 'tsx.cmd' : 'tsx');
+const bunBin = 'bun';
 
-const child = spawn(tsxBin, [mainScript, ...process.argv.slice(2)], {
+const args = process.argv.slice(2);
+const tui = args[0] === 'tui';
+const entrypoint = tui ? tuiScript : adminScript;
+const child = spawn(bunBin, ['run', entrypoint, ...(tui ? args.slice(1) : args)], {
     stdio: 'inherit',
     env: process.env,
-    shell: true
 });
 
 child.on('exit', (code) => {
