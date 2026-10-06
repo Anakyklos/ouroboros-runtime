@@ -362,7 +362,7 @@ vinculante de cada subsistema está em [LEGACY_MATRIX.md](LEGACY_MATRIX.md).
 **Exemplos de conceitos legados:**
 - Self-modifying engine (SelfModifyingEngine, modifySelf())
 - Python sandbox como capacidade central (SandboxRunner/SandboxTool removidos
-  do core em #83; PersistentPythonREPL permanece como follow-up #61-followup-2)
+  em #83; PersistentPythonREPL removido do core em #96)
 - Council/personas como arquitetura central (Vision, Architect, Guardian,
   Kinetic)
 - Fixed persona ArchitectClient
