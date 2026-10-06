@@ -106,9 +106,10 @@ Properties:
 
 Authoritative list: [`scripts/quarantine-manifest.json`](../scripts/quarantine-manifest.json).
 
-Issue [#41](https://github.com/Anakyklos/ouroboros-runtime/issues/41) tracked
-the final quarantined suite and is resolved by restoring it to the mandatory
-runner with deterministic local gate strategies.
+Issue [#41](https://github.com/Anakyklos/ouroboros-runtime/issues/41) is
+resolved. The current manifest has an empty `files` list, so **0 suites are
+quarantined**. The quarantine mechanism remains documented for future use; its
+presence does not represent active recovery debt.
 
 Printed at the start of every `bun run check:tests` run. The runner **fails** if:
 
@@ -123,16 +124,19 @@ Rules for quarantine:
 - Failures are **not** counted as pass  
 - Files are **not** deleted or renamed to hide them  
 - Each entry must have `tracking_issue` (or inherit the global value)
-- Re-enable when the `reactivate_when` condition in the manifest is met; track progress on **#41**  
+- Re-enable when the `reactivate_when` condition in the manifest is met.
+- Every future entry must name an explicit, current tracking issue; do not
+  inherit the manifest's historical `tracking_issue: 41` default.
 - Mandatory suite size is not reduced just to keep CI green  
 - No `|| true`, `continue-on-error`, or broad silence filters on required checks
 
-Exactly **0 suites remain quarantined**. The manifest's `files` list is empty;
-the final #41 recovery reactivated `AntiVibeWorkflow.test.ts` in the mandatory
-runner after correcting fixture gates, approval-state expectations, and the
-spec/report assertions. This restores test coverage for legacy compatibility
-without changing Ouroboros product scope: Runstead owns software verification
-and Cadinho owns capability promotion/evolution.
+Exactly **0 suites remain quarantined**. The manifest's `files` list is empty.
+Issue #41's final recovery reactivated `AntiVibeWorkflow.test.ts` in the
+mandatory runner after correcting fixture gates, approval-state expectations,
+and the spec/report assertions. That issue is closed; no quarantine debt is
+active. This restores test coverage for legacy compatibility without changing
+Ouroboros product scope: Runstead owns software verification and Cadinho owns
+capability promotion/evolution.
 
 ## Known limitations
 
