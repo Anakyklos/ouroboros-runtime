@@ -2,7 +2,6 @@ import type {
   DaemonInvocationProjection,
   DaemonMissionProjection,
   DaemonProjectionCompletenessEntry,
-  DaemonSnapshot,
   DaemonStatusProjection,
 } from "./daemon-event-contract.js";
 
@@ -15,7 +14,6 @@ export const LOCAL_CONTROL_MAX_DIAGNOSTICS = 20;
 export const LOCAL_CONTROL_MAX_ID_LENGTH = 256;
 export const LOCAL_CONTROL_READ_OPERATIONS = [
   "protocol.negotiate",
-  "snapshot",
   "health",
   "status",
   "mission.list",
@@ -39,6 +37,18 @@ export interface LocalControlHealth {
   runtime: LocalControlRuntimeIdentity;
   uptimeSeconds: number;
   timestamp: string;
+}
+
+/** Sanitized semantic facts shared by read clients and transport adapters. */
+export interface LocalControlProjectionFacts {
+  status: DaemonStatusProjection;
+  missions: DaemonMissionProjection[];
+  invocations: DaemonInvocationProjection[];
+  completeness: {
+    missions: DaemonProjectionCompletenessEntry;
+    invocations: DaemonProjectionCompletenessEntry;
+  };
+  durableProjectionAvailable: boolean;
 }
 
 export interface LocalControlCollection<T> {
@@ -95,7 +105,6 @@ interface VersionedRequest {
 
 export type LocalControlReadRequest =
   | { operation: "protocol.negotiate"; supportedVersions: readonly number[] }
-  | (VersionedRequest & { operation: "snapshot" })
   | (VersionedRequest & { operation: "health" })
   | (VersionedRequest & { operation: "status" })
   | (VersionedRequest & { operation: "mission.list"; limit?: number })
@@ -122,7 +131,6 @@ export type LocalControlReadResponse =
       selectedVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
       supportedVersions: readonly [typeof LOCAL_CONTROL_PROTOCOL_VERSION];
     }
-  | { ok: true; protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION; operation: "snapshot"; data: DaemonSnapshot }
   | { ok: true; protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION; operation: "health"; data: LocalControlHealth }
   | { ok: true; protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION; operation: "status"; data: DaemonStatusProjection }
   | {
@@ -161,5 +169,3 @@ export type LocalControlReadResponse =
       operation: "diagnostics.list";
       data: LocalControlDiagnosticsProjection;
     };
-
-export type LocalControlSnapshot = DaemonSnapshot;

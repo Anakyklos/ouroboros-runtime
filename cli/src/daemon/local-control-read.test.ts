@@ -161,6 +161,23 @@ describe("LocalControlReadService", () => {
     expect(JSON.stringify(result)).not.toContain("sessionId");
   });
 
+  it("provides transport-neutral status, Mission, and Invocation projection facts", async () => {
+    const read = emptyRead();
+    read.liveMissions = [mission("mission-facts")];
+    read.liveMissionCount = 1;
+    read.liveInvocations = [invocation("invocation-facts")];
+    read.liveInvocationCount = 1;
+    const facts = await service({ missionStore: storeWith(read) }).readProjectionFacts();
+    expect(facts.status).toEqual(status);
+    expect(facts.missions.map((item) => item.missionId)).toEqual(["mission-facts"]);
+    expect(facts.invocations.map((item) => item.invocationId)).toEqual(["invocation-facts"]);
+    expect(facts.durableProjectionAvailable).toBe(true);
+    expect(Object.keys(facts).sort()).toEqual([
+      "completeness", "durableProjectionAvailable", "invocations", "missions", "status",
+    ]);
+    expect(JSON.stringify(facts)).not.toContain("PRIVATE");
+  });
+
   it("reprojects status fields and drops unexpected sensitive properties", async () => {
     const result = await service({
       getStatus: () => ({ ...status, internalError: "PRIVATE RAW ERROR" }) as DaemonStatusProjection,
@@ -372,10 +389,48 @@ describe("LocalControlReadService", () => {
     expect(serialized).not.toContain("operation\":\"resume");
     expect(serialized).not.toContain("operation\":\"cancel");
     expect(LOCAL_CONTROL_READ_OPERATIONS).toEqual([
-      "protocol.negotiate", "snapshot", "health", "status", "mission.list", "mission.show",
+      "protocol.negotiate", "health", "status", "mission.list", "mission.show",
       "invocation.list", "invocation.show", "capability_registry.list", "diagnostics.list",
     ]);
     expect(LOCAL_CONTROL_READ_OPERATIONS.some((operation) => /^(agent|session|daemon\.delegate|provider)\./.test(operation))).toBe(false);
     expect(JSON.parse(serialized)).toEqual(results);
+  });
+
+  it("keeps event-stream snapshots and capabilities out of the local-control contract", async () => {
+    expect(LOCAL_CONTROL_READ_OPERATIONS).not.toContain("snapshot");
+    const current = service();
+    const transportKeys = new Set([
+      "cursor",
+      "transportCapabilities",
+      "orderedEvents",
+      "authoritativeSnapshot",
+      "resync",
+      "durableMissions",
+      "durableInvocations",
+    ]);
+    const hasTransportKey = (value: unknown): boolean => {
+      if (Array.isArray(value)) return value.some(hasTransportKey);
+      if (!value || typeof value !== "object") return false;
+      return Object.entries(value).some(([key, member]) => transportKeys.has(key) || hasTransportKey(member));
+    };
+    const responses = await Promise.all([
+      current.read({ operation: "protocol.negotiate", supportedVersions: [LOCAL_CONTROL_PROTOCOL_VERSION] }),
+      ...LOCAL_CONTROL_READ_OPERATIONS.filter((operation) => operation !== "protocol.negotiate").map((operation) =>
+        current.read({ operation, protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION }),
+      ),
+    ]);
+    expect(responses.some(hasTransportKey)).toBe(false);
+    expect(await current.read({ operation: "snapshot", protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION })).toEqual({
+      ok: false,
+      code: "INVALID_REQUEST",
+      message: "The local-control request is invalid",
+    });
+  });
+
+  it("keeps the public shared contract independent of event-stream types and version", async () => {
+    const contract = await Bun.file(new URL("../../../shared/local-control-read-contract.ts", import.meta.url)).text();
+    expect(contract).not.toContain("DaemonSnapshot");
+    expect(contract).not.toContain("DaemonTransportCapabilities");
+    expect(contract).not.toContain("DAEMON_EVENT_VERSION");
   });
 });

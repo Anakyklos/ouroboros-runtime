@@ -1,9 +1,7 @@
 import type { CapabilityRegistryApi } from "../capabilities/registry.js";
 import type { MissionStore } from "../mission/ports.js";
 import {
-  DAEMON_EVENT_VERSION,
   type DaemonProjectionCompletenessEntry,
-  type DaemonSnapshot,
   type DaemonStatusProjection,
 } from "../../../shared/daemon-event-contract.js";
 import {
@@ -15,6 +13,7 @@ import {
   LOCAL_CONTROL_PROTOCOL_VERSION,
   type LocalControlDiagnostic,
   type LocalControlDiagnosticCode,
+  type LocalControlProjectionFacts,
   type LocalControlReadResponse,
   type LocalControlRuntimeIdentity,
 } from "../../../shared/local-control-read-contract.js";
@@ -149,13 +148,6 @@ export class LocalControlReadService {
 
     try {
       switch (input.operation) {
-        case "snapshot":
-          return {
-            ok: true,
-            protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
-            operation: "snapshot",
-            data: await this.getProjectionSnapshot(),
-          };
         case "health": {
           const status = this.getSafeStatus();
           return {
@@ -302,9 +294,10 @@ export class LocalControlReadService {
     }
   }
 
-  /** Existing event transport adapter snapshot, assembled from the same public read model. */
-  async getProjectionSnapshot(cursor = 0): Promise<DaemonSnapshot> {
+  /** Sanitized semantic facts consumed by read clients and event adapters. */
+  async readProjectionFacts(): Promise<LocalControlProjectionFacts> {
     const status = this.getSafeStatus();
+    const durableProjectionAvailable = this.hasDurableProjection();
     const durable = this.hasDurableProjection()
       ? await readDurableProjection(this.dependencies.missionStore!, {
           maxMissions: LOCAL_CONTROL_MAX_MISSIONS,
@@ -312,18 +305,11 @@ export class LocalControlReadService {
         })
       : emptyDurableProjection();
     return {
-      protocolVersion: DAEMON_EVENT_VERSION,
-      transportCapabilities: {
-        orderedEvents: true,
-        authoritativeSnapshot: true,
-        resync: true,
-        durableMissions: this.hasDurableProjection(),
-        durableInvocations: this.hasDurableProjection(),
-      },
-      cursor,
       status,
-      capabilities: status.capabilities,
-      ...durable,
+      missions: durable.missions,
+      invocations: durable.invocations,
+      completeness: durable.completeness,
+      durableProjectionAvailable,
     };
   }
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { DaemonServer } from './server.js';
+import { DAEMON_EVENT_VERSION } from "../../../shared/daemon-event-contract.js";
 import { EventBus } from './event-bus.js';
 import type { StoragePort } from "../ports/storage.port.js";
 import { SqliteMissionStore } from "../mission/sqlite-mission-store.js";
@@ -188,7 +189,7 @@ describe("DaemonServer", () => {
       eventBus.emit("daemon", { type: "ready", port: TEST_PORT });
       const message = await nextMessage();
 
-      expect(message.version).toBe(1);
+      expect(message.version).toBe(DAEMON_EVENT_VERSION);
       expect(message.event).toBe("daemon");
       expect(message.sequence).toBe(2);
       expect(message.data).toMatchObject({ type: "ready", port: TEST_PORT });
@@ -227,7 +228,14 @@ describe("DaemonServer", () => {
       expect(message.data).toMatchObject({
         cursor: 2,
         status: { processStatus: "alive" },
-        protocolVersion: 1,
+        protocolVersion: DAEMON_EVENT_VERSION,
+        transportCapabilities: {
+          orderedEvents: true,
+          authoritativeSnapshot: true,
+          resync: true,
+          durableMissions: true,
+          durableInvocations: true,
+        },
         missions: [{ missionId: "mission-server-1", state: "waiting_for_provider" }],
       });
       expect(JSON.stringify(message)).not.toContain("Authorization");

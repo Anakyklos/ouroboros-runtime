@@ -11,7 +11,7 @@ import { SessionManager } from './session-manager.js';
 import { GatewayOrchestrator } from '../orchestration/GatewayOrchestrator.js';
 import type { StoragePort } from '../ports/storage.port.js';
 import type { EventBus } from './event-bus.js';
-import type { DaemonSnapshot } from '../../../shared/daemon-event-contract.js';
+import { DAEMON_EVENT_VERSION, type DaemonSnapshot } from '../../../shared/daemon-event-contract.js';
 import { LocalControlReadService, currentLocalControlRuntimeIdentity } from './local-control-read.js';
 import { projectDaemonStatus } from './durable-projection.js';
 import type { MissionStore } from '../mission/ports.js';
@@ -67,8 +67,24 @@ export class RpcGateway implements RpcPort {
      * Authoritative, transport-safe projection for WebSocket handshake/resync.
      * The status contract already excludes prompt and response content.
      */
-    async getProjectionSnapshot(): Promise<DaemonSnapshot> {
-        return this.localControlRead.getProjectionSnapshot();
+    async getProjectionSnapshot(cursor = 0): Promise<DaemonSnapshot> {
+        const facts = await this.localControlRead.readProjectionFacts();
+        return {
+            protocolVersion: DAEMON_EVENT_VERSION,
+            transportCapabilities: {
+                orderedEvents: true,
+                authoritativeSnapshot: true,
+                resync: true,
+                durableMissions: facts.durableProjectionAvailable,
+                durableInvocations: facts.durableProjectionAvailable,
+            },
+            cursor,
+            status: facts.status,
+            capabilities: facts.status.capabilities,
+            missions: facts.missions,
+            invocations: facts.invocations,
+            completeness: facts.completeness,
+        };
     }
 
     async handleRequest(request: RpcRequest): Promise<RpcResponse> {

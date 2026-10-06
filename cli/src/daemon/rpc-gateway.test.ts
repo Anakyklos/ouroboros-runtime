@@ -11,6 +11,54 @@ import type { RpcRequest } from '../ports/rpc.port.js';
 import type { StoragePort } from '../ports/storage.port.js';
 import { EventBus } from './event-bus.js';
 import type { GatewayOrchestrator } from '../orchestration/GatewayOrchestrator.js';
+import { DAEMON_EVENT_VERSION } from '../../../shared/daemon-event-contract.js';
+import type { Mission, CapabilityInvocation } from '../mission/contracts.js';
+import type { MissionProjectionRead, MissionStore } from '../mission/ports.js';
+
+function createProjectionFacts(): MissionProjectionRead {
+    const mission = {
+        missionId: 'mission-fact-1',
+        state: 'ready',
+        source: 'cli',
+        originalIntent: 'PRIVATE PROMPT',
+        sanitizedIntent: 'PRIVATE INTENT',
+        constraints: ['PRIVATE CONSTRAINT'],
+        acceptanceCriteria: ['PRIVATE ACCEPTANCE'],
+        contextRefs: [{ ref: 'private://context', content: 'PRIVATE CONTEXT' }],
+        currentPlanRevisionId: null,
+        createdAt: '2026-10-06T00:00:00.000Z',
+        updatedAt: '2026-10-06T00:00:00.000Z',
+        recoveryMetadata: { recoveryCount: 0 },
+        invocationRefs: [{ invocationId: 'invocation-fact-1' }],
+        approvalRequirements: [],
+    } as unknown as Mission;
+    const invocation = {
+        invocationId: 'invocation-fact-1',
+        missionId: 'mission-fact-1',
+        stepId: 'step-fact-1',
+        capabilityId: 'capability.read',
+        moduleOwner: 'owner',
+        planRevisionId: 'revision-fact-1',
+        status: 'completed',
+        delivery: { state: 'acknowledged' },
+        ownerVerificationState: 'verified',
+        createdAt: '2026-10-06T00:00:00.000Z',
+        updatedAt: '2026-10-06T00:00:00.000Z',
+        result: { body: 'PRIVATE RESULT' },
+        error: 'PRIVATE RAW ERROR',
+        idempotencyKey: 'PRIVATE FINGERPRINT',
+    } as unknown as CapabilityInvocation;
+    return {
+        liveMissions: [mission],
+        historicalMissions: [],
+        liveInvocations: [invocation],
+        historicalInvocations: [],
+        liveMissionCount: 1,
+        historicalMissionCount: 0,
+        liveInvocationCount: 1,
+        historicalInvocationCount: 0,
+    };
+}
 
 describe('RpcGateway', () => {
     let gateway: RpcGateway;
@@ -176,7 +224,9 @@ describe('RpcGateway', () => {
         });
 
         it('adapts local-control reads through the same public projection used by snapshots', async () => {
-            const snapshot = await gateway.getProjectionSnapshot();
+            const snapshot = await gateway.getProjectionSnapshot(37);
+            expect(snapshot.protocolVersion).toBe(DAEMON_EVENT_VERSION);
+            expect(snapshot.cursor).toBe(37);
             const statusResponse = await gateway.handleRequest({
                 jsonrpc: '2.0',
                 id: 'local-status',
@@ -199,22 +249,31 @@ describe('RpcGateway', () => {
                 activeSessions: snapshot.status.activeSessions,
             });
 
-            const snapshotResponse = await gateway.handleRequest({
+            const missionResponse = await gateway.handleRequest({
                 jsonrpc: '2.0',
-                id: 'local-snapshot',
+                id: 'local-missions',
                 method: 'local_control.read',
-                params: { operation: 'snapshot', protocolVersion: 1 },
+                params: { operation: 'mission.list', protocolVersion: 1 },
             });
-            const snapshotResult = snapshotResponse.result as {
+            const missionResult = missionResponse.result as {
                 ok: boolean;
-                operation: string;
-                data: typeof snapshot;
+                data: { items: unknown[] };
             };
-            expect(snapshotResult.ok).toBe(true);
-            expect(snapshotResult.operation).toBe('snapshot');
-            expect(snapshotResult.data.missions).toEqual(snapshot.missions);
-            expect(snapshotResult.data.invocations).toEqual(snapshot.invocations);
-            expect(snapshotResult.data.completeness).toEqual(snapshot.completeness);
+            expect(missionResult.ok).toBe(true);
+            expect(missionResult.data.items).toEqual(snapshot.missions);
+
+            const invocationResponse = await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 'local-invocations',
+                method: 'local_control.read',
+                params: { operation: 'invocation.list', protocolVersion: 1 },
+            });
+            const invocationResult = invocationResponse.result as {
+                ok: boolean;
+                data: { items: unknown[] };
+            };
+            expect(invocationResult.ok).toBe(true);
+            expect(invocationResult.data.items).toEqual(snapshot.invocations);
         });
 
         it('fails closed for incompatible local-control versions over JSON-RPC', async () => {
@@ -230,6 +289,44 @@ describe('RpcGateway', () => {
                 code: 'PROTOCOL_VERSION_UNSUPPORTED',
                 message: 'The requested protocol version is not supported',
             });
+        });
+
+        it('adapts the same sanitized durable facts into event snapshots and local reads', async () => {
+            const projection = createProjectionFacts();
+            const missionStore = {
+                readProjection: mock(async () => projection),
+                getMission: mock(async () => projection.liveMissions[0]),
+                getInvocation: mock(async () => projection.liveInvocations[0]),
+            } as unknown as MissionStore;
+            const factGateway = new RpcGateway(
+                mockOrchestrator,
+                mockStorage,
+                new EventBus(),
+                undefined,
+                missionStore,
+            );
+            const snapshot = await factGateway.getProjectionSnapshot(44);
+            const missionResponse = await factGateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 'durable-mission-list',
+                method: 'local_control.read',
+                params: { operation: 'mission.list', protocolVersion: 1 },
+            });
+            const invocationResponse = await factGateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 'durable-invocation-list',
+                method: 'local_control.read',
+                params: { operation: 'invocation.list', protocolVersion: 1 },
+            });
+            const missionResult = missionResponse.result as { data: { items: unknown[] } };
+            const invocationResult = invocationResponse.result as { data: { items: unknown[] } };
+
+            expect(snapshot.cursor).toBe(44);
+            expect(snapshot.transportCapabilities.durableMissions).toBe(true);
+            expect(snapshot.transportCapabilities.durableInvocations).toBe(true);
+            expect(missionResult.data.items).toEqual(snapshot.missions);
+            expect(invocationResult.data.items).toEqual(snapshot.invocations);
+            expect(JSON.stringify([missionResult, invocationResult, snapshot])).not.toContain('PRIVATE');
         });
     });
 
