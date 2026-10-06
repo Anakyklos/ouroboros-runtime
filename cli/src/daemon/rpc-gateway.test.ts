@@ -174,6 +174,63 @@ describe('RpcGateway', () => {
             expect(response.id).toBe('custom-id-123');
             expect(response.jsonrpc).toBe('2.0');
         });
+
+        it('adapts local-control reads through the same public projection used by snapshots', async () => {
+            const snapshot = await gateway.getProjectionSnapshot();
+            const statusResponse = await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 'local-status',
+                method: 'local_control.read',
+                params: { operation: 'status', protocolVersion: 1 },
+            });
+            const statusResult = statusResponse.result as {
+                ok: boolean;
+                operation: string;
+                data: typeof snapshot.status;
+            };
+
+            expect(statusResponse.error).toBeUndefined();
+            expect(statusResult.ok).toBe(true);
+            expect(statusResult.operation).toBe('status');
+            expect(statusResult.data).toMatchObject({
+                processStatus: snapshot.status.processStatus,
+                mode: snapshot.status.mode,
+                capabilities: snapshot.status.capabilities,
+                activeSessions: snapshot.status.activeSessions,
+            });
+
+            const snapshotResponse = await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 'local-snapshot',
+                method: 'local_control.read',
+                params: { operation: 'snapshot', protocolVersion: 1 },
+            });
+            const snapshotResult = snapshotResponse.result as {
+                ok: boolean;
+                operation: string;
+                data: typeof snapshot;
+            };
+            expect(snapshotResult.ok).toBe(true);
+            expect(snapshotResult.operation).toBe('snapshot');
+            expect(snapshotResult.data.missions).toEqual(snapshot.missions);
+            expect(snapshotResult.data.invocations).toEqual(snapshot.invocations);
+            expect(snapshotResult.data.completeness).toEqual(snapshot.completeness);
+        });
+
+        it('fails closed for incompatible local-control versions over JSON-RPC', async () => {
+            const response = await gateway.handleRequest({
+                jsonrpc: '2.0',
+                id: 'bad-version',
+                method: 'local_control.read',
+                params: { operation: 'mission.list', protocolVersion: 2 },
+            });
+            expect(response.error).toBeUndefined();
+            expect(response.result).toEqual({
+                ok: false,
+                code: 'PROTOCOL_VERSION_UNSUPPORTED',
+                message: 'The requested protocol version is not supported',
+            });
+        });
     });
 
     describe('system methods', () => {

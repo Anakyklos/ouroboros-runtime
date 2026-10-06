@@ -12,8 +12,10 @@ import { GatewayOrchestrator } from '../orchestration/GatewayOrchestrator.js';
 import type { StoragePort } from '../ports/storage.port.js';
 import type { EventBus } from './event-bus.js';
 import type { DaemonSnapshot } from '../../../shared/daemon-event-contract.js';
-import { projectDaemonStatus, readDurableProjection } from './durable-projection.js';
+import { LocalControlReadService, currentLocalControlRuntimeIdentity } from './local-control-read.js';
+import { projectDaemonStatus } from './durable-projection.js';
 import type { MissionStore } from '../mission/ports.js';
+import type { CapabilityRegistryApi } from '../capabilities/registry.js';
 import type { GeminiModel } from '../bridges/GeminiCliBridge.js';
 import { createAgent } from '../providers/agent-loop.js';
 import { readFileSync, existsSync } from 'fs';
@@ -31,7 +33,7 @@ export class RpcGateway implements RpcPort {
     private gatewayOrchestrator: GatewayOrchestrator;
     private sessionManager: SessionManager;
     private eventBus: EventBus;
-    private readonly missionStore?: MissionStore;
+    private readonly localControlRead: LocalControlReadService;
 
     constructor(
         gatewayOrchestrator: GatewayOrchestrator,
@@ -39,15 +41,22 @@ export class RpcGateway implements RpcPort {
         eventBus: EventBus,
         apiKey?: string,
         missionStore?: MissionStore,
+        capabilityRegistry?: Pick<CapabilityRegistryApi, 'listDescriptors'>,
     ) {
         this.gatewayOrchestrator = gatewayOrchestrator;
         this.eventBus = eventBus;
-        this.missionStore = missionStore;
         this.sessionManager = new SessionManager(storage, eventBus, apiKey);
+        this.localControlRead = new LocalControlReadService({
+            getStatus: () => projectDaemonStatus(this.sessionManager.getStatusSnapshot()),
+            getRuntimeIdentity: currentLocalControlRuntimeIdentity,
+            missionStore,
+            capabilityRegistry,
+        });
         this.registerSystemMethods();
         this.registerSessionMethods();
         this.registerAgentMethods();
         this.registerDaemonMethods();
+        this.registerLocalControlMethods();
     }
 
     registerMethod(name: string, handler: RpcMethodHandler): void {
@@ -59,45 +68,7 @@ export class RpcGateway implements RpcPort {
      * The status contract already excludes prompt and response content.
      */
     async getProjectionSnapshot(): Promise<DaemonSnapshot> {
-        const status = projectDaemonStatus(this.sessionManager.getStatusSnapshot());
-        const durable = this.missionStore
-            ? await readDurableProjection(this.missionStore)
-            : {
-                missions: [],
-                invocations: [],
-                completeness: {
-                    missions: {
-                        liveIncluded: 0,
-                        liveOmitted: 0,
-                        historicalIncluded: 0,
-                        historicalOmitted: 0,
-                        truncated: false,
-                    },
-                    invocations: {
-                        liveIncluded: 0,
-                        liveOmitted: 0,
-                        historicalIncluded: 0,
-                        historicalOmitted: 0,
-                        truncated: false,
-                    },
-                },
-            };
-        return {
-            protocolVersion: 1,
-            transportCapabilities: {
-                orderedEvents: true,
-                authoritativeSnapshot: true,
-                resync: true,
-                durableMissions: Boolean(this.missionStore?.readProjection),
-                durableInvocations: Boolean(this.missionStore?.readProjection),
-            },
-            cursor: 0,
-            status,
-            capabilities: status.capabilities,
-            missions: durable.missions,
-            invocations: durable.invocations,
-            completeness: durable.completeness,
-        };
+        return this.localControlRead.getProjectionSnapshot();
     }
 
     async handleRequest(request: RpcRequest): Promise<RpcResponse> {
@@ -158,6 +129,11 @@ export class RpcGateway implements RpcPort {
                 name: 'ouroboros-daemon',
             };
         });
+    }
+
+    /** Adapt the transport-neutral local-control contract over JSON-RPC. */
+    private registerLocalControlMethods(): void {
+        this.registerMethod('local_control.read', async (params) => this.localControlRead.read(params));
     }
 
     private registerSessionMethods(): void {
