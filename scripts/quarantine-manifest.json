@@ -2,13 +2,5 @@
   "$schema_comment": "Tests excluded from mandatory baseline (issue #35). Names stay discoverable; they are not counted as passing. Recovery debt is tracked by tracking_issue (not #35, which closes with the baseline).",
   "issue": 35,
   "tracking_issue": 41,
-  "files": [
-    {
-      "path": "cli/src/orchestration/AntiVibeWorkflow.test.ts",
-      "classification": "product-bug + test-bug (partial)",
-      "reason": "6 of 19 tests fail: promotion status mismatches (REJECTED vs AWAITING_APPROVAL), typecheck script missing in temp dirs, report assertions outdated. Passing cases remain valuable but file is quarantined as a unit until product/test alignment.",
-      "reactivate_when": "All cases in this file pass without mocks that hide product failures; promote/typecheck contracts match implementation.",
-      "tracking_issue": 41
-    }
-  ]
+  "files": []
 }

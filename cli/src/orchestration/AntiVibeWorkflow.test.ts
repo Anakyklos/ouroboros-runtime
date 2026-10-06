@@ -1,15 +1,9 @@
 /**
- * QUARANTINED — excluded from `bun run check:tests` (baseline gate).
- * Recovery debt: https://github.com/RenyEnnos/ouroboros-runtime/issues/41
- * Manifest: scripts/quarantine-manifest.json
- * Do not delete/rename this file to make CI green; fix or keep listed in the manifest.
- */
-
-/**
- * 🔄 Anti-Vibe Workflow Integration Tests
+ * Legacy Anti-Vibe compatibility tests.
  *
- * End-to-end tests for the complete Anti-Vibe Protocol workflow:
- * spec → code → validate → approve → promote
+ * These tests cover existing helpers and approval-state behavior. They do not
+ * define Ouroboros product direction: Runstead owns software verification and
+ * Cadinho owns capability promotion/evolution.
  *
  * Tests the full integration between:
  * - Spec generation and validation
@@ -29,6 +23,7 @@ import { SpecValidator } from "./validators/SpecValidator.js";
 import { TestCoverageValidator } from "./validators/TestCoverageValidator.js";
 import { ValidationReporter } from "./ValidationReporter.js";
 import { generateSpecTemplate, ensureSpecFile } from "../utils/spec-generator.js";
+import { PromotionStatus, QualityGateType } from "./promotion-types.js";
 import type { ValidationContext, ValidationResult, ValidationStrategy } from "./types.js";
 import type { PromotionConfig } from "./promotion-types.js";
 import type { ApprovalConfig } from "./approval-types.js";
@@ -36,24 +31,20 @@ import type { ApprovalConfig } from "./approval-types.js";
 // --- MOCK VALIDATION STRATEGY ---
 
 /**
- * Mock validation strategy that simulates command execution without actually running commands.
- * This allows testing the workflow without external dependencies.
+ * Local deterministic gate strategy that never runs an external command.
  */
 class MockValidationStrategy implements ValidationStrategy {
     readonly name: string;
     private shouldPass: boolean;
-    private executionTimeMs: number;
+    private durationMs: number;
 
-    constructor(name: string, shouldPass: boolean, executionTimeMs = 100) {
+    constructor(name: string, shouldPass: boolean, durationMs = 0) {
         this.name = name;
         this.shouldPass = shouldPass;
-        this.executionTimeMs = executionTimeMs;
+        this.durationMs = durationMs;
     }
 
     async validate(context: ValidationContext): Promise<ValidationResult> {
-        // Simulate execution time
-        await new Promise(resolve => setTimeout(resolve, this.executionTimeMs));
-
         if (this.shouldPass) {
             return {
                 isValid: true,
@@ -61,7 +52,7 @@ class MockValidationStrategy implements ValidationStrategy {
                 message: `${this.name} passed successfully`,
                 details: {
                     workDir: context.workDir,
-                    durationMs: this.executionTimeMs,
+                    durationMs: this.durationMs,
                     mockOutput: "Simulated successful execution",
                 },
             };
@@ -72,7 +63,7 @@ class MockValidationStrategy implements ValidationStrategy {
                 message: `${this.name} failed`,
                 details: {
                     workDir: context.workDir,
-                    durationMs: this.executionTimeMs,
+                    durationMs: this.durationMs,
                     mockOutput: "Simulated failure",
                 },
             };
@@ -109,16 +100,13 @@ function setupAntiVibeTest(): AntiVibeTestSetup {
     fs.mkdirSync(srcDir, { recursive: true });
     fs.mkdirSync(specDir, { recursive: true });
 
-    // Mock approval callback that auto-approves for testing
-    const mockApprovalCallback = async () => true;
-
     // Create managers with test configuration
     const promotionConfig: Partial<PromotionConfig> = {
         projectRoot: tempDir,
         sourceDir: "playground",
         targetDir: "src",
         requireApproval: true,
-        requiredGates: ["TEST", "TYPE_CHECK", "LINT"] as any,
+        requiredGates: [QualityGateType.TEST, QualityGateType.TYPE_CHECK, QualityGateType.LINT],
         verbose: false,
     };
 
@@ -129,10 +117,27 @@ function setupAntiVibeTest(): AntiVibeTestSetup {
         verbose: false,
     };
 
+    // Approval is granted only when a test explicitly calls requestApproval.
+    const explicitTestApproval = async () => true;
     const promotionManager = new PromotionManager(
         promotionConfig,
         undefined,
-        mockApprovalCallback
+        explicitTestApproval
+    );
+
+    // Every required gate is local and deterministic in every fixture. Tests
+    // override only the gate whose failure they are exercising.
+    promotionManager.setValidationStrategy(
+        QualityGateType.TEST,
+        new MockValidationStrategy(QualityGateType.TEST, true)
+    );
+    promotionManager.setValidationStrategy(
+        QualityGateType.TYPE_CHECK,
+        new MockValidationStrategy(QualityGateType.TYPE_CHECK, true)
+    );
+    promotionManager.setValidationStrategy(
+        QualityGateType.LINT,
+        new MockValidationStrategy(QualityGateType.LINT, true)
     );
     const approvalManager = new ApprovalManager(approvalConfig);
 
@@ -202,7 +207,7 @@ describe("Anti-Vibe Workflow Integration", () => {
         });
 
         it("should create spec file in context directory", async () => {
-            await ensureSpecFile(setup.specDir);
+            await ensureSpecFile(setup.specDir, "spec.md");
 
             const specPath = path.join(setup.specDir, "spec.md");
             expect(fs.existsSync(specPath)).toBe(true);
@@ -363,25 +368,16 @@ test("testHelper returns 'test'", () => {
             // Register candidate
             await setup.promotionManager.registerCandidate(sourcePath, sourcePath, "test-task");
 
-            // Set mock validation strategies that pass
-            setup.promotionManager.setValidationStrategy(
-                "TEST" as any,
-                new MockValidationStrategy("TEST", true, 50)
-            );
-            setup.promotionManager.setValidationStrategy(
-                "TYPE_CHECK" as any,
-                new MockValidationStrategy("TYPE_CHECK", true, 50)
-            );
-            setup.promotionManager.setValidationStrategy(
-                "LINT" as any,
-                new MockValidationStrategy("LINT", true, 50)
-            );
-
             // Run validations
             const validations = await setup.promotionManager.validateCandidate(sourcePath);
 
             expect(validations).toHaveLength(3);
             expect(validations.every(v => v.result.isValid)).toBe(true);
+            expect(validations.map(v => v.type)).toEqual([
+                QualityGateType.TEST,
+                QualityGateType.TYPE_CHECK,
+                QualityGateType.LINT,
+            ]);
 
             // Check candidate status
             const state = setup.promotionManager.getState();
@@ -398,21 +394,30 @@ test("testHelper returns 'test'", () => {
 
             await setup.promotionManager.registerCandidate(sourcePath, sourcePath, "test-task");
 
-            // Set mock strategy that fails
+            // TEST passes first, TYPE_CHECK fails, and LINT must not run after it.
             setup.promotionManager.setValidationStrategy(
-                "TEST" as any,
-                new MockValidationStrategy("TEST", false, 50)
+                QualityGateType.TYPE_CHECK,
+                new MockValidationStrategy(QualityGateType.TYPE_CHECK, false)
             );
 
             const validations = await setup.promotionManager.validateCandidate(sourcePath);
 
-            expect(validations).toHaveLength(1);
-            expect(validations[0].result.isValid).toBe(false);
+            expect(validations).toHaveLength(2);
+            expect(validations[0].type).toBe(QualityGateType.TEST);
+            expect(validations[0].result.isValid).toBe(true);
+            expect(validations[1].type).toBe(QualityGateType.TYPE_CHECK);
+            expect(validations[1].result.isValid).toBe(false);
+            expect(validations.map(v => v.type)).toEqual([
+                QualityGateType.TEST,
+                QualityGateType.TYPE_CHECK,
+            ]);
 
             const state = setup.promotionManager.getState();
             const candidate = state.candidates.find(c => c.sourcePath === sourcePath);
             expect(candidate?.status).toBe("REJECTED");
-            expect(candidate?.rejectionReason).toContain("TEST");
+            expect(candidate?.rejectionReason).toContain(QualityGateType.TYPE_CHECK);
+            await expect(setup.promotionManager.requestApproval(sourcePath))
+                .rejects.toThrow("not awaiting approval");
         });
     });
 
@@ -437,26 +442,22 @@ test("testHelper returns 'test'", () => {
             await setup.promotionManager.registerCandidate(sourcePath, sourcePath, "test-task");
 
             // Set mock validators that pass
-            setup.promotionManager.setValidationStrategy(
-                "TEST" as any,
-                new MockValidationStrategy("TEST", true, 10)
-            );
-            setup.promotionManager.setValidationStrategy(
-                "TYPE_CHECK" as any,
-                new MockValidationStrategy("TYPE_CHECK", true, 10)
-            );
-
             // Run validations
-            await setup.promotionManager.validateCandidate(sourcePath);
-
-            // Request approval
+            const validations = await setup.promotionManager.validateCandidate(sourcePath);
+            expect(validations.map(v => v.type)).toEqual([
+                QualityGateType.TEST,
+                QualityGateType.TYPE_CHECK,
+                QualityGateType.LINT,
+            ]);
+            // Approval is a separate explicit transition after all gates pass.
+            expect(setup.promotionManager.getState().candidates[0].status)
+                .toBe(PromotionStatus.AWAITING_APPROVAL);
             const approved = await setup.promotionManager.requestApproval(sourcePath);
-
             expect(approved).toBe(true);
 
             const state = setup.promotionManager.getState();
             const candidate = state.candidates.find(c => c.sourcePath === sourcePath);
-            expect(candidate?.status).toBe("APPROVED");
+            expect(candidate?.status).toBe(PromotionStatus.APPROVED);
         });
 
         it("should create approval request with correct metadata", async () => {
@@ -547,17 +548,15 @@ test("testHelper returns 'test'", () => {
             // Register and approve
             await setup.promotionManager.registerCandidate(sourcePath, sourcePath, "test-task");
 
-            // Set passing validators
-            setup.promotionManager.setValidationStrategy(
-                "TEST" as any,
-                new MockValidationStrategy("TEST", true, 10)
-            );
-            setup.promotionManager.setValidationStrategy(
-                "TYPE_CHECK" as any,
-                new MockValidationStrategy("TYPE_CHECK", true, 10)
-            );
+            const validations = await setup.promotionManager.validateCandidate(sourcePath);
+            expect(validations.map(v => v.type)).toEqual([
+                QualityGateType.TEST,
+                QualityGateType.TYPE_CHECK,
+                QualityGateType.LINT,
+            ]);
+            expect(setup.promotionManager.getState().candidates[0].status)
+                .toBe(PromotionStatus.AWAITING_APPROVAL);
 
-            await setup.promotionManager.validateCandidate(sourcePath);
             await setup.promotionManager.requestApproval(sourcePath);
 
             // Promote
@@ -587,6 +586,7 @@ test("testHelper returns 'test'", () => {
 
             expect(result.success).toBe(false);
             expect(result.error).toContain("not approved");
+            expect(fs.existsSync(path.join(setup.srcDir, sourcePath))).toBe(false);
         });
 
         it("should execute batch promotions for all approved files", async () => {
@@ -605,16 +605,15 @@ test("testHelper returns 'test'", () => {
 
                 await setup.promotionManager.registerCandidate(sourcePath, sourcePath, "batch-task");
 
-                setup.promotionManager.setValidationStrategy(
-                    "TEST" as any,
-                    new MockValidationStrategy("TEST", true, 5)
-                );
-                setup.promotionManager.setValidationStrategy(
-                    "TYPE_CHECK" as any,
-                    new MockValidationStrategy("TYPE_CHECK", true, 5)
-                );
-
-                await setup.promotionManager.validateCandidate(sourcePath);
+                const validations = await setup.promotionManager.validateCandidate(sourcePath);
+                expect(validations.map(v => v.type)).toEqual([
+                    QualityGateType.TEST,
+                    QualityGateType.TYPE_CHECK,
+                    QualityGateType.LINT,
+                ]);
+                expect(setup.promotionManager.getState().candidates
+                    .find(candidate => candidate.sourcePath === sourcePath)?.status)
+                    .toBe(PromotionStatus.AWAITING_APPROVAL);
                 await setup.promotionManager.requestApproval(sourcePath);
             }
 
@@ -680,23 +679,12 @@ test("complete workflow", () => {
 });`, "utf-8");
 
             // Phase 3: Quality Gate Validation
-            await setup.promotionManager.registerCandidate(sourcePath, `src/${sourcePath}`, "e2e-task");
-
-            setup.promotionManager.setValidationStrategy(
-                "TEST" as any,
-                new MockValidationStrategy("TEST", true, 20)
-            );
-            setup.promotionManager.setValidationStrategy(
-                "TYPE_CHECK" as any,
-                new MockValidationStrategy("TYPE_CHECK", true, 20)
-            );
-            setup.promotionManager.setValidationStrategy(
-                "LINT" as any,
-                new MockValidationStrategy("LINT", true, 20)
-            );
+            await setup.promotionManager.registerCandidate(sourcePath, sourcePath, "e2e-task");
 
             const validations = await setup.promotionManager.validateCandidate(sourcePath);
             expect(validations.every(v => v.result.isValid)).toBe(true);
+            expect(setup.promotionManager.getState().candidates[0].status)
+                .toBe(PromotionStatus.AWAITING_APPROVAL);
 
             // Phase 4: Human Approval
             const approved = await setup.promotionManager.requestApproval(sourcePath);
@@ -725,14 +713,12 @@ test("complete workflow", () => {
             // Verify final state
             const srcFile = path.join(setup.srcDir, sourcePath);
             expect(fs.existsSync(srcFile)).toBe(true);
-
-            const promotedContent = fs.readFileSync(srcFile, "utf-8");
-            expect(promotedContent).toBe(code);
+            expect(fs.readFileSync(srcFile, "utf-8")).toBe(code);
 
             // Verify promotion state
             const promoState = setup.promotionManager.getState();
             const candidate = promoState.candidates.find(c => c.sourcePath === sourcePath);
-            expect(candidate?.status).toBe("PROMOTED");
+            expect(candidate?.status).toBe(PromotionStatus.PROMOTED);
 
             // Verify approval state
             const approvalState = setup.approvalManager.getState();
@@ -751,13 +737,14 @@ test("complete workflow", () => {
 
             // Set failing validator
             setup.promotionManager.setValidationStrategy(
-                "TEST" as any,
-                new MockValidationStrategy("TEST", false, 20)
+                QualityGateType.TEST,
+                new MockValidationStrategy(QualityGateType.TEST, false)
             );
 
             const validations = await setup.promotionManager.validateCandidate(sourcePath);
 
             expect(validations[0].result.isValid).toBe(false);
+            expect(validations.map(v => v.type)).toEqual([QualityGateType.TEST]);
 
             const state = setup.promotionManager.getState();
             const candidate = state.candidates.find(c => c.sourcePath === sourcePath);
@@ -775,11 +762,6 @@ test("complete workflow", () => {
 
             await setup.promotionManager.registerCandidate(sourcePath, sourcePath, "report-task");
 
-            setup.promotionManager.setValidationStrategy(
-                "TEST" as any,
-                new MockValidationStrategy("TEST", true, 10)
-            );
-
             const validations = await setup.promotionManager.validateCandidate(sourcePath);
 
             // Generate markdown report
@@ -788,7 +770,8 @@ test("complete workflow", () => {
             expect(markdown).toContain("Promotion Validation");
             expect(markdown).toContain(sourcePath);
             expect(markdown).toContain("TEST");
-            expect(markdown).toContain("PASSED");
+            expect(markdown).toContain("**Status**: PASSED");
+            expect(markdown).toContain("**Status**: PASS");
         });
     });
 });
