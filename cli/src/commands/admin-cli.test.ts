@@ -4,13 +4,20 @@ import {
   type LocalControlReadRequest,
   type LocalControlReadResponse,
 } from "../../../shared/local-control-read-contract.js";
+import {
+  LOCAL_CONTROL_COMMAND_PROTOCOL_VERSION,
+  type LocalControlCommandResponse,
+} from "../../../shared/local-control-command-contract.js";
 import { runAdminCli } from "./admin-cli.js";
 import {
   DaemonUnavailableError,
+  LocalControlCommandClient,
+  LocalControlFailureError,
   LocalControlReadClient,
   LoopbackJsonRpcTransport,
   ProtocolVersionMismatchError,
   RpcProtocolError,
+  type LocalControlCommandClientRequest,
   type LocalControlReadTransport,
 } from "./local-control-client.js";
 
@@ -91,7 +98,123 @@ function harness(transport: LocalControlReadTransport) {
   };
 }
 
+function commandHarness(execute: (request: LocalControlCommandClientRequest) => Promise<LocalControlCommandResponse>) {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const calls: LocalControlCommandClientRequest[] = [];
+  const commandClient = {
+    execute: async (request: LocalControlCommandClientRequest) => {
+      calls.push(request);
+      return execute(request);
+    },
+  };
+  return {
+    stdout,
+    stderr,
+    calls,
+    run: (args: string[]) => runAdminCli(args, {
+      commandClient,
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+    }),
+  };
+}
+
+function commandSuccess(operation: "mission.pause" | "mission.resume" | "mission.cancel", data: typeof mission): LocalControlCommandResponse {
+  return { ok: true, protocolVersion: LOCAL_CONTROL_COMMAND_PROTOCOL_VERSION, operation, data };
+}
+
 describe("factual admin CLI", () => {
+  it("passes pause with the exact operation, Mission id, and supplied reason", async () => {
+    const paused = { ...mission, state: "paused" };
+    const cli = commandHarness(async () => commandSuccess("mission.pause", paused));
+
+    expect(await cli.run(["mission", "pause", "mission-1", "operator asked to hold"])).toBe(0);
+    expect(cli.calls).toEqual([{
+      operation: "mission.pause",
+      missionId: "mission-1",
+      reason: "operator asked to hold",
+    }]);
+    expect(JSON.parse(cli.stdout[0])).toEqual(paused);
+  });
+
+  it("uses the deterministic pause reason and prints the durable daemon projection", async () => {
+    const paused = { ...mission, state: "paused", updatedAt: "2026-10-06T01:00:00.000Z" };
+    const cli = commandHarness(async () => commandSuccess("mission.pause", paused));
+
+    expect(await cli.run(["mission", "pause", "mission-1"])).toBe(0);
+    expect(cli.calls).toEqual([{
+      operation: "mission.pause",
+      missionId: "mission-1",
+      reason: "operator requested pause via CLI",
+    }]);
+    expect(JSON.parse(cli.stdout[0])).toEqual(paused);
+  });
+
+  it("sends resume without reason or extra fields", async () => {
+    const resumed = { ...mission, state: "waiting_for_provider" };
+    const cli = commandHarness(async () => commandSuccess("mission.resume", resumed));
+
+    expect(await cli.run(["mission", "resume", "mission-1"])).toBe(0);
+    expect(cli.calls).toEqual([{
+      operation: "mission.resume",
+      missionId: "mission-1",
+    }]);
+    expect(JSON.parse(cli.stdout[0])).toEqual(resumed);
+  });
+
+  it("sends cancel with explicit and deterministic default reasons", async () => {
+    const cancelled = { ...mission, state: "cancelled" };
+    const cli = commandHarness(async (request) => commandSuccess("mission.cancel", {
+      ...cancelled,
+      missionId: request.missionId,
+    }));
+
+    expect(await cli.run(["mission", "cancel", "mission-1", "operator stopped this mission"])).toBe(0);
+    expect(await cli.run(["mission", "cancel", "mission-2"])).toBe(0);
+    expect(cli.calls).toEqual([
+      { operation: "mission.cancel", missionId: "mission-1", reason: "operator stopped this mission" },
+      { operation: "mission.cancel", missionId: "mission-2", reason: "operator requested cancel via CLI" },
+    ]);
+    expect(JSON.parse(cli.stdout[0])).toEqual(cancelled);
+    expect(JSON.parse(cli.stdout[1]).missionId).toBe("mission-2");
+  });
+
+  it("returns usage exit code 2 for malformed mission command arguments without sending", async () => {
+    const cli = commandHarness(async () => commandSuccess("mission.pause", mission));
+
+    expect(await cli.run(["mission", "pause"])).toBe(2);
+    expect(await cli.run(["mission", "resume", "mission-1", "reason"])).toBe(2);
+    expect(await cli.run(["mission", "cancel", "mission-1", "reason", "extra"])).toBe(2);
+    expect(cli.calls).toEqual([]);
+  });
+
+  it("maps command failures to operational exit code 1 without printing optimistic output", async () => {
+    const cli = commandHarness(async () => {
+      throw new LocalControlFailureError("INVALID_TRANSITION", "Mission command is not valid for its current state");
+    });
+
+    expect(await cli.run(["mission", "resume", "mission-1"])).toBe(1);
+    expect(cli.stdout).toEqual([]);
+    expect(cli.stderr.join("")).toContain("INVALID_TRANSITION");
+  });
+
+  it("fails honestly when the daemon connection is unavailable and does not expose transport details", async () => {
+    const rpc = new LoopbackJsonRpcTransport({ fetch: async () => { throw new Error("PRIVATE socket failure"); } });
+    const commandClient = new LocalControlCommandClient({ request: (params) => rpc.call("local_control.command", params) });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+
+    expect(await runAdminCli(["mission", "cancel", "mission-1"], {
+      commandClient,
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+    })).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr.join("")).toContain("daemon unavailable");
+    expect(stderr.join("")).not.toContain("PRIVATE");
+  });
+
   it("negotiates the versioned contract before reading status", async () => {
     const transport = new ScriptedTransport({ status: success("status", status) });
     const cli = harness(transport);

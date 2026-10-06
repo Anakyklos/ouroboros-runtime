@@ -6,11 +6,23 @@ import {
   type LocalControlReadRequest,
   type LocalControlReadResponse,
 } from "../../../shared/local-control-read-contract.js";
+import {
+  LOCAL_CONTROL_COMMAND_PROTOCOL_VERSION,
+  type LocalControlCommandFailureCode,
+  type LocalControlCommandOperation,
+  type LocalControlCommandRequest,
+  type LocalControlCommandResponse,
+} from "../../../shared/local-control-command-contract.js";
 import { DAEMON_MISSION_STATES } from "../../../shared/daemon-event-contract.js";
 
 /** Transport-neutral request surface consumed by the factual CLI. */
 export interface LocalControlReadTransport {
   request(params: LocalControlReadRequest): Promise<unknown>;
+}
+
+/** Typed command surface; command requests never travel through the read contract. */
+export interface LocalControlCommandTransport {
+  request(params: LocalControlCommandRequest): Promise<unknown>;
 }
 
 type ReadOperation = Exclude<LocalControlReadRequest["operation"], "protocol.negotiate">;
@@ -49,10 +61,92 @@ export class LocalControlFailureError extends Error {
   }
 }
 
+const LOCAL_CONTROL_COMMAND_FAILURE_MESSAGES: Record<LocalControlCommandFailureCode, string> = {
+  INVALID_REQUEST: "Mission command request was rejected",
+  PROTOCOL_VERSION_REQUIRED: "Mission command protocol version is required",
+  PROTOCOL_VERSION_UNSUPPORTED: "Mission command protocol version is unsupported",
+  INVALID_ID: "Mission id is invalid",
+  INVALID_TEXT: "Mission command text is invalid",
+  MISSION_NOT_FOUND: "Mission not found",
+  INVALID_TRANSITION: "Mission command is not valid for its current state",
+  AUTHORITY_UNAVAILABLE: "Mission command authority is unavailable",
+  COMMAND_FAILED: "Mission command failed",
+};
+
+const LOCAL_CONTROL_COMMAND_FAILURE_CODES: Record<LocalControlCommandFailureCode, true> = {
+  INVALID_REQUEST: true,
+  PROTOCOL_VERSION_REQUIRED: true,
+  PROTOCOL_VERSION_UNSUPPORTED: true,
+  INVALID_ID: true,
+  INVALID_TEXT: true,
+  MISSION_NOT_FOUND: true,
+  INVALID_TRANSITION: true,
+  AUTHORITY_UNAVAILABLE: true,
+  COMMAND_FAILED: true,
+};
+
+function isCommandFailureCode(value: unknown): value is LocalControlCommandFailureCode {
+  return typeof value === "string" && Object.hasOwn(LOCAL_CONTROL_COMMAND_FAILURE_CODES, value);
+}
+
+function isDaemonMissionProjection(value: unknown): boolean {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "missionId", "state", "source", "currentPlanRevisionId", "createdAt", "updatedAt",
+    "recoveryCount", "invocationIds", "pendingApprovalCount",
+  ])) return false;
+  return typeof value.missionId === "string" &&
+    typeof value.state === "string" && DAEMON_MISSION_STATES.includes(value.state as (typeof DAEMON_MISSION_STATES)[number]) &&
+    ["katherine", "mission_control", "cli", "api", "operator"].includes(String(value.source)) &&
+    (value.currentPlanRevisionId === null || typeof value.currentPlanRevisionId === "string") &&
+    typeof value.createdAt === "string" && typeof value.updatedAt === "string" &&
+    Number.isSafeInteger(value.recoveryCount) && Number(value.recoveryCount) >= 0 &&
+    Array.isArray(value.invocationIds) && value.invocationIds.every((id) => typeof id === "string") &&
+    Number.isSafeInteger(value.pendingApprovalCount) && Number(value.pendingApprovalCount) >= 0;
+}
+
+function isLocalControlCommandResponse(value: unknown, operation: LocalControlCommandOperation, missionId: string): value is LocalControlCommandResponse {
+  if (!isRecord(value) || typeof value.ok !== "boolean") return false;
+  if (!value.ok) return hasExactKeys(value, ["ok", "code", "message"]) &&
+    isCommandFailureCode(value.code) && typeof value.message === "string";
+  if (!hasExactKeys(value, ["ok", "protocolVersion", "operation", "data"]) ||
+      value.protocolVersion !== LOCAL_CONTROL_COMMAND_PROTOCOL_VERSION || value.operation !== operation ||
+      !isDaemonMissionProjection(value.data)) return false;
+  const data = value.data as Record<string, unknown>;
+  return data.missionId === missionId;
+}
+
+export type LocalControlCommandClientRequest = {
+  [Operation in LocalControlCommandOperation]: Omit<Extract<LocalControlCommandRequest, { operation: Operation }>, "protocolVersion">;
+}[LocalControlCommandOperation];
+
+/** Executes one versioned Mission command without negotiation or automatic retry. */
+export class LocalControlCommandClient {
+  constructor(private readonly transport: LocalControlCommandTransport) {}
+
+  /** Submit one command and return only the daemon's validated durable projection. */
+  execute(request: LocalControlCommandClientRequest): Promise<Extract<LocalControlCommandResponse, { ok: true }>>;
+  async execute(request: LocalControlCommandClientRequest): Promise<Extract<LocalControlCommandResponse, { ok: true }>> {
+    const params = { ...request, protocolVersion: LOCAL_CONTROL_COMMAND_PROTOCOL_VERSION } as LocalControlCommandRequest;
+    const response = await this.transport.request(params);
+    if (isRecord(response) && response.ok === true && typeof response.protocolVersion === "number" &&
+      response.protocolVersion !== LOCAL_CONTROL_COMMAND_PROTOCOL_VERSION) {
+      throw new ProtocolVersionMismatchError(LOCAL_CONTROL_COMMAND_PROTOCOL_VERSION);
+    }
+    if (!isLocalControlCommandResponse(response, request.operation, request.missionId)) throw new LocalControlPayloadError();
+    if (!response.ok) {
+      if (response.code === "PROTOCOL_VERSION_UNSUPPORTED") {
+        throw new ProtocolVersionMismatchError(LOCAL_CONTROL_COMMAND_PROTOCOL_VERSION);
+      }
+      throw new LocalControlFailureError(response.code, LOCAL_CONTROL_COMMAND_FAILURE_MESSAGES[response.code]);
+    }
+    return response;
+  }
+}
+
 /** The daemon and client cannot agree on the local-control protocol version. */
 export class ProtocolVersionMismatchError extends Error {
-  constructor() {
-    super(`daemon local-control protocol is incompatible (client supports version ${LOCAL_CONTROL_PROTOCOL_VERSION})`);
+  constructor(protocolVersion = LOCAL_CONTROL_PROTOCOL_VERSION) {
+    super(`daemon local-control protocol is incompatible (client supports version ${protocolVersion})`);
     this.name = "ProtocolVersionMismatchError";
   }
 }
@@ -269,13 +363,18 @@ export class LoopbackJsonRpcTransport implements LocalControlReadTransport {
   private readonly fetchImpl: typeof fetch;
 
   async request(params: LocalControlReadRequest): Promise<unknown> {
+    return this.call("local_control.read", params);
+  }
+
+  /** Send one generic JSON-RPC request; domain clients select their own method and contract. */
+  async call(method: string, params: unknown): Promise<unknown> {
     const id = String(this.nextId++);
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}/rpc`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id, method: "local_control.read", params }),
+        body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
       });
     } catch {
       throw new DaemonUnavailableError();
