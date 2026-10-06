@@ -145,7 +145,7 @@ function isMissionCompleteness(value: unknown, itemCount: number): boolean {
   const omittedTotal = liveOmitted + historicalOmitted;
   return includedTotal === itemCount && includedTotal <= LOCAL_CONTROL_MAX_MISSIONS &&
     Number.isSafeInteger(includedTotal + omittedTotal) &&
-    (omittedTotal === 0 || value.truncated === true);
+    value.truncated === (omittedTotal > 0);
 }
 
 function isMissionCollection(value: Record<string, unknown>): boolean {

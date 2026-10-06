@@ -125,6 +125,40 @@ describe("factual admin CLI", () => {
     expect(JSON.parse(cli.stdout[0])).toEqual({ available: true, items: [mission], completeness });
   });
 
+  it("rejects truncated=true when Mission completeness reports no omissions", async () => {
+    const completeness = { liveIncluded: 1, liveOmitted: 0, historicalIncluded: 0, historicalOmitted: 0, truncated: true };
+    const cli = harness(new ScriptedTransport({ "mission.list": success("mission.list", { available: true, items: [mission], completeness }) }));
+
+    expect(await cli.run(["missions"])).toBe(1);
+    expect(cli.stderr.join("")).toContain("malformed local-control response");
+    expect(`${cli.stdout.join("")}${cli.stderr.join("")}`).not.toContain("PRIVATE");
+  });
+
+  it("rejects omitted Missions when completeness says truncated=false", async () => {
+    const completeness = { liveIncluded: 1, liveOmitted: 0, historicalIncluded: 0, historicalOmitted: 1, truncated: false };
+    const cli = harness(new ScriptedTransport({ "mission.list": success("mission.list", { available: true, items: [mission], completeness }) }));
+
+    expect(await cli.run(["missions"])).toBe(1);
+    expect(cli.stderr.join("")).toContain("malformed local-control response");
+    expect(`${cli.stdout.join("")}${cli.stderr.join("")}`).not.toContain("PRIVATE");
+  });
+
+  it("accepts zero omissions with truncated=false", async () => {
+    const completeness = { liveIncluded: 1, liveOmitted: 0, historicalIncluded: 0, historicalOmitted: 0, truncated: false };
+    const cli = harness(new ScriptedTransport({ "mission.list": success("mission.list", { available: true, items: [mission], completeness }) }));
+
+    expect(await cli.run(["missions"])).toBe(0);
+    expect(JSON.parse(cli.stdout[0]).completeness).toEqual(completeness);
+  });
+
+  it("accepts omitted Missions with truncated=true", async () => {
+    const completeness = { liveIncluded: 1, liveOmitted: 0, historicalIncluded: 0, historicalOmitted: 1, truncated: true };
+    const cli = harness(new ScriptedTransport({ "mission.list": success("mission.list", { available: true, items: [mission], completeness }) }));
+
+    expect(await cli.run(["missions"])).toBe(0);
+    expect(JSON.parse(cli.stdout[0]).completeness).toEqual(completeness);
+  });
+
   it("shows a found mission using only projected fields", async () => {
     const cli = harness(new ScriptedTransport({ "mission.show": success("mission.show", { available: true, item: mission }) }));
 
