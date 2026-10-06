@@ -23,12 +23,12 @@
 
 | Campo | Valor |
 |---|---|
-| **Subsystem** | `cli/src/runtime/SelfModifyingEngine.ts` (+ `SelfModifyingEngine.test.ts`, `cli/benchmarks/SelfModifyingEngine.bench.ts`) |
-| **Current responsibility/evidence** | Engine que altera source files, cria backups, executa testes, faz rollback e opcionalmente cria git commit (`autoGitCommit`). Permite que o agente reescreva seus próprios módulos em runtime. |
+| **Subsystem** | `cli/src/runtime/SelfModifyingEngine.ts`, seu teste dedicado e `cli/benchmarks/SelfModifyingEngine.bench.ts` (todos removidos em #95). |
+| **Historical responsibility/evidence** | A implementação aposentada alterava source files, criava backups, executava testes, fazia rollback e opcionalmente criava git commit (`autoGitCommit`). Ela permitia que o agente reescrevesse seus próprios módulos em runtime. |
 | **Decision** | **RETIRE** do runtime core. |
 | **Future owner/boundary** | Cadinho (evolution de capabilities) e Runstead (software work). Ouroboros não possui `modifySelf()` nem authority equivalente. Primitives de backup/rollback/test-run podem ser extraídas para Cadinho/Runstead se houver necessidade comprovada. |
 | **Rationale** | #60: "sistema que altera/promove silenciosamente o próprio código" está na lista de "Ouroboros não deve ser". #69: proibido preservar `Ouroboros.modifySelf()` com authority de produção. Software work pertence ao Runstead; forging/evolution pertence ao Cadinho com promoção explícita. |
-| **Follow-up implication** | Remoção do SelfModifyingEngine do core + avaliação de extração de primitives (backup/rollback) para Cadinho/Runstead. #41 foi resolvida e o manifesto atual tem zero suites; `SelfModifyingEngine.test.ts` não estava entre as suites daquela dívida histórica. A decisão RETIRE independe de quarentena. |
+| **Follow-up implication** | #95 removeu implementação, teste e benchmark do repositório; nenhuma primitive foi extraída sem owner e necessidade comprovados. #41 foi resolvida e o manifesto atual tem zero suites; `SelfModifyingEngine.test.ts` não estava entre as suites daquela dívida histórica. A decisão RETIRE independe de quarentena. |
 
 ### 2. PersistentPythonREPL
 
@@ -341,7 +341,7 @@
 
 ## Follow-ups recomendados (para o mantenedor criar após merge)
 
-1. **#61-followup-1**: Remover SelfModifyingEngine do runtime core; avaliar extração de primitives backup/rollback para Cadinho/Runstead.
+1. **#61-followup-1**: Remoção do SelfModifyingEngine concluída em #95; nenhuma extração de primitives backup/rollback foi justificada neste repositório.
 2. **#61-followup-2**: Remover PersistentPythonREPL do runtime core. SandboxRunner e SandboxTool já foram removidos em #83, junto com `SandboxPathUtils` (órfã comprovada) e as cinco suites de sandbox que integravam a quarentena histórica #41 (SandboxE2E, SandboxEscapeTests, SandboxResourceLimits, SandboxRunner, SandboxSecurity). Essa dívida foi resolvida; o manifesto atual tem zero suites.
 3. **#61-followup-3**: Migration map do Orchestrator (#62) — remover personas/ESCALATION_CHAIN como abstração first-class.
 4. **#61-followup-4**: GatewayOrchestrator (#63) — remover bridges hardcoded em favor de Capability Registry/connectors.

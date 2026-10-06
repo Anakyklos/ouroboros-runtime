@@ -218,7 +218,8 @@ Baseline: [`docs/BASELINE.md`](docs/BASELINE.md) | CI:
   factual. #69 fechou a decisão que proíbe self-modification; o ciclo
   governado entre módulos continua direção, não comportamento implementado.
   Não declarar completo o composition root local-control.
-- **Legacy** — código que não define mais a direção: SelfModifyingEngine,
+- **Legacy** — subsistemas que não definem mais a direção: SelfModifyingEngine
+  (retirado em #95),
   Python sandbox, Council/personas, ArchitectClient, waves, Ralph,
   MCP/SkillLoader, bridges diretas, TUI React/Ink, Council/Memory/Terminal UI.
   Classificação completa em [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
