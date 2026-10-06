@@ -34,7 +34,7 @@ function requirePublicId(value: string, field: string): string {
 }
 
 /** Copy only the operational fields safe for the public daemon snapshot. */
-export function projectDaemonStatus(status: DaemonStatusResult): DaemonStatusProjection {
+export function projectDaemonStatus(status: DaemonStatusResult | DaemonStatusProjection): DaemonStatusProjection {
   return {
     processStatus: status.processStatus,
     mode: status.mode,
@@ -101,6 +101,18 @@ function emptyCompleteness(): DaemonProjectionCompletenessEntry {
   };
 }
 
+/** Return the explicit empty state used when durable projection is unavailable. */
+export function emptyDurableProjection(): DaemonDurableProjection {
+  return {
+    missions: [],
+    invocations: [],
+    completeness: {
+      missions: emptyCompleteness(),
+      invocations: emptyCompleteness(),
+    },
+  };
+}
+
 function completenessFor(
   liveTotal: number,
   liveIncluded: number,
@@ -141,14 +153,7 @@ export async function readDurableProjection(
   const maxMissions = boundedLimit(limits.maxMissions, DEFAULT_MAX_PROJECTED_MISSIONS);
   const maxInvocations = boundedLimit(limits.maxInvocations, DEFAULT_MAX_PROJECTED_INVOCATIONS);
   if (!store.readProjection) {
-    return {
-      missions: [],
-      invocations: [],
-      completeness: {
-        missions: emptyCompleteness(),
-        invocations: emptyCompleteness(),
-      },
-    };
+    return emptyDurableProjection();
   }
 
   const read = await store.readProjection({
