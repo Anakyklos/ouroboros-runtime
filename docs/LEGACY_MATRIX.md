@@ -28,7 +28,7 @@
 | **Decision** | **RETIRE** do runtime core. |
 | **Future owner/boundary** | Cadinho (evolution de capabilities) e Runstead (software work). Ouroboros não possui `modifySelf()` nem authority equivalente. Primitives de backup/rollback/test-run podem ser extraídas para Cadinho/Runstead se houver necessidade comprovada. |
 | **Rationale** | #60: "sistema que altera/promove silenciosamente o próprio código" está na lista de "Ouroboros não deve ser". #69: proibido preservar `Ouroboros.modifySelf()` com authority de produção. Software work pertence ao Runstead; forging/evolution pertence ao Cadinho com promoção explícita. |
-| **Follow-up implication** | Abrir issue de remoção do SelfModifyingEngine do core + avaliação de extração de primitives (backup/rollback) para Cadinho/Runstead. `SelfModifyingEngine.test.ts` não está na quarentena (#41) — a decisão RETIRE não depende de quarentena para ser executada. |
+| **Follow-up implication** | Remoção do SelfModifyingEngine do core + avaliação de extração de primitives (backup/rollback) para Cadinho/Runstead. #41 foi resolvida e o manifesto atual tem zero suites; `SelfModifyingEngine.test.ts` não estava entre as suites daquela dívida histórica. A decisão RETIRE independe de quarentena. |
 
 ### 2. PersistentPythonREPL
 
@@ -39,18 +39,18 @@
 | **Decision** | **RETIRE** do runtime core. |
 | **Future owner/boundary** | Nenhum módulo do Anakyklos reivindicou REPL Python arbitrário persistente. Se surgir necessidade legítima de execução Python, será via capability declarada com owner (ex.: Runstead para software work) sob policy. |
 | **Rationale** | #60: Ouroboros "não é executor irrestrito de Python/shell". Execução arbitrária persistente não é necessidade executiva do coordination runtime. |
-| **Follow-up implication** | Remoção do runtime core. `PersistentPythonREPL.test.ts` não está na quarentena (#41) — a decisão RETIRE é independente de quarentena. |
+| **Follow-up implication** | Remoção do runtime core. #41 foi resolvida e o manifesto atual tem zero suites; `PersistentPythonREPL.test.ts` não estava entre as suites daquela dívida histórica. A decisão RETIRE é independente de quarentena. |
 
 ### 3. SandboxRunner
 
 | Campo | Valor |
 |---|---|
 | **Subsystem** | `cli/src/runtime/SandboxRunner.ts` (+ `SandboxRunner.test.ts`) |
-| **Current responsibility/evidence** | Execução Python sandboxed com resource limits, timeout e filesystem confinement via venv isolado. Testes dependem de `.ouroboros/venv` (quarentena #41). |
+| **Current responsibility/evidence** | Execução Python sandboxed com resource limits, timeout e filesystem confinement via venv isolado. `SandboxRunner` e suas suites foram removidos em #83; as suites de sandbox que integravam a quarentena histórica #41 também foram retiradas. |
 | **Decision** | **RETIRE** do runtime core. |
 | **Future owner/boundary** | Nenhuma necessidade executiva real permanece no core. Se algum módulo precisar de sandbox, será capability do owner (Runstead para software work), com sua própria verificação técnica. |
-| **Rationale** | #60: Python playground não é capacidade central; Ouroboros não é executor irrestrito. A quarentena dos testes de sandbox (#41) já reconhece incompatibilidade com CI limpa. |
-| **Follow-up implication** | Remoção do core; resolver quarentenas de sandbox (#41) como consequência da decisão RETIRE. |
+| **Rationale** | #60: Python playground não é capacidade central; Ouroboros não é executor irrestrito. A quarentena histórica foi resolvida com a retirada das suites de sandbox em #83; #41 está fechada e o manifesto atual tem zero suites. |
+| **Follow-up implication** | `SandboxRunner`/`SandboxTool` e as suites de sandbox foram removidos em #83. A dívida de quarentena relacionada a esse subsistema foi resolvida em #41; não há recuperação de quarantine ativa. |
 
 ### 4. SandboxTool
 
@@ -101,11 +101,11 @@
 | Campo | Valor |
 |---|---|
 | **Subsystem** | `cli/src/orchestration/AntiVibeWorkflow.test.ts`, `cli/src/utils/anti-vibe.ts`, validators (`SpecValidator`, `TestCoverageValidator`), `ValidationReporter` |
-| **Current responsibility/evidence** | Quality gates fail-closed para workflow de código: spec → code → validate → approve → promote. Suite em quarentena (#41) por falhas parciais. |
+| **Current responsibility/evidence** | Quality gates fail-closed para workflow de código: spec → code → validate → approve → promote. A suite `AntiVibeWorkflow.test.ts` foi reativada em #41 e está no gate obrigatório; o manifesto atual tem zero suites. |
 | **Decision** | **ADAPT** — conceitos fail-closed/evidence sobrevivem como mission-level gates no Ouroboros. |
 | **Future owner/boundary** | Ouroboros: mission acceptance/approval gates. Runstead: verificação técnica de software. Cadinho: promoção/evolução de capabilities. |
 | **Rationale** | #61: "Preservar ideias úteis de gates fail-closed e evidência, mas revisão técnica de software deve permanecer no Runstead. Ouroboros pode manter mission acceptance/approval gates." |
-| **Follow-up implication** | Extrair mission-level gate semantics; resolver quarentena conforme decisão (#41); não ampliar como código-oriented protocol no core. |
+| **Follow-up implication** | Extrair mission-level gate semantics; #41 resolveu a quarentena desta suite; não ampliar como código-oriented protocol no core. |
 
 ### 9. PromotionManager / code-review gates
 
@@ -116,7 +116,7 @@
 | **Decision** | **ADAPT** — approval/promotion state machine inspira mission-level approval no Ouroboros. |
 | **Future owner/boundary** | Ouroboros: approval workflow para missions (approval requests, state). Runstead: quality gates de software. Cadinho: candidate → trial → promotion. |
 | **Rationale** | #61/#69: promotion/capability evolution pertence ao Cadinho; Ouroboros mantém mission-level gates e approvals. |
-| **Follow-up implication** | Migration de approval/promotion para Mission approval contract (#62); resolver quarentenas (#41). |
+| **Follow-up implication** | Migration de approval/promotion para Mission approval contract (#62); as suites recuperadas por #41 estão no gate obrigatório e não há quarantine ativa. |
 
 ### 10. Antigravity bridge
 
@@ -342,7 +342,7 @@
 ## Follow-ups recomendados (para o mantenedor criar após merge)
 
 1. **#61-followup-1**: Remover SelfModifyingEngine do runtime core; avaliar extração de primitives backup/rollback para Cadinho/Runstead.
-2. **#61-followup-2**: Remover PersistentPythonREPL do runtime core. SandboxRunner e SandboxTool já foram removidos em #83, junto com `SandboxPathUtils` (órfã comprovada) e as cinco suites de sandbox da quarentena #41 (SandboxE2E, SandboxEscapeTests, SandboxResourceLimits, SandboxRunner, SandboxSecurity).
+2. **#61-followup-2**: Remover PersistentPythonREPL do runtime core. SandboxRunner e SandboxTool já foram removidos em #83, junto com `SandboxPathUtils` (órfã comprovada) e as cinco suites de sandbox que integravam a quarentena histórica #41 (SandboxE2E, SandboxEscapeTests, SandboxResourceLimits, SandboxRunner, SandboxSecurity). Essa dívida foi resolvida; o manifesto atual tem zero suites.
 3. **#61-followup-3**: Migration map do Orchestrator (#62) — remover personas/ESCALATION_CHAIN como abstração first-class.
 4. **#61-followup-4**: GatewayOrchestrator (#63) — remover bridges hardcoded em favor de Capability Registry/connectors.
 5. **#61-followup-5**: MemoryManager/MemoryRetriever → Context Compiler (#64) com provenance.

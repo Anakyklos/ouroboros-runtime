@@ -1,7 +1,8 @@
 # Mission Contract (Issue #62)
 
-> **Status**: Direction (implemented contract) — this is the first executable
-> contract of the executive-coordination realignment (epic #60).
+> **Status**: Current — implemented Mission contract delivered by #62 (closed,
+> M0). Historically, this was the first executable contract of the
+> executive-coordination realignment (epic #60).
 > **Authority**: #60, #62 + `Anakyklos/architecture` (SYSTEM-MAP.md, RFC 0001).
 > **Implementation**: `cli/src/mission/` (TypeScript, provider-free, testable).
 
@@ -40,8 +41,10 @@ receives the complete `Mission`, raw `originalIntent`, or `context?: unknown`.
 The coordinator recompiles from durable state for every proposal/replan and
 submits each returned candidate through `MissionEngine.proposePlan()` and
 `PlanPolicyValidator`. The pack is data, not authority. This provider-neutral
-wiring is one slice of #78; a concrete planner provider and later ResultArtifact
-defaults remain outside this contract update.
+wiring was delivered by #78 (closed, M0). A concrete planner provider is
+outside this contract; provider-reported accounting and latency/context-quality
+measurements remain unavailable as documented in
+[`CONTEXT_PACK_RUNTIME.md`](CONTEXT_PACK_RUNTIME.md).
 
 ## `MissionIntent != Mission`
 
@@ -356,10 +359,11 @@ the durable boundary, not a manual field-by-field checklist:
 | `cli/src/mission/testing.ts` | Injectable fakes (test-only) |
 | `cli/src/mission/*.test.ts` | Contract/policy/persistence tests |
 
-## Out of scope (future issues)
+## Out of scope of this contract document
 
-- Capability Registry + real catalog (#63)
-- Context Compiler with provenance (#64)
-- Durable invocation scheduler, exactly-once, reconciliation (#50)
-- Supervision tree (#59)
-- Katherine/Runstead/Cadinho/Mission Control integration (#65-#68)
+- Capability Registry + real catalog (#63, delivered in M0)
+- Context Compiler with provenance (#64, delivered in M0)
+- Durable invocation scheduler, recovery and reconciliation (#50, delivered in M0)
+- Supervision tree (#59, current M1 epic)
+- Katherine/Runstead/Cadinho integration (#65-#67/#82, gated M3); Mission
+  Control experience (#68, gated M2)

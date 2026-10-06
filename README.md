@@ -168,7 +168,11 @@ Mission Control may evolve toward a spatial Mission Canvas for visualizing Missi
 
 For software work, the owner remains Runstead. Ouroboros invokes the public Runstead capability contract and consumes its verified result/evidence; it does not bypass Runstead through direct vendor coding CLIs or private Runstead state.
 
-Canvas product work remains gated by the durable Mission/Capability/event contracts tracked by #62/#63/#38 and the UI/product issues #68/#70. See docs/ARCHITECTURE.md and Anakyklos/architecture ADR 0004.
+The durable Mission, Capability and event contracts from #62/#63/#38 are
+implemented in `main`. Mission Canvas remains future work: the local-control
+facts tracked by M1/#70 are still being completed, and the experience itself
+is tracked by the gated M2 issue #68. See docs/ARCHITECTURE.md and
+Anakyklos/architecture ADR 0004.
 
 ## Quickstart (baseline)
 
@@ -182,7 +186,8 @@ bun run check
 ```
 
 Baseline: [`docs/BASELINE.md`](docs/BASELINE.md) | CI:
-`.github/workflows/ci.yml` | Testes em quarentena: `scripts/quarantine-manifest.json` (#41).
+`.github/workflows/ci.yml` | Manifesto de quarentena:
+`scripts/quarantine-manifest.json` (0 suites atuais; dívida #41 resolvida).
 
 ---
 
@@ -205,16 +210,30 @@ Baseline: [`docs/BASELINE.md`](docs/BASELINE.md) | CI:
 
 - **Current** — comportamento comprovado hoje: daemon/RPC, session manager,
   event bus, SQLite storage, daemon controls, web frontend (Vite/React),
-  baseline CI, contracts de eventos/provider.
-- **Direction** — executive coordination: Mission durável (#62), Capability
-  Registry (#63), Context Compiler (#64), policy determinística, headless
-  daemon + Mission Control desktop + CLI (#70), self-improving governado (#69).
+  baseline CI e contracts de eventos/provider; Mission e invocations duráveis,
+  policy determinística, Capability Registry/dispatch, Context Compiler e
+  Context Packs bounded/progressivos (#50/#62/#63/#64/#78).
+- **Direction** — a arquitetura-alvo continua maior que o runtime atual.
+  M1 (#70/#59) compõe o daemon headless e completa a boundary local e a CLI
+  factual. #69 fechou a decisão que proíbe self-modification; o ciclo
+  governado entre módulos continua direção, não comportamento implementado.
+  Não declarar completo o composition root local-control.
 - **Legacy** — código que não define mais a direção: SelfModifyingEngine,
   Python sandbox, Council/personas, ArchitectClient, waves, Ralph,
   MCP/SkillLoader, bridges diretas, TUI React/Ink, Council/Memory/Terminal UI.
   Classificação completa em [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
 - **Hypothesis** — decisões pendentes de POC/benchmark: migração Go (#58),
   boundaries Zig/Rust, framework desktop, IPC protocol, service lifecycle.
+
+### Roadmap de milestones
+
+- **M0 — Executive Foundation: concluída** (19 issues fechadas, 0 abertas).
+- **M1 — Local Control Plane: fase atual**; #94 é a leaf P0 selecionada.
+  Outras leaves #94–#105 permanecem em seus estados individuais no GitHub.
+- **M2 — Mission Control Experience: futura/gated** (#68), após os fatos de M1.
+- **M3 — Cross-project Capability Boundaries: futura/gated** (#65–#67/#82);
+  Katherine está deferred e integrações Runstead/Cadinho continuam gated.
+- **Research sem milestone**: #31/#58/#79/#80 permanecem research-gated.
 
 ---
 

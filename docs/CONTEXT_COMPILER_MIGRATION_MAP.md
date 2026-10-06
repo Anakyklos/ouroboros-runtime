@@ -33,8 +33,10 @@ accounting is persisted on the Mission through `MissionStore`. The
 provider-neutral `ContextPlanningCoordinator` compiles a fresh initial pack
 before `PlannerPort`, then forwards its advisory candidate to
 `MissionEngine.proposePlan()` for deterministic policy validation. Replan
-recompiles from durable state and passes a sanitized reason. Concrete provider
-binding and other remaining #78 work are still pending. See
+recompiles from durable state and passes a sanitized reason. Issue #78 is
+closed; provider/model binding is outside this provider-neutral coordinator,
+and provider-reported accounting and quality/latency measurements remain
+unavailable in the current contracts. See
 [`CONTEXT_PACK_RUNTIME.md`](CONTEXT_PACK_RUNTIME.md) for the contract and its
 limits.
 

@@ -232,7 +232,10 @@ Canvas implementation remains blocked until the runtime exposes enough stable fa
 6. versioned local interface/IPC;
 7. failure/degraded states that do not require UI inference.
 
-Issues #68 and #70 remain the product/UI tracking points and retain their dependency gates, including #62/#63/#38.
+The foundational Mission, Capability and event contracts tracked by #62/#63/#38
+are implemented in `main`; they are no longer pending dependencies. M1/#70 is
+still completing the local-control facts needed for an honest interface, and
+the Mission Control experience remains future/gated work under M2/#68.
 
 The cross-project normative decision is Anakyklos/architecture ADR 0004.
 
@@ -242,6 +245,13 @@ The cross-project normative decision is Anakyklos/architecture ADR 0004.
 
 O que o repositório implementa e testa atualmente:
 
+- **Mission durável** e CapabilityInvocation, policy determinística, SQLite
+  persistence, scheduler/recovery/reconciliation (#50/#62)
+- **Capability Registry** e dispatch seam (#63)
+- **Context Compiler** com provenance, Context Packs bounded/progressivos e
+  planner coordinator (#64/#78)
+- **Provider boundary/resilience** (#44/#47), projection/reconnect de eventos
+  do daemon (#38) e trust-model containment
 - **Daemon server** com RPC gateway (JSON-RPC 2.0 sobre Fastify + WebSocket)
 - **SessionManager** com lifecycle de sessões
 - **EventBus** para comunicação cross-module
@@ -274,21 +284,26 @@ direção futura do produto. Ver classificação detalhada em
 
 ## Direction (executive coordination desejada)
 
-A direção arquitetural, conforme `Anakyklos/architecture` (README.md,
-SYSTEM-MAP.md, RFC 0001, VISION.md, policies) + issues #60, #62, #63, #64,
-#69, #70:
+As decisões aceitas em `Anakyklos/architecture` (README.md, SYSTEM-MAP.md,
+RFC 0001, VISION.md, policies) continuam orientando o produto. Mission (#62),
+Capability Registry (#63), Context Compiler (#64) e policy determinística já
+têm implementação comprovada em `main`; não são apenas componentes futuros.
 
-- **Mission** como entidade durável first-class (#62)
-- **Capability Registry** + connector versionado (#63)
-- **Context Compiler** com provenance e ownership externo (#64)
-- **Planning agentic** advisory; **policy determinística** autoritativa
+O trabalho de produto ainda em direção inclui:
+
+- **Composition root headless/local control plane** (#70, M1), com boundary
+  local versionada, daemon como autoridade e CLI factual de admin/recovery;
+- **Mission Control desktop** como interface principal, ainda gated por M1 e
+  tracked em #68/M2;
+- **Planning agentic** advisory; **policy determinística** autoritativa;
 - **Mission-level verification** separada de domain/technical verification
   (SYSTEM-MAP.md: "No higher layer may erase a lower layer's safety or
   correctness checks")
-- **Self-improving** governado (#69): Ouroboros observa → adaptação bounded
-  OR CapabilityGap → Cadinho trial → Runstead implementation → verification
-  → promoção explícita
-- **Execução durável** (#50/#59): supervisão, recovery, reconciliation
+- **Self-improving** governado: o limite arquitetural foi fechado em #69
+  (self-modification do Ouroboros é proibida); o ciclo entre módulos ainda é
+  direção e não deve ser descrito como funcionalidade runtime implementada.
+- **Supervisão e lifecycle bounded** (#59), sobre primitives de execução
+  durável já entregues em #50;
 - **Contexto compilado** sob orçamento, com provenance, sem universal memory
   (policies/resource-efficiency.md: "Ouroboros should coordinate context
   without duplicating all module state")
@@ -313,6 +328,24 @@ SYSTEM-MAP.md, RFC 0001, VISION.md, policies) + issues #60, #62, #63, #64,
   life-domain facts; Tecer owns health/wellness; device modules own device
   state; Ouroboros routes, references, and compiles rather than becoming
   universal source of truth (SYSTEM-MAP.md)
+
+### Roadmap de milestones
+
+- **M0 — Executive Foundation: concluída**. O milestone tem 19 issues
+  fechadas e 0 abertas, incluindo baseline/CI, zero quarantines, Mission e
+  Invocation duráveis, scheduler/recovery/reconciliation, Capability Registry
+  e dispatch, Context Compiler/Context Packs, provider resilience, event
+  projection/reconnect e trust-model containment.
+- **M1 — Local Control Plane: fase atual**. #70 e #59 são os principais
+  epics; #94–#105 são leaves da fase. #94 é a leaf P0 selecionada. M1 não está
+  completo e #97/#98 ou outras children abertas não devem ser marcadas como
+  concluídas por inferência.
+- **M2 — Mission Control Experience: futura/gated** (#68), condicionada a
+  fatos suficientes do Local Control Plane.
+- **M3 — Cross-project Capability Boundaries: futura/gated**. #65 Katherine
+  está deferred; #66/#67 e #82 permanecem blocked/gated.
+- **Research sem milestone**: #31/#58/#79/#80 aguardam seus gates explícitos
+  de evidência; Go (#58) e IPC local ainda não são Current.
 
 ---
 
@@ -400,14 +433,16 @@ Este documento foi reconciliado com as seguintes fontes do repositório
 
 | Issue | Título | Status |
 |-------|--------|--------|
-| #60 | [P0][EPIC][REALIGN] Reorientar Ouroboros para executive coordination | Direction |
-| #61 | [P0][REALIGN] Corrigir source of truth e classificar subsistemas legados | Esta PR |
-| #62 | [P0][ARCH] Definir Mission como entidade durável | Blocked by #61 |
-| #63 | [P0][ARCH] Definir Capability Registry e connector contract | Blocked by #62 |
-| #64 | [P0][ARCH] Definir Context Compiler com provenance | Blocked by #62/#63 |
-| #69 | [P1][ARCH] Self-improving Anakyklos sem self-modifying Ouroboros | Direction |
-| #70 | [P1][ARCH][APP] Ouroboros como daemon headless + Mission Control + CLI | Direction |
-| #35 | Baseline reproduzível e CI | Current |
-| #41 | Resolver quarentenas após classificação do legado | Blocked by #61 |
-| #50 | Execução durável de missões e capability invocations | Current/Direction |
-| #58 | Avaliar Go como runtime core | Hypothesis |
+| #60 | [P0][EPIC][REALIGN] Reorientar Ouroboros para executive coordination | Open program |
+| #61 | [P0][REALIGN] Corrigir source of truth e classificar subsistemas legados | Closed (M0) |
+| #62 | [P0][ARCH] Definir Mission como entidade durável | Closed; implemented (M0) |
+| #63 | [P0][ARCH] Definir Capability Registry e connector contract | Closed; implemented (M0) |
+| #64 | [P0][ARCH] Definir Context Compiler com provenance | Closed; implemented (M0) |
+| #69 | [P1][ARCH] Self-improving Anakyklos sem self-modifying Ouroboros | Closed decision; runtime cycle remains Direction |
+| #70 | [P1][ARCH][APP] Ouroboros como daemon headless + Mission Control + CLI | Open; current M1 epic |
+| #35 | Baseline reproduzível e CI | Closed; current baseline |
+| #41 | Resolver quarentenas após classificação do legado | Closed; resolved, 0 current quarantines |
+| #50 | Execução durável de missões e capability invocations | Closed; implemented (M0) |
+| #58 | Avaliar Go como runtime core | Open; research-gated (no milestone) |
+| #78 | Context Packs bounded/progressivos | Closed; implemented (M0), with documented limits |
+| #94 | Reconciliação de status após M0 | Open; selected M1 leaf |

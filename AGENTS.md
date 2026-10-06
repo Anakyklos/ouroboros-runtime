@@ -63,8 +63,10 @@ bun run check:tests     # testes obrigatórios (imprime quarentena)
 CI: `.github/workflows/ci.yml` roda o mesmo gate em `pull_request` e `push`
 para `main` (sem API keys).
 
-Suites em quarentena (não executadas por `check:tests`, **não** contam como
-verde): `scripts/quarantine-manifest.json`. Dívida de recuperação: issue **#41**.
+O mecanismo e o manifesto de quarentena permanecem documentados em
+`scripts/quarantine-manifest.json`; hoje a lista `files` está vazia e há
+**0 suites em quarentena**. A dívida da issue **#41 foi resolvida**. Uma
+quarentena futura exige uma issue de acompanhamento explícita e atualizada.
 
 > ⚠️ **Não** use `bun run test` sozinho como prova de integridade: use
 > `bun run check`. Não use `skip`/`todo`/`only`/`|| true` para esconder falhas.
@@ -78,6 +80,12 @@ verde): `scripts/quarantine-manifest.json`. Dívida de recuperação: issue **#4
 - Daemon server com RPC gateway (JSON-RPC 2.0 sobre Fastify/WebSocket)
 - SessionManager, EventBus, SQLite storage (better-sqlite3, WAL)
 - Daemon controls (status/mode/emergencyBrake)
+- Mission durável e CapabilityInvocation, policy determinística e persistência
+  SQLite (#62/#50)
+- Capability Registry e dispatch seam (#63)
+- Context Compiler com provenance e Context Packs bounded/progressivos
+  (#64/#78); o planner recebe packs bounded antes de propor planos
+- Scheduler/recovery/reconciliation e projeção/reconexão de eventos (#50/#38)
 - Web frontend (Vite/React) + TUI React/Ink + bridges + Orchestrator com
   personas + WaveExecutor + MemoryManager/MemoryRetriever + SelfModifyingEngine
   + Sandbox* + PromotionManager/Anti-Vibe + local inference
@@ -88,13 +96,16 @@ verde): `scripts/quarantine-manifest.json`. Dívida de recuperação: issue **#4
 
 ### Direction (executive coordination)
 
-- Mission durável first-class (#62), Capability Registry + connectors (#63),
-  Context Compiler com provenance (#64), policy determinística
-- Headless daemon (ouroborosd) autoridade; Mission Control desktop interface
-  principal; CLI pequena para admin/recovery; Katherine interface opcional (#70)
-- Self-improving governado: Ouroboros observa → bounded adaptation OR
-  CapabilityGap → Cadinho trial → Runstead implementation → verification →
-  promoção explícita (#69)
+- M0 (Executive Foundation) está concluída: contracts e primitives duráveis
+  de Mission, Capability, Context, execução e eventos estão em `main`.
+- M1 (Local Control Plane) é a fase executável atual: compor o daemon
+  headless como autoridade, estabelecer boundary local versionada e CLI factual
+  de administração/recovery (#70, #59).
+- Mission Control desktop segue gated para M2 (#68). Integrações Katherine,
+  Runstead e Cadinho seguem gated/deferred em M3 (#65–#67/#82).
+- #69 fechou a decisão arquitetural: self-improving governado não autoriza
+  self-modification. O ciclo de evolução entre módulos continua direção, não
+  comportamento implementado do runtime.
 
 ### Legacy (não é direção)
 
@@ -160,16 +171,30 @@ cli/src/
 
 ## Status do projeto
 
-**Estado**: realinhamento arquitetural em andamento (epic #60).
-Primeiro leaf executável: #61 (source of truth + matriz de legado).
+**Estado**: o programa de realinhamento #60 continua em andamento. M0
+(Executive Foundation) está concluída; M1 (Local Control Plane) é a fase
+executável atual. A leaf P0 selecionada agora é #94 (reconciliação da source of
+truth), não uma issue fechada da fundação.
 
-**Implementado (Current)**: baseline reproduzível (#35), daemon/RPC,
-session manager, event bus, SQLite storage, daemon controls, web frontend,
-contracts de eventos/provider, inferência local, orchestration legada.
+**M0 concluída**: 19 issues fechadas e 0 abertas no milestone M0. Inclui
+baseline reproduzível, zero quarantines, Mission/CapabilityInvocation
+duráveis, scheduler/recovery/reconciliation, Capability Registry/dispatch,
+Context Compiler/Context Packs, provider boundary/resilience, projeção de
+eventos e trust-model containment.
 
-**Em direção (Direction)**: Mission durável (#62), Capability Registry (#63),
-Context Compiler (#64), policy determinística, topologia headless + Mission
-Control + CLI (#70), self-improving governado (#69).
+**Current** também inclui daemon/RPC, session manager, event bus, SQLite,
+daemon controls, web frontend, contracts de eventos/provider, inferência local
+e subsistemas de orchestration legados. Current descreve comportamento; código
+legado não se torna Direction por estar presente.
+
+**M1 atual**: #70 e #59 são os principais epics; #94–#105 são leaves abertas
+ou gated nesta fase. #94 é a leaf P0 selecionada agora. Não inferir conclusão
+de #97/#98 ou de qualquer outra child ainda aberta.
+
+**M2 futura/gated**: #68, Mission Control Experience, depende dos fatos do
+Local Control Plane. **M3 futura/gated**: #65 Katherine (deferred), #66/#67
+Cadinho/Runstead e #82 (blocked). **Research sem milestone**: #31/#58/#79/#80,
+avançam somente após seus gates de evidência.
 
 **Legado classificado**: ver [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
 
@@ -179,14 +204,16 @@ Control + CLI (#70), self-improving governado (#69).
 
 | Issue | Tema | Status |
 |---|---|---|
-| #60 | Epic realinhamento executive coordination | Direction |
-| #61 | Source of truth + matriz de legado | Esta PR |
-| #62 | Mission durável | Blocked by #61 |
-| #63 | Capability Registry + connectors | Blocked by #62 |
-| #64 | Context Compiler com provenance | Blocked by #62/#63 |
-| #69 | Self-improving != self-modifying | Direction |
-| #70 | Headless daemon + Mission Control + CLI | Direction |
-| #35 | Baseline reproduzível e CI | Current |
-| #41 | Resolver quarentenas após classificação | Blocked by #61 |
-| #50 | Execução durável | Current/Direction |
-| #58 | Avaliar Go como runtime core | Hypothesis |
+| #60 | Epic realinhamento executive coordination | Open program |
+| #61 | Source of truth + matriz de legado | Closed (M0) |
+| #62 | Mission durável | Closed; implemented (M0) |
+| #63 | Capability Registry + connectors | Closed; implemented (M0) |
+| #64 | Context Compiler com provenance | Closed; implemented (M0) |
+| #69 | Self-improving != self-modifying | Closed decision (M0); runtime cycle remains Direction |
+| #70 | Headless daemon + Mission Control + CLI | Open; current M1 epic |
+| #35 | Baseline reproduzível e CI | Closed; current baseline |
+| #41 | Resolver quarentenas após classificação | Closed; resolved, 0 current quarantines |
+| #50 | Execução durável | Closed; implemented (M0) |
+| #58 | Avaliar Go como runtime core | Open; research-gated (no milestone) |
+| #78 | Context Packs bounded/progressivos | Closed; implemented (M0), with documented limits |
+| #94 | Reconciliação de status após M0 | Open; selected M1 leaf |
