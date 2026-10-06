@@ -270,7 +270,6 @@ O que o repositório implementa e testa atualmente:
 - **TUI React/Ink** com tema Emerald
 - **Web frontend** Vite/React (Mission Control, Swiss, settings, terminal pane,
   memory panel, Council quadrants)
-- **SelfModifyingEngine** com mutations, backup, rollback, git commit
 - **PromotionManager** / **Anti-Vibe workflow** (playground → src gates)
 - **Bridges** diretas: Antigravity, Gemini CLI, Jules, local inference
 - **Ralph loop** (opencode automation)

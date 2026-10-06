@@ -87,7 +87,7 @@ quarentena futura exige uma issue de acompanhamento explícita e atualizada.
   (#64/#78); o planner recebe packs bounded antes de propor planos
 - Scheduler/recovery/reconciliation e projeção/reconexão de eventos (#50/#38)
 - Web frontend (Vite/React) + TUI React/Ink + bridges + Orchestrator com
-  personas + WaveExecutor + MemoryManager/MemoryRetriever + SelfModifyingEngine
+  personas + WaveExecutor + MemoryManager/MemoryRetriever
   + Sandbox* + PromotionManager/Anti-Vibe + local inference
 - Baseline CI (#35)
 
@@ -109,7 +109,7 @@ quarentena futura exige uma issue de acompanhamento explícita e atualizada.
 
 ### Legacy (não é direção)
 
-SelfModifyingEngine, PersistentPythonREPL, Council/personas, ArchitectClient (persona), WaveExecutor ("agent wave"),
+SelfModifyingEngine (retired in #95), PersistentPythonREPL, Council/personas, ArchitectClient (persona), WaveExecutor ("agent wave"),
 Anti-Vibe como code gate, bridges diretas (Antigravity/Gemini/Jules), Ralph,
 MCP/SkillLoader, Council/Memory/Terminal UI, Electron (direção), TUI React/Ink.
 Classificação completa: [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
@@ -145,7 +145,7 @@ cli/src/
 ├── orchestration/  # Orchestrator, WaveExecutor, Memory, Promotion (classificar)
 ├── ports/          # Interface definitions (hexagonal)
 ├── providers/      # Agent execution engines
-├── runtime/        # SelfModifyingEngine, Sandbox* (LEGACY: RETIRE)
+├── runtime/        # PersistentPythonREPL, Sandbox* (LEGACY: RETIRE)
 └── tui/            # React/Ink TUI (LEGACY: RETIRE)
 ```
 
