@@ -106,8 +106,9 @@ Properties:
 
 Authoritative list: [`scripts/quarantine-manifest.json`](../scripts/quarantine-manifest.json).
 
-**Recovery debt tracker:** [issue #41](https://github.com/Anakyklos/ouroboros-runtime/issues/41)
-(field `tracking_issue` in the manifest). Issue **#35** only establishes the baseline gate; it must not be the sole tracker after close.
+Issue [#41](https://github.com/Anakyklos/ouroboros-runtime/issues/41) tracked
+the final quarantined suite and is resolved by restoring it to the mandatory
+runner with deterministic local gate strategies.
 
 Printed at the start of every `bun run check:tests` run. The runner **fails** if:
 
@@ -121,16 +122,17 @@ Rules for quarantine:
 - Suites are **not** executed in the mandatory gate  
 - Failures are **not** counted as pass  
 - Files are **not** deleted or renamed to hide them  
-- Each entry has `tracking_issue` (or inherits global) — currently **#41**  
+- Each entry must have `tracking_issue` (or inherit the global value)
 - Re-enable when the `reactivate_when` condition in the manifest is met; track progress on **#41**  
 - Mandatory suite size is not reduced just to keep CI green  
 - No `|| true`, `continue-on-error`, or broad silence filters on required checks
 
-Exactly **1 suite remains quarantined** (summary):
-
-| File | Classification |
-|------|----------------|
-| `cli/src/orchestration/AntiVibeWorkflow.test.ts` | product/test partial fail |
+Exactly **0 suites remain quarantined**. The manifest's `files` list is empty;
+the final #41 recovery reactivated `AntiVibeWorkflow.test.ts` in the mandatory
+runner after correcting fixture gates, approval-state expectations, and the
+spec/report assertions. This restores test coverage for legacy compatibility
+without changing Ouroboros product scope: Runstead owns software verification
+and Cadinho owns capability promotion/evolution.
 
 ## Known limitations
 
