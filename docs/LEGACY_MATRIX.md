@@ -144,7 +144,7 @@
 
 | Campo | Valor |
 |---|---|
-| **Subsystem** | `cli/src/bridges/JulesBridge.ts` (+ `jules-types.ts`, `test-persistent-bridge.ts`) |
+| **Subsystem** | `cli/src/bridges/JulesBridge.ts` (+ `jules-types.ts`) |
 | **Current responsibility/evidence** | Bridge para Jules (implementador assíncrono via Gemini CLI extension). |
 | **Decision** | **ADAPT** — uso via capability/connector versionado, não bridge hardcoded no core. |
 | **Future owner/boundary** | Runstead (software work) ou connector versionado; Ouroboros apenas formula objetivo/acceptance e recebe evidence. |
