@@ -7,8 +7,7 @@
 
 import type { StoragePort, Session, SessionSummary, SessionMemory, SessionCheckpoint } from '../ports/storage.port.js';
 import type { EventBus } from './event-bus.js';
-import { Orchestrator, createTask } from '../orchestration/index.js';
-import { PersonaType } from '../orchestration/types.js';
+import type { Orchestrator } from '../orchestration/Orchestrator.js';
 import {
     type DaemonMode,
     type DaemonStatusResult,
@@ -533,6 +532,7 @@ export class SessionManager {
             status: this.acceptsNewWork() ? data.status ?? "active" : "paused",
         } as Omit<Session, "id" | "createdAt" | "updatedAt">);
 
+        const { Orchestrator } = await import('../orchestration/Orchestrator.js');
         const orchestrator = new Orchestrator(
             { verbose: true, skipPhaseValidation: true },
             this.eventBus
@@ -586,6 +586,7 @@ export class SessionManager {
         }
 
         if (!this.activeOrchestrators.has(id)) {
+            const { Orchestrator } = await import('../orchestration/Orchestrator.js');
             const orchestrator = new Orchestrator(
                 { verbose: true, skipPhaseValidation: true },
                 this.eventBus
@@ -777,6 +778,10 @@ export class SessionManager {
             throw e;
         }
 
+        const [{ createTask }, { PersonaType }] = await Promise.all([
+            import('../orchestration/Orchestrator.js'),
+            import('../orchestration/types.js'),
+        ]);
         const task = createTask(prompt, PersonaType.DEVELOPER, {
             id: `task_${sessionId}_${Date.now()}`,
         });

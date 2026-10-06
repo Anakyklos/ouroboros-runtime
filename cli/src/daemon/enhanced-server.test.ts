@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { DaemonServer } from './server.js';
+import { LegacyRpcGateway } from './legacy-rpc-gateway.js';
 import { DAEMON_EVENT_VERSION } from "../../../shared/daemon-event-contract.js";
+import { LOCAL_CONTROL_PROTOCOL_VERSION } from "../../../shared/local-control-read-contract.js";
 import { EventBus } from './event-bus.js';
 import type { StoragePort } from "../ports/storage.port.js";
 import { SqliteMissionStore } from "../mission/sqlite-mission-store.js";
@@ -29,9 +31,9 @@ class MockStorage implements StoragePort {
   async clear() { }
 }
 
-function makeInvocation(missionId: string): CapabilityInvocation {
+function makeInvocation(missionId: string, invocationId = "invocation-server-1"): CapabilityInvocation {
   return {
-    invocationId: "invocation-server-1",
+    invocationId,
     missionId,
     stepId: "step-server-1",
     capabilityId: "runstead.code-review",
@@ -150,6 +152,187 @@ describe("DaemonServer", () => {
     expect(data.result).toBeDefined();
   });
 
+  it("serves factual local-control reads from the headless daemon", async () => {
+    await missionStore.saveInvocation(makeInvocation("mission-server-1"));
+    const protocolResponse = await fetch(`http://127.0.0.1:${TEST_PORT}/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "local-control-protocol",
+        method: "local_control.read",
+        params: { operation: "protocol.negotiate", supportedVersions: [LOCAL_CONTROL_PROTOCOL_VERSION] },
+      }),
+    });
+    const protocolBody = await protocolResponse.json() as { result?: { ok?: boolean; protocolVersion?: number } };
+    expect(protocolBody.result).toMatchObject({ ok: true, protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION });
+
+    const healthResponse = await fetch(`http://127.0.0.1:${TEST_PORT}/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "local-control-health",
+        method: "local_control.read",
+        params: { operation: "health", protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION },
+      }),
+    });
+    const healthBody = await healthResponse.json() as { result?: { data?: { healthy?: boolean } } };
+    expect(healthBody.result?.data?.healthy).toBe(true);
+
+    const response = await fetch(`http://127.0.0.1:${TEST_PORT}/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "local-control-status",
+        method: "local_control.read",
+        params: { operation: "status", protocolVersion: 1 },
+      }),
+    });
+
+    const body = await response.json() as { result?: { data?: Record<string, unknown> } };
+    expect(body.result?.data?.processStatus).toBe("alive");
+
+    const missionResponse = await fetch(`http://127.0.0.1:${TEST_PORT}/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "local-control-missions",
+        method: "local_control.read",
+        params: { operation: "mission.list", protocolVersion: 1 },
+      }),
+    });
+    const missionBody = await missionResponse.json() as { result?: { data?: { items?: Array<Record<string, unknown>> } } };
+    expect(missionBody.result?.data?.items).toContainEqual(expect.objectContaining({
+      missionId: "mission-server-1",
+      state: "waiting_for_provider",
+    }));
+    expect(JSON.stringify(missionBody)).not.toContain("Authorization");
+
+    const invocationResponse = await fetch(`http://127.0.0.1:${TEST_PORT}/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "local-control-invocations",
+        method: "local_control.read",
+        params: { operation: "invocation.list", protocolVersion: 1 },
+      }),
+    });
+    const invocationBody = await invocationResponse.json() as { result?: { data?: { items?: Array<Record<string, unknown>> } } };
+    expect(invocationBody.result?.data?.items).toContainEqual(expect.objectContaining({
+      invocationId: "invocation-server-1",
+      missionId: "mission-server-1",
+      status: "pending",
+    }));
+
+    const capabilitiesResponse = await fetch(`http://127.0.0.1:${TEST_PORT}/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "local-control-capabilities",
+        method: "local_control.read",
+        params: { operation: "capability_registry.list", protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION },
+      }),
+    });
+    const capabilitiesBody = await capabilitiesResponse.json() as { result?: { data?: { available?: boolean } } };
+    expect(capabilitiesBody.result?.data?.available).toBe(false);
+  });
+
+  it("reconnects with a fresh authoritative Mission and Invocation snapshot", async () => {
+    const connectAndReadSnapshot = async () => {
+      const socket = new WebSocket(`ws://127.0.0.1:${TEST_PORT}/ws`);
+      const message = await new Promise<Record<string, unknown>>((resolve, reject) => {
+        socket.addEventListener("message", (event) => resolve(JSON.parse(String(event.data)) as Record<string, unknown>), { once: true });
+        socket.addEventListener("error", () => reject(new Error("websocket connection failed")), { once: true });
+      });
+      socket.close();
+      await new Promise<void>((resolve) => {
+        if (socket.readyState === WebSocket.CLOSED) resolve();
+        else socket.addEventListener("close", () => resolve(), { once: true });
+      });
+      return message;
+    };
+
+    await missionStore.saveInvocation(makeInvocation("mission-server-1"));
+    const first = await connectAndReadSnapshot();
+    try {
+      await missionStore.updateMission("mission-server-1", {
+        state: MissionState.EXECUTING,
+        updatedAt: "2026-09-04T00:02:00.000Z",
+      });
+      const reconnected = await connectAndReadSnapshot();
+      const data = reconnected.data as { missions: Array<Record<string, unknown>>; invocations: Array<Record<string, unknown>> };
+
+      expect(first.event).toBe("snapshot");
+      expect(reconnected.event).toBe("snapshot");
+      expect(data.missions).toContainEqual(expect.objectContaining({
+        missionId: "mission-server-1",
+        state: "executing",
+      }));
+      expect(data.invocations).toContainEqual(expect.objectContaining({
+        invocationId: "invocation-server-1",
+        missionId: "mission-server-1",
+      }));
+    } finally {
+      await missionStore.updateMission("mission-server-1", {
+        state: MissionState.WAITING_FOR_PROVIDER,
+        updatedAt: "2026-09-04T00:03:00.000Z",
+      });
+    }
+  });
+
+  it("reports legacy agent and delegate methods as unsupported without executing them", async () => {
+    const methods = [
+      { method: "agent.input", params: { sessionId: "missing", prompt: "must not run" } },
+      { method: "agent.interrupt", params: { sessionId: "missing" } },
+      { method: "agent.resume", params: { sessionId: "missing" } },
+      { method: "daemon.delegate", params: { agent: "glm", prompt: "must not run" } },
+      { method: "daemon.list_agents" },
+    ];
+
+    for (const [index, request] of methods.entries()) {
+      const response = await fetch(`http://127.0.0.1:${TEST_PORT}/rpc`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: `legacy-${index}`, ...request }),
+      });
+      const body = await response.json() as { error?: { code?: number; message?: string } };
+      expect(body.error?.code).toBe(-32601);
+      expect(body.error?.message).toContain("Method not found");
+    }
+  });
+
+  it("exposes legacy methods only when a legacy gateway is explicitly composed", async () => {
+    const legacyGateway = new LegacyRpcGateway({
+      checkBridgeAvailability: async () => ({ gemini: false, antigravity: false, jules: false }),
+    } as never, storage, new EventBus());
+    const legacyServer = new DaemonServer(storage, {
+      port: TEST_PORT + 1,
+      host: "127.0.0.1",
+    }, new EventBus(), undefined, legacyGateway);
+
+    try {
+      await legacyServer.start();
+      const response = await fetch(`http://127.0.0.1:${TEST_PORT + 1}/rpc`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "legacy-opt-in", method: "daemon.list_agents" }),
+      });
+      const body = await response.json() as { result?: { agents?: Record<string, string> } };
+      expect(body.result?.agents).toMatchObject({
+        gemini: "unavailable",
+        antigravity: "unavailable",
+        jules: "unavailable",
+      });
+    } finally {
+      await legacyServer.stop();
+    }
+  });
+
   it("should reject invalid JSON-RPC", async () => {
     const response = await fetch(`http://127.0.0.1:${TEST_PORT}/rpc`, {
       method: "POST",
@@ -191,7 +374,7 @@ describe("DaemonServer", () => {
 
       expect(message.version).toBe(DAEMON_EVENT_VERSION);
       expect(message.event).toBe("daemon");
-      expect(message.sequence).toBe(2);
+      expect(typeof message.sequence).toBe("number");
       expect(message.data).toMatchObject({ type: "ready", port: TEST_PORT });
       expect(messages).toHaveLength(2);
     } finally {
@@ -222,11 +405,10 @@ describe("DaemonServer", () => {
     try {
       expect(message.version).toBe(1);
       expect(typeof message.eventId).toBe("string");
-      expect(message.sequence).toBe(2);
+      expect(typeof message.sequence).toBe("number");
       expect(message.event).toBe("snapshot");
       expect(typeof message.timestamp).toBe("string");
       expect(message.data).toMatchObject({
-        cursor: 2,
         status: { processStatus: "alive" },
         protocolVersion: DAEMON_EVENT_VERSION,
         transportCapabilities: {
@@ -238,6 +420,7 @@ describe("DaemonServer", () => {
         },
         missions: [{ missionId: "mission-server-1", state: "waiting_for_provider" }],
       });
+      expect(message.sequence).toBe((message.data as Record<string, unknown>).cursor);
       expect(JSON.stringify(message)).not.toContain("Authorization");
       expect(JSON.stringify(message)).not.toContain("private prompt");
     } finally {
@@ -295,11 +478,11 @@ describe("DaemonServer", () => {
       });
 
       const invocationEvent = nextMessage();
-      await missionStore.saveInvocation(makeInvocation(eventMissionId));
+      await missionStore.saveInvocation(makeInvocation(eventMissionId, "invocation-server-events"));
       const invocationMessage = await invocationEvent;
       expect(invocationMessage.event).toBe("capability_invocation");
       expect(invocationMessage.data).toMatchObject({
-        invocationId: "invocation-server-1",
+        invocationId: "invocation-server-events",
         missionId: eventMissionId,
         status: "pending",
       });

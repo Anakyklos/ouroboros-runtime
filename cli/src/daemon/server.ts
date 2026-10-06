@@ -8,7 +8,7 @@
 import Fastify, { FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
 import { EventBus, globalEventBus } from './event-bus.js';
-import { RpcGateway } from './rpc-gateway.js';
+import { RpcGateway, type DaemonRpcGatewayPort } from './rpc-gateway.js';
 import { DaemonProjection, type ProjectionClient } from './daemon-projection.js';
 import { projectInvocation, projectMission } from './durable-projection.js';
 import {
@@ -17,7 +17,6 @@ import {
     type AllowedDaemonEvent,
     type DaemonEventDataMap,
 } from '../../../shared/daemon-event-contract.js';
-import { GatewayOrchestrator } from '../orchestration/GatewayOrchestrator.js';
 import type { StoragePort } from '../ports/storage.port.js';
 import type { MissionMutation, MissionStore } from '../mission/ports.js';
 
@@ -37,8 +36,7 @@ export class DaemonServer {
     private app: FastifyInstance;
     private config: DaemonConfig;
     private eventBus: EventBus;
-    private rpcGateway: RpcGateway;
-    private gatewayOrchestrator: GatewayOrchestrator;
+    private rpcGateway: DaemonRpcGatewayPort;
     private projection: DaemonProjection;
     private eventForwardingUnsubscribe: (() => void) | null = null;
     private missionMutationUnsubscribe: (() => void) | null = null;
@@ -50,20 +48,13 @@ export class DaemonServer {
         config: Partial<DaemonConfig> = {},
         eventBus: EventBus = globalEventBus,
         missionStore?: MissionStore,
+        rpcGateway?: DaemonRpcGatewayPort,
     ) {
         this.config = { ...DEFAULT_CONFIG, ...config };
         this.eventBus = eventBus;
-        this.gatewayOrchestrator = new GatewayOrchestrator({}, eventBus);
-        
-        if (this.config.apiKey) {
-            this.gatewayOrchestrator.initialize(this.config.apiKey);
-        }
-        
-        this.rpcGateway = new RpcGateway(
-            this.gatewayOrchestrator,
+        this.rpcGateway = rpcGateway ?? new RpcGateway(
             storage,
             eventBus,
-            this.config.apiKey,
             missionStore,
         );
         this.projection = new DaemonProjection({

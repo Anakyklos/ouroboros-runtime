@@ -252,7 +252,12 @@ O que o repositório implementa e testa atualmente:
   planner coordinator (#64/#78)
 - **Provider boundary/resilience** (#44/#47), projection/reconnect de eventos
   do daemon (#38) e trust-model containment
-- **Daemon server** com RPC gateway (JSON-RPC 2.0 sobre Fastify + WebSocket)
+- **Daemon server** com RPC gateway (JSON-RPC 2.0 sobre Fastify + WebSocket).
+  A composição default é headless/provider-independent: serve health/status,
+  `local_control.read` e projeções duráveis de Mission/Invocation sem construir
+  o `GatewayOrchestrator`. A superfície direta `agent.*`/`daemon.delegate`
+  permanece disponível somente ao compor explicitamente o gateway legacy;
+  esse adapter continua legado e não é parte do caminho default.
 - **SessionManager** com lifecycle de sessões
 - **EventBus** para comunicação cross-module
 - **GatewayOrchestrator** integrando bridges (Antigravity, Gemini, Jules,

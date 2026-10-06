@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, mock, beforeEach, spyOn } from 'bun:test';
-import { RpcGateway } from './rpc-gateway.js';
+import { LegacyRpcGateway } from './legacy-rpc-gateway.js';
 import { RPC_ERROR_CODES } from '../ports/rpc.port.js';
 import type { RpcRequest } from '../ports/rpc.port.js';
 import type { StoragePort } from '../ports/storage.port.js';
@@ -141,7 +141,7 @@ describe('RpcGateway', () => {
             })),
         } as unknown as GatewayOrchestrator;
 
-        gateway = new RpcGateway(mockOrchestrator, mockStorage, mockEventBus);
+        gateway = new LegacyRpcGateway(mockOrchestrator, mockStorage, mockEventBus);
     });
 
     describe('handleRequest', () => {
@@ -298,7 +298,7 @@ describe('RpcGateway', () => {
                 getMission: mock(async () => projection.liveMissions[0]),
                 getInvocation: mock(async () => projection.liveInvocations[0]),
             } as unknown as MissionStore;
-            const factGateway = new RpcGateway(
+            const factGateway = new LegacyRpcGateway(
                 mockOrchestrator,
                 mockStorage,
                 new EventBus(),
