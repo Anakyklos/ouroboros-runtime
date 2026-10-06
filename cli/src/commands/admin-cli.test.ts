@@ -184,6 +184,18 @@ describe("factual admin CLI", () => {
     await expect(transport.request({ operation: "status", protocolVersion: 1 })).rejects.toBeInstanceOf(RpcProtocolError);
   });
 
+  it("rejects a JSON-RPC envelope carrying an unknown field", async () => {
+    const transport = new LoopbackJsonRpcTransport({
+      baseUrl: "http://127.0.0.1:7777",
+      fetch: async (_input, init) => {
+        const request = JSON.parse(String(init?.body)) as { id: string };
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {}, privateEnvelope: "PRIVATE_RPC_FIELD" }), { status: 200 });
+      },
+    });
+
+    await expect(transport.request({ operation: "status", protocolVersion: 1 })).rejects.toBeInstanceOf(RpcProtocolError);
+  });
+
   it("classifies malformed local-control payloads separately from RPC envelopes", async () => {
     const transport: LocalControlReadTransport = {
       request: async (request) => request.operation === "protocol.negotiate"
@@ -252,4 +264,109 @@ describe("factual admin CLI", () => {
     const output = cli.stdout.join("");
     expect(output).not.toMatch(/Council|persona|CoT|reasoning|originalIntent|sanitizedOriginalIntent|acceptanceCriteria|private prompt/i);
   });
+
+  const unsafeResponses: Array<{ name: string; args: string[]; operation: "health" | "status" | "mission.list" | "mission.show" | "capability_registry.list"; response: () => unknown; sentinel: string }> = [
+    {
+      name: "mission.show with originalIntent",
+      args: ["mission", "show", "mission-1"],
+      operation: "mission.show",
+      response: () => success("mission.show", { available: true, item: { ...mission, originalIntent: "PRIVATE_ORIGINAL_INTENT" } }),
+      sentinel: "PRIVATE_ORIGINAL_INTENT",
+    },
+    {
+      name: "mission.list item with secret",
+      args: ["missions"],
+      operation: "mission.list",
+      response: () => success("mission.list", { available: true, items: [{ ...mission, secret: "PRIVATE_MISSION_SECRET" }] }),
+      sentinel: "PRIVATE_MISSION_SECRET",
+    },
+    {
+      name: "status with an unexpected private field",
+      args: ["status"],
+      operation: "status",
+      response: () => success("status", { ...status, unexpected: "PRIVATE_STATUS_FIELD" }),
+      sentinel: "PRIVATE_STATUS_FIELD",
+    },
+    {
+      name: "status memory with an extra field",
+      args: ["status"],
+      operation: "status",
+      response: () => success("status", { ...status, memory: { ...status.memory, privateBytes: "PRIVATE_MEMORY_FIELD" } }),
+      sentinel: "PRIVATE_MEMORY_FIELD",
+    },
+    {
+      name: "status metric with an extra field",
+      args: ["status"],
+      operation: "status",
+      response: () => success("status", { ...status, activeSessions: { available: false, reason: "not tracked", secret: "PRIVATE_METRIC_FIELD" } }),
+      sentinel: "PRIVATE_METRIC_FIELD",
+    },
+    {
+      name: "status capabilities with an extra field",
+      args: ["status"],
+      operation: "status",
+      response: () => success("status", { ...status, capabilities: { ...status.capabilities, privateMode: "PRIVATE_CAPABILITY_FIELD" } }),
+      sentinel: "PRIVATE_CAPABILITY_FIELD",
+    },
+    {
+      name: "health runtime with an extra field",
+      args: ["version"],
+      operation: "health",
+      response: () => success("health", {
+        healthy: true,
+        runtime: { processId: 42, processTitle: "ouroboros-daemon", runtime: "bun", runtimeVersion: "1.3.9", privateBuild: "PRIVATE_RUNTIME_FIELD" },
+        uptimeSeconds: 99,
+        timestamp: "2026-10-06T00:00:00.000Z",
+      }),
+      sentinel: "PRIVATE_RUNTIME_FIELD",
+    },
+    {
+      name: "capability descriptor with a secret",
+      args: ["capabilities"],
+      operation: "capability_registry.list",
+      response: () => success("capability_registry.list", { available: true, items: [{ ...descriptor, secret: "PRIVATE_DESCRIPTOR_SECRET" }], truncated: false }),
+      sentinel: "PRIVATE_DESCRIPTOR_SECRET",
+    },
+    {
+      name: "mission.list with malformed completeness",
+      args: ["missions"],
+      operation: "mission.list",
+      response: () => success("mission.list", {
+        available: true,
+        items: [mission],
+        completeness: { liveIncluded: "1", liveOmitted: 0, historicalIncluded: 0, historicalOmitted: 0, truncated: false, privateNote: "PRIVATE_COMPLETENESS_FIELD" },
+      }),
+      sentinel: "PRIVATE_COMPLETENESS_FIELD",
+    },
+    {
+      name: "mission.show collection wrapper with a private field",
+      args: ["mission", "show", "mission-1"],
+      operation: "mission.show",
+      response: () => success("mission.show", { available: true, item: mission, privateWrapper: "PRIVATE_WRAPPER_FIELD" }),
+      sentinel: "PRIVATE_WRAPPER_FIELD",
+    },
+    {
+      name: "local-control response wrapper with a private field",
+      args: ["status"],
+      operation: "status",
+      response: () => ({ ...success("status", status), privateEnvelope: "PRIVATE_ENVELOPE_FIELD" }),
+      sentinel: "PRIVATE_ENVELOPE_FIELD",
+    },
+    {
+      name: "failure with an undeclared code",
+      args: ["status"],
+      operation: "status",
+      response: () => ({ ok: false, code: "UNKNOWN_PRIVATE_FAILURE", message: "PRIVATE_FAILURE_MESSAGE" }),
+      sentinel: "PRIVATE_FAILURE_MESSAGE",
+    },
+  ];
+
+  for (const testCase of unsafeResponses) {
+    it(`rejects ${testCase.name} without exposing its private fields`, async () => {
+      const cli = harness(new ScriptedTransport({ [testCase.operation]: testCase.response() }));
+
+      expect(await cli.run(testCase.args)).toBe(1);
+      expect(`${cli.stdout.join("")}${cli.stderr.join("")}`).not.toContain(testCase.sentinel);
+    });
+  }
 });
