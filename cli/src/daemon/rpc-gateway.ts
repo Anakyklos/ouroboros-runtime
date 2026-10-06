@@ -14,6 +14,7 @@ import { LocalControlReadService, currentLocalControlRuntimeIdentity } from './l
 import { projectDaemonStatus } from './durable-projection.js';
 import type { MissionStore } from '../mission/ports.js';
 import type { CapabilityRegistryApi } from '../capabilities/registry.js';
+import { LocalControlCommandService, type MissionCommandAuthority } from './local-control-command.js';
 
 export interface DaemonRpcGatewayPort extends RpcPort {
     getProjectionSnapshot(cursor?: number): Promise<DaemonSnapshot>;
@@ -24,12 +25,14 @@ export class RpcGateway implements DaemonRpcGatewayPort {
     private readonly methods = new Map<string, RpcMethodHandler>();
     private readonly sessionManager: SessionManager;
     private readonly localControlRead: LocalControlReadService;
+    private readonly localControlCommand?: LocalControlCommandService;
 
     constructor(
         storage: StoragePort,
         eventBus: EventBus,
         missionStore?: MissionStore,
         capabilityRegistry?: Pick<CapabilityRegistryApi, 'listDescriptors'>,
+        missionCommandAuthority?: MissionCommandAuthority,
     ) {
         this.sessionManager = new SessionManager(storage, eventBus);
         this.localControlRead = new LocalControlReadService({
@@ -38,6 +41,9 @@ export class RpcGateway implements DaemonRpcGatewayPort {
             missionStore,
             capabilityRegistry,
         });
+        this.localControlCommand = missionCommandAuthority
+            ? new LocalControlCommandService(missionCommandAuthority)
+            : undefined;
         this.registerSystemMethods();
         this.registerReadOnlySessionMethods();
         this.registerDaemonControlMethods();
@@ -145,5 +151,10 @@ export class RpcGateway implements DaemonRpcGatewayPort {
 
     private registerLocalControlMethods(): void {
         this.registerMethod('local_control.read', async (params) => this.localControlRead.read(params));
+        this.registerMethod('local_control.command', async (params) =>
+            this.localControlCommand
+                ? this.localControlCommand.execute(params)
+                : { ok: false, code: 'AUTHORITY_UNAVAILABLE', message: 'Mission command authority is unavailable' },
+        );
     }
 }

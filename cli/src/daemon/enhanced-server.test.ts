@@ -3,9 +3,13 @@ import { DaemonServer } from './server.js';
 import { LegacyRpcGateway } from './legacy-rpc-gateway.js';
 import { DAEMON_EVENT_VERSION } from "../../../shared/daemon-event-contract.js";
 import { LOCAL_CONTROL_PROTOCOL_VERSION } from "../../../shared/local-control-read-contract.js";
+import { LOCAL_CONTROL_COMMAND_PROTOCOL_VERSION } from "../../../shared/local-control-command-contract.js";
 import { EventBus } from './event-bus.js';
 import type { StoragePort } from "../ports/storage.port.js";
 import { SqliteMissionStore } from "../mission/sqlite-mission-store.js";
+import { MissionEngine } from "../mission/mission-engine.js";
+import { PlanPolicyValidator } from "../mission/policy.js";
+import { FakeCapabilityResolver } from "../mission/testing.js";
 import {
   EffectClass,
   InvocationStatus,
@@ -109,11 +113,15 @@ describe("DaemonServer", () => {
     };
     await missionStore.createMission(mission);
 
+    const resolver = new FakeCapabilityResolver();
     server = new DaemonServer(storage, {
       port: TEST_PORT,
       host: "127.0.0.1",
       enableWebUI: false,
-    }, eventBus, missionStore);
+    }, eventBus, missionStore, undefined, new MissionEngine({
+      store: missionStore,
+      policy: new PlanPolicyValidator(resolver),
+    }));
 
     await server.start();
     expect(eventBus.listenerCount("*")).toBe(1);
@@ -591,5 +599,28 @@ describe("DaemonServer", () => {
         socket.addEventListener("close", () => resolve(), { once: true });
       });
     }
+  });
+
+  it("serves a durable Mission command through the composed daemon authority", async () => {
+    const response = await fetch(`http://127.0.0.1:${TEST_PORT}/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "pause-through-daemon",
+        method: "local_control.command",
+        params: {
+          operation: "mission.pause",
+          protocolVersion: LOCAL_CONTROL_COMMAND_PROTOCOL_VERSION,
+          missionId: "mission-server-1",
+          reason: "integration test hold",
+          pausedBy: "operator-test",
+        },
+      }),
+    });
+    const body = await response.json() as { result?: { ok?: boolean; data?: { missionId?: string; state?: string } } };
+    expect(response.status).toBe(200);
+    expect(body.result).toMatchObject({ ok: true, data: { missionId: "mission-server-1", state: "paused" } });
+    expect((await missionStore.getMission("mission-server-1"))?.state).toBe(MissionState.PAUSED);
   });
 });
