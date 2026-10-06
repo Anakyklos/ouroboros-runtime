@@ -337,9 +337,9 @@ O trabalho de produto ainda em direção inclui:
   e dispatch, Context Compiler/Context Packs, provider resilience, event
   projection/reconnect e trust-model containment.
 - **M1 — Local Control Plane: fase atual**. #70 e #59 são os principais
-  epics; #94–#105 são leaves da fase. #94 é a leaf P0 selecionada. M1 não está
-  completo e #97/#98 ou outras children abertas não devem ser marcadas como
-  concluídas por inferência.
+  epics; child work está decomposto e rastreado em #94–#105. Consulte o GitHub
+  para os estados vivos `ready`, `blocked` e `closed`; M1 não está completo e
+  este documento não seleciona a próxima child nem presume conclusão de #97/#98.
 - **M2 — Mission Control Experience: futura/gated** (#68), condicionada a
   fatos suficientes do Local Control Plane.
 - **M3 — Cross-project Capability Boundaries: futura/gated**. #65 Katherine
@@ -445,4 +445,4 @@ Este documento foi reconciliado com as seguintes fontes do repositório
 | #50 | Execução durável de missões e capability invocations | Closed; implemented (M0) |
 | #58 | Avaliar Go como runtime core | Open; research-gated (no milestone) |
 | #78 | Context Packs bounded/progressivos | Closed; implemented (M0), with documented limits |
-| #94 | Reconciliação de status após M0 | Open; selected M1 leaf |
+| #94 | Reconciliação de status após M0 | Reconciliação documentada por esta mudança; estado vivo no GitHub |

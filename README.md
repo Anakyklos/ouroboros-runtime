@@ -228,8 +228,9 @@ Baseline: [`docs/BASELINE.md`](docs/BASELINE.md) | CI:
 ### Roadmap de milestones
 
 - **M0 — Executive Foundation: concluída** (19 issues fechadas, 0 abertas).
-- **M1 — Local Control Plane: fase atual**; #94 é a leaf P0 selecionada.
-  Outras leaves #94–#105 permanecem em seus estados individuais no GitHub.
+- **M1 — Local Control Plane: fase atual**; child work está decomposto e
+  rastreado em #94–#105. Consulte o GitHub para o estado executável atual de
+  cada issue; este README não seleciona a próxima child.
 - **M2 — Mission Control Experience: futura/gated** (#68), após os fatos de M1.
 - **M3 — Cross-project Capability Boundaries: futura/gated** (#65–#67/#82);
   Katherine está deferred e integrações Runstead/Cadinho continuam gated.

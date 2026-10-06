@@ -173,8 +173,8 @@ cli/src/
 
 **Estado**: o programa de realinhamento #60 continua em andamento. M0
 (Executive Foundation) está concluída; M1 (Local Control Plane) é a fase
-executável atual. A leaf P0 selecionada agora é #94 (reconciliação da source of
-truth), não uma issue fechada da fundação.
+executável atual. Esta mudança documenta a reconciliação pós-M0 solicitada
+pela #94.
 
 **M0 concluída**: 19 issues fechadas e 0 abertas no milestone M0. Inclui
 baseline reproduzível, zero quarantines, Mission/CapabilityInvocation
@@ -187,9 +187,10 @@ daemon controls, web frontend, contracts de eventos/provider, inferência local
 e subsistemas de orchestration legados. Current descreve comportamento; código
 legado não se torna Direction por estar presente.
 
-**M1 atual**: #70 e #59 são os principais epics; #94–#105 são leaves abertas
-ou gated nesta fase. #94 é a leaf P0 selecionada agora. Não inferir conclusão
-de #97/#98 ou de qualquer outra child ainda aberta.
+**M1 atual**: #70 e #59 são os principais epics; o child work está decomposto
+e rastreado em #94–#105. Consulte o GitHub para os estados vivos `ready`,
+`blocked` e `closed` de cada issue; este documento não seleciona a próxima
+child nem presume conclusão de #97/#98 ou das demais.
 
 **M2 futura/gated**: #68, Mission Control Experience, depende dos fatos do
 Local Control Plane. **M3 futura/gated**: #65 Katherine (deferred), #66/#67
@@ -216,4 +217,4 @@ avançam somente após seus gates de evidência.
 | #50 | Execução durável | Closed; implemented (M0) |
 | #58 | Avaliar Go como runtime core | Open; research-gated (no milestone) |
 | #78 | Context Packs bounded/progressivos | Closed; implemented (M0), with documented limits |
-| #94 | Reconciliação de status após M0 | Open; selected M1 leaf |
+| #94 | Reconciliação de status após M0 | Reconciliação documentada por esta mudança; estado vivo no GitHub |
