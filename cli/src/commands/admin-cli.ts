@@ -35,7 +35,7 @@ function usage(): string {
   ].join("\n");
 }
 
-/** Run the factual read-only administrator CLI. */
+/** Run the factual administrator and recovery CLI. */
 export async function runAdminCli(args: readonly string[], dependencies: AdminCliDependencies = {}): Promise<number> {
   const stdout = dependencies.stdout ?? ((text) => process.stdout.write(text));
   const stderr = dependencies.stderr ?? ((text) => process.stderr.write(text));
