@@ -34,12 +34,12 @@
 
 | Campo | Valor |
 |---|---|
-| **Subsystem** | `cli/src/runtime/PersistentPythonREPL.ts` (+ `PersistentPythonREPL.test.ts`) |
-| **Current responsibility/evidence** | REPL Python persistente que mantém processo vivo e estado de variáveis entre execuções (`spawn → keep alive → execute N vezes`). |
+| **Subsystem** | `PersistentPythonREPL` (implementation and dedicated test removed in #96). |
+| **Historical responsibility/evidence** | REPL Python persistente que mantinha processo vivo e estado de variáveis entre execuções (`spawn → keep alive → execute N vezes`). |
 | **Decision** | **RETIRE** do runtime core. |
 | **Future owner/boundary** | Nenhum módulo do Anakyklos reivindicou REPL Python arbitrário persistente. Se surgir necessidade legítima de execução Python, será via capability declarada com owner (ex.: Runstead para software work) sob policy. |
 | **Rationale** | #60: Ouroboros "não é executor irrestrito de Python/shell". Execução arbitrária persistente não é necessidade executiva do coordination runtime. |
-| **Follow-up implication** | Remoção do runtime core. #41 foi resolvida e o manifesto atual tem zero suites; `PersistentPythonREPL.test.ts` não estava entre as suites daquela dívida histórica. A decisão RETIRE é independente de quarentena. |
+| **Follow-up implication** | #96 removeu a capability, seu teste dedicado, exports e a bridge persistente que dependia exclusivamente dela. #41 foi resolvida e o manifesto atual tem zero suites; `PersistentPythonREPL.test.ts` não estava entre as suites daquela dívida histórica. A decisão RETIRE é independente de quarentena. |
 
 ### 3. SandboxRunner
 
@@ -122,12 +122,12 @@
 
 | Campo | Valor |
 |---|---|
-| **Subsystem** | `cli/src/bridges/AntigravityBridge.ts` (+ `PersistentAntigravityBridge.ts`) |
+| **Subsystem** | `cli/src/bridges/AntigravityBridge.ts` (continua independente; `PersistentAntigravityBridge.ts` removido em #96 por depender somente do REPL aposentado). |
 | **Current responsibility/evidence** | Bridge direta para Antigravity, usada pelo GatewayOrchestrator. |
 | **Decision** | **ADAPT** — vira connector/capability versionado (#63), não API central do orchestrator. |
 | **Future owner/boundary** | Capability/connector versionado com owner externo (Antigravity), atrás do Capability Registry e policy. Se não houver owner, pode ser retirado em follow-up. |
 | **Rationale** | #60: "GatewayOrchestrator conhece diretamente Antigravity... O alvo é capability discovery + versioned connector contracts." |
-| **Follow-up implication** | Migration map do GatewayOrchestrator (#63) remove bridges hardcoded; não ampliar bridge como método público. |
+| **Follow-up implication** | #96 removeu apenas a bridge persistente órfã e seus helpers de execução arbitrária; preserva `AntigravityBridge.ts`, usada pelo GatewayOrchestrator. A migration map (#63) remove bridges hardcoded; não ampliar bridge como método público. |
 
 ### 11. Gemini bridge
 
@@ -144,7 +144,7 @@
 
 | Campo | Valor |
 |---|---|
-| **Subsystem** | `cli/src/bridges/JulesBridge.ts` (+ `jules-types.ts`, `test-persistent-bridge.ts`) |
+| **Subsystem** | `cli/src/bridges/JulesBridge.ts` (+ `jules-types.ts`) |
 | **Current responsibility/evidence** | Bridge para Jules (implementador assíncrono via Gemini CLI extension). |
 | **Decision** | **ADAPT** — uso via capability/connector versionado, não bridge hardcoded no core. |
 | **Future owner/boundary** | Runstead (software work) ou connector versionado; Ouroboros apenas formula objetivo/acceptance e recebe evidence. |
@@ -333,7 +333,7 @@
 
 | Decisão | Subsistemas |
 |---|---|
-| **RETIRE** | SelfModifyingEngine, PersistentPythonREPL, SandboxRunner, SandboxTool, Council/personas, ArchitectClient (persona hardcoded), Ralph loop, Council UI, Terminal UI, React/Ink TUI, Electron (como direção) |
+| **RETIRE** | SelfModifyingEngine (#95), PersistentPythonREPL (#96), SandboxRunner, SandboxTool, Council/personas, ArchitectClient (persona hardcoded), Ralph loop, Council UI, Terminal UI, React/Ink TUI, Electron (como direção) |
 | **ADAPT** | WaveExecutor (scheduling), Anti-Vibe (mission gates), PromotionManager (approval), Antigravity/Gemini/Jules bridges (connectors), local inference (planner backend), MemoryManager (mission state), MemoryRetriever (context provenance), Memory UI, local web server, Fastify/WebSocket transport, web frontend, terminal pane, direct daemon/UI coupling, duplicated stores |
 | **DEFER** | MCP/SkillLoader (capability protocol candidate) |
 | **KEEP** | Daemon/headless core (server, rpc-gateway, session-manager, event-bus), SQLite storage, daemon controls, event contract, baseline CI (#35) |
@@ -342,7 +342,7 @@
 ## Follow-ups recomendados (para o mantenedor criar após merge)
 
 1. **#61-followup-1**: Remoção do SelfModifyingEngine concluída em #95; nenhuma extração de primitives backup/rollback foi justificada neste repositório.
-2. **#61-followup-2**: Remover PersistentPythonREPL do runtime core. SandboxRunner e SandboxTool já foram removidos em #83, junto com `SandboxPathUtils` (órfã comprovada) e as cinco suites de sandbox que integravam a quarentena histórica #41 (SandboxE2E, SandboxEscapeTests, SandboxResourceLimits, SandboxRunner, SandboxSecurity). Essa dívida foi resolvida; o manifesto atual tem zero suites.
+2. **#61-followup-2**: Concluído em #96: PersistentPythonREPL, teste dedicado, exports e bridge persistente REPL-only removidos; nenhuma substituição genérica adicionada. SandboxRunner e SandboxTool já foram removidos em #83, junto com `SandboxPathUtils` (órfã comprovada) e as cinco suites de sandbox que integravam a quarentena histórica #41 (SandboxE2E, SandboxEscapeTests, SandboxResourceLimits, SandboxRunner, SandboxSecurity). Essa dívida foi resolvida; o manifesto atual tem zero suites.
 3. **#61-followup-3**: Migration map do Orchestrator (#62) — remover personas/ESCALATION_CHAIN como abstração first-class.
 4. **#61-followup-4**: GatewayOrchestrator (#63) — remover bridges hardcoded em favor de Capability Registry/connectors.
 5. **#61-followup-5**: MemoryManager/MemoryRetriever → Context Compiler (#64) com provenance.

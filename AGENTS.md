@@ -109,7 +109,7 @@ quarentena futura exige uma issue de acompanhamento explícita e atualizada.
 
 ### Legacy (não é direção)
 
-SelfModifyingEngine (retired in #95), PersistentPythonREPL, Council/personas, ArchitectClient (persona), WaveExecutor ("agent wave"),
+SelfModifyingEngine (retired in #95), PersistentPythonREPL (retired in #96), Council/personas, ArchitectClient (persona), WaveExecutor ("agent wave"),
 Anti-Vibe como code gate, bridges diretas (Antigravity/Gemini/Jules), Ralph,
 MCP/SkillLoader, Council/Memory/Terminal UI, Electron (direção), TUI React/Ink.
 Classificação completa: [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
@@ -145,7 +145,7 @@ cli/src/
 ├── orchestration/  # Orchestrator, WaveExecutor, Memory, Promotion (classificar)
 ├── ports/          # Interface definitions (hexagonal)
 ├── providers/      # Agent execution engines
-├── runtime/        # PersistentPythonREPL, Sandbox* (LEGACY: RETIRE)
+├── runtime/        # runtime adapters; Python REPL and Sandbox* retired
 └── tui/            # React/Ink TUI (LEGACY: RETIRE)
 ```
 
