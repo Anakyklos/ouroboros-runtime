@@ -19,6 +19,7 @@ import {
 } from '../../../shared/daemon-event-contract.js';
 import type { StoragePort } from '../ports/storage.port.js';
 import type { MissionMutation, MissionStore } from '../mission/ports.js';
+import type { MissionCommandAuthority } from './local-control-command.js';
 
 export interface DaemonConfig {
     port: number;
@@ -49,6 +50,7 @@ export class DaemonServer {
         eventBus: EventBus = globalEventBus,
         missionStore?: MissionStore,
         rpcGateway?: DaemonRpcGatewayPort,
+        missionCommandAuthority?: MissionCommandAuthority,
     ) {
         this.config = { ...DEFAULT_CONFIG, ...config };
         this.eventBus = eventBus;
@@ -56,6 +58,8 @@ export class DaemonServer {
             storage,
             eventBus,
             missionStore,
+            undefined,
+            missionCommandAuthority,
         );
         this.projection = new DaemonProjection({
             snapshot: async (cursor) => ({
