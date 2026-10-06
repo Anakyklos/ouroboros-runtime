@@ -1,11 +1,4 @@
 /**
- * QUARANTINED — excluded from `bun run check:tests` (baseline gate).
- * Recovery debt: https://github.com/RenyEnnos/ouroboros-runtime/issues/41
- * Manifest: scripts/quarantine-manifest.json
- * Do not delete/rename this file to make CI green; fix or keep listed in the manifest.
- */
-
-/**
  * 📤 PromotionManager Unit Tests
  *
  * Tests for the playground → src promotion workflow with quality gates.
@@ -26,17 +19,13 @@ import type { PromotionConfig } from "./promotion-types.js";
 class MockValidationStrategy implements ValidationStrategy {
     readonly name: string;
     private shouldPass: boolean;
-    private executionTimeMs: number;
 
-    constructor(name: string, shouldPass: boolean, executionTimeMs = 100) {
+    constructor(name: string, shouldPass: boolean) {
         this.name = name;
         this.shouldPass = shouldPass;
-        this.executionTimeMs = executionTimeMs;
     }
 
     async validate(context: ValidationContext): Promise<ValidationResult> {
-        await new Promise(resolve => setTimeout(resolve, this.executionTimeMs));
-
         if (this.shouldPass) {
             return {
                 isValid: true,
@@ -44,7 +33,7 @@ class MockValidationStrategy implements ValidationStrategy {
                 message: `${this.name} passed successfully`,
                 details: {
                     workDir: context.workDir,
-                    durationMs: this.executionTimeMs,
+                    durationMs: 0,
                 },
             };
         } else {
@@ -54,7 +43,7 @@ class MockValidationStrategy implements ValidationStrategy {
                 message: `${this.name} failed`,
                 details: {
                     workDir: context.workDir,
-                    durationMs: this.executionTimeMs,
+                    durationMs: 0,
                 },
             };
         }
@@ -89,6 +78,14 @@ function setupTest(): TestSetup {
     };
 
     const promotionManager = new PromotionManager(config);
+    promotionManager.setValidationStrategy(
+        QualityGateType.TEST,
+        new MockValidationStrategy("TEST", true)
+    );
+    promotionManager.setValidationStrategy(
+        QualityGateType.TYPE_CHECK,
+        new MockValidationStrategy("TYPE_CHECK", true)
+    );
 
     return {
         tempDir,
@@ -184,17 +181,21 @@ describe("PromotionManager", () => {
             // Set passing validators
             setup.promotionManager.setValidationStrategy(
                 QualityGateType.TEST,
-                new MockValidationStrategy("TEST", true, 50)
+                new MockValidationStrategy("TEST", true)
             );
             setup.promotionManager.setValidationStrategy(
                 QualityGateType.TYPE_CHECK,
-                new MockValidationStrategy("TYPE_CHECK", true, 50)
+                new MockValidationStrategy("TYPE_CHECK", true)
             );
 
             const validations = await setup.promotionManager.validateCandidate(sourcePath);
 
             expect(validations).toHaveLength(2);
             expect(validations.every(v => v.result.isValid)).toBe(true);
+            expect(validations.map(validation => validation.type)).toEqual([
+                QualityGateType.TEST,
+                QualityGateType.TYPE_CHECK,
+            ]);
 
             const state = setup.promotionManager.getState();
             const candidate = state.candidates.find(c => c.sourcePath === sourcePath);
@@ -213,7 +214,7 @@ describe("PromotionManager", () => {
             // Set failing validator
             setup.promotionManager.setValidationStrategy(
                 QualityGateType.TEST,
-                new MockValidationStrategy("TEST", false, 50)
+                new MockValidationStrategy("TEST", false)
             );
 
             const validations = await setup.promotionManager.validateCandidate(sourcePath);
@@ -225,6 +226,7 @@ describe("PromotionManager", () => {
             const candidate = state.candidates.find(c => c.sourcePath === sourcePath);
             expect(candidate?.status).toBe(PromotionStatus.REJECTED);
             expect(candidate?.rejectionReason).toContain("TEST");
+            expect(state.awaitingApproval).toHaveLength(0);
         });
 
         it("should stop at first failed quality gate", async () => {
@@ -239,11 +241,11 @@ describe("PromotionManager", () => {
             // First gate passes, second fails
             setup.promotionManager.setValidationStrategy(
                 QualityGateType.TEST,
-                new MockValidationStrategy("TEST", true, 10)
+                new MockValidationStrategy("TEST", true)
             );
             setup.promotionManager.setValidationStrategy(
                 QualityGateType.TYPE_CHECK,
-                new MockValidationStrategy("TYPE_CHECK", false, 10)
+                new MockValidationStrategy("TYPE_CHECK", false)
             );
 
             const validations = await setup.promotionManager.validateCandidate(sourcePath);
@@ -257,7 +259,28 @@ describe("PromotionManager", () => {
         it("should throw error when candidate not found", async () => {
             await expect(
                 setup.promotionManager.validateCandidate("nonexistent.ts")
-            ).toThrow("Candidate not found: nonexistent.ts");
+            ).rejects.toThrow("Candidate not found: nonexistent.ts");
+        });
+
+        it("should reject a required gate when no validation strategy is configured", async () => {
+            const manager = new PromotionManager({
+                projectRoot: setup.tempDir,
+                sourceDir: "playground",
+                targetDir: "src",
+                requiredGates: [QualityGateType.MULTI_MODEL_REVIEW],
+                verbose: false,
+            });
+            const sourcePath = "utils/missing-strategy.ts";
+            await manager.registerCandidate(sourcePath, sourcePath);
+
+            const validations = await manager.validateCandidate(sourcePath);
+
+            expect(validations).toHaveLength(0);
+            const state = manager.getState();
+            const candidate = state.candidates.find(item => item.sourcePath === sourcePath);
+            expect(candidate?.status).toBe(PromotionStatus.REJECTED);
+            expect(candidate?.rejectionReason).toContain("has no validation strategy");
+            expect(state.awaitingApproval).toHaveLength(0);
         });
     });
 
@@ -283,7 +306,7 @@ describe("PromotionManager", () => {
 
             setup.promotionManager.setValidationStrategy(
                 QualityGateType.TEST,
-                new MockValidationStrategy("TEST", true, 10)
+                new MockValidationStrategy("TEST", true)
             );
 
             await setup.promotionManager.validateCandidate(sourcePath);
@@ -295,6 +318,8 @@ describe("PromotionManager", () => {
             const state = setup.promotionManager.getState();
             const candidate = state.candidates.find(c => c.sourcePath === sourcePath);
             expect(candidate?.status).toBe(PromotionStatus.APPROVED);
+            expect(candidate?.validations).toHaveLength(2);
+            expect(state.awaitingApproval).toHaveLength(0);
         });
 
         it("should use approval callback when configured", async () => {
@@ -321,7 +346,7 @@ describe("PromotionManager", () => {
 
             manager.setValidationStrategy(
                 QualityGateType.TEST,
-                new MockValidationStrategy("TEST", true, 10)
+                new MockValidationStrategy("TEST", true)
             );
 
             await manager.validateCandidate(sourcePath);
@@ -358,7 +383,7 @@ describe("PromotionManager", () => {
 
             manager.setValidationStrategy(
                 QualityGateType.TEST,
-                new MockValidationStrategy("TEST", true, 10)
+                new MockValidationStrategy("TEST", true)
             );
 
             await manager.validateCandidate(sourcePath);
@@ -395,14 +420,18 @@ describe("PromotionManager", () => {
 
             manager.setValidationStrategy(
                 QualityGateType.TEST,
-                new MockValidationStrategy("TEST", true, 10)
+                new MockValidationStrategy("TEST", true)
             );
 
             await manager.validateCandidate(sourcePath);
 
             await expect(
                 manager.requestApproval(sourcePath)
-            ).toThrow("Approval required but no callback configured");
+            ).rejects.toThrow("Approval required but no callback configured");
+            expect(manager.getState().candidates[0].status).toBe(
+                PromotionStatus.AWAITING_APPROVAL
+            );
+            expect(manager.getState().approvedPending).toHaveLength(0);
         });
 
         it("should throw error when candidate not in AWAITING_APPROVAL status", async () => {
@@ -412,7 +441,7 @@ describe("PromotionManager", () => {
 
             await expect(
                 setup.promotionManager.requestApproval(sourcePath)
-            ).toThrow("is not awaiting approval");
+            ).rejects.toThrow("is not awaiting approval");
         });
     });
 
@@ -441,7 +470,7 @@ describe("PromotionManager", () => {
 
             setup.promotionManager.setValidationStrategy(
                 QualityGateType.TEST,
-                new MockValidationStrategy("TEST", true, 10)
+                new MockValidationStrategy("TEST", true)
             );
 
             await setup.promotionManager.validateCandidate(sourcePath);
@@ -487,7 +516,7 @@ describe("PromotionManager", () => {
 
             setup.promotionManager.setValidationStrategy(
                 QualityGateType.TEST,
-                new MockValidationStrategy("TEST", true, 10)
+                new MockValidationStrategy("TEST", true)
             );
 
             await setup.promotionManager.validateCandidate(sourcePath);
@@ -535,7 +564,7 @@ describe("PromotionManager", () => {
 
                 setup.promotionManager.setValidationStrategy(
                     QualityGateType.TEST,
-                    new MockValidationStrategy("TEST", true, 5)
+                    new MockValidationStrategy("TEST", true)
                 );
 
                 await setup.promotionManager.validateCandidate(sourcePath);
@@ -570,7 +599,7 @@ describe("PromotionManager", () => {
 
                 setup.promotionManager.setValidationStrategy(
                     QualityGateType.TEST,
-                    new MockValidationStrategy("TEST", true, 5)
+                    new MockValidationStrategy("TEST", true)
                 );
 
                 await setup.promotionManager.validateCandidate(sourcePath);
@@ -616,7 +645,7 @@ describe("PromotionManager", () => {
 
             setup.promotionManager.setValidationStrategy(
                 QualityGateType.TEST,
-                new MockValidationStrategy("TEST", true, 10)
+                new MockValidationStrategy("TEST", true)
             );
 
             await setup.promotionManager.validateCandidate(sourcePath);
@@ -704,7 +733,7 @@ describe("PromotionManager", () => {
 
             setup.promotionManager.setValidationStrategy(
                 QualityGateType.TEST,
-                new MockValidationStrategy("TEST", true, 10)
+                new MockValidationStrategy("TEST", true)
             );
 
             await setup.promotionManager.validateCandidate(sourcePath);
@@ -720,6 +749,30 @@ describe("PromotionManager", () => {
             const state = newManager.getState();
             const candidate = state.candidates.find(c => c.sourcePath === sourcePath);
             expect(candidate?.status).toBe(PromotionStatus.AWAITING_APPROVAL);
+            expect(state.awaitingApproval.map(item => item.sourcePath)).toContain(sourcePath);
+        });
+
+        it("should persist rejected status without adding candidate to approval queue", async () => {
+            const sourcePath = "utils/rejected-status.ts";
+            await setup.promotionManager.registerCandidate(sourcePath, sourcePath);
+            setup.promotionManager.setValidationStrategy(
+                QualityGateType.TEST,
+                new MockValidationStrategy("TEST", false)
+            );
+
+            await setup.promotionManager.validateCandidate(sourcePath);
+
+            const reloadedManager = new PromotionManager({
+                projectRoot: setup.tempDir,
+                sourceDir: "playground",
+                targetDir: "src",
+                verbose: false,
+            });
+            const state = reloadedManager.getState();
+            const candidate = state.candidates.find(item => item.sourcePath === sourcePath);
+
+            expect(candidate?.status).toBe(PromotionStatus.REJECTED);
+            expect(state.awaitingApproval).toHaveLength(0);
         });
     });
 
@@ -741,7 +794,7 @@ describe("PromotionManager", () => {
 
             setup.promotionManager.setValidationStrategy(
                 QualityGateType.TEST,
-                new MockValidationStrategy("TEST", true, 10)
+                new MockValidationStrategy("TEST", true)
             );
 
             await setup.promotionManager.validateCandidate(sourcePath);
@@ -815,7 +868,7 @@ describe("PromotionManager", () => {
 
             setup.promotionManager.setValidationStrategy(
                 QualityGateType.TEST,
-                new MockValidationStrategy("TEST", true, 10)
+                new MockValidationStrategy("TEST", true)
             );
 
             await setup.promotionManager.validateCandidate(sourcePath);
@@ -844,7 +897,7 @@ describe("PromotionManager", () => {
         });
 
         it("should allow setting custom validation strategy", async () => {
-            const customStrategy = new MockValidationStrategy("CUSTOM", true, 50);
+            const customStrategy = new MockValidationStrategy("CUSTOM", true);
 
             setup.promotionManager.setValidationStrategy(
                 QualityGateType.TEST,
@@ -861,8 +914,11 @@ describe("PromotionManager", () => {
 
             const validations = await setup.promotionManager.validateCandidate(sourcePath);
 
-            expect(validations).toHaveLength(1);
-            expect(validations[0].result.isValid).toBe(true);
+            expect(validations).toHaveLength(2);
+            expect(validations[0].type).toBe(QualityGateType.TEST);
+            expect(validations[0].result.message).toBe("CUSTOM passed successfully");
+            expect(validations[1].type).toBe(QualityGateType.TYPE_CHECK);
+            expect(validations.every(validation => validation.result.isValid)).toBe(true);
         });
     });
 });

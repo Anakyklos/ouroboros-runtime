@@ -163,8 +163,13 @@ export class PromotionManager {
         for (const gateType of this.config.requiredGates) {
             const strategy = this.validationStrategies.get(gateType);
             if (!strategy) {
-                this.log('warn', `⚠️ No validation strategy for gate: ${gateType}`);
-                continue;
+                const message = `Required quality gate ${gateType} has no validation strategy`;
+                this.log('error', `   ❌ ${message}`);
+                candidate.status = PromotionStatus.REJECTED;
+                candidate.rejectionReason = message;
+                candidate.validations.push(...validations);
+                this.saveState();
+                return validations;
             }
 
             this.log('info', `   Running gate: ${gateType}`);

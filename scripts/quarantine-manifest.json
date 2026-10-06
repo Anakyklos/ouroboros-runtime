@@ -9,13 +9,6 @@
       "reason": "6 of 19 tests fail: promotion status mismatches (REJECTED vs AWAITING_APPROVAL), typecheck script missing in temp dirs, report assertions outdated. Passing cases remain valuable but file is quarantined as a unit until product/test alignment.",
       "reactivate_when": "All cases in this file pass without mocks that hide product failures; promote/typecheck contracts match implementation.",
       "tracking_issue": 41
-    },
-    {
-      "path": "cli/src/orchestration/PromotionManager.test.ts",
-      "classification": "product-bug (partial)",
-      "reason": "13 of 28 tests fail around approval/promotion state machine (candidates end REJECTED instead of AWAITING_APPROVAL). Not removed; blocked from mandatory gate.",
-      "reactivate_when": "PromotionManager status transitions match test expectations or tests are updated with product agreement.",
-      "tracking_issue": 41
     }
   ]
 }
