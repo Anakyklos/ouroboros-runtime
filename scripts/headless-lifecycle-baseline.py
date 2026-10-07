@@ -200,64 +200,6 @@ def rpc_read(port: int, operation: str) -> dict[str, Any]:
     return result["result"]
 
 
-def validate_fixture_snapshot(name: str, snapshot: dict[str, Any], expected_states: dict[str, str]) -> None:
-    mission_ids = snapshot.get("missionIds")
-    states = snapshot.get("states")
-    expected_ids = sorted(expected_states)
-    if not isinstance(mission_ids, list) or any(not isinstance(value, str) for value in mission_ids):
-        raise AssertionError(f"{name}: fixture missionIds must be a string list")
-    if len(mission_ids) != len(set(mission_ids)):
-        raise AssertionError(f"{name}: duplicate Mission ids")
-    if sorted(mission_ids) != expected_ids:
-        raise AssertionError(f"{name}: expected Mission ids {expected_ids}, got {sorted(mission_ids)}")
-    if states != expected_states:
-        raise AssertionError(f"{name}: expected states {expected_states}, got {states}")
-
-
-def validate_projection(name: str, snapshot: dict[str, Any], expected_states: dict[str, str]) -> None:
-    expected_ids = sorted(expected_states)
-    if snapshot.get("available") is not True:
-        raise AssertionError(f"{name}: durable Mission projection is unavailable")
-    mission_ids = snapshot.get("mission_ids")
-    if not isinstance(mission_ids, list) or len(mission_ids) != len(set(mission_ids)):
-        raise AssertionError(f"{name}: Mission projection has missing or duplicate identity data")
-    if mission_ids != expected_ids or snapshot.get("mission_count") != len(expected_ids):
-        raise AssertionError(f"{name}: expected exactly {expected_ids}, got {mission_ids}")
-    if snapshot.get("states") != expected_states:
-        raise AssertionError(f"{name}: expected states {expected_states}, got {snapshot.get('states')}")
-    items = snapshot.get("items")
-    if not isinstance(items, list) or len(items) != len(expected_ids):
-        raise AssertionError(f"{name}: Mission item cardinality mismatch")
-    item_ids = [item.get("missionId") for item in items]
-    if sorted(item_ids) != expected_ids or len(item_ids) != len(set(item_ids)):
-        raise AssertionError(f"{name}: Mission item identities are incomplete or duplicated")
-    for item in items:
-        if item.get("state") != expected_states[item["missionId"]]:
-            raise AssertionError(f"{name}: Mission {item['missionId']} has unexpected state")
-        if item.get("invocationIds") != []:
-            raise AssertionError(f"{name}: Mission {item['missionId']} has unexpected invocations/effects")
-    invocation_ids = snapshot.get("invocation_ids")
-    if invocation_ids != [] or snapshot.get("invocation_count") != 0:
-        raise AssertionError(f"{name}: expected no invocation/effect records, got {invocation_ids}")
-
-
-def validate_exit_status(signal_name: str, returncode: int, process_group_released: bool) -> dict[str, Any]:
-    expected = 0 if signal_name == "SIGTERM" else -signal.SIGKILL if signal_name == "SIGKILL" else None
-    if expected is None:
-        raise ValueError(f"unsupported termination signal {signal_name}")
-    if returncode != expected:
-        raise AssertionError(f"{signal_name}: expected exit code {expected}, got {returncode}")
-    if not process_group_released:
-        raise AssertionError(f"{signal_name}: daemon process group/resources remain alive")
-    return {
-        "requested_signal": signal_name,
-        "exit_code": returncode,
-        "process_group_released": process_group_released,
-        "graceful": signal_name == "SIGTERM" and returncode == 0 and process_group_released,
-        "forced": signal_name == "SIGKILL" and returncode == -signal.SIGKILL and process_group_released,
-    }
-
-
 def idle_websocket(port: int) -> dict[str, Any]:
     key = secrets.token_bytes(16)
     encoded_key = __import__("base64").b64encode(key).decode("ascii")
