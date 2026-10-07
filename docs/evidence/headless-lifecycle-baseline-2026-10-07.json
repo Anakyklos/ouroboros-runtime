@@ -1,0 +1,669 @@
+{
+  "base_sha": "fd62c7c81b922ba8e142465278e00e47e54d3361",
+  "environment": {
+    "architecture": "x86_64",
+    "bun_version": "1.4.2",
+    "distribution": {
+      "ID": "linuxmint",
+      "PRETTY_NAME": "Linux Mint 22.3",
+      "VERSION_ID": "22.3"
+    },
+    "kernel": "7.0.0-30-generic",
+    "logical_cpu_count": 12,
+    "memory_total_kib": 32554560,
+    "perf_version": "perf version 7.0.12",
+    "proc_clock_ticks_per_second": 100,
+    "python_version": "3.12.3",
+    "timestamp_utc": "2026-10-07T23:00:27Z",
+    "uname": "Linux pedro-550XED 7.0.0-30-generic #30~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Fri Aug  7 13:27:52 UTC 2 x86_64 x86_64"
+  },
+  "limitations": [
+    "Cold means first daemon process on an isolated fresh database; OS page cache was not flushed.",
+    "Warm means a graceful daemon restart on the same isolated fixture database.",
+    "Wakeups use perf scheduler tracepoints when permissions allow; per-process context-switch deltas are also recorded and are not equivalent to wakeups.",
+    "Idle scenario contains only a waiting_for_provider Mission; recovery scenario includes a READY accepted-plan Mission and is measured separately.",
+    "READY durability and projection persistence are observed; no claim of automatic Mission scheduling or resumption is made.",
+    "RSS and CPU are sampled for the daemon process tree using /proc; measurements describe this host/container environment only.",
+    "No providers, models, external services, load generator, or production Mission content are used."
+  ],
+  "measurements": {
+    "idle_interval_seconds": 10.0,
+    "raw_samples": [
+      {
+        "cold_projection": {
+          "available": true,
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "cold_projection_seconds": 0.007673,
+        "cold_start_seconds": 0.21377,
+        "crash_kill_wait_seconds": 0.003327,
+        "crash_restart_seconds": 0.265002,
+        "graceful_shutdown_seconds": 0.015466,
+        "idle_waiting_fixture": {
+          "cold_start_seconds": 0.181753,
+          "graceful_shutdown_seconds": 0.063656,
+          "metrics": {
+            "cpu_percent_of_one_logical_cpu": 0.2,
+            "cpu_seconds": 0.02,
+            "interval_seconds": 10.000563109992072,
+            "involuntary_context_switch_delta": 5,
+            "perf_sched_wakeup": {
+              "available": false,
+              "returncode": 129,
+              "stderr": "event syntax error: 'sched:sched_wakeup,sched:sched_wakeup_new'\n                     \\___ can't access trace events\n\nError:\tNo permissions to read /sys/kernel/tracing//events/sched/sched_wakeup\nHint:\tTry 'sudo mount -o remount,mode=755 /sys/kernel/tracing/'\n\nRun 'perf list' for a list of valid events\n\n Usage: perf stat [<options>] [<command>]\n\n    -e, --event <event>   event selector. use 'perf list' to list available events",
+              "stdout": ""
+            },
+            "pid_count_after": 1,
+            "pid_count_before": 1,
+            "rss_after_kib": 66740,
+            "rss_before_kib": 66772,
+            "threads_after": 17,
+            "threads_before": 20,
+            "voluntary_context_switch_delta": 67
+          }
+        },
+        "persisted_after_crash": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "post_restart_projection": {
+          "available": true,
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "post_restart_projection_after_controlled_idle_seconds": 0.002407,
+        "recovery_fixtures": {
+          "fixtureMode": "recovery",
+          "missionIds": [
+            "fixture-waiting",
+            "fixture-ready"
+          ],
+          "states": [
+            "waiting_for_provider",
+            "ready"
+          ]
+        },
+        "repetition": 1,
+        "restart_graceful_shutdown_seconds": 0.007316,
+        "restart_projection_reconstruction_seconds": 0.008786,
+        "restart_projection_seconds": 0.008689,
+        "transport_idle_connection": {
+          "additional_frame_bytes": 0,
+          "cpu_percent_of_one_logical_cpu": 0.4,
+          "cpu_seconds": 0.02,
+          "handshake_seconds": 0.01006,
+          "initial_frame_bytes": 1717,
+          "interval_seconds": 5.000142206001328,
+          "involuntary_context_switch_delta": 14,
+          "pid_count_after": 1,
+          "pid_count_before": 1,
+          "request_bytes": 156,
+          "response_header_bytes": 162,
+          "rss_after_kib": 67020,
+          "rss_before_kib": 66740,
+          "rss_delta_at_connect_kib": 1176,
+          "threads_after": 19,
+          "threads_before": 17,
+          "threads_delta_at_connect": 2,
+          "voluntary_context_switch_delta": 44
+        },
+        "warm_projection": {
+          "available": true,
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "warm_projection_seconds": 0.010373,
+        "warm_start_seconds": 0.24035
+      },
+      {
+        "cold_projection": {
+          "available": true,
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "cold_projection_seconds": 0.008774,
+        "cold_start_seconds": 0.187288,
+        "crash_kill_wait_seconds": 0.007449,
+        "crash_restart_seconds": 0.18767,
+        "graceful_shutdown_seconds": 0.015483,
+        "idle_waiting_fixture": {
+          "cold_start_seconds": 0.265132,
+          "graceful_shutdown_seconds": 0.031453,
+          "metrics": {
+            "cpu_percent_of_one_logical_cpu": 0.2,
+            "cpu_seconds": 0.02,
+            "interval_seconds": 10.000809646007838,
+            "involuntary_context_switch_delta": 4,
+            "perf_sched_wakeup": {
+              "available": false,
+              "returncode": 129,
+              "stderr": "event syntax error: 'sched:sched_wakeup,sched:sched_wakeup_new'\n                     \\___ can't access trace events\n\nError:\tNo permissions to read /sys/kernel/tracing//events/sched/sched_wakeup\nHint:\tTry 'sudo mount -o remount,mode=755 /sys/kernel/tracing/'\n\nRun 'perf list' for a list of valid events\n\n Usage: perf stat [<options>] [<command>]\n\n    -e, --event <event>   event selector. use 'perf list' to list available events",
+              "stdout": ""
+            },
+            "pid_count_after": 1,
+            "pid_count_before": 1,
+            "rss_after_kib": 66952,
+            "rss_before_kib": 66520,
+            "threads_after": 19,
+            "threads_before": 22,
+            "voluntary_context_switch_delta": 59
+          }
+        },
+        "persisted_after_crash": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "post_restart_projection": {
+          "available": true,
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "post_restart_projection_after_controlled_idle_seconds": 0.001899,
+        "recovery_fixtures": {
+          "fixtureMode": "recovery",
+          "missionIds": [
+            "fixture-waiting",
+            "fixture-ready"
+          ],
+          "states": [
+            "waiting_for_provider",
+            "ready"
+          ]
+        },
+        "repetition": 2,
+        "restart_graceful_shutdown_seconds": 0.007388,
+        "restart_projection_reconstruction_seconds": 0.008513,
+        "restart_projection_seconds": 0.008441,
+        "transport_idle_connection": {
+          "additional_frame_bytes": 0,
+          "cpu_percent_of_one_logical_cpu": 0.4,
+          "cpu_seconds": 0.02,
+          "handshake_seconds": 0.00752,
+          "initial_frame_bytes": 1717,
+          "interval_seconds": 5.000101279991213,
+          "involuntary_context_switch_delta": 12,
+          "pid_count_after": 1,
+          "pid_count_before": 1,
+          "request_bytes": 156,
+          "response_header_bytes": 162,
+          "rss_after_kib": 67564,
+          "rss_before_kib": 66952,
+          "rss_delta_at_connect_kib": 1204,
+          "threads_after": 21,
+          "threads_before": 19,
+          "threads_delta_at_connect": 2,
+          "voluntary_context_switch_delta": 36
+        },
+        "warm_projection": {
+          "available": true,
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "warm_projection_seconds": 0.009063,
+        "warm_start_seconds": 0.187799
+      },
+      {
+        "cold_projection": {
+          "available": true,
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "cold_projection_seconds": 0.00554,
+        "cold_start_seconds": 0.1344,
+        "crash_kill_wait_seconds": 0.003294,
+        "crash_restart_seconds": 0.133924,
+        "graceful_shutdown_seconds": 0.015467,
+        "idle_waiting_fixture": {
+          "cold_start_seconds": 0.131794,
+          "graceful_shutdown_seconds": 0.015492,
+          "metrics": {
+            "cpu_percent_of_one_logical_cpu": 0.2,
+            "cpu_seconds": 0.02,
+            "interval_seconds": 10.000512799015269,
+            "involuntary_context_switch_delta": 0,
+            "perf_sched_wakeup": {
+              "available": false,
+              "returncode": 129,
+              "stderr": "event syntax error: 'sched:sched_wakeup,sched:sched_wakeup_new'\n                     \\___ can't access trace events\n\nError:\tNo permissions to read /sys/kernel/tracing//events/sched/sched_wakeup\nHint:\tTry 'sudo mount -o remount,mode=755 /sys/kernel/tracing/'\n\nRun 'perf list' for a list of valid events\n\n Usage: perf stat [<options>] [<command>]\n\n    -e, --event <event>   event selector. use 'perf list' to list available events",
+              "stdout": ""
+            },
+            "pid_count_after": 1,
+            "pid_count_before": 1,
+            "rss_after_kib": 66752,
+            "rss_before_kib": 66208,
+            "threads_after": 18,
+            "threads_before": 21,
+            "voluntary_context_switch_delta": 71
+          }
+        },
+        "persisted_after_crash": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "post_restart_projection": {
+          "available": true,
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "post_restart_projection_after_controlled_idle_seconds": 0.001941,
+        "recovery_fixtures": {
+          "fixtureMode": "recovery",
+          "missionIds": [
+            "fixture-waiting",
+            "fixture-ready"
+          ],
+          "states": [
+            "waiting_for_provider",
+            "ready"
+          ]
+        },
+        "repetition": 3,
+        "restart_graceful_shutdown_seconds": 0.007337,
+        "restart_projection_reconstruction_seconds": 0.00485,
+        "restart_projection_seconds": 0.004792,
+        "transport_idle_connection": {
+          "additional_frame_bytes": 0,
+          "cpu_percent_of_one_logical_cpu": 0.2,
+          "cpu_seconds": 0.01,
+          "handshake_seconds": 0.006937,
+          "initial_frame_bytes": 1717,
+          "interval_seconds": 5.0000743299897294,
+          "involuntary_context_switch_delta": 1,
+          "pid_count_after": 1,
+          "pid_count_before": 1,
+          "request_bytes": 156,
+          "response_header_bytes": 162,
+          "rss_after_kib": 67112,
+          "rss_before_kib": 66752,
+          "rss_delta_at_connect_kib": 1204,
+          "threads_after": 20,
+          "threads_before": 18,
+          "threads_delta_at_connect": 2,
+          "voluntary_context_switch_delta": 39
+        },
+        "warm_projection": {
+          "available": true,
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "warm_projection_seconds": 0.00516,
+        "warm_start_seconds": 0.159542
+      },
+      {
+        "cold_projection": {
+          "available": true,
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "cold_projection_seconds": 0.004056,
+        "cold_start_seconds": 0.131424,
+        "crash_kill_wait_seconds": 0.003174,
+        "crash_restart_seconds": 0.131797,
+        "graceful_shutdown_seconds": 0.015461,
+        "idle_waiting_fixture": {
+          "cold_start_seconds": 0.13265,
+          "graceful_shutdown_seconds": 0.031577,
+          "metrics": {
+            "cpu_percent_of_one_logical_cpu": 0.2,
+            "cpu_seconds": 0.02,
+            "interval_seconds": 10.000617882993538,
+            "involuntary_context_switch_delta": 14,
+            "perf_sched_wakeup": {
+              "available": false,
+              "returncode": 129,
+              "stderr": "event syntax error: 'sched:sched_wakeup,sched:sched_wakeup_new'\n                     \\___ can't access trace events\n\nError:\tNo permissions to read /sys/kernel/tracing//events/sched/sched_wakeup\nHint:\tTry 'sudo mount -o remount,mode=755 /sys/kernel/tracing/'\n\nRun 'perf list' for a list of valid events\n\n Usage: perf stat [<options>] [<command>]\n\n    -e, --event <event>   event selector. use 'perf list' to list available events",
+              "stdout": ""
+            },
+            "pid_count_after": 1,
+            "pid_count_before": 1,
+            "rss_after_kib": 66756,
+            "rss_before_kib": 66344,
+            "threads_after": 18,
+            "threads_before": 21,
+            "voluntary_context_switch_delta": 50
+          }
+        },
+        "persisted_after_crash": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "post_restart_projection": {
+          "available": true,
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "post_restart_projection_after_controlled_idle_seconds": 0.001408,
+        "recovery_fixtures": {
+          "fixtureMode": "recovery",
+          "missionIds": [
+            "fixture-waiting",
+            "fixture-ready"
+          ],
+          "states": [
+            "waiting_for_provider",
+            "ready"
+          ]
+        },
+        "repetition": 4,
+        "restart_graceful_shutdown_seconds": 0.007409,
+        "restart_projection_reconstruction_seconds": 0.004149,
+        "restart_projection_seconds": 0.0041,
+        "transport_idle_connection": {
+          "additional_frame_bytes": 0,
+          "cpu_percent_of_one_logical_cpu": 0.6,
+          "cpu_seconds": 0.03,
+          "handshake_seconds": 0.015724,
+          "initial_frame_bytes": 1717,
+          "interval_seconds": 5.000146025005961,
+          "involuntary_context_switch_delta": 25,
+          "pid_count_after": 1,
+          "pid_count_before": 1,
+          "request_bytes": 156,
+          "response_header_bytes": 162,
+          "rss_after_kib": 67004,
+          "rss_before_kib": 66756,
+          "rss_delta_at_connect_kib": 1192,
+          "threads_after": 20,
+          "threads_before": 18,
+          "threads_delta_at_connect": 2,
+          "voluntary_context_switch_delta": 44
+        },
+        "warm_projection": {
+          "available": true,
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "warm_projection_seconds": 0.004105,
+        "warm_start_seconds": 0.106284
+      },
+      {
+        "cold_projection": {
+          "available": true,
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "cold_projection_seconds": 0.00722,
+        "cold_start_seconds": 0.13408,
+        "crash_kill_wait_seconds": 0.007353,
+        "crash_restart_seconds": 0.132727,
+        "graceful_shutdown_seconds": 0.007302,
+        "idle_waiting_fixture": {
+          "cold_start_seconds": 0.210883,
+          "graceful_shutdown_seconds": 0.031602,
+          "metrics": {
+            "cpu_percent_of_one_logical_cpu": 0.1,
+            "cpu_seconds": 0.01,
+            "interval_seconds": 10.00049713201588,
+            "involuntary_context_switch_delta": 8,
+            "perf_sched_wakeup": {
+              "available": false,
+              "returncode": 129,
+              "stderr": "event syntax error: 'sched:sched_wakeup,sched:sched_wakeup_new'\n                     \\___ can't access trace events\n\nError:\tNo permissions to read /sys/kernel/tracing//events/sched/sched_wakeup\nHint:\tTry 'sudo mount -o remount,mode=755 /sys/kernel/tracing/'\n\nRun 'perf list' for a list of valid events\n\n Usage: perf stat [<options>] [<command>]\n\n    -e, --event <event>   event selector. use 'perf list' to list available events",
+              "stdout": ""
+            },
+            "pid_count_after": 1,
+            "pid_count_before": 1,
+            "rss_after_kib": 66920,
+            "rss_before_kib": 66704,
+            "threads_after": 18,
+            "threads_before": 21,
+            "voluntary_context_switch_delta": 56
+          }
+        },
+        "persisted_after_crash": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "post_restart_projection": {
+          "available": true,
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "post_restart_projection_after_controlled_idle_seconds": 0.001809,
+        "recovery_fixtures": {
+          "fixtureMode": "recovery",
+          "missionIds": [
+            "fixture-waiting",
+            "fixture-ready"
+          ],
+          "states": [
+            "waiting_for_provider",
+            "ready"
+          ]
+        },
+        "repetition": 5,
+        "restart_graceful_shutdown_seconds": 0.007283,
+        "restart_projection_reconstruction_seconds": 0.004512,
+        "restart_projection_seconds": 0.004461,
+        "transport_idle_connection": {
+          "additional_frame_bytes": 0,
+          "cpu_percent_of_one_logical_cpu": 0.4,
+          "cpu_seconds": 0.02,
+          "handshake_seconds": 0.005293,
+          "initial_frame_bytes": 1716,
+          "interval_seconds": 5.000111932982691,
+          "involuntary_context_switch_delta": 3,
+          "pid_count_after": 1,
+          "pid_count_before": 1,
+          "request_bytes": 156,
+          "response_header_bytes": 162,
+          "rss_after_kib": 67692,
+          "rss_before_kib": 66920,
+          "rss_delta_at_connect_kib": 924,
+          "threads_after": 20,
+          "threads_before": 18,
+          "threads_delta_at_connect": 2,
+          "voluntary_context_switch_delta": 43
+        },
+        "warm_projection": {
+          "available": true,
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "warm_projection_seconds": 0.004152,
+        "warm_start_seconds": 0.133418
+      }
+    ],
+    "repetitions": 5,
+    "summary_seconds": {
+      "cold_projection_seconds": {
+        "max": 0.008774,
+        "median": 0.00722,
+        "min": 0.004056,
+        "p95_nearest_rank": 0.008774
+      },
+      "cold_start_seconds": {
+        "max": 0.21377,
+        "median": 0.1344,
+        "min": 0.131424,
+        "p95_nearest_rank": 0.21377
+      },
+      "crash_restart_seconds": {
+        "max": 0.265002,
+        "median": 0.133924,
+        "min": 0.131797,
+        "p95_nearest_rank": 0.265002
+      },
+      "graceful_shutdown_seconds": {
+        "max": 0.015483,
+        "median": 0.015466,
+        "min": 0.007302,
+        "p95_nearest_rank": 0.015483
+      },
+      "idle_waiting_cold_start_seconds": {
+        "max": 0.265132,
+        "median": 0.181753,
+        "min": 0.131794,
+        "p95_nearest_rank": 0.265132
+      },
+      "idle_waiting_graceful_shutdown_seconds": {
+        "max": 0.063656,
+        "median": 0.031577,
+        "min": 0.015492,
+        "p95_nearest_rank": 0.063656
+      },
+      "restart_projection_reconstruction_seconds": {
+        "max": 0.008786,
+        "median": 0.00485,
+        "min": 0.004149,
+        "p95_nearest_rank": 0.008786
+      },
+      "restart_projection_seconds": {
+        "max": 0.008689,
+        "median": 0.004792,
+        "min": 0.0041,
+        "p95_nearest_rank": 0.008689
+      },
+      "warm_projection_seconds": {
+        "max": 0.010373,
+        "median": 0.00516,
+        "min": 0.004105,
+        "p95_nearest_rank": 0.010373
+      },
+      "warm_start_seconds": {
+        "max": 0.24035,
+        "median": 0.159542,
+        "min": 0.106284,
+        "p95_nearest_rank": 0.24035
+      }
+    },
+    "transport_idle_interval_seconds": 5.0
+  },
+  "schema": "ouroboros.headless-lifecycle-baseline/v1"
+}
