@@ -28,13 +28,33 @@ export class SqliteAdapter implements StoragePort {
     }
 
     async initialize(): Promise<void> {
-        this.db = new Database(this.dbPath);
+        const db = new Database(this.dbPath);
+        this.db = db;
+
+        // SQLite foreign key enforcement is connection-local and may default off.
+        // Enable it before schema setup or any prepared statements, then verify it.
+        try {
+            db.exec('PRAGMA foreign_keys = ON');
+            const foreignKeys = db.query('PRAGMA foreign_keys').get() as { foreign_keys?: number } | null;
+            if (foreignKeys?.foreign_keys !== 1) {
+                throw new Error('PRAGMA foreign_keys readback did not return 1');
+            }
+        } catch (error) {
+            this.db = null;
+            try {
+                db.close();
+            } catch {
+                // Preserve the setup error; the connection is no longer exposed.
+            }
+            const detail = error instanceof Error ? error.message : String(error);
+            throw new Error(`Failed to enable SQLite foreign key enforcement: ${detail}`, { cause: error });
+        }
 
         // Enable WAL mode for better concurrency
-        this.db.exec('PRAGMA journal_mode = WAL');
+        db.exec('PRAGMA journal_mode = WAL');
 
         // Create tables
-        this.db.exec(`
+        db.exec(`
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL,
