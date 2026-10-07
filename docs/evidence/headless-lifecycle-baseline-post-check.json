@@ -1,0 +1,45 @@
+{
+  "base_sha": "2be2171c78df9f0473cb777fd4a11b0b376602b9",
+  "environment": {
+    "architecture": "x86_64",
+    "better_sqlite3_version": "12.6.2",
+    "bun_version": "1.4.2",
+      "daemon_package_script": "tsx cli/src/daemon/main.ts",
+    "distribution": {
+      "ID": "linuxmint",
+      "PRETTY_NAME": "Linux Mint 22.3",
+      "VERSION_ID": "22.3"
+    },
+    "kernel": "7.0.0-30-generic",
+    "kernel_identity": "Linux 7.0.0-30-generic x86_64",
+    "logical_cpu_count": 12,
+    "memory_total_kib": 32554560,
+    "native_module_runtime_probe": {
+      "bun_better_sqlite3_require_only_exit_code": 0,
+      "bun_better_sqlite3_instantiation_exit_code": 1,
+      "bun_error_code": "ERR_DLOPEN_FAILED",
+      "node_better_sqlite3_exit_code": 0,
+      "tsx_error_code": "ERR_UNSUPPORTED_ESM_URL_SCHEME",
+      "tsx_node_bun_sqlite_exit_code": 1
+    },
+    "node_version": "v22.23.2",
+    "perf_version": "perf version 7.0.12",
+    "proc_clock_ticks_per_second": 100,
+    "python_version": "3.12.3",
+    "timestamp_utc": "2026-10-07T23:16:48Z"
+  },
+  "failure": {
+    "command": [
+      "bun",
+      "run",
+      "cli/src/daemon/main.ts"
+    ],
+    "diagnostic": "better-sqlite3 is not supported by this Bun runtime",
+    "error_code": "ERR_DLOPEN_FAILED",
+    "exit_code": 1,
+    "working_directory": "isolated temporary fixture directory"
+  },
+  "measurement_status": "failed_not_comparable",
+  "requested_repetitions": 5,
+  "schema": "ouroboros.headless-lifecycle-baseline/v2"
+}

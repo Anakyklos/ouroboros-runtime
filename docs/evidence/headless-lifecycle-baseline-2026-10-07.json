@@ -2,21 +2,32 @@
   "base_sha": "fd62c7c81b922ba8e142465278e00e47e54d3361",
   "environment": {
     "architecture": "x86_64",
+    "better_sqlite3_version": "12.6.2",
     "bun_version": "1.4.2",
+    "daemon_package_script": "bun cli/src/daemon/main.ts",
     "distribution": {
       "ID": "linuxmint",
       "PRETTY_NAME": "Linux Mint 22.3",
       "VERSION_ID": "22.3"
     },
     "kernel": "7.0.0-30-generic",
+    "kernel_identity": "Linux 7.0.0-30-generic x86_64",
     "logical_cpu_count": 12,
     "memory_total_kib": 32554560,
+    "native_module_runtime_probe": {
+      "bun_better_sqlite3_exit_code": 1,
+      "bun_error_code": "ERR_DLOPEN_FAILED",
+      "node_better_sqlite3_exit_code": 0,
+      "tsx_error_code": "ERR_UNSUPPORTED_ESM_URL_SCHEME",
+      "tsx_node_bun_sqlite_exit_code": 1
+    },
+    "node_version": "v22.23.2",
     "perf_version": "perf version 7.0.12",
     "proc_clock_ticks_per_second": 100,
     "python_version": "3.12.3",
-    "timestamp_utc": "2026-10-07T23:00:27Z",
-    "uname": "Linux pedro-550XED 7.0.0-30-generic #30~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Fri Aug  7 13:27:52 UTC 2 x86_64 x86_64"
+    "timestamp_utc": "2026-10-07T23:21:27Z"
   },
+  "head_sha": "f6306ddbfa2aeaf605e8d4068c8895ac6f7d2086",
   "limitations": [
     "Cold means first daemon process on an isolated fresh database; OS page cache was not flushed.",
     "Warm means a graceful daemon restart on the same isolated fixture database.",
@@ -26,12 +37,69 @@
     "RSS and CPU are sampled for the daemon process tree using /proc; measurements describe this host/container environment only.",
     "No providers, models, external services, load generator, or production Mission content are used."
   ],
+  "measurement_status": "completed",
   "measurements": {
     "idle_interval_seconds": 10.0,
     "raw_samples": [
       {
+        "after_restart_sigterm": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "after_sigkill": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "after_sigterm": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
         "cold_projection": {
           "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
           "mission_count": 2,
           "mission_ids": [
             "fixture-ready",
@@ -42,19 +110,48 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "cold_projection_seconds": 0.007673,
-        "cold_start_seconds": 0.21377,
-        "crash_kill_wait_seconds": 0.003327,
-        "crash_restart_seconds": 0.265002,
-        "graceful_shutdown_seconds": 0.015466,
+        "cold_projection_seconds": 0.00643,
+        "cold_start_seconds": 0.158424,
+        "crash_restart_seconds": 0.188153,
+        "graceful_shutdown": {
+          "duration_seconds": 0.007367,
+          "exit_code": 0,
+          "forced": false,
+          "graceful": true,
+          "process_group_released": true,
+          "requested_signal": "SIGTERM",
+          "tracked_process_ids": [
+            2013548
+          ],
+          "tracked_processes_reaped": true
+        },
         "idle_waiting_fixture": {
-          "cold_start_seconds": 0.181753,
-          "graceful_shutdown_seconds": 0.063656,
+          "after_sigterm": {
+            "missionIds": [
+              "fixture-waiting"
+            ],
+            "states": {
+              "fixture-waiting": "waiting_for_provider"
+            }
+          },
+          "cold_start_seconds": 0.268111,
+          "graceful_shutdown": {
+            "duration_seconds": 0.015497,
+            "exit_code": 0,
+            "forced": false,
+            "graceful": true,
+            "process_group_released": true,
+            "requested_signal": "SIGTERM",
+            "tracked_process_ids": [
+              2013199
+            ],
+            "tracked_processes_reaped": true
+          },
           "metrics": {
             "cpu_percent_of_one_logical_cpu": 0.2,
             "cpu_seconds": 0.02,
-            "interval_seconds": 10.000563109992072,
-            "involuntary_context_switch_delta": 5,
+            "interval_seconds": 10.000801715999842,
+            "involuntary_context_switch_delta": 4,
             "perf_sched_wakeup": {
               "available": false,
               "returncode": 129,
@@ -63,12 +160,14 @@
             },
             "pid_count_after": 1,
             "pid_count_before": 1,
-            "rss_after_kib": 66740,
-            "rss_before_kib": 66772,
+            "rss_after_kib": 60068,
+            "rss_before_kib": 59920,
             "threads_after": 17,
-            "threads_before": 20,
-            "voluntary_context_switch_delta": 67
-          }
+            "threads_before": 18,
+            "voluntary_context_switch_delta": 64
+          },
+          "projection_after_interval_seconds": 0.005251,
+          "projection_before_interval_seconds": 0.008999
         },
         "persisted_after_crash": {
           "missionIds": [
@@ -82,6 +181,32 @@
         },
         "post_restart_projection": {
           "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
           "mission_count": 2,
           "mission_ids": [
             "fixture-ready",
@@ -92,7 +217,7 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "post_restart_projection_after_controlled_idle_seconds": 0.002407,
+        "post_restart_projection_after_controlled_idle_seconds": 0.004833,
         "recovery_fixtures": {
           "fixtureMode": "recovery",
           "missionIds": [
@@ -105,31 +230,81 @@
           ]
         },
         "repetition": 1,
-        "restart_graceful_shutdown_seconds": 0.007316,
-        "restart_projection_reconstruction_seconds": 0.008786,
-        "restart_projection_seconds": 0.008689,
+        "restart_graceful_shutdown": {
+          "duration_seconds": 0.015562,
+          "exit_code": 0,
+          "forced": false,
+          "graceful": true,
+          "process_group_released": true,
+          "requested_signal": "SIGTERM",
+          "tracked_process_ids": [
+            2013625
+          ],
+          "tracked_processes_reaped": true
+        },
+        "restart_projection_reconstruction_seconds": 0.011375,
+        "restart_projection_seconds": 0.011359,
+        "sigkill_termination": {
+          "duration_seconds": 0.003376,
+          "exit_code": -9,
+          "forced": true,
+          "graceful": false,
+          "process_group_released": true,
+          "requested_signal": "SIGKILL",
+          "tracked_process_ids": [
+            2013589
+          ],
+          "tracked_processes_reaped": true
+        },
         "transport_idle_connection": {
-          "additional_frame_bytes": 0,
-          "cpu_percent_of_one_logical_cpu": 0.4,
-          "cpu_seconds": 0.02,
-          "handshake_seconds": 0.01006,
-          "initial_frame_bytes": 1717,
-          "interval_seconds": 5.000142206001328,
-          "involuntary_context_switch_delta": 14,
+          "bytes_after_handshake": 0,
+          "bytes_read_after_headers_in_handshake_recv": 1716,
+          "bytes_read_until_handshake_headers_complete": 1882,
+          "cpu_percent_of_one_logical_cpu": 0.2,
+          "cpu_seconds": 0.01,
+          "handshake_seconds": 0.004155,
+          "interval_seconds": 5.000262309011305,
+          "involuntary_context_switch_delta": 0,
           "pid_count_after": 1,
           "pid_count_before": 1,
           "request_bytes": 156,
-          "response_header_bytes": 162,
-          "rss_after_kib": 67020,
-          "rss_before_kib": 66740,
-          "rss_delta_at_connect_kib": 1176,
-          "threads_after": 19,
+          "response_header_bytes": 166,
+          "rss_after_kib": 60368,
+          "rss_before_kib": 60168,
+          "rss_delta_at_connect_kib": 748,
+          "threads_after": 17,
           "threads_before": 17,
-          "threads_delta_at_connect": 2,
-          "voluntary_context_switch_delta": 44
+          "threads_delta_at_connect": 0,
+          "voluntary_context_switch_delta": 28
         },
         "warm_projection": {
           "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
           "mission_count": 2,
           "mission_ids": [
             "fixture-ready",
@@ -140,12 +315,68 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "warm_projection_seconds": 0.010373,
-        "warm_start_seconds": 0.24035
+        "warm_projection_seconds": 0.009303,
+        "warm_start_seconds": 0.161427
       },
       {
+        "after_restart_sigterm": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "after_sigkill": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "after_sigterm": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
         "cold_projection": {
           "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
           "mission_count": 2,
           "mission_ids": [
             "fixture-ready",
@@ -156,19 +387,48 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "cold_projection_seconds": 0.008774,
-        "cold_start_seconds": 0.187288,
-        "crash_kill_wait_seconds": 0.007449,
-        "crash_restart_seconds": 0.18767,
-        "graceful_shutdown_seconds": 0.015483,
+        "cold_projection_seconds": 0.007339,
+        "cold_start_seconds": 0.160633,
+        "crash_restart_seconds": 0.160816,
+        "graceful_shutdown": {
+          "duration_seconds": 0.007388,
+          "exit_code": 0,
+          "forced": false,
+          "graceful": true,
+          "process_group_released": true,
+          "requested_signal": "SIGTERM",
+          "tracked_process_ids": [
+            2014108
+          ],
+          "tracked_processes_reaped": true
+        },
         "idle_waiting_fixture": {
-          "cold_start_seconds": 0.265132,
-          "graceful_shutdown_seconds": 0.031453,
+          "after_sigterm": {
+            "missionIds": [
+              "fixture-waiting"
+            ],
+            "states": {
+              "fixture-waiting": "waiting_for_provider"
+            }
+          },
+          "cold_start_seconds": 0.240557,
+          "graceful_shutdown": {
+            "duration_seconds": 0.031723,
+            "exit_code": 0,
+            "forced": false,
+            "graceful": true,
+            "process_group_released": true,
+            "requested_signal": "SIGTERM",
+            "tracked_process_ids": [
+              2013842
+            ],
+            "tracked_processes_reaped": true
+          },
           "metrics": {
             "cpu_percent_of_one_logical_cpu": 0.2,
             "cpu_seconds": 0.02,
-            "interval_seconds": 10.000809646007838,
-            "involuntary_context_switch_delta": 4,
+            "interval_seconds": 10.000598938000621,
+            "involuntary_context_switch_delta": 7,
             "perf_sched_wakeup": {
               "available": false,
               "returncode": 129,
@@ -177,12 +437,14 @@
             },
             "pid_count_after": 1,
             "pid_count_before": 1,
-            "rss_after_kib": 66952,
-            "rss_before_kib": 66520,
+            "rss_after_kib": 60560,
+            "rss_before_kib": 60796,
             "threads_after": 19,
-            "threads_before": 22,
-            "voluntary_context_switch_delta": 59
-          }
+            "threads_before": 20,
+            "voluntary_context_switch_delta": 58
+          },
+          "projection_after_interval_seconds": 0.002937,
+          "projection_before_interval_seconds": 0.009983
         },
         "persisted_after_crash": {
           "missionIds": [
@@ -196,6 +458,32 @@
         },
         "post_restart_projection": {
           "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
           "mission_count": 2,
           "mission_ids": [
             "fixture-ready",
@@ -206,7 +494,7 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "post_restart_projection_after_controlled_idle_seconds": 0.001899,
+        "post_restart_projection_after_controlled_idle_seconds": 0.003353,
         "recovery_fixtures": {
           "fixtureMode": "recovery",
           "missionIds": [
@@ -219,31 +507,81 @@
           ]
         },
         "repetition": 2,
-        "restart_graceful_shutdown_seconds": 0.007388,
-        "restart_projection_reconstruction_seconds": 0.008513,
-        "restart_projection_seconds": 0.008441,
+        "restart_graceful_shutdown": {
+          "duration_seconds": 0.007503,
+          "exit_code": 0,
+          "forced": false,
+          "graceful": true,
+          "process_group_released": true,
+          "requested_signal": "SIGTERM",
+          "tracked_process_ids": [
+            2014185
+          ],
+          "tracked_processes_reaped": true
+        },
+        "restart_projection_reconstruction_seconds": 0.006812,
+        "restart_projection_seconds": 0.0068,
+        "sigkill_termination": {
+          "duration_seconds": 0.007492,
+          "exit_code": -9,
+          "forced": true,
+          "graceful": false,
+          "process_group_released": true,
+          "requested_signal": "SIGKILL",
+          "tracked_process_ids": [
+            2014135
+          ],
+          "tracked_processes_reaped": true
+        },
         "transport_idle_connection": {
-          "additional_frame_bytes": 0,
-          "cpu_percent_of_one_logical_cpu": 0.4,
-          "cpu_seconds": 0.02,
-          "handshake_seconds": 0.00752,
-          "initial_frame_bytes": 1717,
-          "interval_seconds": 5.000101279991213,
-          "involuntary_context_switch_delta": 12,
+          "bytes_after_handshake": 0,
+          "bytes_read_after_headers_in_handshake_recv": 1717,
+          "bytes_read_until_handshake_headers_complete": 1883,
+          "cpu_percent_of_one_logical_cpu": 0.2,
+          "cpu_seconds": 0.01,
+          "handshake_seconds": 0.002557,
+          "interval_seconds": 5.000105935992906,
+          "involuntary_context_switch_delta": 4,
           "pid_count_after": 1,
           "pid_count_before": 1,
           "request_bytes": 156,
-          "response_header_bytes": 162,
-          "rss_after_kib": 67564,
-          "rss_before_kib": 66952,
-          "rss_delta_at_connect_kib": 1204,
-          "threads_after": 21,
+          "response_header_bytes": 166,
+          "rss_after_kib": 61188,
+          "rss_before_kib": 60608,
+          "rss_delta_at_connect_kib": 784,
+          "threads_after": 20,
           "threads_before": 19,
-          "threads_delta_at_connect": 2,
-          "voluntary_context_switch_delta": 36
+          "threads_delta_at_connect": 1,
+          "voluntary_context_switch_delta": 58
         },
         "warm_projection": {
           "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
           "mission_count": 2,
           "mission_ids": [
             "fixture-ready",
@@ -254,12 +592,68 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "warm_projection_seconds": 0.009063,
-        "warm_start_seconds": 0.187799
+        "warm_projection_seconds": 0.00974,
+        "warm_start_seconds": 0.136146
       },
       {
+        "after_restart_sigterm": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "after_sigkill": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "after_sigterm": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
         "cold_projection": {
           "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
           "mission_count": 2,
           "mission_ids": [
             "fixture-ready",
@@ -270,19 +664,48 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "cold_projection_seconds": 0.00554,
-        "cold_start_seconds": 0.1344,
-        "crash_kill_wait_seconds": 0.003294,
-        "crash_restart_seconds": 0.133924,
-        "graceful_shutdown_seconds": 0.015467,
+        "cold_projection_seconds": 0.006877,
+        "cold_start_seconds": 0.134554,
+        "crash_restart_seconds": 0.109357,
+        "graceful_shutdown": {
+          "duration_seconds": 0.007463,
+          "exit_code": 0,
+          "forced": false,
+          "graceful": true,
+          "process_group_released": true,
+          "requested_signal": "SIGTERM",
+          "tracked_process_ids": [
+            2014520
+          ],
+          "tracked_processes_reaped": true
+        },
         "idle_waiting_fixture": {
-          "cold_start_seconds": 0.131794,
-          "graceful_shutdown_seconds": 0.015492,
+          "after_sigterm": {
+            "missionIds": [
+              "fixture-waiting"
+            ],
+            "states": {
+              "fixture-waiting": "waiting_for_provider"
+            }
+          },
+          "cold_start_seconds": 0.16138,
+          "graceful_shutdown": {
+            "duration_seconds": 0.015532,
+            "exit_code": 0,
+            "forced": false,
+            "graceful": true,
+            "process_group_released": true,
+            "requested_signal": "SIGTERM",
+            "tracked_process_ids": [
+              2014302
+            ],
+            "tracked_processes_reaped": true
+          },
           "metrics": {
-            "cpu_percent_of_one_logical_cpu": 0.2,
-            "cpu_seconds": 0.02,
-            "interval_seconds": 10.000512799015269,
-            "involuntary_context_switch_delta": 0,
+            "cpu_percent_of_one_logical_cpu": 0.1,
+            "cpu_seconds": 0.01,
+            "interval_seconds": 10.000565261987504,
+            "involuntary_context_switch_delta": 1,
             "perf_sched_wakeup": {
               "available": false,
               "returncode": 129,
@@ -291,12 +714,14 @@
             },
             "pid_count_after": 1,
             "pid_count_before": 1,
-            "rss_after_kib": 66752,
-            "rss_before_kib": 66208,
+            "rss_after_kib": 60176,
+            "rss_before_kib": 60140,
             "threads_after": 18,
-            "threads_before": 21,
-            "voluntary_context_switch_delta": 71
-          }
+            "threads_before": 19,
+            "voluntary_context_switch_delta": 51
+          },
+          "projection_after_interval_seconds": 0.005918,
+          "projection_before_interval_seconds": 0.006522
         },
         "persisted_after_crash": {
           "missionIds": [
@@ -310,6 +735,32 @@
         },
         "post_restart_projection": {
           "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
           "mission_count": 2,
           "mission_ids": [
             "fixture-ready",
@@ -320,7 +771,7 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "post_restart_projection_after_controlled_idle_seconds": 0.001941,
+        "post_restart_projection_after_controlled_idle_seconds": 0.003478,
         "recovery_fixtures": {
           "fixtureMode": "recovery",
           "missionIds": [
@@ -333,31 +784,81 @@
           ]
         },
         "repetition": 3,
-        "restart_graceful_shutdown_seconds": 0.007337,
-        "restart_projection_reconstruction_seconds": 0.00485,
-        "restart_projection_seconds": 0.004792,
+        "restart_graceful_shutdown": {
+          "duration_seconds": 0.007547,
+          "exit_code": 0,
+          "forced": false,
+          "graceful": true,
+          "process_group_released": true,
+          "requested_signal": "SIGTERM",
+          "tracked_process_ids": [
+            2014588
+          ],
+          "tracked_processes_reaped": true
+        },
+        "restart_projection_reconstruction_seconds": 0.008144,
+        "restart_projection_seconds": 0.008133,
+        "sigkill_termination": {
+          "duration_seconds": 0.003337,
+          "exit_code": -9,
+          "forced": true,
+          "graceful": false,
+          "process_group_released": true,
+          "requested_signal": "SIGKILL",
+          "tracked_process_ids": [
+            2014555
+          ],
+          "tracked_processes_reaped": true
+        },
         "transport_idle_connection": {
-          "additional_frame_bytes": 0,
+          "bytes_after_handshake": 0,
+          "bytes_read_after_headers_in_handshake_recv": 1717,
+          "bytes_read_until_handshake_headers_complete": 1883,
           "cpu_percent_of_one_logical_cpu": 0.2,
           "cpu_seconds": 0.01,
-          "handshake_seconds": 0.006937,
-          "initial_frame_bytes": 1717,
-          "interval_seconds": 5.0000743299897294,
+          "handshake_seconds": 0.003448,
+          "interval_seconds": 5.0001080430229194,
           "involuntary_context_switch_delta": 1,
           "pid_count_after": 1,
           "pid_count_before": 1,
           "request_bytes": 156,
-          "response_header_bytes": 162,
-          "rss_after_kib": 67112,
-          "rss_before_kib": 66752,
-          "rss_delta_at_connect_kib": 1204,
-          "threads_after": 20,
+          "response_header_bytes": 166,
+          "rss_after_kib": 60476,
+          "rss_before_kib": 60276,
+          "rss_delta_at_connect_kib": 660,
+          "threads_after": 18,
           "threads_before": 18,
-          "threads_delta_at_connect": 2,
-          "voluntary_context_switch_delta": 39
+          "threads_delta_at_connect": 0,
+          "voluntary_context_switch_delta": 44
         },
         "warm_projection": {
           "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
           "mission_count": 2,
           "mission_ids": [
             "fixture-ready",
@@ -368,12 +869,68 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "warm_projection_seconds": 0.00516,
-        "warm_start_seconds": 0.159542
+        "warm_projection_seconds": 0.006147,
+        "warm_start_seconds": 0.106868
       },
       {
+        "after_restart_sigterm": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "after_sigkill": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "after_sigterm": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
         "cold_projection": {
           "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
           "mission_count": 2,
           "mission_ids": [
             "fixture-ready",
@@ -384,19 +941,48 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "cold_projection_seconds": 0.004056,
-        "cold_start_seconds": 0.131424,
-        "crash_kill_wait_seconds": 0.003174,
-        "crash_restart_seconds": 0.131797,
-        "graceful_shutdown_seconds": 0.015461,
+        "cold_projection_seconds": 0.008157,
+        "cold_start_seconds": 0.187586,
+        "crash_restart_seconds": 0.159829,
+        "graceful_shutdown": {
+          "duration_seconds": 0.015538,
+          "exit_code": 0,
+          "forced": false,
+          "graceful": true,
+          "process_group_released": true,
+          "requested_signal": "SIGTERM",
+          "tracked_process_ids": [
+            2014844
+          ],
+          "tracked_processes_reaped": true
+        },
         "idle_waiting_fixture": {
-          "cold_start_seconds": 0.13265,
-          "graceful_shutdown_seconds": 0.031577,
+          "after_sigterm": {
+            "missionIds": [
+              "fixture-waiting"
+            ],
+            "states": {
+              "fixture-waiting": "waiting_for_provider"
+            }
+          },
+          "cold_start_seconds": 0.158628,
+          "graceful_shutdown": {
+            "duration_seconds": 0.032043,
+            "exit_code": 0,
+            "forced": false,
+            "graceful": true,
+            "process_group_released": true,
+            "requested_signal": "SIGTERM",
+            "tracked_process_ids": [
+              2014669
+            ],
+            "tracked_processes_reaped": true
+          },
           "metrics": {
             "cpu_percent_of_one_logical_cpu": 0.2,
             "cpu_seconds": 0.02,
-            "interval_seconds": 10.000617882993538,
-            "involuntary_context_switch_delta": 14,
+            "interval_seconds": 10.00057742500212,
+            "involuntary_context_switch_delta": 7,
             "perf_sched_wakeup": {
               "available": false,
               "returncode": 129,
@@ -405,12 +991,14 @@
             },
             "pid_count_after": 1,
             "pid_count_before": 1,
-            "rss_after_kib": 66756,
-            "rss_before_kib": 66344,
-            "threads_after": 18,
-            "threads_before": 21,
-            "voluntary_context_switch_delta": 50
-          }
+            "rss_after_kib": 60308,
+            "rss_before_kib": 60404,
+            "threads_after": 19,
+            "threads_before": 20,
+            "voluntary_context_switch_delta": 51
+          },
+          "projection_after_interval_seconds": 0.005858,
+          "projection_before_interval_seconds": 0.006046
         },
         "persisted_after_crash": {
           "missionIds": [
@@ -424,6 +1012,32 @@
         },
         "post_restart_projection": {
           "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
           "mission_count": 2,
           "mission_ids": [
             "fixture-ready",
@@ -434,7 +1048,7 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "post_restart_projection_after_controlled_idle_seconds": 0.001408,
+        "post_restart_projection_after_controlled_idle_seconds": 0.002378,
         "recovery_fixtures": {
           "fixtureMode": "recovery",
           "missionIds": [
@@ -447,31 +1061,81 @@
           ]
         },
         "repetition": 4,
-        "restart_graceful_shutdown_seconds": 0.007409,
-        "restart_projection_reconstruction_seconds": 0.004149,
-        "restart_projection_seconds": 0.0041,
+        "restart_graceful_shutdown": {
+          "duration_seconds": 0.007435,
+          "exit_code": 0,
+          "forced": false,
+          "graceful": true,
+          "process_group_released": true,
+          "requested_signal": "SIGTERM",
+          "tracked_process_ids": [
+            2014916
+          ],
+          "tracked_processes_reaped": true
+        },
+        "restart_projection_reconstruction_seconds": 0.007748,
+        "restart_projection_seconds": 0.007737,
+        "sigkill_termination": {
+          "duration_seconds": 0.007504,
+          "exit_code": -9,
+          "forced": true,
+          "graceful": false,
+          "process_group_released": true,
+          "requested_signal": "SIGKILL",
+          "tracked_process_ids": [
+            2014879
+          ],
+          "tracked_processes_reaped": true
+        },
         "transport_idle_connection": {
-          "additional_frame_bytes": 0,
-          "cpu_percent_of_one_logical_cpu": 0.6,
-          "cpu_seconds": 0.03,
-          "handshake_seconds": 0.015724,
-          "initial_frame_bytes": 1717,
-          "interval_seconds": 5.000146025005961,
-          "involuntary_context_switch_delta": 25,
+          "bytes_after_handshake": 0,
+          "bytes_read_after_headers_in_handshake_recv": 1717,
+          "bytes_read_until_handshake_headers_complete": 1883,
+          "cpu_percent_of_one_logical_cpu": 0.4,
+          "cpu_seconds": 0.02,
+          "handshake_seconds": 0.00407,
+          "interval_seconds": 5.000286107009742,
+          "involuntary_context_switch_delta": 0,
           "pid_count_after": 1,
           "pid_count_before": 1,
           "request_bytes": 156,
-          "response_header_bytes": 162,
-          "rss_after_kib": 67004,
-          "rss_before_kib": 66756,
-          "rss_delta_at_connect_kib": 1192,
-          "threads_after": 20,
-          "threads_before": 18,
-          "threads_delta_at_connect": 2,
-          "voluntary_context_switch_delta": 44
+          "response_header_bytes": 166,
+          "rss_after_kib": 60632,
+          "rss_before_kib": 60400,
+          "rss_delta_at_connect_kib": 736,
+          "threads_after": 19,
+          "threads_before": 19,
+          "threads_delta_at_connect": 0,
+          "voluntary_context_switch_delta": 35
         },
         "warm_projection": {
           "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
           "mission_count": 2,
           "mission_ids": [
             "fixture-ready",
@@ -482,12 +1146,68 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "warm_projection_seconds": 0.004105,
-        "warm_start_seconds": 0.106284
+        "warm_projection_seconds": 0.00821,
+        "warm_start_seconds": 0.159984
       },
       {
+        "after_restart_sigterm": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "after_sigkill": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "after_sigterm": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
         "cold_projection": {
           "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
           "mission_count": 2,
           "mission_ids": [
             "fixture-ready",
@@ -498,19 +1218,48 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "cold_projection_seconds": 0.00722,
-        "cold_start_seconds": 0.13408,
-        "crash_kill_wait_seconds": 0.007353,
-        "crash_restart_seconds": 0.132727,
-        "graceful_shutdown_seconds": 0.007302,
+        "cold_projection_seconds": 0.009565,
+        "cold_start_seconds": 0.236365,
+        "crash_restart_seconds": 0.213398,
+        "graceful_shutdown": {
+          "duration_seconds": 0.015536,
+          "exit_code": 0,
+          "forced": false,
+          "graceful": true,
+          "process_group_released": true,
+          "requested_signal": "SIGTERM",
+          "tracked_process_ids": [
+            2015126
+          ],
+          "tracked_processes_reaped": true
+        },
         "idle_waiting_fixture": {
-          "cold_start_seconds": 0.210883,
-          "graceful_shutdown_seconds": 0.031602,
+          "after_sigterm": {
+            "missionIds": [
+              "fixture-waiting"
+            ],
+            "states": {
+              "fixture-waiting": "waiting_for_provider"
+            }
+          },
+          "cold_start_seconds": 0.160983,
+          "graceful_shutdown": {
+            "duration_seconds": 0.031595,
+            "exit_code": 0,
+            "forced": false,
+            "graceful": true,
+            "process_group_released": true,
+            "requested_signal": "SIGTERM",
+            "tracked_process_ids": [
+              2014996
+            ],
+            "tracked_processes_reaped": true
+          },
           "metrics": {
-            "cpu_percent_of_one_logical_cpu": 0.1,
-            "cpu_seconds": 0.01,
-            "interval_seconds": 10.00049713201588,
-            "involuntary_context_switch_delta": 8,
+            "cpu_percent_of_one_logical_cpu": 0.3,
+            "cpu_seconds": 0.03,
+            "interval_seconds": 10.000443048018496,
+            "involuntary_context_switch_delta": 20,
             "perf_sched_wakeup": {
               "available": false,
               "returncode": 129,
@@ -519,12 +1268,14 @@
             },
             "pid_count_after": 1,
             "pid_count_before": 1,
-            "rss_after_kib": 66920,
-            "rss_before_kib": 66704,
-            "threads_after": 18,
-            "threads_before": 21,
-            "voluntary_context_switch_delta": 56
-          }
+            "rss_after_kib": 60272,
+            "rss_before_kib": 59784,
+            "threads_after": 19,
+            "threads_before": 20,
+            "voluntary_context_switch_delta": 58
+          },
+          "projection_after_interval_seconds": 0.003937,
+          "projection_before_interval_seconds": 0.00909
         },
         "persisted_after_crash": {
           "missionIds": [
@@ -538,6 +1289,32 @@
         },
         "post_restart_projection": {
           "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
           "mission_count": 2,
           "mission_ids": [
             "fixture-ready",
@@ -548,7 +1325,7 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "post_restart_projection_after_controlled_idle_seconds": 0.001809,
+        "post_restart_projection_after_controlled_idle_seconds": 0.00407,
         "recovery_fixtures": {
           "fixtureMode": "recovery",
           "missionIds": [
@@ -561,31 +1338,81 @@
           ]
         },
         "repetition": 5,
-        "restart_graceful_shutdown_seconds": 0.007283,
-        "restart_projection_reconstruction_seconds": 0.004512,
-        "restart_projection_seconds": 0.004461,
+        "restart_graceful_shutdown": {
+          "duration_seconds": 0.009571,
+          "exit_code": 0,
+          "forced": false,
+          "graceful": true,
+          "process_group_released": true,
+          "requested_signal": "SIGTERM",
+          "tracked_process_ids": [
+            2015186
+          ],
+          "tracked_processes_reaped": true
+        },
+        "restart_projection_reconstruction_seconds": 0.01073,
+        "restart_projection_seconds": 0.010716,
+        "sigkill_termination": {
+          "duration_seconds": 0.007522,
+          "exit_code": -9,
+          "forced": true,
+          "graceful": false,
+          "process_group_released": true,
+          "requested_signal": "SIGKILL",
+          "tracked_process_ids": [
+            2015152
+          ],
+          "tracked_processes_reaped": true
+        },
         "transport_idle_connection": {
-          "additional_frame_bytes": 0,
-          "cpu_percent_of_one_logical_cpu": 0.4,
-          "cpu_seconds": 0.02,
-          "handshake_seconds": 0.005293,
-          "initial_frame_bytes": 1716,
-          "interval_seconds": 5.000111932982691,
-          "involuntary_context_switch_delta": 3,
+          "bytes_after_handshake": 0,
+          "bytes_read_after_headers_in_handshake_recv": 1717,
+          "bytes_read_until_handshake_headers_complete": 1883,
+          "cpu_percent_of_one_logical_cpu": 0.2,
+          "cpu_seconds": 0.01,
+          "handshake_seconds": 0.002347,
+          "interval_seconds": 5.0001654049847275,
+          "involuntary_context_switch_delta": 0,
           "pid_count_after": 1,
           "pid_count_before": 1,
           "request_bytes": 156,
-          "response_header_bytes": 162,
-          "rss_after_kib": 67692,
-          "rss_before_kib": 66920,
-          "rss_delta_at_connect_kib": 924,
-          "threads_after": 20,
-          "threads_before": 18,
-          "threads_delta_at_connect": 2,
-          "voluntary_context_switch_delta": 43
+          "response_header_bytes": 166,
+          "rss_after_kib": 60596,
+          "rss_before_kib": 60364,
+          "rss_delta_at_connect_kib": 680,
+          "threads_after": 19,
+          "threads_before": 19,
+          "threads_delta_at_connect": 0,
+          "voluntary_context_switch_delta": 35
         },
         "warm_projection": {
           "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
           "mission_count": 2,
           "mission_ids": [
             "fixture-ready",
@@ -596,74 +1423,80 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "warm_projection_seconds": 0.004152,
-        "warm_start_seconds": 0.133418
+        "warm_projection_seconds": 0.009612,
+        "warm_start_seconds": 0.214705
       }
     ],
     "repetitions": 5,
     "summary_seconds": {
       "cold_projection_seconds": {
-        "max": 0.008774,
-        "median": 0.00722,
-        "min": 0.004056,
-        "p95_nearest_rank": 0.008774
+        "max": 0.009565,
+        "median": 0.007339,
+        "min": 0.00643,
+        "p95_nearest_rank": 0.009565
       },
       "cold_start_seconds": {
-        "max": 0.21377,
-        "median": 0.1344,
-        "min": 0.131424,
-        "p95_nearest_rank": 0.21377
+        "max": 0.236365,
+        "median": 0.160633,
+        "min": 0.134554,
+        "p95_nearest_rank": 0.236365
       },
       "crash_restart_seconds": {
-        "max": 0.265002,
-        "median": 0.133924,
-        "min": 0.131797,
-        "p95_nearest_rank": 0.265002
+        "max": 0.213398,
+        "median": 0.160816,
+        "min": 0.109357,
+        "p95_nearest_rank": 0.213398
       },
       "graceful_shutdown_seconds": {
-        "max": 0.015483,
-        "median": 0.015466,
-        "min": 0.007302,
-        "p95_nearest_rank": 0.015483
+        "max": 0.015538,
+        "median": 0.007463,
+        "min": 0.007367,
+        "p95_nearest_rank": 0.015538
       },
       "idle_waiting_cold_start_seconds": {
-        "max": 0.265132,
-        "median": 0.181753,
-        "min": 0.131794,
-        "p95_nearest_rank": 0.265132
+        "max": 0.268111,
+        "median": 0.16138,
+        "min": 0.158628,
+        "p95_nearest_rank": 0.268111
       },
       "idle_waiting_graceful_shutdown_seconds": {
-        "max": 0.063656,
-        "median": 0.031577,
-        "min": 0.015492,
-        "p95_nearest_rank": 0.063656
+        "max": 0.032043,
+        "median": 0.031595,
+        "min": 0.015497,
+        "p95_nearest_rank": 0.032043
       },
       "restart_projection_reconstruction_seconds": {
-        "max": 0.008786,
-        "median": 0.00485,
-        "min": 0.004149,
-        "p95_nearest_rank": 0.008786
+        "max": 0.011375,
+        "median": 0.008144,
+        "min": 0.006812,
+        "p95_nearest_rank": 0.011375
       },
       "restart_projection_seconds": {
-        "max": 0.008689,
-        "median": 0.004792,
-        "min": 0.0041,
-        "p95_nearest_rank": 0.008689
+        "max": 0.011359,
+        "median": 0.008133,
+        "min": 0.0068,
+        "p95_nearest_rank": 0.011359
+      },
+      "sigkill_process_termination_seconds": {
+        "max": 0.007522,
+        "median": 0.007492,
+        "min": 0.003337,
+        "p95_nearest_rank": 0.007522
       },
       "warm_projection_seconds": {
-        "max": 0.010373,
-        "median": 0.00516,
-        "min": 0.004105,
-        "p95_nearest_rank": 0.010373
+        "max": 0.00974,
+        "median": 0.009303,
+        "min": 0.006147,
+        "p95_nearest_rank": 0.00974
       },
       "warm_start_seconds": {
-        "max": 0.24035,
-        "median": 0.159542,
-        "min": 0.106284,
-        "p95_nearest_rank": 0.24035
+        "max": 0.214705,
+        "median": 0.159984,
+        "min": 0.106868,
+        "p95_nearest_rank": 0.214705
       }
     },
     "transport_idle_interval_seconds": 5.0
   },
-  "schema": "ouroboros.headless-lifecycle-baseline/v1"
+  "schema": "ouroboros.headless-lifecycle-baseline/v2"
 }
