@@ -2,24 +2,24 @@
  * 💾 SQLite Adapter
  * 
  * Implementação do StoragePort usando SQLite.
- * Usa better-sqlite3 para performance síncrona.
+ * Usa o SQLite síncrono nativo do Bun.
  */
 
-import Database from 'better-sqlite3';
+import { Database, type SQLQueryBindings, type Statement } from 'bun:sqlite';
 import { randomUUID } from 'crypto';
 import type { StoragePort, Session, SessionSummary, AuditEntry, SessionWave, SessionCheckpoint, SessionMemory } from '../ports/storage.port.js';
 
 export class SqliteAdapter implements StoragePort {
-    private db: Database.Database | null = null;
+    private db: Database | null = null;
     private dbPath: string;
     // Cache prepared statements to improve performance
-    private statements: Record<string, Database.Statement> = {};
+    private statements: Record<string, Statement> = {};
 
     constructor(dbPath: string = '.ouroboros/daemon.db') {
         this.dbPath = dbPath;
     }
 
-    private getStatement(key: string, sql: string): Database.Statement {
+    private getStatement(key: string, sql: string): Statement {
         const db = this.ensureDb();
         if (!this.statements[key]) {
             this.statements[key] = db.prepare(sql);
@@ -28,13 +28,33 @@ export class SqliteAdapter implements StoragePort {
     }
 
     async initialize(): Promise<void> {
-        this.db = new Database(this.dbPath);
+        const db = new Database(this.dbPath);
+        this.db = db;
+
+        // SQLite foreign key enforcement is connection-local and may default off.
+        // Enable it before schema setup or any prepared statements, then verify it.
+        try {
+            db.exec('PRAGMA foreign_keys = ON');
+            const foreignKeys = db.query('PRAGMA foreign_keys').get() as { foreign_keys?: number } | null;
+            if (foreignKeys?.foreign_keys !== 1) {
+                throw new Error('PRAGMA foreign_keys readback did not return 1');
+            }
+        } catch (error) {
+            this.db = null;
+            try {
+                db.close();
+            } catch {
+                // Preserve the setup error; the connection is no longer exposed.
+            }
+            const detail = error instanceof Error ? error.message : String(error);
+            throw new Error(`Failed to enable SQLite foreign key enforcement: ${detail}`, { cause: error });
+        }
 
         // Enable WAL mode for better concurrency
-        this.db.pragma('journal_mode = WAL');
+        db.exec('PRAGMA journal_mode = WAL');
 
         // Create tables
-        this.db.exec(`
+        db.exec(`
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL,
@@ -101,7 +121,7 @@ export class SqliteAdapter implements StoragePort {
         this.statements = {};
     }
 
-    private ensureDb(): Database.Database {
+    private ensureDb(): Database {
         if (!this.db) {
             throw new Error('Database not initialized. Call initialize() first.');
         }
@@ -160,7 +180,7 @@ export class SqliteAdapter implements StoragePort {
     async updateSession(id: string, data: Partial<Session>): Promise<void> {
         const db = this.ensureDb();
         const updates: string[] = ['updated_at = ?'];
-        const values: unknown[] = [new Date().toISOString()];
+        const values: SQLQueryBindings[] = [new Date().toISOString()];
 
         if (data.status) {
             updates.push('status = ?');
@@ -181,8 +201,8 @@ export class SqliteAdapter implements StoragePort {
     }
 
     async listSessions(filter?: { status?: Session['status'] }): Promise<SessionSummary[]> {
-        let stmt: Database.Statement;
-        const params: unknown[] = [];
+        let stmt: Statement;
+        const params: SQLQueryBindings[] = [];
 
         // Optimize: Select only summary fields, excluding large context_snapshot
         const queryCols = 'id, created_at, updated_at, status, metadata';
@@ -352,7 +372,7 @@ export class SqliteAdapter implements StoragePort {
     async updateWave(id: string, data: Partial<SessionWave>): Promise<void> {
         const db = this.ensureDb();
         const updates: string[] = ['updated_at = ?'];
-        const values: unknown[] = [new Date().toISOString()];
+        const values: SQLQueryBindings[] = [new Date().toISOString()];
 
         if (data.status) {
             updates.push('status = ?');
@@ -486,8 +506,8 @@ export class SqliteAdapter implements StoragePort {
     }
 
     async listMemory(sessionId: string, filter?: { type?: SessionMemory['type'] }): Promise<SessionMemory[]> {
-        let stmt: Database.Statement;
-        const params: unknown[] = [sessionId];
+        let stmt: Statement;
+        const params: SQLQueryBindings[] = [sessionId];
 
         if (filter?.type) {
             stmt = this.getStatement('listMemoryByType', 

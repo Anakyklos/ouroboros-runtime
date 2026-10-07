@@ -13,7 +13,7 @@ const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8
 describe("ouroboros admin CLI entrypoint", () => {
   it("routes headless startup to the daemon and exposes no TUI/setup scripts", () => {
     expect(packageJson.scripts["start:headless"]).toBe("bun run daemon");
-    expect(packageJson.scripts.daemon).toBe("tsx cli/src/daemon/main.ts");
+    expect(packageJson.scripts.daemon).toBe("bun cli/src/daemon/main.ts");
     expect(packageJson.scripts.ouroboros).toBe("bun run bin/ouroboros.js");
     expect(packageJson.scripts.tui).toBeUndefined();
     expect(packageJson.scripts.setup).toBeUndefined();
