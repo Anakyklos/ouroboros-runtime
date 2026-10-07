@@ -69,14 +69,14 @@ async function main() {
         'Ouroboros workspace',
         config.isReady,
         `Workspace ready at ${config.workspace}`,
-        'Workspace not found. Run: bun run setup'
+        'Legacy workspace missing. This is not required by the daemon/admin CLI; create it only for legacy tooling with: bun run setup_ouroboros.ts'
     );
 
     check(
         'Python venv',
         existsSync(config.python),
         `Python found at ${config.python}`,
-        'Python venv not found. Run: bun run setup'
+        'Legacy Python venv missing. This is not required by the daemon/admin CLI; create it only for legacy tooling with: bun run setup_ouroboros.ts'
     );
 
     // 4. Check Gemini CLI

@@ -210,12 +210,12 @@
 
 | Campo | Valor |
 |---|---|
-| **Subsystem** | `cli/src/tui/components/CouncilPanel.tsx`; `web/src/components/quadrants/the-council.tsx` (Council quadrant no web) |
-| **Current responsibility/evidence** | Painéis que exibem debate do Council/quadrantes de personas. |
+| **Subsystem** | `web/src/components/quadrants/the-council.tsx` (Council quadrant no web); o antigo `cli/src/tui/components/CouncilPanel.tsx` foi removido em #104 |
+| **Current responsibility/evidence** | O frontend web ainda contém o quadrante legado; o painel da TUI foi removido junto com a TUI. |
 | **Decision** | **RETIRE** como superfície principal. |
 | **Future owner/boundary** | Nenhum; Council/personas não permanecem arquitetura central (#60). UI futura é projection de Mission facts. |
 | **Rationale** | #61: "Council/CoT/persona theatre não permanece superfície principal." |
-| **Follow-up implication** | Remover/ocultar painéis quando UI for re-trabalhada (#68); não ampliar. |
+| **Follow-up implication** | Remover/ocultar o quadrante web quando a UI for re-trabalhada (#68); não ampliar. |
 
 ### 19. Memory UI
 
@@ -232,12 +232,12 @@
 
 | Campo | Valor |
 |---|---|
-| **Subsystem** | `cli/src/tui/` (React/Ink TUI completa) |
-| **Current responsibility/evidence** | TUI Ink/React com tema Emerald, visualization de waves/intent/health. |
+| **Subsystem** | React/Ink TUI completa (código removido em #104) |
+| **Current responsibility/evidence** | TUI React/Ink retirada em #104; a implementação e seu entrypoint foram removidos após a CLI factual assumir admin/recovery. |
 | **Decision** | **RETIRE** como produto principal — não compete como segunda UI principal. |
 | **Future owner/boundary** | Ouroboros: CLI pequena (`ouroboros status/missions/mission show|pause|resume|cancel/capabilities`). |
 | **Rationale** | #70: "A TUI completa não deve permanecer como segunda experiência principal competindo com o desktop." |
-| **Follow-up implication** | Substituir por CLI pequena; reter somente componentes com valor real para recovery/debug. |
+| **Follow-up implication** | Executado em #104: sem componentes de debug/recovery retidos, pois não havia consumidor atual comprovado fora da TUI. |
 
 ### 21. Electron shell
 
@@ -276,12 +276,12 @@
 
 | Campo | Valor |
 |---|---|
-| **Subsystem** | `cli/src/tui/` (entry.tsx, components, store, adapter) |
-| **Current responsibility/evidence** | TUI React/Ink com LogViewer, StatusPanel, CouncilPanel, InputBar. |
+| **Subsystem** | React/Ink TUI (entry.tsx, components, store, adapter; removidos em #104) |
+| **Current responsibility/evidence** | TUI React/Ink e componentes removidos em #104 após busca de imports/consumidores; nenhum componente possuía consumidor atual fora da TUI. |
 | **Decision** | **RETIRE** — mesma decisão da Terminal UI: não é segunda UI principal. |
 | **Future owner/boundary** | Ouroboros: CLI pequena para admin/recovery. |
 | **Rationale** | #70: TUI não compete como segunda experiência principal. |
-| **Follow-up implication** | Substituir por CLI; componentes com valor real para debug podem ser retidos. |
+| **Follow-up implication** | Executado em #104: a CLI factual cobre admin/recovery; nenhum componente foi retido sem consumidor comprovado. |
 
 ### 25. Web frontend
 
@@ -320,7 +320,7 @@
 
 | Campo | Valor |
 |---|---|
-| **Subsystem** | `web/src/stores/` (mission-control-store.ts, settings-store.ts, log-store.ts) + `cli/src/tui/store.ts` |
+| **Subsystem** | `web/src/stores/` (mission-control-store.ts, settings-store.ts, log-store.ts); a antiga `cli/src/tui/store.ts` foi removida em #104 |
 | **Current responsibility/evidence** | Stores duplicados entre TUI e web frontend; state de UI separado do daemon. |
 | **Decision** | **ADAPT** — consolidar após contracts de projeção; stores refletem projection, nunca state autoritativo da Mission. |
 | **Future owner/boundary** | Ouroboros: projeção versionada; UI state é cache de exibição. |
@@ -347,7 +347,8 @@
 4. **#61-followup-4**: GatewayOrchestrator (#63) — remover bridges hardcoded em favor de Capability Registry/connectors.
 5. **#61-followup-5**: MemoryManager/MemoryRetriever → Context Compiler (#64) com provenance.
 6. **#61-followup-6**: Ralph loop → mover para dev-tools ou remover.
-7. **#61-followup-7**: TUI React/Ink → substituir por CLI pequena (#70); reter componentes de debug.
+7. **#61-followup-7**: Concluído em #104: retirar TUI React/Ink e seus entrypoints; a CLI factual de #99/#103 cobre admin/recovery. Nenhum componente de debug tinha consumidor atual comprovado.
+   O BootWizard e o Concierge foram preservados porque `cli/src/daemon/loop.ts` ainda os importa. O GatewayOrchestrator também permanece com consumidores explícitos em `daemon/server.ts`, `daemon/legacy-rpc-gateway.ts`, `adapters/channels/ChannelGateway.ts` e `daemon/loop.ts`; a composição headless/admin atual não os inicializa.
 8. **#61-followup-8**: Web frontend → reaproveitar componentes em Mission Control desktop leve após POC (#70/#68).
 9. **#61-followup-9**: Transporte → avaliar IPC local (Unix socket) após contracts (#70).
 10. **#61-followup-10**: MCP/SkillLoader → reavaliar como transport candidate após Capability Registry (#63).
