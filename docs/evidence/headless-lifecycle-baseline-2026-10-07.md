@@ -1,8 +1,8 @@
 # Headless daemon resource and lifecycle baseline (#105)
 
 **Main base SHA:** `fd62c7c81b922ba8e142465278e00e47e54d3361`
-**Measured code HEAD:** `8c0fd8e00101d03261b6fd740842b0c5c9880b0f`
-**Collection:** 2026-10-07 23:31 UTC; five repetitions after frozen installs and `bun run check` at the measured HEAD.
+**Measured code HEAD:** `1d84744c56f74a9679ce1d1357c6992d8ddf186f`
+**Collection:** 2026-10-07 23:42 UTC; five repetitions after frozen installs and `bun run check` at the measured HEAD.
 
 **Environment:** Linux Mint 22.3, kernel `7.0.0-30-generic`, x86_64, 12 logical CPUs, 31.1 GiB RAM, Bun 1.4.2, Node 22.23.2, Python 3.12.3, `better-sqlite3` 12.6.2 installed, perf 7.0.12. Hostname is omitted. Raw samples and runtime probes are in [the JSON artifact](headless-lifecycle-baseline-2026-10-07.json).
 
@@ -22,7 +22,7 @@ python3 scripts/headless-lifecycle-baseline.py \
   --output docs/evidence/headless-lifecycle-baseline-2026-10-07.json
 ```
 
-The five-run collection in the JSON completed after these frozen installs and the full gate. `bun run check` passed all 66 mandatory files; the web build emitted its existing chunk-size warning. The harness's eight explicit unit tests cover malformed identity, duplicate and missing Missions, wrong state, unexpected invocation/effect records, nonzero SIGTERM exit, and SIGKILL classification.
+The five-run collection in the JSON completed after these frozen installs and the full gate. `bun run check` passed all 67 mandatory files; the web build emitted its existing chunk-size warning. The harness's eight explicit unit tests cover malformed identity, duplicate and missing Missions, wrong state, unexpected invocation/effect records, nonzero SIGTERM exit, and SIGKILL classification.
 
 The post-install failure was a real runtime composition mismatch, not a damaged native binary: Node 22 loaded the installed `better-sqlite3` 12.6.2 addon successfully, while Bun 1.4.2 failed to instantiate it with `ERR_DLOPEN_FAILED`. The package's former `tsx` daemon command ran under Node, where the headless composition's `bun:sqlite` import failed with `ERR_UNSUPPORTED_ESM_URL_SCHEME`. The failed attempt and its sanitized environment are retained in [the diagnostic artifact](headless-lifecycle-baseline-post-check.json).
 
@@ -34,17 +34,17 @@ Times show min / median / max over five repetitions. Process exit codes and ever
 
 | Measurement | Result |
 |---|---:|
-| First start with fresh fixture DB | 133–628 ms / **186 ms** / 628 ms |
-| Warm restart with same DB | 109–436 ms / **161 ms** / 436 ms |
-| Graceful SIGTERM to exit 0 and released process group | 7.4–41.2 ms / **15.6 ms** / 41.2 ms |
-| Forced SIGKILL termination | exit `-9` in all runs; 3.4–8.2 ms / **7.5 ms** / 8.2 ms |
-| Crash restart to health-ready | 106–487 ms / **109 ms** / 487 ms |
-| Post-restart authoritative projection | 4.9–19.9 ms / **6.7 ms** / 19.9 ms |
-| Warm-start projection | 8.1–22.5 ms / **13.0 ms** / 22.5 ms |
+| First start with fresh fixture DB | 132–239 ms / **161 ms** / 239 ms |
+| Warm restart with same DB | 106–187 ms / **162 ms** / 187 ms |
+| Graceful SIGTERM to exit 0 and released process group | 7.4–15.7 ms / **7.4 ms** / 15.7 ms |
+| Forced SIGKILL termination | exit `-9` in all runs; 3.4–7.5 ms / **3.9 ms** / 7.5 ms |
+| Crash restart to health-ready | 107–268 ms / **161 ms** / 268 ms |
+| Post-restart authoritative projection | 5.3–14.5 ms / **8.0 ms** / 14.5 ms |
+| Warm-start projection | 5.4–9.6 ms / **8.3 ms** / 9.6 ms |
 
-For each controlled 10-second idle interval, the database had only a synthetic `waiting_for_provider` Mission. The daemon process tree had one process, with RSS 59,740–60,416 KiB at interval start and 60,100–60,488 KiB at the end (median end RSS 60,268 KiB). CPU was 0.1–0.4% of one logical CPU. Threads ranged from 19–22 at start and 18–21 at end. Voluntary context-switch delta was 53–76 (median 59); involuntary delta was 0–45. Direct scheduler wakeup tracepoints were denied by host permissions, so no wakeup count is claimed.
+For each controlled 10-second idle interval, the database had only a synthetic `waiting_for_provider` Mission. The daemon process tree had one process, with RSS 60,068–60,508 KiB at interval start and 60,028–60,488 KiB at the end (median end RSS 60,296 KiB). CPU was 0.1–0.2% of one logical CPU. Threads ranged from 19–20 at start and 18–19 at end. Voluntary context-switch delta was 55–74 (median 65); involuntary delta was 0–19. Direct scheduler wakeup tracepoints were denied by host permissions, so no wakeup count is claimed.
 
-One idle localhost WebSocket was held open for five seconds per repetition. Handshake latency was 3.3–6.2 ms (median 3.9 ms); the client request was 156 bytes and the HTTP response header was 166 bytes, including its delimiter. The socket read through handshake completion returned 1,883 bytes total; 1,717 bytes followed the headers in that same read. Those trailing bytes are recorded as received bytes, not interpreted as a complete or validated WebSocket frame. No additional bytes arrived during the remaining idle interval. RSS changed by +736–820 KiB at connection time (median +768 KiB), thread count by 0, and CPU was 0.2–0.6% of one logical CPU.
+One idle localhost WebSocket was held open for five seconds per repetition. Handshake latency was 2.5–4.8 ms (median 3.9 ms); the client request was 156 bytes and the HTTP response header was 166 bytes, including its delimiter. The socket read through handshake completion returned 1,883 bytes total; 1,717 bytes followed the headers in that same read. Those trailing bytes are recorded as received bytes, not interpreted as a complete or validated WebSocket frame. No additional bytes arrived during the remaining idle interval. RSS changed by +756–820 KiB at connection time (median +780 KiB), thread count by 0, and CPU was 0.2–0.4% of one logical CPU.
 
 ## Recovery and shutdown checks
 
@@ -53,6 +53,23 @@ The harness asserts exact Mission identity, cardinality and state before startup
 Every SIGTERM sample recorded exit code `0`, process-group release, and reaped tracked processes before counting the duration as graceful. Every SIGKILL sample recorded `-9`, forced termination, released process group, and reaped processes separately. The eight Python regression tests also reject incorrect exit codes and unreleased process groups.
 
 These results prove durable state and projection reconstruction. They do not demonstrate automatic Mission resumption: current `main.ts` still does not compose a resident `MissionScheduler`, as recorded in [FAILURE_DOMAINS.md](../FAILURE_DOMAINS.md).
+
+## SQLite foreign-key integrity after driver migration
+
+`SqliteAdapter.initialize()` now enables `PRAGMA foreign_keys = ON` on the adapter-owned `bun:sqlite` connection before schema creation, reads the pragma back, and requires value `1`. If execution or readback fails, initialization closes and removes the connection, then throws. No storage redesign, dependency, or lockfile change was made.
+
+The real-SQLite integration test reads `PRAGMA foreign_keys` from that same adapter connection, writes a session and child rows in `session_waves`, `session_checkpoints`, `session_memory`, and `audit_logs`, closes/reopens the adapter, rechecks readback, verifies each child exists, then deletes the session and verifies all four cascades. It also attempts each orphan insert both before and after reopen and expects SQLite's `FOREIGN KEY constraint failed`.
+
+Version-specific results on this Linux host (one test, 24 assertions each):
+
+| Command | Result |
+|---|---|
+| `bun test cli/src/adapters/sqlite.adapter.test.ts` (Bun 1.4.2) | PASS |
+| `npm exec --yes --package=bun@1.3.9 -- bun test cli/src/adapters/sqlite.adapter.test.ts` (Bun 1.3.9) | PASS |
+| `bun run check` (Bun 1.4.2) | PASS; 67 mandatory files, 0 failures |
+| Five-run harness after the gate (Bun 1.4.2) | PASS; raw JSON records measured code HEAD `1d84744` |
+
+Bun 1.3.9 was fetched ephemerally through npm; it was not added to project manifests or lockfiles. The host supports enabling foreign keys, so the initialization failure branch was not fault-injected. The test verifies successful readback and enforcement on both the original and reopened production connections.
 
 ## Limitations
 
