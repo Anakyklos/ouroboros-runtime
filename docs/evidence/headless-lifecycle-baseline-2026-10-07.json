@@ -25,9 +25,9 @@
     "perf_version": "perf version 7.0.12",
     "proc_clock_ticks_per_second": 100,
     "python_version": "3.12.3",
-    "timestamp_utc": "2026-10-07T23:21:27Z"
+    "timestamp_utc": "2026-10-07T23:27:19Z"
   },
-  "head_sha": "f6306ddbfa2aeaf605e8d4068c8895ac6f7d2086",
+  "head_sha": "8be6751d8d32d1d73bd527d13698f5ee17bb46ee",
   "limitations": [
     "Cold means first daemon process on an isolated fresh database; OS page cache was not flushed.",
     "Warm means a graceful daemon restart on the same isolated fixture database.",
@@ -110,18 +110,18 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "cold_projection_seconds": 0.00643,
-        "cold_start_seconds": 0.158424,
-        "crash_restart_seconds": 0.188153,
+        "cold_projection_seconds": 0.010405,
+        "cold_start_seconds": 0.187153,
+        "crash_restart_seconds": 0.134265,
         "graceful_shutdown": {
-          "duration_seconds": 0.007367,
+          "duration_seconds": 0.007394,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2013548
+            2022269
           ],
           "tracked_processes_reaped": true
         },
@@ -134,24 +134,24 @@
               "fixture-waiting": "waiting_for_provider"
             }
           },
-          "cold_start_seconds": 0.268111,
+          "cold_start_seconds": 0.217036,
           "graceful_shutdown": {
-            "duration_seconds": 0.015497,
+            "duration_seconds": 0.031728,
             "exit_code": 0,
             "forced": false,
             "graceful": true,
             "process_group_released": true,
             "requested_signal": "SIGTERM",
             "tracked_process_ids": [
-              2013199
+              2021994
             ],
             "tracked_processes_reaped": true
           },
           "metrics": {
-            "cpu_percent_of_one_logical_cpu": 0.2,
-            "cpu_seconds": 0.02,
-            "interval_seconds": 10.000801715999842,
-            "involuntary_context_switch_delta": 4,
+            "cpu_percent_of_one_logical_cpu": 0.3,
+            "cpu_seconds": 0.03,
+            "interval_seconds": 10.000630656984868,
+            "involuntary_context_switch_delta": 7,
             "perf_sched_wakeup": {
               "available": false,
               "returncode": 129,
@@ -160,14 +160,14 @@
             },
             "pid_count_after": 1,
             "pid_count_before": 1,
-            "rss_after_kib": 60068,
-            "rss_before_kib": 59920,
-            "threads_after": 17,
-            "threads_before": 18,
-            "voluntary_context_switch_delta": 64
+            "rss_after_kib": 60260,
+            "rss_before_kib": 60060,
+            "threads_after": 19,
+            "threads_before": 20,
+            "voluntary_context_switch_delta": 74
           },
-          "projection_after_interval_seconds": 0.005251,
-          "projection_before_interval_seconds": 0.008999
+          "projection_after_interval_seconds": 0.005879,
+          "projection_before_interval_seconds": 0.008358
         },
         "persisted_after_crash": {
           "missionIds": [
@@ -217,7 +217,7 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "post_restart_projection_after_controlled_idle_seconds": 0.004833,
+        "post_restart_projection_after_controlled_idle_seconds": 0.00371,
         "recovery_fixtures": {
           "fixtureMode": "recovery",
           "missionIds": [
@@ -231,51 +231,51 @@
         },
         "repetition": 1,
         "restart_graceful_shutdown": {
-          "duration_seconds": 0.015562,
+          "duration_seconds": 0.007487,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2013625
+            2022345
           ],
           "tracked_processes_reaped": true
         },
-        "restart_projection_reconstruction_seconds": 0.011375,
-        "restart_projection_seconds": 0.011359,
+        "restart_projection_reconstruction_seconds": 0.006106,
+        "restart_projection_seconds": 0.006098,
         "sigkill_termination": {
-          "duration_seconds": 0.003376,
+          "duration_seconds": 0.007459,
           "exit_code": -9,
           "forced": true,
           "graceful": false,
           "process_group_released": true,
           "requested_signal": "SIGKILL",
           "tracked_process_ids": [
-            2013589
+            2022311
           ],
           "tracked_processes_reaped": true
         },
         "transport_idle_connection": {
           "bytes_after_handshake": 0,
-          "bytes_read_after_headers_in_handshake_recv": 1716,
-          "bytes_read_until_handshake_headers_complete": 1882,
+          "bytes_read_after_headers_in_handshake_recv": 1717,
+          "bytes_read_until_handshake_headers_complete": 1883,
           "cpu_percent_of_one_logical_cpu": 0.2,
           "cpu_seconds": 0.01,
-          "handshake_seconds": 0.004155,
-          "interval_seconds": 5.000262309011305,
-          "involuntary_context_switch_delta": 0,
+          "handshake_seconds": 0.004504,
+          "interval_seconds": 5.000181042996701,
+          "involuntary_context_switch_delta": 3,
           "pid_count_after": 1,
           "pid_count_before": 1,
           "request_bytes": 156,
           "response_header_bytes": 166,
-          "rss_after_kib": 60368,
-          "rss_before_kib": 60168,
-          "rss_delta_at_connect_kib": 748,
-          "threads_after": 17,
-          "threads_before": 17,
+          "rss_after_kib": 60640,
+          "rss_before_kib": 60356,
+          "rss_delta_at_connect_kib": 788,
+          "threads_after": 19,
+          "threads_before": 19,
           "threads_delta_at_connect": 0,
-          "voluntary_context_switch_delta": 28
+          "voluntary_context_switch_delta": 29
         },
         "warm_projection": {
           "available": true,
@@ -315,8 +315,8 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "warm_projection_seconds": 0.009303,
-        "warm_start_seconds": 0.161427
+        "warm_projection_seconds": 0.00716,
+        "warm_start_seconds": 0.132796
       },
       {
         "after_restart_sigterm": {
@@ -387,18 +387,18 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "cold_projection_seconds": 0.007339,
-        "cold_start_seconds": 0.160633,
-        "crash_restart_seconds": 0.160816,
+        "cold_projection_seconds": 0.012379,
+        "cold_start_seconds": 0.214868,
+        "crash_restart_seconds": 0.215065,
         "graceful_shutdown": {
-          "duration_seconds": 0.007388,
+          "duration_seconds": 0.015615,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2014108
+            2022674
           ],
           "tracked_processes_reaped": true
         },
@@ -411,24 +411,24 @@
               "fixture-waiting": "waiting_for_provider"
             }
           },
-          "cold_start_seconds": 0.240557,
+          "cold_start_seconds": 0.213371,
           "graceful_shutdown": {
-            "duration_seconds": 0.031723,
+            "duration_seconds": 0.031739,
             "exit_code": 0,
             "forced": false,
             "graceful": true,
             "process_group_released": true,
             "requested_signal": "SIGTERM",
             "tracked_process_ids": [
-              2013842
+              2022419
             ],
             "tracked_processes_reaped": true
           },
           "metrics": {
-            "cpu_percent_of_one_logical_cpu": 0.2,
-            "cpu_seconds": 0.02,
-            "interval_seconds": 10.000598938000621,
-            "involuntary_context_switch_delta": 7,
+            "cpu_percent_of_one_logical_cpu": 0.1,
+            "cpu_seconds": 0.01,
+            "interval_seconds": 10.0006324799906,
+            "involuntary_context_switch_delta": 24,
             "perf_sched_wakeup": {
               "available": false,
               "returncode": 129,
@@ -437,14 +437,14 @@
             },
             "pid_count_after": 1,
             "pid_count_before": 1,
-            "rss_after_kib": 60560,
-            "rss_before_kib": 60796,
-            "threads_after": 19,
-            "threads_before": 20,
-            "voluntary_context_switch_delta": 58
+            "rss_after_kib": 60276,
+            "rss_before_kib": 60060,
+            "threads_after": 18,
+            "threads_before": 19,
+            "voluntary_context_switch_delta": 62
           },
-          "projection_after_interval_seconds": 0.002937,
-          "projection_before_interval_seconds": 0.009983
+          "projection_after_interval_seconds": 0.004058,
+          "projection_before_interval_seconds": 0.011006
         },
         "persisted_after_crash": {
           "missionIds": [
@@ -494,7 +494,7 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "post_restart_projection_after_controlled_idle_seconds": 0.003353,
+        "post_restart_projection_after_controlled_idle_seconds": 0.003981,
         "recovery_fixtures": {
           "fixtureMode": "recovery",
           "missionIds": [
@@ -508,51 +508,51 @@
         },
         "repetition": 2,
         "restart_graceful_shutdown": {
-          "duration_seconds": 0.007503,
+          "duration_seconds": 0.007443,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2014185
+            2022762
           ],
           "tracked_processes_reaped": true
         },
-        "restart_projection_reconstruction_seconds": 0.006812,
-        "restart_projection_seconds": 0.0068,
+        "restart_projection_reconstruction_seconds": 0.009948,
+        "restart_projection_seconds": 0.009928,
         "sigkill_termination": {
-          "duration_seconds": 0.007492,
+          "duration_seconds": 0.007553,
           "exit_code": -9,
           "forced": true,
           "graceful": false,
           "process_group_released": true,
           "requested_signal": "SIGKILL",
           "tracked_process_ids": [
-            2014135
+            2022727
           ],
           "tracked_processes_reaped": true
         },
         "transport_idle_connection": {
           "bytes_after_handshake": 0,
-          "bytes_read_after_headers_in_handshake_recv": 1717,
-          "bytes_read_until_handshake_headers_complete": 1883,
+          "bytes_read_after_headers_in_handshake_recv": 1715,
+          "bytes_read_until_handshake_headers_complete": 1881,
           "cpu_percent_of_one_logical_cpu": 0.2,
           "cpu_seconds": 0.01,
-          "handshake_seconds": 0.002557,
-          "interval_seconds": 5.000105935992906,
-          "involuntary_context_switch_delta": 4,
+          "handshake_seconds": 0.002244,
+          "interval_seconds": 5.000185657001566,
+          "involuntary_context_switch_delta": 15,
           "pid_count_after": 1,
           "pid_count_before": 1,
           "request_bytes": 156,
           "response_header_bytes": 166,
-          "rss_after_kib": 61188,
-          "rss_before_kib": 60608,
-          "rss_delta_at_connect_kib": 784,
-          "threads_after": 20,
-          "threads_before": 19,
-          "threads_delta_at_connect": 1,
-          "voluntary_context_switch_delta": 58
+          "rss_after_kib": 60636,
+          "rss_before_kib": 60376,
+          "rss_delta_at_connect_kib": 716,
+          "threads_after": 18,
+          "threads_before": 18,
+          "threads_delta_at_connect": 0,
+          "voluntary_context_switch_delta": 39
         },
         "warm_projection": {
           "available": true,
@@ -592,8 +592,8 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "warm_projection_seconds": 0.00974,
-        "warm_start_seconds": 0.136146
+        "warm_projection_seconds": 0.010446,
+        "warm_start_seconds": 0.240952
       },
       {
         "after_restart_sigterm": {
@@ -664,18 +664,18 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "cold_projection_seconds": 0.006877,
-        "cold_start_seconds": 0.134554,
-        "crash_restart_seconds": 0.109357,
+        "cold_projection_seconds": 0.008367,
+        "cold_start_seconds": 0.185309,
+        "crash_restart_seconds": 0.132972,
         "graceful_shutdown": {
-          "duration_seconds": 0.007463,
+          "duration_seconds": 0.007416,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2014520
+            2023037
           ],
           "tracked_processes_reaped": true
         },
@@ -688,24 +688,24 @@
               "fixture-waiting": "waiting_for_provider"
             }
           },
-          "cold_start_seconds": 0.16138,
+          "cold_start_seconds": 0.26739,
           "graceful_shutdown": {
-            "duration_seconds": 0.015532,
+            "duration_seconds": 0.031778,
             "exit_code": 0,
             "forced": false,
             "graceful": true,
             "process_group_released": true,
             "requested_signal": "SIGTERM",
             "tracked_process_ids": [
-              2014302
+              2022873
             ],
             "tracked_processes_reaped": true
           },
           "metrics": {
-            "cpu_percent_of_one_logical_cpu": 0.1,
-            "cpu_seconds": 0.01,
-            "interval_seconds": 10.000565261987504,
-            "involuntary_context_switch_delta": 1,
+            "cpu_percent_of_one_logical_cpu": 0.2,
+            "cpu_seconds": 0.02,
+            "interval_seconds": 10.000751106999815,
+            "involuntary_context_switch_delta": 3,
             "perf_sched_wakeup": {
               "available": false,
               "returncode": 129,
@@ -714,14 +714,14 @@
             },
             "pid_count_after": 1,
             "pid_count_before": 1,
-            "rss_after_kib": 60176,
-            "rss_before_kib": 60140,
-            "threads_after": 18,
+            "rss_after_kib": 60308,
+            "rss_before_kib": 60200,
+            "threads_after": 19,
             "threads_before": 19,
-            "voluntary_context_switch_delta": 51
+            "voluntary_context_switch_delta": 55
           },
-          "projection_after_interval_seconds": 0.005918,
-          "projection_before_interval_seconds": 0.006522
+          "projection_after_interval_seconds": 0.005771,
+          "projection_before_interval_seconds": 0.014328
         },
         "persisted_after_crash": {
           "missionIds": [
@@ -771,7 +771,7 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "post_restart_projection_after_controlled_idle_seconds": 0.003478,
+        "post_restart_projection_after_controlled_idle_seconds": 0.003326,
         "recovery_fixtures": {
           "fixtureMode": "recovery",
           "missionIds": [
@@ -785,28 +785,28 @@
         },
         "repetition": 3,
         "restart_graceful_shutdown": {
-          "duration_seconds": 0.007547,
+          "duration_seconds": 0.007423,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2014588
+            2023103
           ],
           "tracked_processes_reaped": true
         },
-        "restart_projection_reconstruction_seconds": 0.008144,
-        "restart_projection_seconds": 0.008133,
+        "restart_projection_reconstruction_seconds": 0.006797,
+        "restart_projection_seconds": 0.006786,
         "sigkill_termination": {
-          "duration_seconds": 0.003337,
+          "duration_seconds": 0.007475,
           "exit_code": -9,
           "forced": true,
           "graceful": false,
           "process_group_released": true,
           "requested_signal": "SIGKILL",
           "tracked_process_ids": [
-            2014555
+            2023070
           ],
           "tracked_processes_reaped": true
         },
@@ -816,20 +816,20 @@
           "bytes_read_until_handshake_headers_complete": 1883,
           "cpu_percent_of_one_logical_cpu": 0.2,
           "cpu_seconds": 0.01,
-          "handshake_seconds": 0.003448,
-          "interval_seconds": 5.0001080430229194,
-          "involuntary_context_switch_delta": 1,
+          "handshake_seconds": 0.004854,
+          "interval_seconds": 5.000066517997766,
+          "involuntary_context_switch_delta": 0,
           "pid_count_after": 1,
           "pid_count_before": 1,
           "request_bytes": 156,
           "response_header_bytes": 166,
-          "rss_after_kib": 60476,
-          "rss_before_kib": 60276,
-          "rss_delta_at_connect_kib": 660,
-          "threads_after": 18,
-          "threads_before": 18,
+          "rss_after_kib": 60644,
+          "rss_before_kib": 60408,
+          "rss_delta_at_connect_kib": 756,
+          "threads_after": 19,
+          "threads_before": 19,
           "threads_delta_at_connect": 0,
-          "voluntary_context_switch_delta": 44
+          "voluntary_context_switch_delta": 34
         },
         "warm_projection": {
           "available": true,
@@ -869,8 +869,8 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "warm_projection_seconds": 0.006147,
-        "warm_start_seconds": 0.106868
+        "warm_projection_seconds": 0.006104,
+        "warm_start_seconds": 0.109502
       },
       {
         "after_restart_sigterm": {
@@ -941,18 +941,18 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "cold_projection_seconds": 0.008157,
-        "cold_start_seconds": 0.187586,
-        "crash_restart_seconds": 0.159829,
+        "cold_projection_seconds": 0.008348,
+        "cold_start_seconds": 0.213126,
+        "crash_restart_seconds": 0.190872,
         "graceful_shutdown": {
-          "duration_seconds": 0.015538,
+          "duration_seconds": 0.015512,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2014844
+            2023383
           ],
           "tracked_processes_reaped": true
         },
@@ -965,24 +965,24 @@
               "fixture-waiting": "waiting_for_provider"
             }
           },
-          "cold_start_seconds": 0.158628,
+          "cold_start_seconds": 0.161087,
           "graceful_shutdown": {
-            "duration_seconds": 0.032043,
+            "duration_seconds": 0.031735,
             "exit_code": 0,
             "forced": false,
             "graceful": true,
             "process_group_released": true,
             "requested_signal": "SIGTERM",
             "tracked_process_ids": [
-              2014669
+              2023182
             ],
             "tracked_processes_reaped": true
           },
           "metrics": {
-            "cpu_percent_of_one_logical_cpu": 0.2,
-            "cpu_seconds": 0.02,
-            "interval_seconds": 10.00057742500212,
-            "involuntary_context_switch_delta": 7,
+            "cpu_percent_of_one_logical_cpu": 0.3,
+            "cpu_seconds": 0.03,
+            "interval_seconds": 10.000658211007249,
+            "involuntary_context_switch_delta": 12,
             "perf_sched_wakeup": {
               "available": false,
               "returncode": 129,
@@ -991,14 +991,14 @@
             },
             "pid_count_after": 1,
             "pid_count_before": 1,
-            "rss_after_kib": 60308,
-            "rss_before_kib": 60404,
-            "threads_after": 19,
+            "rss_after_kib": 60224,
+            "rss_before_kib": 60344,
+            "threads_after": 18,
             "threads_before": 20,
-            "voluntary_context_switch_delta": 51
+            "voluntary_context_switch_delta": 57
           },
-          "projection_after_interval_seconds": 0.005858,
-          "projection_before_interval_seconds": 0.006046
+          "projection_after_interval_seconds": 0.006007,
+          "projection_before_interval_seconds": 0.007729
         },
         "persisted_after_crash": {
           "missionIds": [
@@ -1048,7 +1048,7 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "post_restart_projection_after_controlled_idle_seconds": 0.002378,
+        "post_restart_projection_after_controlled_idle_seconds": 0.003864,
         "recovery_fixtures": {
           "fixtureMode": "recovery",
           "missionIds": [
@@ -1062,28 +1062,28 @@
         },
         "repetition": 4,
         "restart_graceful_shutdown": {
-          "duration_seconds": 0.007435,
+          "duration_seconds": 0.007531,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2014916
+            2023441
           ],
           "tracked_processes_reaped": true
         },
-        "restart_projection_reconstruction_seconds": 0.007748,
-        "restart_projection_seconds": 0.007737,
+        "restart_projection_reconstruction_seconds": 0.009862,
+        "restart_projection_seconds": 0.009847,
         "sigkill_termination": {
-          "duration_seconds": 0.007504,
+          "duration_seconds": 0.003409,
           "exit_code": -9,
           "forced": true,
           "graceful": false,
           "process_group_released": true,
           "requested_signal": "SIGKILL",
           "tracked_process_ids": [
-            2014879
+            2023409
           ],
           "tracked_processes_reaped": true
         },
@@ -1091,22 +1091,22 @@
           "bytes_after_handshake": 0,
           "bytes_read_after_headers_in_handshake_recv": 1717,
           "bytes_read_until_handshake_headers_complete": 1883,
-          "cpu_percent_of_one_logical_cpu": 0.4,
-          "cpu_seconds": 0.02,
-          "handshake_seconds": 0.00407,
-          "interval_seconds": 5.000286107009742,
+          "cpu_percent_of_one_logical_cpu": 0.2,
+          "cpu_seconds": 0.01,
+          "handshake_seconds": 0.005495,
+          "interval_seconds": 5.000082193990238,
           "involuntary_context_switch_delta": 0,
           "pid_count_after": 1,
           "pid_count_before": 1,
           "request_bytes": 156,
           "response_header_bytes": 166,
-          "rss_after_kib": 60632,
-          "rss_before_kib": 60400,
-          "rss_delta_at_connect_kib": 736,
+          "rss_after_kib": 60476,
+          "rss_before_kib": 60308,
+          "rss_delta_at_connect_kib": 692,
           "threads_after": 19,
-          "threads_before": 19,
-          "threads_delta_at_connect": 0,
-          "voluntary_context_switch_delta": 35
+          "threads_before": 18,
+          "threads_delta_at_connect": 1,
+          "voluntary_context_switch_delta": 38
         },
         "warm_projection": {
           "available": true,
@@ -1146,8 +1146,8 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "warm_projection_seconds": 0.00821,
-        "warm_start_seconds": 0.159984
+        "warm_projection_seconds": 0.009355,
+        "warm_start_seconds": 0.188003
       },
       {
         "after_restart_sigterm": {
@@ -1218,18 +1218,18 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "cold_projection_seconds": 0.009565,
-        "cold_start_seconds": 0.236365,
-        "crash_restart_seconds": 0.213398,
+        "cold_projection_seconds": 0.005164,
+        "cold_start_seconds": 0.131575,
+        "crash_restart_seconds": 0.107405,
         "graceful_shutdown": {
-          "duration_seconds": 0.015536,
+          "duration_seconds": 0.007345,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2015126
+            2023658
           ],
           "tracked_processes_reaped": true
         },
@@ -1242,24 +1242,24 @@
               "fixture-waiting": "waiting_for_provider"
             }
           },
-          "cold_start_seconds": 0.160983,
+          "cold_start_seconds": 0.187946,
           "graceful_shutdown": {
-            "duration_seconds": 0.031595,
+            "duration_seconds": 0.031556,
             "exit_code": 0,
             "forced": false,
             "graceful": true,
             "process_group_released": true,
             "requested_signal": "SIGTERM",
             "tracked_process_ids": [
-              2014996
+              2023526
             ],
             "tracked_processes_reaped": true
           },
           "metrics": {
             "cpu_percent_of_one_logical_cpu": 0.3,
             "cpu_seconds": 0.03,
-            "interval_seconds": 10.000443048018496,
-            "involuntary_context_switch_delta": 20,
+            "interval_seconds": 10.000655859999824,
+            "involuntary_context_switch_delta": 4,
             "perf_sched_wakeup": {
               "available": false,
               "returncode": 129,
@@ -1268,14 +1268,14 @@
             },
             "pid_count_after": 1,
             "pid_count_before": 1,
-            "rss_after_kib": 60272,
-            "rss_before_kib": 59784,
-            "threads_after": 19,
-            "threads_before": 20,
-            "voluntary_context_switch_delta": 58
+            "rss_after_kib": 60000,
+            "rss_before_kib": 59488,
+            "threads_after": 18,
+            "threads_before": 19,
+            "voluntary_context_switch_delta": 57
           },
-          "projection_after_interval_seconds": 0.003937,
-          "projection_before_interval_seconds": 0.00909
+          "projection_after_interval_seconds": 0.005288,
+          "projection_before_interval_seconds": 0.009331
         },
         "persisted_after_crash": {
           "missionIds": [
@@ -1325,7 +1325,7 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "post_restart_projection_after_controlled_idle_seconds": 0.00407,
+        "post_restart_projection_after_controlled_idle_seconds": 0.002982,
         "recovery_fixtures": {
           "fixtureMode": "recovery",
           "missionIds": [
@@ -1339,28 +1339,28 @@
         },
         "repetition": 5,
         "restart_graceful_shutdown": {
-          "duration_seconds": 0.009571,
+          "duration_seconds": 0.00741,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2015186
+            2023730
           ],
           "tracked_processes_reaped": true
         },
-        "restart_projection_reconstruction_seconds": 0.01073,
-        "restart_projection_seconds": 0.010716,
+        "restart_projection_reconstruction_seconds": 0.005946,
+        "restart_projection_seconds": 0.005932,
         "sigkill_termination": {
-          "duration_seconds": 0.007522,
+          "duration_seconds": 0.007454,
           "exit_code": -9,
           "forced": true,
           "graceful": false,
           "process_group_released": true,
           "requested_signal": "SIGKILL",
           "tracked_process_ids": [
-            2015152
+            2023690
           ],
           "tracked_processes_reaped": true
         },
@@ -1370,20 +1370,20 @@
           "bytes_read_until_handshake_headers_complete": 1883,
           "cpu_percent_of_one_logical_cpu": 0.2,
           "cpu_seconds": 0.01,
-          "handshake_seconds": 0.002347,
-          "interval_seconds": 5.0001654049847275,
-          "involuntary_context_switch_delta": 0,
+          "handshake_seconds": 0.004433,
+          "interval_seconds": 5.000305615016259,
+          "involuntary_context_switch_delta": 2,
           "pid_count_after": 1,
           "pid_count_before": 1,
           "request_bytes": 156,
           "response_header_bytes": 166,
-          "rss_after_kib": 60596,
-          "rss_before_kib": 60364,
-          "rss_delta_at_connect_kib": 680,
-          "threads_after": 19,
-          "threads_before": 19,
+          "rss_after_kib": 60364,
+          "rss_before_kib": 60108,
+          "rss_delta_at_connect_kib": 748,
+          "threads_after": 18,
+          "threads_before": 18,
           "threads_delta_at_connect": 0,
-          "voluntary_context_switch_delta": 35
+          "voluntary_context_switch_delta": 39
         },
         "warm_projection": {
           "available": true,
@@ -1423,77 +1423,77 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "warm_projection_seconds": 0.009612,
-        "warm_start_seconds": 0.214705
+        "warm_projection_seconds": 0.007111,
+        "warm_start_seconds": 0.10923
       }
     ],
     "repetitions": 5,
     "summary_seconds": {
       "cold_projection_seconds": {
-        "max": 0.009565,
-        "median": 0.007339,
-        "min": 0.00643,
-        "p95_nearest_rank": 0.009565
+        "max": 0.012379,
+        "median": 0.008367,
+        "min": 0.005164,
+        "p95_nearest_rank": 0.012379
       },
       "cold_start_seconds": {
-        "max": 0.236365,
-        "median": 0.160633,
-        "min": 0.134554,
-        "p95_nearest_rank": 0.236365
+        "max": 0.214868,
+        "median": 0.187153,
+        "min": 0.131575,
+        "p95_nearest_rank": 0.214868
       },
       "crash_restart_seconds": {
-        "max": 0.213398,
-        "median": 0.160816,
-        "min": 0.109357,
-        "p95_nearest_rank": 0.213398
+        "max": 0.215065,
+        "median": 0.134265,
+        "min": 0.107405,
+        "p95_nearest_rank": 0.215065
       },
       "graceful_shutdown_seconds": {
-        "max": 0.015538,
-        "median": 0.007463,
-        "min": 0.007367,
-        "p95_nearest_rank": 0.015538
+        "max": 0.015615,
+        "median": 0.007416,
+        "min": 0.007345,
+        "p95_nearest_rank": 0.015615
       },
       "idle_waiting_cold_start_seconds": {
-        "max": 0.268111,
-        "median": 0.16138,
-        "min": 0.158628,
-        "p95_nearest_rank": 0.268111
+        "max": 0.26739,
+        "median": 0.213371,
+        "min": 0.161087,
+        "p95_nearest_rank": 0.26739
       },
       "idle_waiting_graceful_shutdown_seconds": {
-        "max": 0.032043,
-        "median": 0.031595,
-        "min": 0.015497,
-        "p95_nearest_rank": 0.032043
+        "max": 0.031778,
+        "median": 0.031735,
+        "min": 0.031556,
+        "p95_nearest_rank": 0.031778
       },
       "restart_projection_reconstruction_seconds": {
-        "max": 0.011375,
-        "median": 0.008144,
-        "min": 0.006812,
-        "p95_nearest_rank": 0.011375
+        "max": 0.009948,
+        "median": 0.006797,
+        "min": 0.005946,
+        "p95_nearest_rank": 0.009948
       },
       "restart_projection_seconds": {
-        "max": 0.011359,
-        "median": 0.008133,
-        "min": 0.0068,
-        "p95_nearest_rank": 0.011359
+        "max": 0.009928,
+        "median": 0.006786,
+        "min": 0.005932,
+        "p95_nearest_rank": 0.009928
       },
       "sigkill_process_termination_seconds": {
-        "max": 0.007522,
-        "median": 0.007492,
-        "min": 0.003337,
-        "p95_nearest_rank": 0.007522
+        "max": 0.007553,
+        "median": 0.007459,
+        "min": 0.003409,
+        "p95_nearest_rank": 0.007553
       },
       "warm_projection_seconds": {
-        "max": 0.00974,
-        "median": 0.009303,
-        "min": 0.006147,
-        "p95_nearest_rank": 0.00974
+        "max": 0.010446,
+        "median": 0.00716,
+        "min": 0.006104,
+        "p95_nearest_rank": 0.010446
       },
       "warm_start_seconds": {
-        "max": 0.214705,
-        "median": 0.159984,
-        "min": 0.106868,
-        "p95_nearest_rank": 0.214705
+        "max": 0.240952,
+        "median": 0.132796,
+        "min": 0.10923,
+        "p95_nearest_rank": 0.240952
       }
     },
     "transport_idle_interval_seconds": 5.0
