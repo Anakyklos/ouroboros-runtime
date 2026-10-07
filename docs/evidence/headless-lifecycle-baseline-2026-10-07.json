@@ -25,9 +25,9 @@
     "perf_version": "perf version 7.0.12",
     "proc_clock_ticks_per_second": 100,
     "python_version": "3.12.3",
-    "timestamp_utc": "2026-10-07T23:27:19Z"
+    "timestamp_utc": "2026-10-07T23:31:28Z"
   },
-  "head_sha": "8be6751d8d32d1d73bd527d13698f5ee17bb46ee",
+  "head_sha": "8c0fd8e00101d03261b6fd740842b0c5c9880b0f",
   "limitations": [
     "Cold means first daemon process on an isolated fresh database; OS page cache was not flushed.",
     "Warm means a graceful daemon restart on the same isolated fixture database.",
@@ -110,18 +110,18 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "cold_projection_seconds": 0.010405,
-        "cold_start_seconds": 0.187153,
-        "crash_restart_seconds": 0.134265,
+        "cold_projection_seconds": 0.007058,
+        "cold_start_seconds": 0.16016,
+        "crash_restart_seconds": 0.106289,
         "graceful_shutdown": {
-          "duration_seconds": 0.007394,
+          "duration_seconds": 0.015631,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2022269
+            2028210
           ],
           "tracked_processes_reaped": true
         },
@@ -134,24 +134,24 @@
               "fixture-waiting": "waiting_for_provider"
             }
           },
-          "cold_start_seconds": 0.217036,
+          "cold_start_seconds": 0.191578,
           "graceful_shutdown": {
-            "duration_seconds": 0.031728,
+            "duration_seconds": 0.015628,
             "exit_code": 0,
             "forced": false,
             "graceful": true,
             "process_group_released": true,
             "requested_signal": "SIGTERM",
             "tracked_process_ids": [
-              2021994
+              2027929
             ],
             "tracked_processes_reaped": true
           },
           "metrics": {
-            "cpu_percent_of_one_logical_cpu": 0.3,
-            "cpu_seconds": 0.03,
-            "interval_seconds": 10.000630656984868,
-            "involuntary_context_switch_delta": 7,
+            "cpu_percent_of_one_logical_cpu": 0.2,
+            "cpu_seconds": 0.02,
+            "interval_seconds": 10.000607782014413,
+            "involuntary_context_switch_delta": 13,
             "perf_sched_wakeup": {
               "available": false,
               "returncode": 129,
@@ -160,14 +160,14 @@
             },
             "pid_count_after": 1,
             "pid_count_before": 1,
-            "rss_after_kib": 60260,
-            "rss_before_kib": 60060,
-            "threads_after": 19,
-            "threads_before": 20,
-            "voluntary_context_switch_delta": 74
+            "rss_after_kib": 60488,
+            "rss_before_kib": 60252,
+            "threads_after": 21,
+            "threads_before": 22,
+            "voluntary_context_switch_delta": 59
           },
-          "projection_after_interval_seconds": 0.005879,
-          "projection_before_interval_seconds": 0.008358
+          "projection_after_interval_seconds": 0.006379,
+          "projection_before_interval_seconds": 0.007414
         },
         "persisted_after_crash": {
           "missionIds": [
@@ -217,7 +217,7 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "post_restart_projection_after_controlled_idle_seconds": 0.00371,
+        "post_restart_projection_after_controlled_idle_seconds": 0.002327,
         "recovery_fixtures": {
           "fixtureMode": "recovery",
           "missionIds": [
@@ -231,28 +231,28 @@
         },
         "repetition": 1,
         "restart_graceful_shutdown": {
-          "duration_seconds": 0.007487,
+          "duration_seconds": 0.007386,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2022345
+            2028280
           ],
           "tracked_processes_reaped": true
         },
-        "restart_projection_reconstruction_seconds": 0.006106,
-        "restart_projection_seconds": 0.006098,
+        "restart_projection_reconstruction_seconds": 0.004863,
+        "restart_projection_seconds": 0.004855,
         "sigkill_termination": {
-          "duration_seconds": 0.007459,
+          "duration_seconds": 0.00745,
           "exit_code": -9,
           "forced": true,
           "graceful": false,
           "process_group_released": true,
           "requested_signal": "SIGKILL",
           "tracked_process_ids": [
-            2022311
+            2028245
           ],
           "tracked_processes_reaped": true
         },
@@ -262,572 +262,18 @@
           "bytes_read_until_handshake_headers_complete": 1883,
           "cpu_percent_of_one_logical_cpu": 0.2,
           "cpu_seconds": 0.01,
-          "handshake_seconds": 0.004504,
-          "interval_seconds": 5.000181042996701,
-          "involuntary_context_switch_delta": 3,
+          "handshake_seconds": 0.003283,
+          "interval_seconds": 5.0000739700044505,
+          "involuntary_context_switch_delta": 1,
           "pid_count_after": 1,
           "pid_count_before": 1,
           "request_bytes": 156,
           "response_header_bytes": 166,
-          "rss_after_kib": 60640,
-          "rss_before_kib": 60356,
-          "rss_delta_at_connect_kib": 788,
-          "threads_after": 19,
-          "threads_before": 19,
-          "threads_delta_at_connect": 0,
-          "voluntary_context_switch_delta": 29
-        },
-        "warm_projection": {
-          "available": true,
-          "invocation_count": 0,
-          "invocation_ids": [],
-          "items": [
-            {
-              "createdAt": "2026-10-07T00:00:00.000Z",
-              "currentPlanRevisionId": "revision-fixture-ready",
-              "invocationIds": [],
-              "missionId": "fixture-ready",
-              "pendingApprovalCount": 0,
-              "recoveryCount": 0,
-              "source": "operator",
-              "state": "ready",
-              "updatedAt": "2026-10-07T00:00:00.000Z"
-            },
-            {
-              "createdAt": "2026-10-07T00:00:00.000Z",
-              "currentPlanRevisionId": "revision-fixture-waiting",
-              "invocationIds": [],
-              "missionId": "fixture-waiting",
-              "pendingApprovalCount": 0,
-              "recoveryCount": 0,
-              "source": "operator",
-              "state": "waiting_for_provider",
-              "updatedAt": "2026-10-07T00:00:00.000Z"
-            }
-          ],
-          "mission_count": 2,
-          "mission_ids": [
-            "fixture-ready",
-            "fixture-waiting"
-          ],
-          "states": {
-            "fixture-ready": "ready",
-            "fixture-waiting": "waiting_for_provider"
-          }
-        },
-        "warm_projection_seconds": 0.00716,
-        "warm_start_seconds": 0.132796
-      },
-      {
-        "after_restart_sigterm": {
-          "missionIds": [
-            "fixture-ready",
-            "fixture-waiting"
-          ],
-          "states": {
-            "fixture-ready": "ready",
-            "fixture-waiting": "waiting_for_provider"
-          }
-        },
-        "after_sigkill": {
-          "missionIds": [
-            "fixture-ready",
-            "fixture-waiting"
-          ],
-          "states": {
-            "fixture-ready": "ready",
-            "fixture-waiting": "waiting_for_provider"
-          }
-        },
-        "after_sigterm": {
-          "missionIds": [
-            "fixture-ready",
-            "fixture-waiting"
-          ],
-          "states": {
-            "fixture-ready": "ready",
-            "fixture-waiting": "waiting_for_provider"
-          }
-        },
-        "cold_projection": {
-          "available": true,
-          "invocation_count": 0,
-          "invocation_ids": [],
-          "items": [
-            {
-              "createdAt": "2026-10-07T00:00:00.000Z",
-              "currentPlanRevisionId": "revision-fixture-ready",
-              "invocationIds": [],
-              "missionId": "fixture-ready",
-              "pendingApprovalCount": 0,
-              "recoveryCount": 0,
-              "source": "operator",
-              "state": "ready",
-              "updatedAt": "2026-10-07T00:00:00.000Z"
-            },
-            {
-              "createdAt": "2026-10-07T00:00:00.000Z",
-              "currentPlanRevisionId": "revision-fixture-waiting",
-              "invocationIds": [],
-              "missionId": "fixture-waiting",
-              "pendingApprovalCount": 0,
-              "recoveryCount": 0,
-              "source": "operator",
-              "state": "waiting_for_provider",
-              "updatedAt": "2026-10-07T00:00:00.000Z"
-            }
-          ],
-          "mission_count": 2,
-          "mission_ids": [
-            "fixture-ready",
-            "fixture-waiting"
-          ],
-          "states": {
-            "fixture-ready": "ready",
-            "fixture-waiting": "waiting_for_provider"
-          }
-        },
-        "cold_projection_seconds": 0.012379,
-        "cold_start_seconds": 0.214868,
-        "crash_restart_seconds": 0.215065,
-        "graceful_shutdown": {
-          "duration_seconds": 0.015615,
-          "exit_code": 0,
-          "forced": false,
-          "graceful": true,
-          "process_group_released": true,
-          "requested_signal": "SIGTERM",
-          "tracked_process_ids": [
-            2022674
-          ],
-          "tracked_processes_reaped": true
-        },
-        "idle_waiting_fixture": {
-          "after_sigterm": {
-            "missionIds": [
-              "fixture-waiting"
-            ],
-            "states": {
-              "fixture-waiting": "waiting_for_provider"
-            }
-          },
-          "cold_start_seconds": 0.213371,
-          "graceful_shutdown": {
-            "duration_seconds": 0.031739,
-            "exit_code": 0,
-            "forced": false,
-            "graceful": true,
-            "process_group_released": true,
-            "requested_signal": "SIGTERM",
-            "tracked_process_ids": [
-              2022419
-            ],
-            "tracked_processes_reaped": true
-          },
-          "metrics": {
-            "cpu_percent_of_one_logical_cpu": 0.1,
-            "cpu_seconds": 0.01,
-            "interval_seconds": 10.0006324799906,
-            "involuntary_context_switch_delta": 24,
-            "perf_sched_wakeup": {
-              "available": false,
-              "returncode": 129,
-              "stderr": "event syntax error: 'sched:sched_wakeup,sched:sched_wakeup_new'\n                     \\___ can't access trace events\n\nError:\tNo permissions to read /sys/kernel/tracing//events/sched/sched_wakeup\nHint:\tTry 'sudo mount -o remount,mode=755 /sys/kernel/tracing/'\n\nRun 'perf list' for a list of valid events\n\n Usage: perf stat [<options>] [<command>]\n\n    -e, --event <event>   event selector. use 'perf list' to list available events",
-              "stdout": ""
-            },
-            "pid_count_after": 1,
-            "pid_count_before": 1,
-            "rss_after_kib": 60276,
-            "rss_before_kib": 60060,
-            "threads_after": 18,
-            "threads_before": 19,
-            "voluntary_context_switch_delta": 62
-          },
-          "projection_after_interval_seconds": 0.004058,
-          "projection_before_interval_seconds": 0.011006
-        },
-        "persisted_after_crash": {
-          "missionIds": [
-            "fixture-ready",
-            "fixture-waiting"
-          ],
-          "states": {
-            "fixture-ready": "ready",
-            "fixture-waiting": "waiting_for_provider"
-          }
-        },
-        "post_restart_projection": {
-          "available": true,
-          "invocation_count": 0,
-          "invocation_ids": [],
-          "items": [
-            {
-              "createdAt": "2026-10-07T00:00:00.000Z",
-              "currentPlanRevisionId": "revision-fixture-ready",
-              "invocationIds": [],
-              "missionId": "fixture-ready",
-              "pendingApprovalCount": 0,
-              "recoveryCount": 0,
-              "source": "operator",
-              "state": "ready",
-              "updatedAt": "2026-10-07T00:00:00.000Z"
-            },
-            {
-              "createdAt": "2026-10-07T00:00:00.000Z",
-              "currentPlanRevisionId": "revision-fixture-waiting",
-              "invocationIds": [],
-              "missionId": "fixture-waiting",
-              "pendingApprovalCount": 0,
-              "recoveryCount": 0,
-              "source": "operator",
-              "state": "waiting_for_provider",
-              "updatedAt": "2026-10-07T00:00:00.000Z"
-            }
-          ],
-          "mission_count": 2,
-          "mission_ids": [
-            "fixture-ready",
-            "fixture-waiting"
-          ],
-          "states": {
-            "fixture-ready": "ready",
-            "fixture-waiting": "waiting_for_provider"
-          }
-        },
-        "post_restart_projection_after_controlled_idle_seconds": 0.003981,
-        "recovery_fixtures": {
-          "fixtureMode": "recovery",
-          "missionIds": [
-            "fixture-waiting",
-            "fixture-ready"
-          ],
-          "states": [
-            "waiting_for_provider",
-            "ready"
-          ]
-        },
-        "repetition": 2,
-        "restart_graceful_shutdown": {
-          "duration_seconds": 0.007443,
-          "exit_code": 0,
-          "forced": false,
-          "graceful": true,
-          "process_group_released": true,
-          "requested_signal": "SIGTERM",
-          "tracked_process_ids": [
-            2022762
-          ],
-          "tracked_processes_reaped": true
-        },
-        "restart_projection_reconstruction_seconds": 0.009948,
-        "restart_projection_seconds": 0.009928,
-        "sigkill_termination": {
-          "duration_seconds": 0.007553,
-          "exit_code": -9,
-          "forced": true,
-          "graceful": false,
-          "process_group_released": true,
-          "requested_signal": "SIGKILL",
-          "tracked_process_ids": [
-            2022727
-          ],
-          "tracked_processes_reaped": true
-        },
-        "transport_idle_connection": {
-          "bytes_after_handshake": 0,
-          "bytes_read_after_headers_in_handshake_recv": 1715,
-          "bytes_read_until_handshake_headers_complete": 1881,
-          "cpu_percent_of_one_logical_cpu": 0.2,
-          "cpu_seconds": 0.01,
-          "handshake_seconds": 0.002244,
-          "interval_seconds": 5.000185657001566,
-          "involuntary_context_switch_delta": 15,
-          "pid_count_after": 1,
-          "pid_count_before": 1,
-          "request_bytes": 156,
-          "response_header_bytes": 166,
-          "rss_after_kib": 60636,
-          "rss_before_kib": 60376,
-          "rss_delta_at_connect_kib": 716,
-          "threads_after": 18,
-          "threads_before": 18,
-          "threads_delta_at_connect": 0,
-          "voluntary_context_switch_delta": 39
-        },
-        "warm_projection": {
-          "available": true,
-          "invocation_count": 0,
-          "invocation_ids": [],
-          "items": [
-            {
-              "createdAt": "2026-10-07T00:00:00.000Z",
-              "currentPlanRevisionId": "revision-fixture-ready",
-              "invocationIds": [],
-              "missionId": "fixture-ready",
-              "pendingApprovalCount": 0,
-              "recoveryCount": 0,
-              "source": "operator",
-              "state": "ready",
-              "updatedAt": "2026-10-07T00:00:00.000Z"
-            },
-            {
-              "createdAt": "2026-10-07T00:00:00.000Z",
-              "currentPlanRevisionId": "revision-fixture-waiting",
-              "invocationIds": [],
-              "missionId": "fixture-waiting",
-              "pendingApprovalCount": 0,
-              "recoveryCount": 0,
-              "source": "operator",
-              "state": "waiting_for_provider",
-              "updatedAt": "2026-10-07T00:00:00.000Z"
-            }
-          ],
-          "mission_count": 2,
-          "mission_ids": [
-            "fixture-ready",
-            "fixture-waiting"
-          ],
-          "states": {
-            "fixture-ready": "ready",
-            "fixture-waiting": "waiting_for_provider"
-          }
-        },
-        "warm_projection_seconds": 0.010446,
-        "warm_start_seconds": 0.240952
-      },
-      {
-        "after_restart_sigterm": {
-          "missionIds": [
-            "fixture-ready",
-            "fixture-waiting"
-          ],
-          "states": {
-            "fixture-ready": "ready",
-            "fixture-waiting": "waiting_for_provider"
-          }
-        },
-        "after_sigkill": {
-          "missionIds": [
-            "fixture-ready",
-            "fixture-waiting"
-          ],
-          "states": {
-            "fixture-ready": "ready",
-            "fixture-waiting": "waiting_for_provider"
-          }
-        },
-        "after_sigterm": {
-          "missionIds": [
-            "fixture-ready",
-            "fixture-waiting"
-          ],
-          "states": {
-            "fixture-ready": "ready",
-            "fixture-waiting": "waiting_for_provider"
-          }
-        },
-        "cold_projection": {
-          "available": true,
-          "invocation_count": 0,
-          "invocation_ids": [],
-          "items": [
-            {
-              "createdAt": "2026-10-07T00:00:00.000Z",
-              "currentPlanRevisionId": "revision-fixture-ready",
-              "invocationIds": [],
-              "missionId": "fixture-ready",
-              "pendingApprovalCount": 0,
-              "recoveryCount": 0,
-              "source": "operator",
-              "state": "ready",
-              "updatedAt": "2026-10-07T00:00:00.000Z"
-            },
-            {
-              "createdAt": "2026-10-07T00:00:00.000Z",
-              "currentPlanRevisionId": "revision-fixture-waiting",
-              "invocationIds": [],
-              "missionId": "fixture-waiting",
-              "pendingApprovalCount": 0,
-              "recoveryCount": 0,
-              "source": "operator",
-              "state": "waiting_for_provider",
-              "updatedAt": "2026-10-07T00:00:00.000Z"
-            }
-          ],
-          "mission_count": 2,
-          "mission_ids": [
-            "fixture-ready",
-            "fixture-waiting"
-          ],
-          "states": {
-            "fixture-ready": "ready",
-            "fixture-waiting": "waiting_for_provider"
-          }
-        },
-        "cold_projection_seconds": 0.008367,
-        "cold_start_seconds": 0.185309,
-        "crash_restart_seconds": 0.132972,
-        "graceful_shutdown": {
-          "duration_seconds": 0.007416,
-          "exit_code": 0,
-          "forced": false,
-          "graceful": true,
-          "process_group_released": true,
-          "requested_signal": "SIGTERM",
-          "tracked_process_ids": [
-            2023037
-          ],
-          "tracked_processes_reaped": true
-        },
-        "idle_waiting_fixture": {
-          "after_sigterm": {
-            "missionIds": [
-              "fixture-waiting"
-            ],
-            "states": {
-              "fixture-waiting": "waiting_for_provider"
-            }
-          },
-          "cold_start_seconds": 0.26739,
-          "graceful_shutdown": {
-            "duration_seconds": 0.031778,
-            "exit_code": 0,
-            "forced": false,
-            "graceful": true,
-            "process_group_released": true,
-            "requested_signal": "SIGTERM",
-            "tracked_process_ids": [
-              2022873
-            ],
-            "tracked_processes_reaped": true
-          },
-          "metrics": {
-            "cpu_percent_of_one_logical_cpu": 0.2,
-            "cpu_seconds": 0.02,
-            "interval_seconds": 10.000751106999815,
-            "involuntary_context_switch_delta": 3,
-            "perf_sched_wakeup": {
-              "available": false,
-              "returncode": 129,
-              "stderr": "event syntax error: 'sched:sched_wakeup,sched:sched_wakeup_new'\n                     \\___ can't access trace events\n\nError:\tNo permissions to read /sys/kernel/tracing//events/sched/sched_wakeup\nHint:\tTry 'sudo mount -o remount,mode=755 /sys/kernel/tracing/'\n\nRun 'perf list' for a list of valid events\n\n Usage: perf stat [<options>] [<command>]\n\n    -e, --event <event>   event selector. use 'perf list' to list available events",
-              "stdout": ""
-            },
-            "pid_count_after": 1,
-            "pid_count_before": 1,
-            "rss_after_kib": 60308,
-            "rss_before_kib": 60200,
-            "threads_after": 19,
-            "threads_before": 19,
-            "voluntary_context_switch_delta": 55
-          },
-          "projection_after_interval_seconds": 0.005771,
-          "projection_before_interval_seconds": 0.014328
-        },
-        "persisted_after_crash": {
-          "missionIds": [
-            "fixture-ready",
-            "fixture-waiting"
-          ],
-          "states": {
-            "fixture-ready": "ready",
-            "fixture-waiting": "waiting_for_provider"
-          }
-        },
-        "post_restart_projection": {
-          "available": true,
-          "invocation_count": 0,
-          "invocation_ids": [],
-          "items": [
-            {
-              "createdAt": "2026-10-07T00:00:00.000Z",
-              "currentPlanRevisionId": "revision-fixture-ready",
-              "invocationIds": [],
-              "missionId": "fixture-ready",
-              "pendingApprovalCount": 0,
-              "recoveryCount": 0,
-              "source": "operator",
-              "state": "ready",
-              "updatedAt": "2026-10-07T00:00:00.000Z"
-            },
-            {
-              "createdAt": "2026-10-07T00:00:00.000Z",
-              "currentPlanRevisionId": "revision-fixture-waiting",
-              "invocationIds": [],
-              "missionId": "fixture-waiting",
-              "pendingApprovalCount": 0,
-              "recoveryCount": 0,
-              "source": "operator",
-              "state": "waiting_for_provider",
-              "updatedAt": "2026-10-07T00:00:00.000Z"
-            }
-          ],
-          "mission_count": 2,
-          "mission_ids": [
-            "fixture-ready",
-            "fixture-waiting"
-          ],
-          "states": {
-            "fixture-ready": "ready",
-            "fixture-waiting": "waiting_for_provider"
-          }
-        },
-        "post_restart_projection_after_controlled_idle_seconds": 0.003326,
-        "recovery_fixtures": {
-          "fixtureMode": "recovery",
-          "missionIds": [
-            "fixture-waiting",
-            "fixture-ready"
-          ],
-          "states": [
-            "waiting_for_provider",
-            "ready"
-          ]
-        },
-        "repetition": 3,
-        "restart_graceful_shutdown": {
-          "duration_seconds": 0.007423,
-          "exit_code": 0,
-          "forced": false,
-          "graceful": true,
-          "process_group_released": true,
-          "requested_signal": "SIGTERM",
-          "tracked_process_ids": [
-            2023103
-          ],
-          "tracked_processes_reaped": true
-        },
-        "restart_projection_reconstruction_seconds": 0.006797,
-        "restart_projection_seconds": 0.006786,
-        "sigkill_termination": {
-          "duration_seconds": 0.007475,
-          "exit_code": -9,
-          "forced": true,
-          "graceful": false,
-          "process_group_released": true,
-          "requested_signal": "SIGKILL",
-          "tracked_process_ids": [
-            2023070
-          ],
-          "tracked_processes_reaped": true
-        },
-        "transport_idle_connection": {
-          "bytes_after_handshake": 0,
-          "bytes_read_after_headers_in_handshake_recv": 1717,
-          "bytes_read_until_handshake_headers_complete": 1883,
-          "cpu_percent_of_one_logical_cpu": 0.2,
-          "cpu_seconds": 0.01,
-          "handshake_seconds": 0.004854,
-          "interval_seconds": 5.000066517997766,
-          "involuntary_context_switch_delta": 0,
-          "pid_count_after": 1,
-          "pid_count_before": 1,
-          "request_bytes": 156,
-          "response_header_bytes": 166,
-          "rss_after_kib": 60644,
-          "rss_before_kib": 60408,
-          "rss_delta_at_connect_kib": 756,
-          "threads_after": 19,
-          "threads_before": 19,
+          "rss_after_kib": 60824,
+          "rss_before_kib": 60584,
+          "rss_delta_at_connect_kib": 736,
+          "threads_after": 21,
+          "threads_before": 21,
           "threads_delta_at_connect": 0,
           "voluntary_context_switch_delta": 34
         },
@@ -869,8 +315,8 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "warm_projection_seconds": 0.006104,
-        "warm_start_seconds": 0.109502
+        "warm_projection_seconds": 0.008908,
+        "warm_start_seconds": 0.160744
       },
       {
         "after_restart_sigterm": {
@@ -941,18 +387,18 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "cold_projection_seconds": 0.008348,
-        "cold_start_seconds": 0.213126,
-        "crash_restart_seconds": 0.190872,
+        "cold_projection_seconds": 0.022374,
+        "cold_start_seconds": 0.432909,
+        "crash_restart_seconds": 0.487265,
         "graceful_shutdown": {
-          "duration_seconds": 0.015512,
+          "duration_seconds": 0.033239,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2023383
+            2028881
           ],
           "tracked_processes_reaped": true
         },
@@ -965,24 +411,24 @@
               "fixture-waiting": "waiting_for_provider"
             }
           },
-          "cold_start_seconds": 0.161087,
+          "cold_start_seconds": 0.134338,
           "graceful_shutdown": {
-            "duration_seconds": 0.031735,
+            "duration_seconds": 0.031678,
             "exit_code": 0,
             "forced": false,
             "graceful": true,
             "process_group_released": true,
             "requested_signal": "SIGTERM",
             "tracked_process_ids": [
-              2023182
+              2028357
             ],
             "tracked_processes_reaped": true
           },
           "metrics": {
-            "cpu_percent_of_one_logical_cpu": 0.3,
-            "cpu_seconds": 0.03,
-            "interval_seconds": 10.000658211007249,
-            "involuntary_context_switch_delta": 12,
+            "cpu_percent_of_one_logical_cpu": 0.1,
+            "cpu_seconds": 0.01,
+            "interval_seconds": 10.000860360014485,
+            "involuntary_context_switch_delta": 1,
             "perf_sched_wakeup": {
               "available": false,
               "returncode": 129,
@@ -991,14 +437,14 @@
             },
             "pid_count_after": 1,
             "pid_count_before": 1,
-            "rss_after_kib": 60224,
-            "rss_before_kib": 60344,
-            "threads_after": 18,
+            "rss_after_kib": 60272,
+            "rss_before_kib": 60416,
+            "threads_after": 19,
             "threads_before": 20,
-            "voluntary_context_switch_delta": 57
+            "voluntary_context_switch_delta": 64
           },
-          "projection_after_interval_seconds": 0.006007,
-          "projection_before_interval_seconds": 0.007729
+          "projection_after_interval_seconds": 0.004589,
+          "projection_before_interval_seconds": 0.008682
         },
         "persisted_after_crash": {
           "missionIds": [
@@ -1048,7 +494,561 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "post_restart_projection_after_controlled_idle_seconds": 0.003864,
+        "post_restart_projection_after_controlled_idle_seconds": 0.006414,
+        "recovery_fixtures": {
+          "fixtureMode": "recovery",
+          "missionIds": [
+            "fixture-waiting",
+            "fixture-ready"
+          ],
+          "states": [
+            "waiting_for_provider",
+            "ready"
+          ]
+        },
+        "repetition": 2,
+        "restart_graceful_shutdown": {
+          "duration_seconds": 0.007634,
+          "exit_code": 0,
+          "forced": false,
+          "graceful": true,
+          "process_group_released": true,
+          "requested_signal": "SIGTERM",
+          "tracked_process_ids": [
+            2028970
+          ],
+          "tracked_processes_reaped": true
+        },
+        "restart_projection_reconstruction_seconds": 0.019391,
+        "restart_projection_seconds": 0.019357,
+        "sigkill_termination": {
+          "duration_seconds": 0.007725,
+          "exit_code": -9,
+          "forced": true,
+          "graceful": false,
+          "process_group_released": true,
+          "requested_signal": "SIGKILL",
+          "tracked_process_ids": [
+            2028929
+          ],
+          "tracked_processes_reaped": true
+        },
+        "transport_idle_connection": {
+          "bytes_after_handshake": 0,
+          "bytes_read_after_headers_in_handshake_recv": 1717,
+          "bytes_read_until_handshake_headers_complete": 1883,
+          "cpu_percent_of_one_logical_cpu": 0.2,
+          "cpu_seconds": 0.01,
+          "handshake_seconds": 0.003882,
+          "interval_seconds": 5.000077815988334,
+          "involuntary_context_switch_delta": 23,
+          "pid_count_after": 1,
+          "pid_count_before": 1,
+          "request_bytes": 156,
+          "response_header_bytes": 166,
+          "rss_after_kib": 60616,
+          "rss_before_kib": 60320,
+          "rss_delta_at_connect_kib": 796,
+          "threads_after": 19,
+          "threads_before": 19,
+          "threads_delta_at_connect": 0,
+          "voluntary_context_switch_delta": 45
+        },
+        "warm_projection": {
+          "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "warm_projection_seconds": 0.02247,
+        "warm_start_seconds": 0.433516
+      },
+      {
+        "after_restart_sigterm": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "after_sigkill": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "after_sigterm": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "cold_projection": {
+          "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "cold_projection_seconds": 0.037494,
+        "cold_start_seconds": 0.628178,
+        "crash_restart_seconds": 0.418363,
+        "graceful_shutdown": {
+          "duration_seconds": 0.041175,
+          "exit_code": 0,
+          "forced": false,
+          "graceful": true,
+          "process_group_released": true,
+          "requested_signal": "SIGTERM",
+          "tracked_process_ids": [
+            2029577
+          ],
+          "tracked_processes_reaped": true
+        },
+        "idle_waiting_fixture": {
+          "after_sigterm": {
+            "missionIds": [
+              "fixture-waiting"
+            ],
+            "states": {
+              "fixture-waiting": "waiting_for_provider"
+            }
+          },
+          "cold_start_seconds": 0.364317,
+          "graceful_shutdown": {
+            "duration_seconds": 0.168463,
+            "exit_code": 0,
+            "forced": false,
+            "graceful": true,
+            "process_group_released": true,
+            "requested_signal": "SIGTERM",
+            "tracked_process_ids": [
+              2029032
+            ],
+            "tracked_processes_reaped": true
+          },
+          "metrics": {
+            "cpu_percent_of_one_logical_cpu": 0.3,
+            "cpu_seconds": 0.03,
+            "interval_seconds": 10.001302766002482,
+            "involuntary_context_switch_delta": 45,
+            "perf_sched_wakeup": {
+              "available": false,
+              "returncode": 129,
+              "stderr": "event syntax error: 'sched:sched_wakeup,sched:sched_wakeup_new'\n                     \\___ can't access trace events\n\nError:\tNo permissions to read /sys/kernel/tracing//events/sched/sched_wakeup\nHint:\tTry 'sudo mount -o remount,mode=755 /sys/kernel/tracing/'\n\nRun 'perf list' for a list of valid events\n\n Usage: perf stat [<options>] [<command>]\n\n    -e, --event <event>   event selector. use 'perf list' to list available events",
+              "stdout": ""
+            },
+            "pid_count_after": 1,
+            "pid_count_before": 1,
+            "rss_after_kib": 60268,
+            "rss_before_kib": 60248,
+            "threads_after": 18,
+            "threads_before": 19,
+            "voluntary_context_switch_delta": 53
+          },
+          "projection_after_interval_seconds": 0.003598,
+          "projection_before_interval_seconds": 0.022529
+        },
+        "persisted_after_crash": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "post_restart_projection": {
+          "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "post_restart_projection_after_controlled_idle_seconds": 0.006325,
+        "recovery_fixtures": {
+          "fixtureMode": "recovery",
+          "missionIds": [
+            "fixture-waiting",
+            "fixture-ready"
+          ],
+          "states": [
+            "waiting_for_provider",
+            "ready"
+          ]
+        },
+        "repetition": 3,
+        "restart_graceful_shutdown": {
+          "duration_seconds": 0.016071,
+          "exit_code": 0,
+          "forced": false,
+          "graceful": true,
+          "process_group_released": true,
+          "requested_signal": "SIGTERM",
+          "tracked_process_ids": [
+            2029671
+          ],
+          "tracked_processes_reaped": true
+        },
+        "restart_projection_reconstruction_seconds": 0.019943,
+        "restart_projection_seconds": 0.019919,
+        "sigkill_termination": {
+          "duration_seconds": 0.008236,
+          "exit_code": -9,
+          "forced": true,
+          "graceful": false,
+          "process_group_released": true,
+          "requested_signal": "SIGKILL",
+          "tracked_process_ids": [
+            2029620
+          ],
+          "tracked_processes_reaped": true
+        },
+        "transport_idle_connection": {
+          "bytes_after_handshake": 0,
+          "bytes_read_after_headers_in_handshake_recv": 1717,
+          "bytes_read_until_handshake_headers_complete": 1883,
+          "cpu_percent_of_one_logical_cpu": 0.5999,
+          "cpu_seconds": 0.03,
+          "handshake_seconds": 0.005466,
+          "interval_seconds": 5.000723687000573,
+          "involuntary_context_switch_delta": 18,
+          "pid_count_after": 1,
+          "pid_count_before": 1,
+          "request_bytes": 156,
+          "response_header_bytes": 166,
+          "rss_after_kib": 60864,
+          "rss_before_kib": 60380,
+          "rss_delta_at_connect_kib": 768,
+          "threads_after": 18,
+          "threads_before": 18,
+          "threads_delta_at_connect": 0,
+          "voluntary_context_switch_delta": 12
+        },
+        "warm_projection": {
+          "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "warm_projection_seconds": 0.019981,
+        "warm_start_seconds": 0.43614
+      },
+      {
+        "after_restart_sigterm": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "after_sigkill": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "after_sigterm": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "cold_projection": {
+          "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "cold_projection_seconds": 0.005397,
+        "cold_start_seconds": 0.133432,
+        "crash_restart_seconds": 0.108982,
+        "graceful_shutdown": {
+          "duration_seconds": 0.007457,
+          "exit_code": 0,
+          "forced": false,
+          "graceful": true,
+          "process_group_released": true,
+          "requested_signal": "SIGTERM",
+          "tracked_process_ids": [
+            2030034
+          ],
+          "tracked_processes_reaped": true
+        },
+        "idle_waiting_fixture": {
+          "after_sigterm": {
+            "missionIds": [
+              "fixture-waiting"
+            ],
+            "states": {
+              "fixture-waiting": "waiting_for_provider"
+            }
+          },
+          "cold_start_seconds": 0.378136,
+          "graceful_shutdown": {
+            "duration_seconds": 0.031898,
+            "exit_code": 0,
+            "forced": false,
+            "graceful": true,
+            "process_group_released": true,
+            "requested_signal": "SIGTERM",
+            "tracked_process_ids": [
+              2029807
+            ],
+            "tracked_processes_reaped": true
+          },
+          "metrics": {
+            "cpu_percent_of_one_logical_cpu": 0.4,
+            "cpu_seconds": 0.04,
+            "interval_seconds": 10.00096965098055,
+            "involuntary_context_switch_delta": 24,
+            "perf_sched_wakeup": {
+              "available": false,
+              "returncode": 129,
+              "stderr": "event syntax error: 'sched:sched_wakeup,sched:sched_wakeup_new'\n                     \\___ can't access trace events\n\nError:\tNo permissions to read /sys/kernel/tracing//events/sched/sched_wakeup\nHint:\tTry 'sudo mount -o remount,mode=755 /sys/kernel/tracing/'\n\nRun 'perf list' for a list of valid events\n\n Usage: perf stat [<options>] [<command>]\n\n    -e, --event <event>   event selector. use 'perf list' to list available events",
+              "stdout": ""
+            },
+            "pid_count_after": 1,
+            "pid_count_before": 1,
+            "rss_after_kib": 60160,
+            "rss_before_kib": 60004,
+            "threads_after": 19,
+            "threads_before": 19,
+            "voluntary_context_switch_delta": 58
+          },
+          "projection_after_interval_seconds": 0.007817,
+          "projection_before_interval_seconds": 0.021346
+        },
+        "persisted_after_crash": {
+          "missionIds": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "post_restart_projection": {
+          "available": true,
+          "invocation_count": 0,
+          "invocation_ids": [],
+          "items": [
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-ready",
+              "invocationIds": [],
+              "missionId": "fixture-ready",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "ready",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            },
+            {
+              "createdAt": "2026-10-07T00:00:00.000Z",
+              "currentPlanRevisionId": "revision-fixture-waiting",
+              "invocationIds": [],
+              "missionId": "fixture-waiting",
+              "pendingApprovalCount": 0,
+              "recoveryCount": 0,
+              "source": "operator",
+              "state": "waiting_for_provider",
+              "updatedAt": "2026-10-07T00:00:00.000Z"
+            }
+          ],
+          "mission_count": 2,
+          "mission_ids": [
+            "fixture-ready",
+            "fixture-waiting"
+          ],
+          "states": {
+            "fixture-ready": "ready",
+            "fixture-waiting": "waiting_for_provider"
+          }
+        },
+        "post_restart_projection_after_controlled_idle_seconds": 0.003267,
         "recovery_fixtures": {
           "fixtureMode": "recovery",
           "missionIds": [
@@ -1062,28 +1062,28 @@
         },
         "repetition": 4,
         "restart_graceful_shutdown": {
-          "duration_seconds": 0.007531,
+          "duration_seconds": 0.007386,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2023441
+            2030105
           ],
           "tracked_processes_reaped": true
         },
-        "restart_projection_reconstruction_seconds": 0.009862,
-        "restart_projection_seconds": 0.009847,
+        "restart_projection_reconstruction_seconds": 0.006685,
+        "restart_projection_seconds": 0.006674,
         "sigkill_termination": {
-          "duration_seconds": 0.003409,
+          "duration_seconds": 0.003361,
           "exit_code": -9,
           "forced": true,
           "graceful": false,
           "process_group_released": true,
           "requested_signal": "SIGKILL",
           "tracked_process_ids": [
-            2023409
+            2030070
           ],
           "tracked_processes_reaped": true
         },
@@ -1091,22 +1091,22 @@
           "bytes_after_handshake": 0,
           "bytes_read_after_headers_in_handshake_recv": 1717,
           "bytes_read_until_handshake_headers_complete": 1883,
-          "cpu_percent_of_one_logical_cpu": 0.2,
-          "cpu_seconds": 0.01,
-          "handshake_seconds": 0.005495,
-          "interval_seconds": 5.000082193990238,
+          "cpu_percent_of_one_logical_cpu": 0.4,
+          "cpu_seconds": 0.02,
+          "handshake_seconds": 0.006202,
+          "interval_seconds": 5.000101770012407,
           "involuntary_context_switch_delta": 0,
           "pid_count_after": 1,
           "pid_count_before": 1,
           "request_bytes": 156,
           "response_header_bytes": 166,
-          "rss_after_kib": 60476,
-          "rss_before_kib": 60308,
-          "rss_delta_at_connect_kib": 692,
+          "rss_after_kib": 60508,
+          "rss_before_kib": 60272,
+          "rss_delta_at_connect_kib": 768,
           "threads_after": 19,
-          "threads_before": 18,
-          "threads_delta_at_connect": 1,
-          "voluntary_context_switch_delta": 38
+          "threads_before": 19,
+          "threads_delta_at_connect": 0,
+          "voluntary_context_switch_delta": 32
         },
         "warm_projection": {
           "available": true,
@@ -1146,8 +1146,8 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "warm_projection_seconds": 0.009355,
-        "warm_start_seconds": 0.188003
+        "warm_projection_seconds": 0.008117,
+        "warm_start_seconds": 0.109001
       },
       {
         "after_restart_sigterm": {
@@ -1218,18 +1218,18 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "cold_projection_seconds": 0.005164,
-        "cold_start_seconds": 0.131575,
-        "crash_restart_seconds": 0.107405,
+        "cold_projection_seconds": 0.005214,
+        "cold_start_seconds": 0.185898,
+        "crash_restart_seconds": 0.106584,
         "graceful_shutdown": {
-          "duration_seconds": 0.007345,
+          "duration_seconds": 0.007371,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2023658
+            2030331
           ],
           "tracked_processes_reaped": true
         },
@@ -1242,24 +1242,24 @@
               "fixture-waiting": "waiting_for_provider"
             }
           },
-          "cold_start_seconds": 0.187946,
+          "cold_start_seconds": 0.162577,
           "graceful_shutdown": {
-            "duration_seconds": 0.031556,
+            "duration_seconds": 0.031509,
             "exit_code": 0,
             "forced": false,
             "graceful": true,
             "process_group_released": true,
             "requested_signal": "SIGTERM",
             "tracked_process_ids": [
-              2023526
+              2030177
             ],
             "tracked_processes_reaped": true
           },
           "metrics": {
             "cpu_percent_of_one_logical_cpu": 0.3,
             "cpu_seconds": 0.03,
-            "interval_seconds": 10.000655859999824,
-            "involuntary_context_switch_delta": 4,
+            "interval_seconds": 10.000618519989075,
+            "involuntary_context_switch_delta": 0,
             "perf_sched_wakeup": {
               "available": false,
               "returncode": 129,
@@ -1268,14 +1268,14 @@
             },
             "pid_count_after": 1,
             "pid_count_before": 1,
-            "rss_after_kib": 60000,
-            "rss_before_kib": 59488,
-            "threads_after": 18,
+            "rss_after_kib": 60100,
+            "rss_before_kib": 59740,
+            "threads_after": 19,
             "threads_before": 19,
-            "voluntary_context_switch_delta": 57
+            "voluntary_context_switch_delta": 76
           },
-          "projection_after_interval_seconds": 0.005288,
-          "projection_before_interval_seconds": 0.009331
+          "projection_after_interval_seconds": 0.003295,
+          "projection_before_interval_seconds": 0.009234
         },
         "persisted_after_crash": {
           "missionIds": [
@@ -1325,7 +1325,7 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "post_restart_projection_after_controlled_idle_seconds": 0.002982,
+        "post_restart_projection_after_controlled_idle_seconds": 0.003589,
         "recovery_fixtures": {
           "fixtureMode": "recovery",
           "missionIds": [
@@ -1339,28 +1339,28 @@
         },
         "repetition": 5,
         "restart_graceful_shutdown": {
-          "duration_seconds": 0.00741,
+          "duration_seconds": 0.007471,
           "exit_code": 0,
           "forced": false,
           "graceful": true,
           "process_group_released": true,
           "requested_signal": "SIGTERM",
           "tracked_process_ids": [
-            2023730
+            2030426
           ],
           "tracked_processes_reaped": true
         },
-        "restart_projection_reconstruction_seconds": 0.005946,
-        "restart_projection_seconds": 0.005932,
+        "restart_projection_reconstruction_seconds": 0.005027,
+        "restart_projection_seconds": 0.005019,
         "sigkill_termination": {
-          "duration_seconds": 0.007454,
+          "duration_seconds": 0.007497,
           "exit_code": -9,
           "forced": true,
           "graceful": false,
           "process_group_released": true,
           "requested_signal": "SIGKILL",
           "tracked_process_ids": [
-            2023690
+            2030368
           ],
           "tracked_processes_reaped": true
         },
@@ -1370,20 +1370,20 @@
           "bytes_read_until_handshake_headers_complete": 1883,
           "cpu_percent_of_one_logical_cpu": 0.2,
           "cpu_seconds": 0.01,
-          "handshake_seconds": 0.004433,
-          "interval_seconds": 5.000305615016259,
-          "involuntary_context_switch_delta": 2,
+          "handshake_seconds": 0.003276,
+          "interval_seconds": 5.000066966982558,
+          "involuntary_context_switch_delta": 1,
           "pid_count_after": 1,
           "pid_count_before": 1,
           "request_bytes": 156,
           "response_header_bytes": 166,
-          "rss_after_kib": 60364,
-          "rss_before_kib": 60108,
-          "rss_delta_at_connect_kib": 748,
-          "threads_after": 18,
-          "threads_before": 18,
+          "rss_after_kib": 60468,
+          "rss_before_kib": 59712,
+          "rss_delta_at_connect_kib": 820,
+          "threads_after": 19,
+          "threads_before": 19,
           "threads_delta_at_connect": 0,
-          "voluntary_context_switch_delta": 39
+          "voluntary_context_switch_delta": 36
         },
         "warm_projection": {
           "available": true,
@@ -1423,77 +1423,77 @@
             "fixture-waiting": "waiting_for_provider"
           }
         },
-        "warm_projection_seconds": 0.007111,
-        "warm_start_seconds": 0.10923
+        "warm_projection_seconds": 0.012955,
+        "warm_start_seconds": 0.138782
       }
     ],
     "repetitions": 5,
     "summary_seconds": {
       "cold_projection_seconds": {
-        "max": 0.012379,
-        "median": 0.008367,
-        "min": 0.005164,
-        "p95_nearest_rank": 0.012379
+        "max": 0.037494,
+        "median": 0.007058,
+        "min": 0.005214,
+        "p95_nearest_rank": 0.037494
       },
       "cold_start_seconds": {
-        "max": 0.214868,
-        "median": 0.187153,
-        "min": 0.131575,
-        "p95_nearest_rank": 0.214868
+        "max": 0.628178,
+        "median": 0.185898,
+        "min": 0.133432,
+        "p95_nearest_rank": 0.628178
       },
       "crash_restart_seconds": {
-        "max": 0.215065,
-        "median": 0.134265,
-        "min": 0.107405,
-        "p95_nearest_rank": 0.215065
+        "max": 0.487265,
+        "median": 0.108982,
+        "min": 0.106289,
+        "p95_nearest_rank": 0.487265
       },
       "graceful_shutdown_seconds": {
-        "max": 0.015615,
-        "median": 0.007416,
-        "min": 0.007345,
-        "p95_nearest_rank": 0.015615
+        "max": 0.041175,
+        "median": 0.015631,
+        "min": 0.007371,
+        "p95_nearest_rank": 0.041175
       },
       "idle_waiting_cold_start_seconds": {
-        "max": 0.26739,
-        "median": 0.213371,
-        "min": 0.161087,
-        "p95_nearest_rank": 0.26739
+        "max": 0.378136,
+        "median": 0.191578,
+        "min": 0.134338,
+        "p95_nearest_rank": 0.378136
       },
       "idle_waiting_graceful_shutdown_seconds": {
-        "max": 0.031778,
-        "median": 0.031735,
-        "min": 0.031556,
-        "p95_nearest_rank": 0.031778
+        "max": 0.168463,
+        "median": 0.031678,
+        "min": 0.015628,
+        "p95_nearest_rank": 0.168463
       },
       "restart_projection_reconstruction_seconds": {
-        "max": 0.009948,
-        "median": 0.006797,
-        "min": 0.005946,
-        "p95_nearest_rank": 0.009948
+        "max": 0.019943,
+        "median": 0.006685,
+        "min": 0.004863,
+        "p95_nearest_rank": 0.019943
       },
       "restart_projection_seconds": {
-        "max": 0.009928,
-        "median": 0.006786,
-        "min": 0.005932,
-        "p95_nearest_rank": 0.009928
+        "max": 0.019919,
+        "median": 0.006674,
+        "min": 0.004855,
+        "p95_nearest_rank": 0.019919
       },
       "sigkill_process_termination_seconds": {
-        "max": 0.007553,
-        "median": 0.007459,
-        "min": 0.003409,
-        "p95_nearest_rank": 0.007553
+        "max": 0.008236,
+        "median": 0.007497,
+        "min": 0.003361,
+        "p95_nearest_rank": 0.008236
       },
       "warm_projection_seconds": {
-        "max": 0.010446,
-        "median": 0.00716,
-        "min": 0.006104,
-        "p95_nearest_rank": 0.010446
+        "max": 0.02247,
+        "median": 0.012955,
+        "min": 0.008117,
+        "p95_nearest_rank": 0.02247
       },
       "warm_start_seconds": {
-        "max": 0.240952,
-        "median": 0.132796,
-        "min": 0.10923,
-        "p95_nearest_rank": 0.240952
+        "max": 0.43614,
+        "median": 0.160744,
+        "min": 0.109001,
+        "p95_nearest_rank": 0.43614
       }
     },
     "transport_idle_interval_seconds": 5.0

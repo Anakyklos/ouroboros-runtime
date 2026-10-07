@@ -1,8 +1,8 @@
 # Headless daemon resource and lifecycle baseline (#105)
 
 **Main base SHA:** `fd62c7c81b922ba8e142465278e00e47e54d3361`
-**Measured code HEAD:** `8be6751d8d32d1d73bd527d13698f5ee17bb46ee`
-**Collection:** 2026-10-07 23:27 UTC; five repetitions after frozen installs and `bun run check` at the measured HEAD.
+**Measured code HEAD:** `8c0fd8e00101d03261b6fd740842b0c5c9880b0f`
+**Collection:** 2026-10-07 23:31 UTC; five repetitions after frozen installs and `bun run check` at the measured HEAD.
 
 **Environment:** Linux Mint 22.3, kernel `7.0.0-30-generic`, x86_64, 12 logical CPUs, 31.1 GiB RAM, Bun 1.4.2, Node 22.23.2, Python 3.12.3, `better-sqlite3` 12.6.2 installed, perf 7.0.12. Hostname is omitted. Raw samples and runtime probes are in [the JSON artifact](headless-lifecycle-baseline-2026-10-07.json).
 
@@ -34,17 +34,17 @@ Times show min / median / max over five repetitions. Process exit codes and ever
 
 | Measurement | Result |
 |---|---:|
-| First start with fresh fixture DB | 132–215 ms / **187 ms** / 215 ms |
-| Warm restart with same DB | 109–241 ms / **133 ms** / 241 ms |
-| Graceful SIGTERM to exit 0 and released process group | 7.3–15.6 ms / **7.4 ms** / 15.6 ms |
-| Forced SIGKILL termination | exit `-9` in all runs; 3.4–7.6 ms / **7.5 ms** / 7.6 ms |
-| Crash restart to health-ready | 107–215 ms / **134 ms** / 215 ms |
-| Post-restart authoritative projection | 5.9–9.9 ms / **6.8 ms** / 9.9 ms |
-| Warm-start projection | 6.1–10.4 ms / **7.2 ms** / 10.4 ms |
+| First start with fresh fixture DB | 133–628 ms / **186 ms** / 628 ms |
+| Warm restart with same DB | 109–436 ms / **161 ms** / 436 ms |
+| Graceful SIGTERM to exit 0 and released process group | 7.4–41.2 ms / **15.6 ms** / 41.2 ms |
+| Forced SIGKILL termination | exit `-9` in all runs; 3.4–8.2 ms / **7.5 ms** / 8.2 ms |
+| Crash restart to health-ready | 106–487 ms / **109 ms** / 487 ms |
+| Post-restart authoritative projection | 4.9–19.9 ms / **6.7 ms** / 19.9 ms |
+| Warm-start projection | 8.1–22.5 ms / **13.0 ms** / 22.5 ms |
 
-For each controlled 10-second idle interval, the database had only a synthetic `waiting_for_provider` Mission. The daemon process tree had one process, with RSS 59,488–60,344 KiB at interval start and 60,000–60,308 KiB at the end (median end RSS 60,260 KiB). CPU was 0.1–0.3% of one logical CPU. Threads ranged from 19–20 at start and 18–19 at end. Voluntary context-switch delta was 55–74 (median 57); involuntary delta was 3–24. Direct scheduler wakeup tracepoints were denied by host permissions, so no wakeup count is claimed.
+For each controlled 10-second idle interval, the database had only a synthetic `waiting_for_provider` Mission. The daemon process tree had one process, with RSS 59,740–60,416 KiB at interval start and 60,100–60,488 KiB at the end (median end RSS 60,268 KiB). CPU was 0.1–0.4% of one logical CPU. Threads ranged from 19–22 at start and 18–21 at end. Voluntary context-switch delta was 53–76 (median 59); involuntary delta was 0–45. Direct scheduler wakeup tracepoints were denied by host permissions, so no wakeup count is claimed.
 
-One idle localhost WebSocket was held open for five seconds per repetition. Handshake latency was 2.2–5.5 ms (median 4.5 ms); the client request was 156 bytes and the HTTP response header was 166 bytes, including its delimiter. The socket read through handshake completion returned 1,881–1,883 bytes total; 1,715–1,717 bytes followed the headers in that same read. Those trailing bytes are recorded as received bytes, not interpreted as a complete or validated WebSocket frame. No additional bytes arrived during the remaining idle interval. RSS changed by +692–788 KiB at connection time (median +748 KiB), thread count by 0–1, and CPU was 0.2% of one logical CPU.
+One idle localhost WebSocket was held open for five seconds per repetition. Handshake latency was 3.3–6.2 ms (median 3.9 ms); the client request was 156 bytes and the HTTP response header was 166 bytes, including its delimiter. The socket read through handshake completion returned 1,883 bytes total; 1,717 bytes followed the headers in that same read. Those trailing bytes are recorded as received bytes, not interpreted as a complete or validated WebSocket frame. No additional bytes arrived during the remaining idle interval. RSS changed by +736–820 KiB at connection time (median +768 KiB), thread count by 0, and CPU was 0.2–0.6% of one logical CPU.
 
 ## Recovery and shutdown checks
 
