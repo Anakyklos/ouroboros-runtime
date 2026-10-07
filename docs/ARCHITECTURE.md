@@ -267,7 +267,6 @@ O que o repositório implementa e testa atualmente:
   Anti-Vibe phases
 - **MemoryManager** / **MemoryRetriever** (Markdown file-first em .agent/memory)
 - **SQLite storage** (better-sqlite3, WAL mode, prepared statements)
-- **TUI React/Ink** com tema Emerald
 - **Web frontend** Vite/React (Mission Control, Swiss, settings, terminal pane,
   memory panel, Council quadrants)
 - **PromotionManager** / **Anti-Vibe workflow** (playground → src gates)
@@ -371,7 +370,7 @@ vinculante de cada subsistema está em [LEGACY_MATRIX.md](LEGACY_MATRIX.md).
 - Ralph loop autônomo
 - MCP/skills como expansão do próprio agente
 - Electron como shell desktop
-- TUI React/Ink como segunda interface principal
+- TUI React/Ink como segunda interface principal (código/entrypoint removidos em #104)
 - Web server (Fastify/WebSocket) como transporte default
 - Direct bridges (Antigravity, Gemini, Jules) como API central do orchestrator
 - GatewayOrchestrator como god orchestrator de integrações concretas

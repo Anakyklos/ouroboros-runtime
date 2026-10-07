@@ -10,7 +10,7 @@
  *   bun run scripts/agy-bridge.ts "<command>"
  * 
  * Example:
- *   bun run scripts/agy-bridge.ts "bun test cli/src/tui"
+ *   bun run scripts/agy-bridge.ts "bun test cli/src/daemon"
  */
 
 import { spawn } from "bun";

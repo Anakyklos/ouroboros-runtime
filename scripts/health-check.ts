@@ -8,23 +8,93 @@
 
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { loadEnv, isHeadlessMode } from '../cli/src/utils/env-loader.js';
+import { loadEnv } from '../cli/src/utils/env-loader.js';
 import { getOuroborosConfig } from '../cli/src/utils/ouroboros.js';
 
-interface CheckResult {
+export interface CheckResult {
     name: string;
     status: 'ok' | 'warn' | 'error';
     message: string;
 }
 
-const results: CheckResult[] = [];
-
-function check(name: string, condition: boolean, okMsg: string, errorMsg: string): void {
-    results.push({
+function check(
+    name: string,
+    condition: boolean,
+    okMsg: string,
+    missingMsg: string,
+    required = true,
+): CheckResult {
+    const result: CheckResult = {
         name,
-        status: condition ? 'ok' : 'error',
-        message: condition ? okMsg : errorMsg,
-    });
+        status: condition ? 'ok' : required ? 'error' : 'warn',
+        message: condition ? okMsg : missingMsg,
+    };
+    return result;
+}
+
+/**
+ * Build health results from observed prerequisites. Provider and legacy tooling
+ * are informational; only the runtime needed to launch the daemon/admin CLI is
+ * required for this health check.
+ */
+export function buildHealthResults(input: {
+    envFile: boolean;
+    groqApiKey: boolean;
+    googleApiKey: boolean;
+    workspace: string;
+    workspaceReady: boolean;
+    python: string;
+    pythonVenv: boolean;
+    geminiCli: boolean;
+    bunRuntime: boolean;
+}): CheckResult[] {
+    return [
+        check('.env file', input.envFile, 'Found .env file', 'Optional: .env file is not configured', false),
+        check('GROQ_API_KEY', input.groqApiKey, 'GROQ_API_KEY is set', 'Optional: GROQ_API_KEY is not set', false),
+        check('GOOGLE_API_KEY', input.googleApiKey, 'GOOGLE_API_KEY is set', 'Optional: GOOGLE_API_KEY is not set', false),
+        check(
+            'Ouroboros workspace',
+            input.workspaceReady,
+            `Workspace ready at ${input.workspace}`,
+            'Optional legacy workspace is missing; it is not required by the daemon/admin CLI',
+            false,
+        ),
+        check(
+            'Python venv',
+            input.pythonVenv,
+            `Python found at ${input.python}`,
+            'Optional legacy Python venv is missing; it is not required by the daemon/admin CLI',
+            false,
+        ),
+        check(
+            'Gemini CLI',
+            input.geminiCli,
+            'Gemini CLI is available',
+            'Optional provider tooling: Gemini CLI is not installed',
+            false,
+        ),
+        check('Bun runtime', input.bunRuntime, 'Bun is available', 'Bun not found'),
+    ];
+}
+
+function report(results: CheckResult[]): void {
+    console.log('\n📊 Results:\n');
+
+    const hasErrors = results.some((result) => result.status === 'error');
+    for (const r of results) {
+        const icon = r.status === 'ok' ? '✅' : r.status === 'warn' ? '⚠️' : '❌';
+        console.log(`${icon} ${r.name}: ${r.message}`);
+    }
+
+    console.log('\n' + '='.repeat(50));
+
+    if (hasErrors) {
+        console.log('❌ Required runtime checks failed. Please fix the issues above.');
+        process.exit(1);
+    }
+
+    console.log('✅ Required runtime checks passed. Optional tooling may be unavailable.');
+    process.exit(0);
 }
 
 async function checkCommand(command: string, args: string[]): Promise<boolean> {
@@ -39,83 +109,29 @@ async function main() {
     console.log('🐍 Ouroboros Health Check\n');
     console.log('='.repeat(50));
 
-    // 1. Check .env
     loadEnv();
-    check(
-        '.env file',
-        existsSync('.env'),
-        'Found .env file',
-        'Missing .env file (create from .env.example)'
-    );
-
-    // 2. Check environment variables
-    check(
-        'GROQ_API_KEY',
-        !!process.env.GROQ_API_KEY,
-        'GROQ_API_KEY is set',
-        'GROQ_API_KEY is missing'
-    );
-
-    check(
-        'GOOGLE_API_KEY',
-        !!process.env.GOOGLE_API_KEY,
-        'GOOGLE_API_KEY is set',
-        'GOOGLE_API_KEY is missing'
-    );
-
-    // 3. Check Ouroboros environment
     const config = getOuroborosConfig();
-    check(
-        'Ouroboros workspace',
-        config.isReady,
-        `Workspace ready at ${config.workspace}`,
-        'Workspace not found. Run: bun run setup'
-    );
+    const [geminiCli, bunRuntime] = await Promise.all([
+        checkCommand('gemini', ['--version']),
+        checkCommand('bun', ['--version']),
+    ]);
 
-    check(
-        'Python venv',
-        existsSync(config.python),
-        `Python found at ${config.python}`,
-        'Python venv not found. Run: bun run setup'
-    );
-
-    // 4. Check Gemini CLI
-    const geminiAvailable = await checkCommand('gemini', ['--version']);
-    check(
-        'Gemini CLI',
-        geminiAvailable,
-        'Gemini CLI is available',
-        'Gemini CLI not found. Install: npm install -g @anthropic-ai/gemini-cli'
-    );
-
-    // 5. Check Bun
-    const bunAvailable = await checkCommand('bun', ['--version']);
-    check(
-        'Bun runtime',
-        bunAvailable,
-        'Bun is available',
-        'Bun not found'
-    );
-
-    // Print results
-    console.log('\n📊 Results:\n');
-
-    let hasErrors = false;
-    for (const r of results) {
-        const icon = r.status === 'ok' ? '✅' : r.status === 'warn' ? '⚠️' : '❌';
-        console.log(`${icon} ${r.name}: ${r.message}`);
-        if (r.status === 'error') hasErrors = true;
-    }
-
-    console.log('\n' + '='.repeat(50));
-
-    if (hasErrors) {
-        console.log('❌ Some checks failed. Please fix the issues above.');
-        process.exit(1);
-    } else {
-        console.log('✅ All checks passed! Ouroboros is ready.');
-        process.exit(0);
-    }
+    report(buildHealthResults({
+        envFile: existsSync('.env'),
+        groqApiKey: !!process.env.GROQ_API_KEY,
+        googleApiKey: !!process.env.GOOGLE_API_KEY,
+        workspace: config.workspace,
+        workspaceReady: config.isReady,
+        python: config.python,
+        pythonVenv: existsSync(config.python),
+        geminiCli,
+        bunRuntime,
+    }));
 }
 
-main().catch(console.error);
+if (import.meta.main) {
+    main().catch((error: unknown) => {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exit(1);
+    });
+}

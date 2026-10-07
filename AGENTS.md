@@ -86,7 +86,7 @@ quarentena futura exige uma issue de acompanhamento explícita e atualizada.
 - Context Compiler com provenance e Context Packs bounded/progressivos
   (#64/#78); o planner recebe packs bounded antes de propor planos
 - Scheduler/recovery/reconciliation e projeção/reconexão de eventos (#50/#38)
-- Web frontend (Vite/React) + TUI React/Ink + bridges + Orchestrator com
+- Web frontend (Vite/React) + bridges + Orchestrator com
   personas + WaveExecutor + MemoryManager/MemoryRetriever
   + Sandbox* + PromotionManager/Anti-Vibe + local inference
 - Baseline CI (#35)
@@ -111,7 +111,7 @@ quarentena futura exige uma issue de acompanhamento explícita e atualizada.
 
 SelfModifyingEngine (retired in #95), PersistentPythonREPL (retired in #96), Council/personas, ArchitectClient (persona), WaveExecutor ("agent wave"),
 Anti-Vibe como code gate, bridges diretas (Antigravity/Gemini/Jules), Ralph,
-MCP/SkillLoader, Council/Memory/Terminal UI, Electron (direção), TUI React/Ink.
+MCP/SkillLoader, Council/Memory/Terminal UI, Electron (direção), TUI React/Ink (removida em #104).
 Classificação completa: [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
 
 ### Hypothesis (aguarda POC/benchmark)
@@ -146,11 +146,10 @@ cli/src/
 ├── ports/          # Interface definitions (hexagonal)
 ├── providers/      # Agent execution engines
 ├── runtime/        # runtime adapters; Python REPL and Sandbox* retired
-└── tui/            # React/Ink TUI (LEGACY: RETIRE)
 ```
 
 > ⚠️ Antes de editar arquivos em `bridges/`, `runtime/`, `orchestration/`,
-> `tui/`, `inference/` ou `scripts/ralph/`, leia a linha correspondente na
+> `inference/` ou `scripts/ralph/`, leia a linha correspondente na
 > matriz de legado e respeite a Decision única registrada (não amplie feature
 > de subsistema classificado `RETIRE`/`DEFER`).
 

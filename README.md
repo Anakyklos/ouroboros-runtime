@@ -221,7 +221,7 @@ Baseline: [`docs/BASELINE.md`](docs/BASELINE.md) | CI:
 - **Legacy** — subsistemas que não definem mais a direção: SelfModifyingEngine
   (retirado em #95),
   Python sandbox, Council/personas, ArchitectClient, waves, Ralph,
-  MCP/SkillLoader, bridges diretas, TUI React/Ink, Council/Memory/Terminal UI.
+  MCP/SkillLoader, bridges diretas, TUI React/Ink (removida em #104), Council/Memory/Terminal UI.
   Classificação completa em [docs/LEGACY_MATRIX.md](docs/LEGACY_MATRIX.md).
 - **Hypothesis** — decisões pendentes de POC/benchmark: migração Go (#58),
   boundaries Zig/Rust, framework desktop, IPC protocol, service lifecycle.
@@ -253,11 +253,14 @@ bun run check:tests    # testes obrigatórios
 
 > ⚠️ Classificação dos entrypoints:
 >
-> - `bun run setup` → **workflow/setup legado** (BootWizard da fase
->   "self-modifying runtime"; classificado na matriz de legado).
-> - `bun run tui` → **TUI legada** (React/Ink; classificada `RETIRE` na
->   matriz de legado — não compete como segunda UI principal).
+> - `bun run setup` e `bun run tui` não são mais scripts públicos. A TUI
+>   React/Ink e seu entrypoint foram retirados em #104; o arquivo
+>   `setup_ouroboros.ts` permanece apenas para ferramentas legadas que ainda
+>   usam o workspace Python e não é requisito do daemon/CLI factual.
+> - `bun run ouroboros` e o binário `ouroboros` usam a CLI factual de
+>   administração/recovery. `ouroboros tui` não abre uma interface legada.
 > - `bun run daemon` → **entrypoint atual válido** do daemon/headless runtime.
+>   `bun run start:headless` é um alias deste entrypoint.
 >   O daemon é parte da direção preservada (core `KEEP` na matriz). O entrypoint
 >   atual não deve ser confundido com a arquitetura-alvo `ouroborosd` do #70:
 >   o **daemon/headless core atual, incluindo o RPC gateway**, permanece

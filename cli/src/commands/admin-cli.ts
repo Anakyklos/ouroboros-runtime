@@ -31,7 +31,6 @@ function usage(): string {
     "  ouroboros mission resume <id>",
     "  ouroboros mission cancel <id> [reason]",
     "  ouroboros capabilities",
-    "  ouroboros tui",
   ].join("\n");
 }
 
