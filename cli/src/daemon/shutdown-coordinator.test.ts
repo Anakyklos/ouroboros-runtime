@@ -42,12 +42,14 @@ describe('DaemonShutdownCoordinator', () => {
 
     it('continues after a bounded close timeout and marks forced termination explicitly', async () => {
         const forceTerminate = mock(() => {});
+        const setExitCode = mock((_code: number) => {});
         const closeMissionStore = mock(async () => {});
         const coordinator = new DaemonShutdownCoordinator({
             stopServer: () => new Promise<void>(() => {}),
             closeStorage: async () => {},
             closeMissionStore,
             forceTerminate,
+            setExitCode,
             stepTimeoutMs: 10,
             forceTerminationTimeoutMs: 40,
         });
@@ -56,5 +58,6 @@ describe('DaemonShutdownCoordinator', () => {
 
         expect(closeMissionStore).toHaveBeenCalledTimes(1);
         expect(forceTerminate).toHaveBeenCalledTimes(1);
+        expect(setExitCode).toHaveBeenCalledWith(1);
     });
 });

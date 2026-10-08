@@ -117,14 +117,10 @@ export class RpcGateway implements DaemonRpcGatewayPort {
             timestamp: new Date().toISOString(),
         }));
         this.registerMethod('system.shutdown', async () => {
-            if (this.onShutdownRequested) {
-                setImmediate(() => {
-                    try {
-                        this.onShutdownRequested?.();
-                    } catch {
-                        // The lifecycle owner reports its own sanitized failure.
-                    }
-                });
+            try {
+                this.onShutdownRequested?.();
+            } catch {
+                // The lifecycle owner reports its own sanitized failure.
             }
             return { status: 'shutting_down' };
         });

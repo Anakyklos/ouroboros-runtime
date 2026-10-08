@@ -7,6 +7,7 @@
 
 import Fastify, { FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
+import type { ServerResponse } from 'node:http';
 import { EventBus, globalEventBus } from './event-bus.js';
 import { RpcGateway, type DaemonRpcGatewayPort } from './rpc-gateway.js';
 import { DaemonProjection, type ProjectionClient } from './daemon-projection.js';
@@ -34,6 +35,13 @@ const DEFAULT_CONFIG: DaemonConfig = {
 };
 
 const RPC_DRAIN_TIMEOUT_MS = 4_000;
+
+class RpcDrainTimeoutError extends Error {
+    constructor() {
+        super('Accepted RPC response drain timed out');
+        this.name = 'RpcDrainTimeoutError';
+    }
+}
 
 export class DaemonServer {
     private app: FastifyInstance;
@@ -218,8 +226,7 @@ export class DaemonServer {
                 });
             }
 
-            const isShutdownRequest = rpcRequest.method === 'system.shutdown';
-            if (!this.acceptingRpc && !isShutdownRequest) {
+            if (!this.acceptingRpc) {
                 return reply.code(503).send({
                     jsonrpc: '2.0',
                     id: rpcRequest.id,
@@ -227,22 +234,13 @@ export class DaemonServer {
                 });
             }
 
-            const finishRpc = isShutdownRequest ? undefined : this.beginRpcRequest();
-            try {
-                const response = await this.rpcGateway.handleRequest({
-                    jsonrpc: '2.0',
-                    id: rpcRequest.id,
-                    method: rpcRequest.method,
-                    params: rpcRequest.params,
-                });
-                if (finishRpc) {
-                    reply.raw.once('finish', finishRpc);
-                    reply.raw.once('close', finishRpc);
-                }
-                return response;
-            } finally {
-                if (finishRpc && !reply.raw.headersSent) finishRpc();
-            }
+            this.beginRpcRequest(reply.raw);
+            return await this.rpcGateway.handleRequest({
+                jsonrpc: '2.0',
+                id: rpcRequest.id,
+                method: rpcRequest.method,
+                params: rpcRequest.params,
+            });
         });
     }
 
@@ -289,7 +287,7 @@ export class DaemonServer {
         }
 
         this.eventBus.emit('daemon', { type: 'shutting_down' });
-        await this.waitForRpcDrain();
+        const drained = await this.waitForRpcDrain();
         this.cleanupTransport();
 
         try {
@@ -303,28 +301,29 @@ export class DaemonServer {
             this.eventBus.log('error', 'Error stopping daemon resources', 'DaemonServer');
             throw error;
         }
+        if (!drained) throw new RpcDrainTimeoutError();
     }
 
-    private async waitForRpcDrain(): Promise<void> {
-        if (this.inFlightRpc === 0) return;
-        await new Promise<void>((resolve) => {
+    private async waitForRpcDrain(): Promise<boolean> {
+        if (this.inFlightRpc === 0) return true;
+        return await new Promise<boolean>((resolve) => {
             const finish = () => {
                 if (timeout) clearTimeout(timeout);
-                resolve();
+                resolve(true);
             };
             const timeout = setTimeout(() => {
                 this.rpcDrainWaiters = this.rpcDrainWaiters.filter((waiter) => waiter !== finish);
                 this.eventBus.log('warn', 'RPC shutdown drain timed out; pending results may be unknown', 'DaemonServer');
-                resolve();
+                resolve(false);
             }, RPC_DRAIN_TIMEOUT_MS);
             this.rpcDrainWaiters.push(finish);
         });
     }
 
-    private beginRpcRequest(): () => void {
+    private beginRpcRequest(response: ServerResponse): void {
         this.inFlightRpc += 1;
         let finished = false;
-        return () => {
+        const finishRpc = () => {
             if (finished) return;
             finished = true;
             this.inFlightRpc -= 1;
@@ -332,6 +331,13 @@ export class DaemonServer {
                 for (const resolve of this.rpcDrainWaiters.splice(0)) resolve();
             }
         };
+
+        if (response.writableFinished || response.destroyed) {
+            finishRpc();
+            return;
+        }
+        response.once('finish', finishRpc);
+        response.once('close', finishRpc);
     }
 
     get running(): boolean {
