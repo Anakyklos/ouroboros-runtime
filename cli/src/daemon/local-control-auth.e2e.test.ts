@@ -468,6 +468,76 @@ describe("local-control authentication over real Fastify and SQLite", () => {
     expect(body).not.toContain("secret");
   });
 
+  it("rejects malformed injected protected reads and normalizes gateway errors", async () => {
+    const codeCanary = "CANARY_PRIVATE_ERROR_CODE_124";
+    const dataCanary = "CANARY_PRIVATE_READ_DATA_124";
+    const targetPort = await unusedPort();
+    const injectedEventBus = new EventBus();
+    const injectedLogMessages: string[] = [];
+    const unsubscribe = injectedEventBus.on("log", (entry) => injectedLogMessages.push(entry.message));
+    const delegate = new RpcGateway(daemonStorage, injectedEventBus, missionStore);
+    const injectedGateway: DaemonRpcGatewayPort = {
+      registerMethod: (name, handler) => delegate.registerMethod(name, handler),
+      getProjectionSnapshot: (cursor) => delegate.getProjectionSnapshot(cursor),
+      handleRequest: async (request) => {
+        if (request.method === "system.version") {
+          return { jsonrpc: "2.0", id: request.id, result: { name: "ouroboros-daemon", version: "1.0.0", private: dataCanary } };
+        }
+        if (request.method === "daemon.status") {
+          return { jsonrpc: "2.0", id: request.id, result: { processStatus: "alive", private: dataCanary } };
+        }
+        if (request.method === "local_control.read") {
+          return { jsonrpc: "2.0", id: request.id, result: { ok: true, protocolVersion: 1, operation: "status", data: { private: dataCanary } } };
+        }
+        return {
+          jsonrpc: "2.0", id: request.id,
+          error: { code: codeCanary, message: dataCanary, private: dataCanary },
+          private: dataCanary,
+        };
+      },
+    };
+    injectedGatewayServer = new DaemonServer(
+      daemonStorage, { port: targetPort, host: "127.0.0.1" }, injectedEventBus,
+      missionStore, injectedGateway, undefined, undefined, authorizer,
+    );
+    await injectedGatewayServer.start();
+    try {
+      const request = async (method: string, params: unknown = {}) => fetch(`http://127.0.0.1:${targetPort}/rpc`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${readToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: method, method, params }),
+      });
+      const errorResponse = await request("session.get", { id: "missing" });
+      const errorText = await errorResponse.text();
+      const versionResponse = await request("system.version");
+      const versionText = await versionResponse.text();
+      const statusResponse = await request("daemon.status");
+      const statusText = await statusResponse.text();
+      const localReadResponse = await request("local_control.read", { operation: "status", protocolVersion: 1 });
+      const localReadText = await localReadResponse.text();
+      const allBodies = `${errorText}${versionText}${statusText}${localReadText}`;
+
+      expect(errorResponse.status).toBe(200);
+      expect(JSON.parse(errorText)).toEqual({
+        jsonrpc: "2.0", id: "session.get",
+        error: { code: -32603, message: "The RPC request could not be completed" },
+      });
+      for (const response of [versionResponse, statusResponse, localReadResponse]) expect(response.status).toBe(200);
+      for (const canary of [codeCanary, dataCanary]) {
+        expect(allBodies).not.toContain(canary);
+        expect(JSON.stringify(injectedLogMessages)).not.toContain(canary);
+      }
+      expect(JSON.parse(versionText).error?.code).toBe(-32603);
+      expect(JSON.parse(statusText).error?.code).toBe(-32603);
+      expect(JSON.parse(localReadText).error?.code).toBe(-32603);
+    } finally {
+      await injectedGatewayServer.stop();
+      injectedGatewayServer = undefined;
+      unsubscribe();
+      injectedEventBus.clear();
+    }
+  });
+
   it("requires browser Origin and authenticated session before the first WS snapshot", async () => {
     const anonymous = await RawWebSocketProbe.connect(port, { Origin: frontendOrigin });
     expect((await anonymous.response).status).toBe(401);

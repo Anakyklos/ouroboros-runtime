@@ -28,6 +28,9 @@ import {
 } from './local-control-auth.js';
 import type { LocalControlAuthenticatedClient } from '../../../shared/local-control-auth-contract.js';
 import { projectSessionGetResult, projectSessionListResult } from './session-rpc-projection.js';
+import { isDaemonStatusProjection } from '../../../shared/daemon-event-contract.js';
+import { sanitizeLocalControlReadResponse } from '../../../shared/local-control-read-contract.js';
+import { projectDaemonStatus } from './durable-projection.js';
 
 export interface DaemonConfig {
     port: number;
@@ -40,6 +43,53 @@ const DEFAULT_CONFIG: DaemonConfig = {
 };
 
 const RPC_DRAIN_TIMEOUT_MS = 4_000;
+const RPC_FAILURE_MESSAGE = 'The RPC request could not be completed';
+
+function safeGatewayError(error: unknown): { code: number; message: string } {
+    if (typeof error !== 'object' || error === null) return { code: -32603, message: RPC_FAILURE_MESSAGE };
+    const candidate = error as { code?: unknown };
+    switch (candidate.code) {
+        case -32601: return { code: -32601, message: RPC_FAILURE_MESSAGE };
+        case -32602: return { code: -32602, message: RPC_FAILURE_MESSAGE };
+        case -32001: return { code: -32001, message: RPC_FAILURE_MESSAGE };
+        case -32002: return { code: -32002, message: RPC_FAILURE_MESSAGE };
+        case -32003: return { code: -32003, message: RPC_FAILURE_MESSAGE };
+        default: return { code: -32603, message: RPC_FAILURE_MESSAGE };
+    }
+}
+
+function safeGatewayResult(method: string, params: Record<string, unknown> | undefined, result: unknown): unknown | null {
+    if (!isRecord(result) || !Object.prototype.hasOwnProperty.call(result, 'result') || Object.prototype.hasOwnProperty.call(result, 'error')) return null;
+    const value = result.result;
+    switch (method) {
+        case 'session.get': return projectSessionGetResult(value);
+        case 'session.list': return projectSessionListResult(value);
+        case 'daemon.status': {
+            if (!isRecord(value)) return null;
+            const projected = projectDaemonStatus(value as never);
+            return isDaemonStatusProjection(projected) ? projected : null;
+        }
+        case 'local_control.read':
+            return sanitizeLocalControlReadResponse(value, params?.operation) ?? null;
+        case 'system.version':
+            return isRecord(value) && Object.keys(value).length === 2 &&
+                typeof value.name === 'string' && value.name === 'ouroboros-daemon' &&
+                typeof value.version === 'string' && /^\d+\.\d+\.\d+$/.test(value.version)
+                ? { name: value.name, version: value.version }
+                : null;
+        case 'system.health': {
+            if (!isRecord(value) || Object.keys(value).length !== 4 || value.status !== 'healthy' || typeof value.uptime !== 'number' || !Number.isFinite(value.uptime) || value.uptime < 0 ||
+                typeof value.timestamp !== 'string' || !Number.isFinite(Date.parse(value.timestamp))) return null;
+            const memory = value.memory;
+            if (!isRecord(memory)) return null;
+            const memoryFields = ['rss', 'heapTotal', 'heapUsed', 'external', 'arrayBuffers'];
+            if (Object.keys(memory).length !== memoryFields.length) return null;
+            if (!memoryFields.every((field) => typeof memory[field] === 'number' && Number.isFinite(memory[field]) && memory[field] >= 0)) return null;
+            return { status: 'healthy', uptime: value.uptime, timestamp: value.timestamp, memory: Object.fromEntries(memoryFields.map((field) => [field, memory[field]])) };
+        }
+        default: return null;
+    }
+}
 
 class RpcDrainTimeoutError extends Error {
     constructor() {
@@ -339,33 +389,39 @@ export class DaemonServer {
                     method: rpcRequest.method,
                     params: rpcRequest.params,
                 });
-                if (result.error) {
+                if (!isRecord(result) || result.jsonrpc !== '2.0') {
+                    return { jsonrpc: '2.0', id: rpcRequest.id, error: safeGatewayError(null) };
+                }
+                if (Object.prototype.hasOwnProperty.call(result, 'error')) {
                     return {
                         jsonrpc: '2.0',
                         id: rpcRequest.id,
-                        error: { code: result.error.code, message: 'The RPC request could not be completed' },
+                        error: safeGatewayError(result.error),
                     };
                 }
-                if (rpcRequest.method === 'session.get') {
+                const protectedReadMethods = new Set([
+                    'session.get', 'session.list', 'daemon.status', 'system.health', 'system.version', 'local_control.read',
+                ]);
+                if (protectedReadMethods.has(rpcRequest.method)) {
+                    const safeResult = safeGatewayResult(rpcRequest.method, rpcRequest.params, result);
+                    if (safeResult === null) {
+                        return { jsonrpc: '2.0', id: rpcRequest.id, error: safeGatewayError(null) };
+                    }
                     return {
                         jsonrpc: '2.0',
                         id: rpcRequest.id,
-                        result: projectSessionGetResult(result.result),
+                        result: safeResult,
                     };
                 }
-                if (rpcRequest.method === 'session.list') {
-                    return {
-                        jsonrpc: '2.0',
-                        id: rpcRequest.id,
-                        result: projectSessionListResult(result.result),
-                    };
+                if (!Object.prototype.hasOwnProperty.call(result, 'result')) {
+                    return { jsonrpc: '2.0', id: rpcRequest.id, error: safeGatewayError(null) };
                 }
-                return result;
+                return { jsonrpc: '2.0', id: rpcRequest.id, result: result.result };
             } catch {
                 return {
                     jsonrpc: '2.0',
                     id: rpcRequest.id,
-                    error: { code: -32603, message: 'The RPC request could not be completed' },
+                    error: safeGatewayError(null),
                 };
             }
         });

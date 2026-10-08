@@ -400,7 +400,7 @@ function isCapabilities(value: unknown): value is DaemonCapabilitiesProjection {
     && typeof value.tokenMetrics === "boolean";
 }
 
-function isStatus(value: unknown): value is DaemonStatusProjection {
+export function isDaemonStatusProjection(value: unknown): value is DaemonStatusProjection {
   if (!isRecord(value)) return false;
   if (!hasExactKeys(value, [
     "processStatus",
@@ -430,7 +430,7 @@ function isStatus(value: unknown): value is DaemonStatusProjection {
     && isValidTimestamp(value.timestamp);
 }
 
-function isMissionProjection(value: unknown): value is DaemonMissionProjection {
+export function isDaemonMissionProjection(value: unknown): value is DaemonMissionProjection {
   if (!isRecord(value)) return false;
   return hasExactKeys(value, [
     "missionId",
@@ -455,7 +455,7 @@ function isMissionProjection(value: unknown): value is DaemonMissionProjection {
     && isSafeInteger(value.pendingApprovalCount);
 }
 
-function isInvocationProjection(value: unknown): value is DaemonInvocationProjection {
+export function isDaemonInvocationProjection(value: unknown): value is DaemonInvocationProjection {
   if (!isRecord(value)) return false;
   return hasExactKeys(value, [
     "invocationId",
@@ -485,7 +485,7 @@ function isInvocationProjection(value: unknown): value is DaemonInvocationProjec
     && (value.completedAt === undefined || isValidTimestamp(value.completedAt));
 }
 
-function isProjectionCompletenessEntry(value: unknown): value is DaemonProjectionCompletenessEntry {
+export function isDaemonProjectionCompletenessEntry(value: unknown): value is DaemonProjectionCompletenessEntry {
   if (!isRecord(value)) return false;
   if (!hasExactKeys(value, [
     "liveIncluded",
@@ -504,11 +504,11 @@ function isProjectionCompletenessEntry(value: unknown): value is DaemonProjectio
   return value.truncated === (value.liveOmitted > 0 || value.historicalOmitted > 0);
 }
 
-function isProjectionCompleteness(value: unknown): value is DaemonProjectionCompleteness {
+export function isDaemonProjectionCompleteness(value: unknown): value is DaemonProjectionCompleteness {
   if (!isRecord(value)) return false;
   return hasExactKeys(value, ["missions", "invocations"])
-    && isProjectionCompletenessEntry(value.missions)
-    && isProjectionCompletenessEntry(value.invocations);
+    && isDaemonProjectionCompletenessEntry(value.missions)
+    && isDaemonProjectionCompletenessEntry(value.invocations);
 }
 
 function isTransportCapabilities(value: unknown): value is DaemonTransportCapabilities {
@@ -542,13 +542,13 @@ function isSnapshot(value: unknown): value is DaemonSnapshot {
     && value.protocolVersion === DAEMON_EVENT_VERSION
     && isTransportCapabilities(value.transportCapabilities)
     && isSafeInteger(value.cursor)
-    && isStatus(value.status)
+    && isDaemonStatusProjection(value.status)
     && isCapabilities(value.capabilities)
     && Array.isArray(value.missions)
-    && value.missions.every(isMissionProjection)
+    && value.missions.every(isDaemonMissionProjection)
     && Array.isArray(value.invocations)
-    && value.invocations.every(isInvocationProjection)
-    && isProjectionCompleteness(value.completeness);
+    && value.invocations.every(isDaemonInvocationProjection)
+    && isDaemonProjectionCompleteness(value.completeness);
 }
 
 function isMissionEventData(value: unknown): value is DaemonMissionEventData {
