@@ -241,6 +241,46 @@ describe('RPC shutdown and pending Mission command', () => {
         }
     });
 
+    it('reports an expired bounded drain as uncertain instead of graceful completion', async () => {
+        let reachedOnSend!: () => void;
+        let releaseOnSend!: () => void;
+        const onSendReached = new Promise<void>((resolve) => { reachedOnSend = resolve; });
+        const onSendRelease = new Promise<void>((resolve) => { releaseOnSend = resolve; });
+        const port = await freePort();
+        const eventBus = new EventBus();
+        const logMessages: string[] = [];
+        eventBus.on('log', (event) => logMessages.push(event.message));
+        const server = new DaemonServer({} as StoragePort, { port, host: '127.0.0.1' }, eventBus);
+        fastifyApp(server).addHook('onSend', async (request, _reply, payload) => {
+            if ((request.body as { method?: string } | undefined)?.method === 'system.version') {
+                reachedOnSend();
+                await onSendRelease;
+            }
+            return payload;
+        });
+        await server.start();
+
+        const responsePromise = fetch(`http://127.0.0.1:${port}/rpc`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 'timeout-version', method: 'system.version' }),
+        }).then((response) => response.arrayBuffer(), (error: unknown) => error);
+        const releaseTimer = setTimeout(releaseOnSend, 4_100);
+        try {
+            await onSendReached;
+            await expect(server.stop()).rejects.toThrow('Accepted RPC response drain timed out');
+            await responsePromise;
+            expect(logMessages).toContain('RPC shutdown drain timed out; pending results may be unknown');
+            expect(logMessages).toContain('Daemon transport closed after RPC drain timeout; pending results may be unknown');
+            expect(logMessages).not.toContain('Daemon stopped gracefully');
+            expect(inFlightRpc(server)).toBe(0);
+        } finally {
+            clearTimeout(releaseTimer);
+            releaseOnSend();
+            await responsePromise;
+            await server.stop().catch(() => undefined);
+        }
+    });
+
     it('closes admission, waits for the real command response, and then closes both stores', async () => {
         let startCommand!: () => void;
         let finishCommand!: (mission: Mission) => void;

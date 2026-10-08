@@ -294,8 +294,12 @@ export class DaemonServer {
             await this.app.close();
             this.appClosed = true;
             this.isRunning = false;
-            this.eventBus.emit('daemon', { type: 'stopped' });
-            this.eventBus.log('info', 'Daemon stopped gracefully', 'DaemonServer');
+            if (drained) {
+                this.eventBus.emit('daemon', { type: 'stopped' });
+                this.eventBus.log('info', 'Daemon stopped gracefully', 'DaemonServer');
+            } else {
+                this.eventBus.log('warn', 'Daemon transport closed after RPC drain timeout; pending results may be unknown', 'DaemonServer');
+            }
         } catch (error) {
             this.isRunning = false;
             this.eventBus.log('error', 'Error stopping daemon resources', 'DaemonServer');
