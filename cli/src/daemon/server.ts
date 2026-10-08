@@ -55,6 +55,7 @@ export class DaemonServer {
     private initialized = false;
     private acceptingRpc = true;
     private inFlightRpc = 0;
+    private inFlightResponses = new Set<ServerResponse>();
     private rpcDrainWaiters: Array<() => void> = [];
     private appClosed = false;
 
@@ -288,6 +289,9 @@ export class DaemonServer {
 
         this.eventBus.emit('daemon', { type: 'shutting_down' });
         const drained = await this.waitForRpcDrain();
+        if (!drained) {
+            for (const response of this.inFlightResponses) response.destroy();
+        }
         this.cleanupTransport();
 
         try {
@@ -330,6 +334,7 @@ export class DaemonServer {
         const finishRpc = () => {
             if (finished) return;
             finished = true;
+            this.inFlightResponses.delete(response);
             this.inFlightRpc -= 1;
             if (this.inFlightRpc === 0) {
                 for (const resolve of this.rpcDrainWaiters.splice(0)) resolve();
@@ -340,6 +345,7 @@ export class DaemonServer {
             finishRpc();
             return;
         }
+        this.inFlightResponses.add(response);
         response.once('finish', finishRpc);
         response.once('close', finishRpc);
     }
