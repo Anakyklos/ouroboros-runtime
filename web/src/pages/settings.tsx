@@ -3,7 +3,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useSettingsStore, type Theme, type UILayout } from "@/stores/settings-store";
-import { setDaemonBearerToken, establishDaemonBrowserSession } from "@/lib/daemon-auth";
+import { setDaemonBearerToken, establishDaemonBrowserSession, normalizeDaemonWebSocketUrl, waitForDaemonSnapshot } from "@/lib/daemon-auth";
 import { 
   Moon, 
   Sun, 
@@ -249,17 +249,12 @@ export function Settings() {
               <button
                 onClick={async () => {
                   try {
-                    await establishDaemonBrowserSession(settings.daemonConfig.websocketUrl);
-                    const ws = new WebSocket(settings.daemonConfig.websocketUrl);
-                    ws.onopen = () => {
-                      ws.close();
-                      alert("Connection successful!");
-                    };
-                    ws.onerror = () => {
-                      alert("Connection failed. Check the WebSocket URL.");
-                    };
+                    const websocketUrl = normalizeDaemonWebSocketUrl(settings.daemonConfig.websocketUrl);
+                    await establishDaemonBrowserSession(websocketUrl);
+                    await waitForDaemonSnapshot(websocketUrl);
+                    alert("Connection successful!");
                   } catch (e) {
-                    alert("Connection failed: " + String(e));
+                    alert("Connection failed: " + (e instanceof Error ? e.message : "daemon unavailable"));
                   }
                 }}
                 className="px-4 py-2 rounded-lg border border-emerald text-emerald hover:bg-emerald hover:text-black transition-colors"

@@ -220,7 +220,7 @@ export class LocalControlAuthorizer implements LocalControlAuthorizationPort {
     const session = this.browserSessions.get(hashOpaqueSecret(cookie));
     if (!session || session.expiresAt <= Date.now() || session.origin !== origin) return null;
     const client = this.credentials.authorizeTokenForVersion(session.clientId, session.credentialVersion, "mission.read");
-    return client ? { ...client, expiresAt: session.expiresAt } : null;
+    return client ? { ...client, scopes: ["mission.read"], expiresAt: session.expiresAt } : null;
   }
 
   isClientStillAuthorized(client: LocalControlAuthenticatedClient, requiredScope: LocalControlAuthScope): boolean {

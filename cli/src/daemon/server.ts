@@ -290,7 +290,7 @@ export class DaemonServer {
         });
 
         this.app.post('/rpc', async (request, reply) => {
-            const principal = this.authenticateHttpRequest(request);
+            const principal = this.authorization?.authenticateBearer(request.headers.authorization) ?? null;
             if (!principal) return sendBoundaryError(reply, 401, 'UNAUTHORIZED', 'Authentication is required');
 
             if (!isRecord(request.body)) {
@@ -480,12 +480,6 @@ export class DaemonServer {
 
     get address(): string {
         return `http://${this.config.host}:${this.config.port}`;
-    }
-
-    private authenticateHttpRequest(request: FastifyRequest): LocalControlAuthenticatedClient | null {
-        const authorization = request.headers.authorization;
-        if (authorization !== undefined) return this.authorization?.authenticateBearer(authorization) ?? null;
-        return this.authorization?.authenticateBrowserSession(request.headers.cookie, request.headers.origin) ?? null;
     }
 
     private authenticateWebSocketRequest(request: FastifyRequest): LocalControlAuthenticatedClient | null {

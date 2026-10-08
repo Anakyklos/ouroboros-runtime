@@ -3,7 +3,7 @@ import { useLogStore } from "@/stores/log-store";
 import { useMissionControlStore, type DaemonCapabilities } from "@/stores/mission-control-store";
 import { useDaemonProjectionStore } from "@/stores/daemon-projection-store";
 import { DaemonWebSocketConnection } from "@/lib/daemon-websocket-connection";
-import { establishDaemonBrowserSession } from "@/lib/daemon-auth";
+import { establishDaemonBrowserSession, normalizeDaemonWebSocketUrl } from "@/lib/daemon-auth";
 import type {
   AllowedDaemonEvent,
   DaemonEventEnvelope,
@@ -52,6 +52,7 @@ export function useEventBus(options: UseEventBusOptions = {}) {
     url = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`,
     maxReconnectAttempts = 10,
   } = options;
+  const websocketUrl = normalizeDaemonWebSocketUrl(url);
 
   const connectionRef = useRef<DaemonWebSocketConnection | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("disconnected");
@@ -103,8 +104,8 @@ export function useEventBus(options: UseEventBusOptions = {}) {
     if (connectionRef.current) return;
 
     const connection = new DaemonWebSocketConnection({
-      url,
-      prepareConnection: () => establishDaemonBrowserSession(url),
+      url: websocketUrl,
+      prepareConnection: () => establishDaemonBrowserSession(websocketUrl),
       maxReconnectAttempts,
       onStatus: (status) => {
         setConnectionStatus(status);
@@ -116,7 +117,7 @@ export function useEventBus(options: UseEventBusOptions = {}) {
     });
     connectionRef.current = connection;
     connection.start();
-  }, [handleDiagnostic, handleEnvelope, handleSnapshot, maxReconnectAttempts, setDaemonConnected, url]);
+  }, [handleDiagnostic, handleEnvelope, handleSnapshot, maxReconnectAttempts, setDaemonConnected, websocketUrl]);
 
   const disconnect = useCallback(() => {
     const connection = connectionRef.current;

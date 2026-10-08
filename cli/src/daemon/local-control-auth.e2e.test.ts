@@ -4,6 +4,8 @@ import { createConnection, createServer as createNetServer, type Socket } from "
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolve } from "node:path";
+import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { SqliteAdapter } from "../adapters/sqlite.adapter.js";
 import { SqliteMissionStore } from "../mission/sqlite-mission-store.js";
@@ -16,6 +18,7 @@ import { LocalControlAuthorizer, LocalControlCredentialStore, getBrowserSessionC
 import type { LocalControlAuthScope } from "../../../shared/local-control-auth-contract.js";
 import { LocalControlReadClient, LoopbackJsonRpcTransport } from "../commands/local-control-client.js";
 import { writeLocalControlClientCredential } from "./local-control-auth.js";
+import { establishDaemonBrowserSession, setDaemonBearerToken } from "../../../web/src/lib/daemon-auth.js";
 
 interface RawFrame { opcode: number; payload: Buffer; }
 
@@ -115,24 +118,31 @@ async function unusedPort(): Promise<number> {
 describe("local-control authentication over real Fastify and SQLite", () => {
   let directory: string;
   let port: number;
+  let frontendPort: number;
+  let frontendOrigin: string;
+  let viteServer: { listen(): Promise<void>; close(): Promise<void> } | undefined;
+  let previousProxyTarget: string | undefined;
   let daemonStorage: SqliteAdapter;
   let missionStore: SqliteMissionStore;
   let credentialStore: LocalControlCredentialStore;
   let authorizer: LocalControlAuthorizer;
   let server: DaemonServer;
   let missionEngine: MissionEngine;
+  let shutdownRequests = 0;
   let readToken: string;
   let controlToken: string;
   let adminToken: string;
+  let multiScopeToken: string;
   let missionId: string;
 
-  async function rpc(method: string, params?: unknown, token?: string, origin?: string) {
+  async function rpc(method: string, params?: unknown, token?: string, origin?: string, cookie?: string) {
     return await fetch(`http://127.0.0.1:${port}/rpc`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         ...(token ? { authorization: `Bearer ${token}` } : {}),
         ...(origin ? { origin } : {}),
+        ...(cookie ? { cookie } : {}),
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: method, method, params }),
     });
@@ -142,6 +152,20 @@ describe("local-control authentication over real Fastify and SQLite", () => {
     directory = await mkdtemp(join(tmpdir(), "ouroboros-local-control-auth-e2e-"));
     process.env.OUROBOROS_OPS_PATH = join(directory, "daemon-ops.json");
     port = await unusedPort();
+    frontendPort = await unusedPort();
+    frontendOrigin = `http://127.0.0.1:${frontendPort}`;
+    previousProxyTarget = process.env.OUROBOROS_DEV_DAEMON_URL;
+    process.env.OUROBOROS_DEV_DAEMON_URL = `http://127.0.0.1:${port}`;
+    const viteEntry = resolve(process.cwd(), "web/node_modules/vite/dist/node/index.js");
+    const { createServer } = createRequire(import.meta.url)(viteEntry) as {
+      createServer(options: Record<string, unknown>): Promise<{ listen(): Promise<void>; close(): Promise<void> }>;
+    };
+    viteServer = await createServer({
+      configFile: resolve(process.cwd(), "web/vite.config.ts"),
+      logLevel: "silent",
+      server: { host: "127.0.0.1", port: frontendPort, strictPort: true, allowedHosts: ["127.0.0.1"] },
+    });
+    await viteServer.listen();
     daemonStorage = new SqliteAdapter(join(directory, "daemon.db"));
     await daemonStorage.initialize();
     missionStore = new SqliteMissionStore(join(directory, "missions.db"));
@@ -150,7 +174,8 @@ describe("local-control authentication over real Fastify and SQLite", () => {
     readToken = credentialStore.provision("read-client", ["mission.read"], Date.now() + 60_000).token;
     controlToken = credentialStore.provision("control-client", ["mission.control"], Date.now() + 60_000).token;
     adminToken = credentialStore.provision("admin-client", ["daemon.admin"], Date.now() + 60_000).token;
-    authorizer = new LocalControlAuthorizer(credentialStore, ["http://localhost:5173"]);
+    multiScopeToken = credentialStore.provision("browser-admin", ["mission.read", "mission.control", "daemon.admin"], Date.now() + 60_000).token;
+    authorizer = new LocalControlAuthorizer(credentialStore, [frontendOrigin]);
     const resolver = new FakeCapabilityResolver();
     missionEngine = new MissionEngine({ store: missionStore, policy: new PlanPolicyValidator(resolver) });
     const mission = await missionEngine.createMission({
@@ -161,16 +186,19 @@ describe("local-control authentication over real Fastify and SQLite", () => {
     server = new DaemonServer(
       daemonStorage,
       { port, host: "127.0.0.1" },
-      new EventBus(), missionStore, undefined, missionEngine, undefined, authorizer,
+      new EventBus(), missionStore, undefined, missionEngine, () => { shutdownRequests += 1; }, authorizer,
     );
     await server.start();
   });
 
   afterAll(async () => {
     await server?.stop();
+    await viteServer?.close();
     credentialStore?.close();
     await daemonStorage?.close();
     await missionStore?.close();
+    if (previousProxyTarget === undefined) delete process.env.OUROBOROS_DEV_DAEMON_URL;
+    else process.env.OUROBOROS_DEV_DAEMON_URL = previousProxyTarget;
     if (directory) await rm(directory, { recursive: true, force: true });
   });
 
@@ -186,6 +214,34 @@ describe("local-control authentication over real Fastify and SQLite", () => {
     expect(unknown.status).toBe(403);
     expect(malformed.status).toBe(403);
     expect((await missionStore.getMission(missionId))?.state).toBe(before?.state);
+    expect((await fetch(`http://127.0.0.1:${port}/health`)).status).toBe(200);
+  });
+
+  it("keeps a multi-scope browser cookie read-only and rejects every daemon-admin RPC before effects", async () => {
+    const origin = frontendOrigin;
+    const statusBeforeResponse = await rpc("daemon.status", {}, multiScopeToken);
+    const statusBefore = await statusBeforeResponse.json() as { result: { mode: string } };
+    const opsPath = join(directory, "daemon-ops.json");
+    const opsBefore = await readFile(opsPath, "utf8").catch(() => null);
+    const session = await fetch(`http://127.0.0.1:${port}/auth/browser-session`, {
+      method: "POST", headers: { authorization: `Bearer ${multiScopeToken}`, origin },
+    });
+    expect(session.status).toBe(204);
+    const cookie = session.headers.get("set-cookie")!.split(";", 1)[0]!;
+
+    const attempts = await Promise.all([
+      rpc("daemon.setMode", { mode: "pause" }, undefined, origin, cookie),
+      rpc("daemon.emergencyBrake", {}, undefined, origin, cookie),
+      rpc("system.shutdown", {}, undefined, origin, cookie),
+    ]);
+    const statusAfterResponse = await rpc("daemon.status", {}, multiScopeToken);
+    const statusAfter = await statusAfterResponse.json() as { result: { mode: string } };
+    const opsAfter = await readFile(opsPath, "utf8").catch(() => null);
+
+    expect(attempts.map((response) => response.status)).toEqual([401, 401, 401]);
+    expect(statusAfter.result.mode).toBe(statusBefore.result.mode);
+    expect(opsAfter).toBe(opsBefore);
+    expect(shutdownRequests).toBe(0);
     expect((await fetch(`http://127.0.0.1:${port}/health`)).status).toBe(200);
   });
 
@@ -241,12 +297,12 @@ describe("local-control authentication over real Fastify and SQLite", () => {
   });
 
   it("requires browser Origin and authenticated session before the first WS snapshot", async () => {
-    const anonymous = await RawWebSocketProbe.connect(port, { Origin: "http://localhost:5173" });
+    const anonymous = await RawWebSocketProbe.connect(port, { Origin: frontendOrigin });
     expect((await anonymous.response).status).toBe(401);
     anonymous.close();
 
     const browserSession = await fetch(`http://127.0.0.1:${port}/auth/browser-session`, {
-      method: "POST", headers: { authorization: `Bearer ${readToken}`, origin: "http://localhost:5173" },
+      method: "POST", headers: { authorization: `Bearer ${readToken}`, origin: frontendOrigin },
     });
     expect(browserSession.status).toBe(204);
     const setCookie = browserSession.headers.get("set-cookie");
@@ -258,7 +314,7 @@ describe("local-control authentication over real Fastify and SQLite", () => {
     expect((await wrongOrigin.response).status).toBe(403);
     wrongOrigin.close();
 
-    const authorized = await RawWebSocketProbe.connect(port, { Origin: "http://localhost:5173", Cookie: cookie });
+    const authorized = await RawWebSocketProbe.connect(port, { Origin: frontendOrigin, Cookie: cookie });
     expect((await authorized.response).status).toBe(101);
     const snapshot = await authorized.nextFrame();
     expect(snapshot.opcode).toBe(1);
@@ -268,6 +324,62 @@ describe("local-control authentication over real Fastify and SQLite", () => {
     const closed = await authorized.nextFrame(2_000);
     expect(closed.opcode).toBe(8);
     authorized.close();
+  });
+
+  it("routes the browser exchange through real Vite and reconnects through the proxied WS snapshot", async () => {
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const originalFetch = globalThis.fetch;
+    let setCookie: string | null = null;
+    let exchangeUrl = "";
+    let exchangeAuthorization = "";
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { location: { href: `${frontendOrigin}/` } },
+    });
+    globalThis.fetch = async (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("Origin", frontendOrigin);
+      exchangeUrl = String(input);
+      exchangeAuthorization = headers.get("authorization") ?? "";
+      const response = await originalFetch(input, { ...init, headers });
+      setCookie = response.headers.get("set-cookie");
+      return response;
+    };
+    setDaemonBearerToken(multiScopeToken);
+    const websocketUrl = `ws://${frontendOrigin.slice("http://".length)}/ws`;
+    try {
+      await establishDaemonBrowserSession(websocketUrl);
+      expect(exchangeUrl).toBe(`${frontendOrigin}/auth/browser-session`);
+      expect(new URL(websocketUrl).search).toBe("");
+      expect(exchangeAuthorization).toBe(`Bearer ${multiScopeToken}`);
+      expect(setCookie).toContain("HttpOnly");
+      const firstCookie = setCookie!.split(";", 1)[0]!;
+      const firstConnection = await RawWebSocketProbe.connect(frontendPort, {
+        Origin: frontendOrigin,
+        Cookie: firstCookie,
+      });
+      expect((await firstConnection.response).status).toBe(101);
+      expect((await firstConnection.nextFrame()).payload.toString("utf8")).toContain(missionId);
+      firstConnection.close();
+
+      setCookie = null;
+      await establishDaemonBrowserSession(websocketUrl);
+      expect(setCookie).toContain("HttpOnly");
+      const reconnectCookie = setCookie!.split(";", 1)[0]!;
+      expect(reconnectCookie).not.toBe(firstCookie);
+      const reconnected = await RawWebSocketProbe.connect(frontendPort, {
+        Origin: frontendOrigin,
+        Cookie: reconnectCookie,
+      });
+      expect((await reconnected.response).status).toBe(101);
+      expect((await reconnected.nextFrame()).payload.toString("utf8")).toContain(missionId);
+      reconnected.close();
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+      else Reflect.deleteProperty(globalThis, "window");
+      setDaemonBearerToken("");
+    }
   });
 
   it("keeps public health metadata minimal and rejects Origin outside the explicit allowlist", async () => {

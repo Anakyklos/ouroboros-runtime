@@ -72,13 +72,18 @@ describe("LocalControlAuthorizer", () => {
   });
 
   it("binds browser stream sessions to allowlisted Origin and invalidates them on revoke or rotate", async () => {
-    const { auth, credential, store } = await fixture();
-    const browserSession = auth.createBrowserSession(`Bearer ${credential.token}`, "http://localhost:5173");
+    const { auth, store } = await fixture();
+    const upgraded = store.provision("test-client", ["mission.read", "mission.control", "daemon.admin"], Date.now() + 60_000);
+    const browserSession = auth.createBrowserSession(`Bearer ${upgraded.token}`, "http://localhost:5173");
     expect(browserSession).not.toBeNull();
     const cookie = `ouroboros_control_session=${browserSession!.cookie}`;
-    expect(auth.authorizeBrowserSession(cookie, "http://localhost:5173")?.clientId).toBe("test-client");
+    expect(auth.authorizeBrowserSession(cookie, "http://localhost:5173")).toMatchObject({
+      clientId: "test-client",
+      scopes: ["mission.read"],
+    });
+    expect(auth.authorizeBearer(`Bearer ${upgraded.token}`, "daemon.admin")?.scopes).toContain("daemon.admin");
     expect(auth.authorizeBrowserSession(cookie, "http://attacker.invalid")).toBeNull();
-    expect(auth.createBrowserSession(`Bearer ${credential.token}`, "http://attacker.invalid")).toBeNull();
+    expect(auth.createBrowserSession(`Bearer ${upgraded.token}`, "http://attacker.invalid")).toBeNull();
     store.revoke("test-client");
     expect(auth.authorizeBrowserSession(cookie, "http://localhost:5173")).toBeNull();
     store.close();
