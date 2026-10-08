@@ -19,17 +19,16 @@ semantics and the repository architecture statement in
 
 ## Current and Direction
 
-**CURRENT observed:** the package's `daemon` and `start:headless` scripts launch
-`cli/src/daemon/main.ts`. It opens independent daemon/session and Mission SQLite
-stores, constructs a Mission engine and an empty in-memory capability registry,
-then starts `DaemonServer`. Its default RPC gateway exposes daemon status/mode/
-brake, read-only session reads, Mission reads, and pause/resume/cancel commands.
-No resident Mission scheduler or connector dispatch seam is composed there.
+**CURRENT observed at the #101 audit:** the package's `daemon` and
+`start:headless` scripts launched `cli/src/daemon/main.ts`. At that point it
+opened independent daemon/session and Mission SQLite stores, constructed a
+Mission engine and an empty in-memory capability registry, then started
+`DaemonServer` without a resident Mission scheduler or dispatch seam.
 
 **DIRECTION (#59):** bounded supervision and lifecycle over the durable
-execution primitives from #50. This audit does not treat a scheduler, worker
-tree, restart manager, or restart policy as implemented. The concrete boundary
-to audit is the composition and behavior that exists above.
+execution primitives from #50. Issue #120 adds only the resident Mission
+scheduler owner described below; it does not imply a generic supervisor,
+worker tree, restart manager, or restart policy.
 
 ## Startup and shutdown observed at the #101 audit (before #117)
 
@@ -101,12 +100,51 @@ acknowledged Invocation, then sends SIGTERM and SIGINT together.
 The test reopens SQLite and confirms the completed effect's acknowledged
 delivery and attempt record are unchanged.
 
-**Limits:** an accepted RPC that does not settle within the 4-second drain
-window has an unknown outcome; shutdown proceeds with cleanup attempts and
-reports the drain timeout. The daemon does not cancel or terminalize that
-Mission, and this lifecycle change does not add scheduler recovery or a general
-process supervisor. The durable E2E covers the current headless composition,
-not a production connector dispatch owner, which is not composed here.
+**Limits at the #117 change:** an accepted RPC that does not settle within the
+4-second drain window has an unknown outcome; shutdown proceeds with cleanup
+attempts and reports the drain timeout. The daemon does not cancel or
+terminalize that Mission. The #120 update below adds bounded scheduler drain;
+it does not add a general process supervisor. No production connector is
+composed here.
+
+## Issue #120 scheduler composition update
+
+**Implemented and verified:** `main.ts` now composes one `MissionScheduler`,
+one `ConnectorDispatchSeam` bound to the same registry used by
+`PlanPolicyValidator`, and one `MissionSchedulerDriver`. The driver starts a
+recovery pass before the listener starts, subscribes to committed MissionStore
+changes, coalesces wakeups while one pass is active, and consumes only a valid
+future `nextWakeAt` as a one-shot timer. An elapsed wake does not create an
+immediate retry loop. Mission creation/state transitions and invocation
+creation/completion wake the driver; other store notifications remain facts,
+not authority.
+
+Shutdown closes server admission, stops the driver and removes its listener and
+timer, then closes daemon storage and MissionStore. The scheduler pass is
+drained within the coordinator's step bound. If it does not settle, sanitized
+`mission_scheduler/timed_out` and `mission_store/timed_out` facts are reported
+and MissionStore is deliberately left open until forced process termination;
+no completed/unknown claim is manufactured.
+
+**Evidence:** `mission-scheduler-driver.test.ts` uses an injected clock/timer
+for future/expired wakes, concurrent changes, one-pass-at-a-time behavior,
+cleanup and sanitized failure reporting. `mission-scheduler-daemon.e2e.test.ts`
+composes the actual headless server and SQLite store with test-only typed
+connectors: a confirmed effect is invoked once across daemon restart, and an
+exception after possible submission stays `blocked/uncertain` without a second
+invoke. `headless-shutdown.e2e.test.ts` starts the actual Bun daemon in a
+subprocess and proves a paused non-terminal Mission is recovered on each
+restart while its confirmed Invocation remains intact.
+
+**Limits:** production still registers no capability connector. With the
+default empty registry, planned work with no connector is recorded as a
+capability wait; no external integration is implied by the test fixture. The
+existing `MissionScheduler.recover()` scan still visits all non-terminal
+Missions without a batch bound; bounded store-level pagination remains a
+follow-up. The scheduler has one local runtime owner but no cross-process
+lease, so overlapping independent daemon processes are not covered by an
+exactly-once guarantee. A pass error is logged as a redacted failure and is
+not automatically retried until another relevant durable change or restart.
 
 ## Domain inventory
 
@@ -214,16 +252,16 @@ not a production connector dispatch owner, which is not composed here.
 
 ### 4. MissionScheduler and restart/recovery ownership
 
-- **Construction and callers:** `MissionScheduler` is defined in
-  `cli/src/mission/mission-scheduler.ts`; repository search found no production
-  construction outside tests. No production caller invokes `recover()` or
-  `runOnce()`. `runOnce()` calls `recover()` internally when it is called.
-- **Driver and wakeup:** the scheduler explicitly owns no resident timer and
-  does not sleep. It returns `nextWakeAt`; no daemon, CLI, or service consumes
-  that value in the current headless composition. No timer, event wakeup, or
-  external driver is wired here. No owner resumes stored Missions after daemon
-  restart. Current daemon exposes Mission facts and pause/resume/cancel only;
-  it does not run resident Mission scheduling.
+- **Construction and callers:** `MissionScheduler` remains the one-shot
+  authority in `cli/src/mission/mission-scheduler.ts`. `main.ts` composes one
+  instance with `ConnectorDispatchSeam`; `MissionSchedulerDriver` owns
+  startup/recovery, mutation wakeups, the single `nextWakeAt` timer, and
+  shutdown.
+- **Driver and wakeup:** the driver listens to committed durable Mission
+  creation/state changes and invocation creation/completion. It coalesces
+  simultaneous notifications and serializes passes. A future timestamp creates
+  one timer; a missing, invalid, or elapsed timestamp creates none. No periodic
+  polling is used. The driver removes listeners and cancels timers on stop.
 - **If invoked directly:** recovery visits each non-terminal Mission and calls
   `recoverMission()` without submitting an effect. A pass queries actionable
   invocations with default batch size 64 and due invocations with the same
@@ -238,23 +276,23 @@ not a production connector dispatch owner, which is not composed here.
   engine's explicit retry transition. Completed effect fingerprints and legacy
   replay barriers prevent a second logical effect. `nextWakeAt` comes from
   durable invocation retry timestamps.
-- **Evidence / gaps:** `mission-scheduler.test.ts` covers recovery,
-  `nextWakeAt`, restart reconciliation without a second invoke, and sharing a
-  single pass for overlapping calls in one instance. **P1:** no production
-  caller means there is currently no automatic recovery, reconciliation,
-  dispatch, or wakeup consumption. **P2:** the recovery Mission scan is
-  unbounded even though actionable/due invocation reads are bounded. Relevant
-  code: `mission-scheduler.ts:47-99,102-121,129-188,314-325`.
+- **Evidence / gaps:** `mission-scheduler.test.ts`,
+  `mission-scheduler-driver.test.ts`, `mission-scheduler-daemon.e2e.test.ts`,
+  and `headless-shutdown.e2e.test.ts` cover one-shot scheduling, durable
+  recovery, fixture dispatch, confirmed-effect idempotency, uncertain delivery,
+  wake coalescing and process restart. **P2:** recovery's `listMissions()` scan
+  is unbounded although actionable/due invocation reads are bounded. Relevant
+  code: `mission-scheduler.ts:47-99,102-121,129-188,314-325`,
+  `mission-scheduler-driver.ts`, and `main.ts`.
 
 ### 5. Capability Registry, connector dispatch, and invocation uncertainty
 
 - **Lifecycle owner / state:** `CapabilityRegistry` owns an in-memory map of
   versioned descriptors and availability. `ConnectorDispatchSeam` owns an
-  in-memory map of bound connectors for its instance. The modern `main.ts`
-  constructs an empty registry for policy validation, but does not construct a
-  `ConnectorDispatchSeam`, register descriptors/connectors, or compose a
-  scheduler. Registry/connector maps therefore are not durable production
-  worker state in this entrypoint.
+  in-memory map of bound connectors for its instance. `main.ts` composes the
+  seam and scheduler against the same registry used for policy. Production
+  leaves the registry empty and registers no connector; deterministic typed
+  fixtures are injected only by tests. Registry/connector maps remain volatile.
 - **Dependencies / failure propagation:** if the seam is composed elsewhere,
   it checks registered identity, availability, policy/descriptor agreement,
   version/schema, and persisted invocation identity before the single
@@ -269,12 +307,13 @@ not a production connector dispatch owner, which is not composed here.
   not. A restarted process must recompose its registry/connector bindings. A
   possibly submitted invocation must be reconciled from its durable request
   identity or remain blocked; its in-memory connector state is not authority.
-- **Evidence / gap:** `dispatch-seam.test.ts` and
+- **Evidence / limit:** `dispatch-seam.test.ts` and
   `mission-scheduler.test.ts` cover pre-mint rejection, uncertain invoke
-  failure, reconciliation, and no blind replay after restart. **P1:** the
-  modern daemon has no production dispatch/recovery owner. **P2:** no generic
-  invocation timeout exists at the seam; any future owner must preserve the
-  uncertain-delivery barrier rather than treating timeout as non-delivery.
+  failure, reconciliation, and no blind replay after restart. Production
+  intentionally has no registered connector, so real module-owner dispatch
+  remains unavailable until an authorized integration is supplied. **P2:** no
+  generic invocation timeout exists at the seam; the resident owner preserves
+  uncertain delivery rather than treating a timeout as non-delivery.
   Relevant code: `registry.ts:143-156,197-201`,
   `dispatch-seam.ts:260-291,304-403,412-423,676-681,894`.
 
@@ -343,8 +382,8 @@ not a production connector dispatch owner, which is not composed here.
 |---|---|---|---|
 | Session, wave, checkpoint, session memory, audit rows | `SqliteAdapter` / daemon session domain | Durable in `daemon.db` | Rows remain; runtime worker maps are not rebuilt by modern composition |
 | Daemon mode/brake summary | `DaemonExecutionController` | Durable file when a control transition persists | Loaded on construction; corrupt/unknown state degrades; no active leases restored |
-| Mission, accepted plan, invocation, retry/delivery/reconciliation | `SqliteMissionStore` / Mission authority | Durable in `missions.db` | Rows reopen; no production scheduler resumes them |
-| Capability descriptors and connector instances | Registry / seam | Volatile | Must be recomposed; no seam is wired in `main.ts` |
+| Mission, accepted plan, invocation, retry/delivery/reconciliation | `SqliteMissionStore` / Mission authority | Durable in `missions.db` | Rows reopen; one daemon-local scheduler recovers eligible work from durable state |
+| Capability descriptors and connector instances | Registry / seam | Volatile | Must be recomposed; production registry currently remains empty |
 | Provider retry/quota/circuit state | `ProviderResilience` | Volatile unless an external consumer persists a snapshot | Quota/circuit can be restored explicitly; in-flight concurrency is not restored |
 | EventBus listeners, WebSocket clients, sequence, handshake queue | Process / `DaemonProjection` | Volatile, reconstructible only as current snapshot facts | Clients reconnect; cursor starts fresh; no historical replay |
 | Module-owner private effect state | Respective module owner | Outside Ouroboros authority | Reconciliation only through that owner's declared connector contract |
@@ -359,10 +398,10 @@ whose impact is narrower and does not itself prove an unsafe effect. Severity
 describes the observed gap, not an asserted incident.
 
 - **P0:** none identified by this code audit.
-- **P1:** Mission scheduling/recovery/wakeup is not composed in production;
-  durable non-terminal Mission rows therefore have no automatic resumption
-  owner in this daemon. The former RPC shutdown cleanup bypass was addressed in
-  #117; accepted work that exceeds the bounded drain remains outcome-unknown.
+- **P1:** an accepted RPC or scheduler pass that exceeds its bounded drain can
+  retain an unknown outcome; shutdown records the timeout and leaves
+  MissionStore open when the scheduler may still be using it. The former RPC
+  shutdown cleanup bypass was addressed in #117.
 - **P2:** persisted active session rows have no worker reconstruction in the modern
   composition; scheduler recovery scans all Missions without a batch bound;
   provider snapshots are not automatically persisted/restored and configured

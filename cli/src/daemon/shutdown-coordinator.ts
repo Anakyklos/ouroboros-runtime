@@ -4,12 +4,13 @@ export type DaemonShutdownReason = 'SIGINT' | 'SIGTERM' | 'RPC' | 'startup_failu
 export type ShutdownDiagnosticOutcome = 'failed' | 'timed_out' | 'forced_termination';
 
 export interface ShutdownDiagnostic {
-    stage: 'server' | 'storage' | 'mission_store' | 'process';
+    stage: 'server' | 'mission_scheduler' | 'storage' | 'mission_store' | 'process';
     outcome: ShutdownDiagnosticOutcome;
 }
 
 export interface DaemonShutdownOptions {
     stopServer: () => Promise<void>;
+    stopMissionScheduler?: () => Promise<void>;
     closeStorage: () => Promise<void>;
     closeMissionStore: () => Promise<void>;
     onDiagnostic?: (diagnostic: ShutdownDiagnostic) => void;
@@ -81,8 +82,36 @@ export class DaemonShutdownCoordinator {
 
         try {
             await close('server', this.options.stopServer);
+            let schedulerStopped = true;
+            if (this.options.stopMissionScheduler) {
+                let timeout: ReturnType<typeof setTimeout> | undefined;
+                try {
+                    await Promise.race([
+                        Promise.resolve().then(this.options.stopMissionScheduler),
+                        new Promise<never>((_, reject) => {
+                            timeout = setTimeout(() => reject(new ShutdownTimeoutError()), stepTimeoutMs);
+                        }),
+                    ]);
+                } catch (error) {
+                    failed = true;
+                    schedulerStopped = false;
+                    this.report({
+                        stage: 'mission_scheduler',
+                        outcome: error instanceof ShutdownTimeoutError ? 'timed_out' : 'failed',
+                    });
+                } finally {
+                    if (timeout) clearTimeout(timeout);
+                }
+            }
             await close('storage', this.options.closeStorage);
-            await close('mission_store', this.options.closeMissionStore);
+            if (schedulerStopped) {
+                await close('mission_store', this.options.closeMissionStore);
+            } else {
+                // The scheduler may still be inside a store operation. Leave
+                // that connection open until forced process termination.
+                failed = true;
+                this.report({ stage: 'mission_store', outcome: 'timed_out' });
+            }
         } finally {
             clearTimeout(watchdog);
         }

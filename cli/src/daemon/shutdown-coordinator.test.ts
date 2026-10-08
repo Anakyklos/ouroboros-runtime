@@ -60,4 +60,25 @@ describe('DaemonShutdownCoordinator', () => {
         expect(forceTerminate).toHaveBeenCalledTimes(1);
         expect(setExitCode).toHaveBeenCalledWith(1);
     });
+
+    it('does not close MissionStore when a scheduling pass misses its drain bound', async () => {
+        const closeMissionStore = mock(async () => {});
+        const diagnostics: unknown[] = [];
+        const coordinator = new DaemonShutdownCoordinator({
+            stopServer: async () => {},
+            stopMissionScheduler: () => new Promise<void>(() => {}),
+            closeStorage: async () => {},
+            closeMissionStore,
+            onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+            forceTerminate: mock(() => {}),
+            stepTimeoutMs: 10,
+            forceTerminationTimeoutMs: 40,
+        });
+
+        await coordinator.requestShutdown('SIGTERM');
+
+        expect(closeMissionStore).not.toHaveBeenCalled();
+        expect(diagnostics).toContainEqual({ stage: 'mission_scheduler', outcome: 'timed_out' });
+        expect(diagnostics).toContainEqual({ stage: 'mission_store', outcome: 'timed_out' });
+    });
 });

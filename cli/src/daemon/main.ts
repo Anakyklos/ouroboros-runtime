@@ -12,8 +12,11 @@ import { SqliteMissionStore } from '../mission/sqlite-mission-store.js';
 import { MissionEngine } from '../mission/mission-engine.js';
 import { PlanPolicyValidator } from '../mission/policy.js';
 import { CapabilityRegistry } from '../capabilities/registry.js';
+import { ConnectorDispatchSeam } from '../capabilities/dispatch-seam.js';
 import type { StoragePort } from '../ports/storage.port.js';
 import type { MissionStore } from '../mission/ports.js';
+import { MissionScheduler } from '../mission/mission-scheduler.js';
+import { MissionSchedulerDriver } from './mission-scheduler-driver.js';
 import {
     DaemonShutdownCoordinator,
     type DaemonShutdownReason,
@@ -49,6 +52,11 @@ export interface HeadlessDaemonDependencies {
         missionEngine: MissionEngine,
         requestShutdown: () => void,
     ) => HeadlessServer;
+    /** Test-only fixture seam; production composition leaves the registry empty. */
+    configureCapabilitiesForTests?: (
+        registry: CapabilityRegistry,
+        seam: ConnectorDispatchSeam,
+    ) => void;
     onDiagnostic?: (diagnostic: ShutdownDiagnostic) => void;
     forceTerminate?: () => void;
     setExitCode?: (code: number) => void;
@@ -63,15 +71,25 @@ export async function startHeadlessDaemon(
     let storage: InitializableStorage | undefined;
     let missionStore: InitializableMissionStore | undefined;
     let server: HeadlessServer | undefined;
+    let schedulerDriver: MissionSchedulerDriver | undefined;
+    let detachSignalListeners = (): void => {};
+    let detachLogListener = (): void => {};
+
+    const onDiagnostic = dependencies.onDiagnostic ?? ((diagnostic: ShutdownDiagnostic) => {
+        const detail = `${diagnostic.stage} ${diagnostic.outcome}`;
+        console.error(`Daemon lifecycle: ${detail}`);
+    });
 
     const lifecycle = new DaemonShutdownCoordinator({
-        stopServer: async () => { await server?.stop(); },
+        stopServer: async () => {
+            detachSignalListeners();
+            detachLogListener();
+            await server?.stop();
+        },
+        stopMissionScheduler: async () => { await schedulerDriver?.stop(); },
         closeStorage: async () => { await storage?.close(); },
         closeMissionStore: async () => { await missionStore?.close(); },
-        onDiagnostic: dependencies.onDiagnostic ?? ((diagnostic) => {
-            const detail = `${diagnostic.stage} ${diagnostic.outcome}`;
-            console.error(`Daemon shutdown: ${detail}`);
-        }),
+        onDiagnostic,
         forceTerminate: dependencies.forceTerminate ?? (() => process.exit(1)),
         setExitCode: dependencies.setExitCode ?? ((code) => { process.exitCode = code; }),
     });
@@ -79,7 +97,7 @@ export async function startHeadlessDaemon(
         lifecycle.requestShutdown(reason);
 
     try {
-        globalEventBus.on('log', (event) => {
+        detachLogListener = globalEventBus.on('log', (event) => {
             const prefix = `[${event.source ?? 'Ouroboros'}]`;
             switch (event.level) {
                 case 'debug': console.debug(prefix, event.message); break;
@@ -101,6 +119,18 @@ export async function startHeadlessDaemon(
             store: missionStore,
             policy: new PlanPolicyValidator(capabilityRegistry),
         });
+        const dispatchSeam = new ConnectorDispatchSeam(missionEngine, capabilityRegistry);
+        dependencies.configureCapabilitiesForTests?.(capabilityRegistry, dispatchSeam);
+        const missionScheduler = new MissionScheduler({
+            engine: missionEngine,
+            store: missionStore,
+            seam: dispatchSeam,
+        });
+        schedulerDriver = new MissionSchedulerDriver({
+            scheduler: missionScheduler,
+            store: missionStore,
+            onDiagnostic: (outcome) => onDiagnostic({ stage: 'mission_scheduler', outcome }),
+        });
 
         const activeSessions = await storage.listSessions({ status: 'active' });
         if (activeSessions.length > 0) {
@@ -119,6 +149,8 @@ export async function startHeadlessDaemon(
             )
         ))(storage, missionStore, missionEngine, () => { void requestShutdown('RPC'); });
 
+        await schedulerDriver.start();
+
         const onSignal = (signal: 'SIGINT' | 'SIGTERM') => {
             console.log(`Daemon shutdown requested by ${signal}.`);
             void requestShutdown(signal);
@@ -127,12 +159,16 @@ export async function startHeadlessDaemon(
         const onSigterm = () => onSignal('SIGTERM');
         process.on('SIGINT', onSigint);
         process.on('SIGTERM', onSigterm);
+        detachSignalListeners = () => {
+            process.off('SIGINT', onSigint);
+            process.off('SIGTERM', onSigterm);
+            detachSignalListeners = () => {};
+        };
 
         try {
             await server.start();
         } catch (error) {
-            process.off('SIGINT', onSigint);
-            process.off('SIGTERM', onSigterm);
+            detachSignalListeners();
             throw error;
         }
 

@@ -21,7 +21,7 @@ const MISSION_ID = 'shutdown-e2e-mission';
 const INVOCATION_ID = 'shutdown-e2e-invocation';
 const NOW = '2026-10-07T12:00:00.000Z';
 
-function mission(): Mission {
+function mission(state: MissionState = MissionState.COMPLETED): Mission {
     return {
         missionId: MISSION_ID,
         schemaVersion: 1,
@@ -40,7 +40,7 @@ function mission(): Mission {
         },
         approvalRequirements: [],
         contextRefs: [],
-        state: MissionState.COMPLETED,
+        state,
         currentPlanRevisionId: null,
         invocationRefs: [],
         evidenceRefs: [],
@@ -220,4 +220,64 @@ describe('headless daemon lifecycle over real RPC and SQLite', () => {
         expect(afterInvocation?.delivery.state).toBe('acknowledged');
         expect(afterInvocation?.attempts).toEqual(before?.attempts);
     });
+
+    it('recovers a paused non-terminal Mission across real process restarts without dispatching its confirmed invocation', async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'ouroboros-recovery-e2e-'));
+        directories.push(directory);
+        const dbPath = join(directory, '.ouroboros', 'missions.db');
+        await import('node:fs/promises').then(({ mkdir }) => mkdir(dirname(dbPath), { recursive: true }));
+
+        const seed = new SqliteMissionStore(dbPath);
+        await seed.initialize();
+        await seed.createMission(mission(MissionState.PAUSED));
+        await seed.saveInvocation(invocation());
+        await seed.close();
+
+        const port = await unusedPort();
+        const first = startDaemon(directory, port);
+        children.push(first);
+        await waitUntilReady(first, port);
+        const firstRead = await rpc(port, 'local_control.read', {
+            protocolVersion: 1,
+            operation: 'mission.show',
+            missionId: MISSION_ID,
+        });
+        expect(firstRead).toMatchObject({
+            result: { ok: true, operation: 'mission.show', data: { item: { missionId: MISSION_ID, state: 'paused', recoveryCount: 1 } } },
+        });
+        first.kill('SIGTERM');
+        expect(await waitForExit(first)).toBe(0);
+
+        const restarted = startDaemon(directory, port);
+        children.push(restarted);
+        await waitUntilReady(restarted, port);
+        const secondRead = await rpc(port, 'local_control.read', {
+            protocolVersion: 1,
+            operation: 'mission.show',
+            missionId: MISSION_ID,
+        });
+        const invocationRead = await rpc(port, 'local_control.read', {
+            protocolVersion: 1,
+            operation: 'invocation.show',
+            invocationId: INVOCATION_ID,
+        });
+        expect(secondRead).toMatchObject({
+            result: { ok: true, operation: 'mission.show', data: { item: { missionId: MISSION_ID, state: 'paused', recoveryCount: 2 } } },
+        });
+        expect(invocationRead).toMatchObject({
+            result: { ok: true, operation: 'invocation.show', data: { item: { invocationId: INVOCATION_ID, status: 'completed' } } },
+        });
+        restarted.kill('SIGTERM');
+        expect(await waitForExit(restarted)).toBe(0);
+
+        const verify = new SqliteMissionStore(dbPath);
+        await verify.initialize();
+        const afterMission = await verify.getMission(MISSION_ID);
+        const afterInvocation = await verify.getInvocation(INVOCATION_ID);
+        await verify.close();
+        expect(afterMission?.state).toBe(MissionState.PAUSED);
+        expect(afterMission?.recoveryMetadata.recoveryCount).toBe(2);
+        expect(afterInvocation?.status).toBe(InvocationStatus.COMPLETED);
+        expect(afterInvocation?.delivery.state).toBe('acknowledged');
+    }, 15_000);
 });
