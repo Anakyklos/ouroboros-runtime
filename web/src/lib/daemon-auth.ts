@@ -20,7 +20,11 @@ export function subscribeDaemonBearerToken(listener: (token: string) => void): (
 export function normalizeDaemonWebSocketUrl(websocketUrl: string, baseUrl?: string): string {
   let endpoint: URL;
   try {
-    endpoint = new URL(websocketUrl, baseUrl ?? window.location.href);
+    endpoint = baseUrl
+      ? new URL(websocketUrl, baseUrl)
+      : /^[a-z][a-z\d+.-]*:/i.test(websocketUrl)
+        ? new URL(websocketUrl)
+        : new URL(websocketUrl, window.location.href);
   } catch {
     throw new Error("Daemon WebSocket URL is invalid");
   }
@@ -33,12 +37,16 @@ export function normalizeDaemonWebSocketUrl(websocketUrl: string, baseUrl?: stri
 }
 
 /** Exchange the memory-only bearer token for a short-lived, HttpOnly WS cookie. */
-export async function establishDaemonBrowserSession(websocketUrl: string): Promise<void> {
+export async function establishDaemonBrowserSession(
+  websocketUrl: string,
+  options: { baseUrl?: string; fetchImpl?: typeof fetch } = {},
+): Promise<void> {
   const token = getDaemonBearerToken();
   if (!token) throw new Error("Enter a daemon credential first");
-  const ws = new URL(normalizeDaemonWebSocketUrl(websocketUrl));
+  const ws = new URL(normalizeDaemonWebSocketUrl(websocketUrl, options.baseUrl));
   const httpUrl = new URL("/auth/browser-session", `${ws.protocol === "wss:" ? "https:" : "http:"}//${ws.host}`);
-  const response = await fetch(httpUrl, {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(httpUrl, {
     method: "POST",
     credentials: "include",
     headers: { Authorization: `Bearer ${token}` },

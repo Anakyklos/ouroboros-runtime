@@ -27,10 +27,23 @@ class RawWebSocketProbe {
   private frames: RawFrame[] = [];
   private frameWaiters: Array<(frame: RawFrame) => void> = [];
   private headerResolver!: (response: { status: number; headers: string }) => void;
-  readonly response = new Promise<{ status: number; headers: string }>((resolve) => { this.headerResolver = resolve; });
+  private headerRejecter!: (error: Error) => void;
+  private headerTimer: ReturnType<typeof setTimeout>;
+  readonly response = new Promise<{ status: number; headers: string }>((resolve, reject) => {
+    this.headerResolver = resolve;
+    this.headerRejecter = reject;
+  });
 
   constructor(readonly socket: Socket) {
+    this.headerTimer = setTimeout(() => {
+      this.close();
+      this.headerRejecter(new Error("WebSocket handshake timed out"));
+    }, 5_000);
     socket.on("data", (chunk) => this.onData(Buffer.from(chunk)));
+    socket.once("close", () => {
+      clearTimeout(this.headerTimer);
+      if (!this.headerResolved) this.headerRejecter(new Error("WebSocket closed before handshake"));
+    });
   }
 
   static async connect(port: number, headers: Record<string, string>): Promise<RawWebSocketProbe> {
@@ -69,6 +82,7 @@ class RawWebSocketProbe {
     const separator = this.buffer.indexOf("\r\n\r\n");
     if (separator >= 0 && !this.headerResolved) {
       this.headerResolved = true;
+      clearTimeout(this.headerTimer);
       const header = this.buffer.subarray(0, separator).toString("utf8");
       this.headerText = header;
       const status = Number(/^HTTP\/1\.1 (\d+)/.exec(header)?.[1] ?? 0);
@@ -327,16 +341,11 @@ describe("local-control authentication over real Fastify and SQLite", () => {
   });
 
   it("routes the browser exchange through real Vite and reconnects through the proxied WS snapshot", async () => {
-    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
     const originalFetch = globalThis.fetch;
     let setCookie: string | null = null;
     let exchangeUrl = "";
     let exchangeAuthorization = "";
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: { location: { href: `${frontendOrigin}/` } },
-    });
-    globalThis.fetch = async (input, init) => {
+    const frontendFetch: typeof fetch = async (input, init) => {
       const headers = new Headers(init?.headers);
       headers.set("Origin", frontendOrigin);
       exchangeUrl = String(input);
@@ -348,7 +357,7 @@ describe("local-control authentication over real Fastify and SQLite", () => {
     setDaemonBearerToken(multiScopeToken);
     const websocketUrl = `ws://${frontendOrigin.slice("http://".length)}/ws`;
     try {
-      await establishDaemonBrowserSession(websocketUrl);
+      await establishDaemonBrowserSession(websocketUrl, { baseUrl: `${frontendOrigin}/`, fetchImpl: frontendFetch });
       expect(exchangeUrl).toBe(`${frontendOrigin}/auth/browser-session`);
       expect(new URL(websocketUrl).search).toBe("");
       expect(exchangeAuthorization).toBe(`Bearer ${multiScopeToken}`);
@@ -363,7 +372,7 @@ describe("local-control authentication over real Fastify and SQLite", () => {
       firstConnection.close();
 
       setCookie = null;
-      await establishDaemonBrowserSession(websocketUrl);
+      await establishDaemonBrowserSession(websocketUrl, { baseUrl: `${frontendOrigin}/`, fetchImpl: frontendFetch });
       expect(setCookie).toContain("HttpOnly");
       const reconnectCookie = setCookie!.split(";", 1)[0]!;
       expect(reconnectCookie).not.toBe(firstCookie);
@@ -375,9 +384,6 @@ describe("local-control authentication over real Fastify and SQLite", () => {
       expect((await reconnected.nextFrame()).payload.toString("utf8")).toContain(missionId);
       reconnected.close();
     } finally {
-      globalThis.fetch = originalFetch;
-      if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
-      else Reflect.deleteProperty(globalThis, "window");
       setDaemonBearerToken("");
     }
   });
