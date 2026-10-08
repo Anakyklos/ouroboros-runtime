@@ -123,7 +123,6 @@ export class MissionScheduler {
         const dispatchedInvocationIds: string[] = [];
         const reconciledInvocationIds: string[] = [];
         const waitingMissionIds: string[] = [];
-        const suppressedMissions = new Set<string>();
         let dispatchSlots = this.maxInFlight;
         const now = this.clock.isoNow();
 
@@ -196,7 +195,6 @@ export class MissionScheduler {
         const dueInvocations = await this.store.listDueInvocations(now, this.recoveryBatchSize);
         for (const candidate of dueInvocations) {
             if (dispatchSlots <= 0) break;
-            if (suppressedMissions.has(candidate.missionId)) continue;
             let mission = await this.store.getMission(candidate.missionId);
             if (!mission || TERMINAL_STATES.has(mission.state) || mission.state === MissionState.PAUSED) continue;
             if (mission.state === MissionState.WAITING_FOR_CAPABILITY) {
@@ -239,9 +237,6 @@ export class MissionScheduler {
                     error,
                     waitingMissionIds,
                 );
-                if (waitingMissionIds.includes(candidate.missionId)) {
-                    suppressedMissions.add(candidate.missionId);
-                }
             }
         }
 
@@ -285,10 +280,13 @@ export class MissionScheduler {
                 })) return false;
                 return true;
             };
+            const readySteps = revision.steps.filter(isReadyStep);
+            const dispatchableSteps = readySteps.filter((step) =>
+                this.seam.canDispatchCapability(step.capabilityRequirement),
+            );
+            const hasUnavailableReadyStep = dispatchableSteps.length < readySteps.length;
             if (capabilityWaiting) {
-                const readySteps = revision.steps.filter(isReadyStep);
-                if (readySteps.length === 0) continue;
-                if (!readySteps.some((step) => this.seam.canDispatchCapability(step.capabilityRequirement))) continue;
+                if (dispatchableSteps.length === 0) continue;
                 try {
                     await this.engine.restoreWaitingToReady(mission.missionId);
                 } catch {
@@ -300,22 +298,45 @@ export class MissionScheduler {
                     && restored.state !== MissionState.EXECUTING
                 )) continue;
             }
+            if (!capabilityWaiting && readySteps.length > 0 && dispatchableSteps.length === 0) {
+                await this.engine.setWaiting(
+                    mission.missionId,
+                    MissionState.WAITING_FOR_CAPABILITY,
+                    'No ready capability currently has both a registered descriptor and connector',
+                );
+                waitingMissionIds.push(mission.missionId);
+                continue;
+            }
             // Dispatch directly while scanning the durable plan. This avoids
             // building an unbounded in-memory candidate queue; at most
             // `maxInFlight` connector calls can be active in this pass.
-            for (const step of revision.steps) {
-                if (dispatchSlots <= 0 || suppressedMissions.has(mission.missionId)) break;
-                if (!isReadyStep(step)) continue;
+            let becameUnavailable = false;
+            for (const step of dispatchableSteps) {
+                if (dispatchSlots <= 0) break;
                 try {
                     const outcome = await this.seam.dispatchThroughSeam(mission.missionId, step.stepId);
                     dispatchedInvocationIds.push(outcome.invocation.invocationId);
                     dispatchSlots--;
                 } catch (error) {
-                    await this.handleDispatchError(mission.missionId, error, waitingMissionIds);
-                    if (waitingMissionIds.includes(mission.missionId)) {
-                        suppressedMissions.add(mission.missionId);
+                    if (isCapabilityWaitError(error)) {
+                        becameUnavailable = true;
+                        continue;
                     }
+                    await this.handleDispatchError(mission.missionId, error, waitingMissionIds);
+                    break;
                 }
+            }
+            if (hasUnavailableReadyStep || becameUnavailable) {
+                const latest = await this.store.getMission(mission.missionId);
+                if (latest && !TERMINAL_STATES.has(latest.state) && latest.state !== MissionState.PAUSED
+                    && latest.state !== MissionState.WAITING_FOR_CAPABILITY) {
+                    await this.engine.setWaiting(
+                        mission.missionId,
+                        MissionState.WAITING_FOR_CAPABILITY,
+                        'At least one ready capability is not currently dispatchable',
+                    );
+                }
+                waitingMissionIds.push(mission.missionId);
             }
         }
 
@@ -344,11 +365,7 @@ export class MissionScheduler {
         error: unknown,
         waitingMissionIds: string[],
     ): Promise<void> {
-        if (
-            error instanceof CapabilityUnavailableError
-            || error instanceof ConnectorNotRegisteredError
-            || error instanceof UnknownCapabilityError
-        ) {
+        if (isCapabilityWaitError(error)) {
             const mission = await this.engine.getMission(missionId);
             if (!TERMINAL_STATES.has(mission.state) && mission.state !== MissionState.PAUSED) {
                 await this.engine.setWaiting(
@@ -371,6 +388,13 @@ export class MissionScheduler {
             );
         }
     }
+}
+
+function isCapabilityWaitError(error: unknown): error is
+    CapabilityUnavailableError | ConnectorNotRegisteredError | UnknownCapabilityError {
+    return error instanceof CapabilityUnavailableError
+        || error instanceof ConnectorNotRegisteredError
+        || error instanceof UnknownCapabilityError;
 }
 
 /** Compatibility name for callers that describe the component by purpose. */

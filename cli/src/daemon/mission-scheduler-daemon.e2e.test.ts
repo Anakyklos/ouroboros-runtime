@@ -11,7 +11,7 @@ import { MissionScheduler } from '../mission/mission-scheduler.js';
 import { PlanPolicyValidator } from '../mission/policy.js';
 import { FakeCapabilityResolver, FakeClock, FakeIdGenerator, FakeVerificationAuthority, makeDefaultCapabilityCatalog } from '../mission/testing.js';
 import { CapabilityRegistry } from '../capabilities/registry.js';
-import { EffectClass, ReconciliationSupport } from '../capabilities/contracts.js';
+import { EffectClass, ReconciliationSupport, type CapabilityDescriptor } from '../capabilities/contracts.js';
 import { defineCapabilityDescriptor } from '../capabilities/fixtures.js';
 import { CapabilityResultStatus, CONNECTOR_CONTRACT_VERSION_1, type CapabilityConnector } from '../capabilities/connector.js';
 import { ConnectorDispatchSeam } from '../capabilities/dispatch-seam.js';
@@ -20,6 +20,7 @@ import type { MissionSchedulerDriverTimer } from './mission-scheduler-driver.js'
 
 const MISSION_ID = 'resident-scheduler-mission-1';
 const CAPABILITY_ID = 'lifeos.query';
+const SECOND_CAPABILITY_ID = 'runstead.code-review';
 const DATA_TIME = '2026-10-08T10:00:00.000Z';
 
 async function unusedPort(): Promise<number> {
@@ -92,6 +93,63 @@ async function seedMission(dataDir: string): Promise<void> {
     await store.close();
 }
 
+async function seedMixedAvailabilityMission(dataDir: string): Promise<void> {
+    const store = new SqliteMissionStore(join(dataDir, 'missions.db'));
+    await store.initialize();
+    const resolver = new FakeCapabilityResolver();
+    resolver.registerMany(makeDefaultCapabilityCatalog());
+    const engine = new MissionEngine({
+        store,
+        policy: new PlanPolicyValidator(resolver),
+        clock: new FakeClock(DATA_TIME),
+        ids: new FakeIdGenerator('resident-scheduler-mission'),
+        interpreter: (intent) => intent.originalIntent,
+        verificationAuthority: new FakeVerificationAuthority(),
+    });
+    const mission = await engine.createMission({
+        intent: {
+            requestId: 'resident-scheduler-mixed-request',
+            source: 'cli',
+            originalIntent: 'Read LifeOS status and review the corresponding change',
+            constraints: [],
+            acceptanceCriteria: ['status read', 'change reviewed'],
+        },
+        allowedCapabilityScope: {
+            capabilityIds: [CAPABILITY_ID, SECOND_CAPABILITY_ID],
+            allowedEffectClasses: [EffectClass.READ, EffectClass.EXECUTION],
+            allowedRefPrefixes: ['refs/lifeos/', 'refs/runstead/'],
+        },
+    });
+    const proposal = await engine.proposePlan(mission.missionId, {
+        planId: 'resident-scheduler-mixed-plan',
+        missionId: mission.missionId,
+        plannerNote: 'independent authorized steps for scheduler recovery',
+        steps: [
+            {
+                stepId: 'step-a-lifeos',
+                desiredOutcome: 'Read the current LifeOS status',
+                dependencyIds: [],
+                capabilityRequirement: CAPABILITY_ID,
+                inputRefs: ['refs/lifeos/status'],
+                expectedAcceptance: ['status read'],
+                effectClass: EffectClass.READ,
+            },
+            {
+                stepId: 'step-b-review',
+                desiredOutcome: 'Review the corresponding change',
+                dependencyIds: [],
+                capabilityRequirement: SECOND_CAPABILITY_ID,
+                inputRefs: ['refs/runstead/pr/120'],
+                expectedAcceptance: ['change reviewed'],
+                effectClass: EffectClass.EXECUTION,
+            },
+        ],
+    });
+    if (!proposal.ok) throw new Error('Mixed-availability daemon fixture plan was rejected');
+    await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+    await store.close();
+}
+
 function makeDescriptor(reconciliationSupport: ReconciliationSupport) {
     return defineCapabilityDescriptor({
         capabilityId: CAPABILITY_ID,
@@ -104,13 +162,34 @@ function makeDescriptor(reconciliationSupport: ReconciliationSupport) {
     });
 }
 
+function makeSecondDescriptor() {
+    return defineCapabilityDescriptor({
+        capabilityId: SECOND_CAPABILITY_ID,
+        moduleOwner: 'runstead',
+        purpose: 'Review a Runstead change in an isolated scheduler test',
+        effectClass: EffectClass.EXECUTION,
+        allowedInputRefPrefixes: ['refs/runstead/'],
+        ownsStorage: false,
+        requiresOwnerVerification: true,
+        reconciliationSupport: ReconciliationSupport.NONE,
+    });
+}
+
 function makeConnector(
     descriptor: ReturnType<typeof makeDescriptor>,
     invoke: CapabilityConnector['invoke'],
 ): CapabilityConnector {
+    return makeConnectorFor(CAPABILITY_ID, descriptor, invoke);
+}
+
+function makeConnectorFor(
+    capabilityId: string,
+    descriptor: CapabilityDescriptor,
+    invoke: CapabilityConnector['invoke'],
+): CapabilityConnector {
     return {
         connectorContractVersion: CONNECTOR_CONTRACT_VERSION_1,
-        capabilityId: CAPABILITY_ID,
+        capabilityId,
         describe: () => descriptor,
         invoke,
     };
@@ -379,6 +458,171 @@ describe('resident Mission scheduler daemon composition', () => {
         unsubscribe?.();
         await store.close();
     });
+
+    it('dispatches an available independent step once and stays idle while an earlier capability is absent', async () => {
+        for (const unavailableMode of ['unregistered', 'connector_missing'] as const) {
+            const dataDir = await mkdtemp(join(tmpdir(), `ouroboros-scheduler-mixed-${unavailableMode}-`));
+            directories.push(dataDir);
+            await seedMixedAvailabilityMission(dataDir);
+
+            const firstStore = new SqliteMissionStore(join(dataDir, 'missions.db'));
+            await firstStore.initialize();
+            const firstClock = new FakeClock(DATA_TIME);
+            const firstResolver = new FakeCapabilityResolver();
+            firstResolver.registerMany(makeDefaultCapabilityCatalog());
+            const firstEngine = new MissionEngine({
+                store: firstStore,
+                policy: new PlanPolicyValidator(firstResolver),
+                clock: firstClock,
+                ids: new FakeIdGenerator(`mixed-${unavailableMode}`),
+                interpreter: (intent) => intent.originalIntent,
+                verificationAuthority: new FakeVerificationAuthority(),
+            });
+            const firstRegistry = new CapabilityRegistry();
+            const firstSeam = new ConnectorDispatchSeam(firstEngine, firstRegistry, firstClock);
+            const firstBDescriptor = makeSecondDescriptor();
+            firstRegistry.register(firstBDescriptor);
+            let bInvokes = 0;
+            firstSeam.registerConnector(SECOND_CAPABILITY_ID, makeConnectorFor(
+                SECOND_CAPABILITY_ID,
+                firstBDescriptor,
+                async (request) => {
+                    bInvokes++;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId: request.requestId,
+                        summary: 'Independent review completed',
+                        evidence: [],
+                        ownerVerification: { owner: 'runstead', verified: true, reason: 'reviewed' },
+                    };
+                },
+            ));
+            if (unavailableMode === 'connector_missing') {
+                firstRegistry.register(makeDescriptor(ReconciliationSupport.NONE));
+            }
+            const firstScheduler = new MissionScheduler({
+                engine: firstEngine,
+                store: firstStore,
+                seam: firstSeam,
+                clock: firstClock,
+            });
+            const firstTimer = new CountingFakeTimer();
+            let firstPasses = 0;
+            let firstMutations = 0;
+            let firstStateChanges = 0;
+            const unsubscribe = firstStore.onMutation?.((mutation) => {
+                firstMutations++;
+                if (mutation.entity === 'mission' && mutation.kind === 'state_changed') firstStateChanges++;
+            });
+            let firstDriver!: MissionSchedulerDriver;
+            firstDriver = new MissionSchedulerDriver({
+                scheduler: { runOnce: async () => {
+                    firstPasses++;
+                    if (firstPasses >= 8) void firstDriver.stop();
+                    return firstScheduler.runOnce();
+                } },
+                store: firstStore,
+                timer: firstTimer,
+            });
+
+            try {
+                await firstDriver.start();
+                await new Promise((resolve) => setTimeout(resolve, 25));
+                const settledPasses = firstPasses;
+                const settledMutations = firstMutations;
+                const settledStateChanges = firstStateChanges;
+                firstClock.advance(60_000);
+                await new Promise((resolve) => setTimeout(resolve, 25));
+
+                const mission = await firstStore.getMission(MISSION_ID);
+                const invocations = await firstStore.listInvocations(MISSION_ID);
+                const aInvocations = invocations.filter((item) => item.capabilityId === CAPABILITY_ID);
+                const bInvocations = invocations.filter((item) => item.capabilityId === SECOND_CAPABILITY_ID);
+                expect(firstPasses).toBe(settledPasses);
+                expect(firstMutations).toBe(settledMutations);
+                expect(firstStateChanges).toBe(settledStateChanges);
+                expect(firstPasses).toBeLessThanOrEqual(3);
+                expect(firstMutations).toBeLessThanOrEqual(10);
+                expect(firstStateChanges).toBeLessThanOrEqual(2);
+                expect(firstTimer.pendingTimers).toBe(0);
+                expect(mission?.state).toBe('waiting_for_capability');
+                expect(aInvocations).toHaveLength(0);
+                expect(bInvocations).toHaveLength(1);
+                expect(bInvocations[0]?.status).toBe('completed');
+                expect(bInvokes).toBe(1);
+            } finally {
+                await firstDriver.stop();
+                unsubscribe?.();
+                await firstStore.close();
+            }
+
+            // A new process composition authorizes A by registering its
+            // descriptor and connector. Recovery may now resume A, while B's
+            // already completed effect remains protected by durable identity.
+            const secondStore = new SqliteMissionStore(join(dataDir, 'missions.db'));
+            await secondStore.initialize();
+            const secondClock = new FakeClock(DATA_TIME);
+            const secondResolver = new FakeCapabilityResolver();
+            secondResolver.registerMany(makeDefaultCapabilityCatalog());
+            const secondEngine = new MissionEngine({
+                store: secondStore,
+                policy: new PlanPolicyValidator(secondResolver),
+                clock: secondClock,
+                ids: new FakeIdGenerator(`mixed-resume-${unavailableMode}`),
+                interpreter: (intent) => intent.originalIntent,
+                verificationAuthority: new FakeVerificationAuthority(),
+            });
+            const secondRegistry = new CapabilityRegistry();
+            const secondSeam = new ConnectorDispatchSeam(secondEngine, secondRegistry, secondClock);
+            const aDescriptor = makeDescriptor(ReconciliationSupport.NONE);
+            const bDescriptor = makeSecondDescriptor();
+            secondRegistry.register(aDescriptor);
+            secondRegistry.register(bDescriptor);
+            let aInvokes = 0;
+            secondSeam.registerConnector(CAPABILITY_ID, makeConnectorFor(CAPABILITY_ID, aDescriptor, async (request) => {
+                aInvokes++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: 'Previously unavailable status read completed',
+                    evidence: [],
+                };
+            }));
+            secondSeam.registerConnector(SECOND_CAPABILITY_ID, makeConnectorFor(SECOND_CAPABILITY_ID, bDescriptor, async (request) => {
+                bInvokes++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: 'Already completed review must not be repeated',
+                    evidence: [],
+                    ownerVerification: { owner: 'runstead', verified: true, reason: 'reviewed' },
+                };
+            }));
+            const secondScheduler = new MissionScheduler({
+                engine: secondEngine,
+                store: secondStore,
+                seam: secondSeam,
+                clock: secondClock,
+            });
+            const secondDriver = new MissionSchedulerDriver({ scheduler: secondScheduler, store: secondStore });
+            try {
+                await secondDriver.start();
+                const deadline = Date.now() + 5_000;
+                let invocations = await secondStore.listInvocations(MISSION_ID);
+                while (invocations.filter((item) => item.capabilityId === CAPABILITY_ID).length !== 1 && Date.now() < deadline) {
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                    invocations = await secondStore.listInvocations(MISSION_ID);
+                }
+                expect(invocations.filter((item) => item.capabilityId === CAPABILITY_ID)).toHaveLength(1);
+                expect(invocations.filter((item) => item.capabilityId === SECOND_CAPABILITY_ID)).toHaveLength(1);
+                expect(aInvokes).toBe(1);
+                expect(bInvokes).toBe(1);
+            } finally {
+                await secondDriver.stop();
+                await secondStore.close();
+            }
+        }
+    }, 15_000);
 });
 
 class CountingFakeTimer implements MissionSchedulerDriverTimer {
@@ -387,6 +631,10 @@ class CountingFakeTimer implements MissionSchedulerDriverTimer {
     private readonly timers = new Map<number, () => void>();
 
     now(): Date { return new Date(this.currentTime); }
+
+    advance(ms: number): void {
+        this.currentTime = new Date(this.currentTime.getTime() + ms);
+    }
 
     setTimeout(callback: () => void, _delayMs: number): ReturnType<typeof setTimeout> {
         const id = this.nextId++;
