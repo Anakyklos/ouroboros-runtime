@@ -331,13 +331,20 @@ export class DaemonServer {
             }
             const client = this.createAuthorizedProjectionClient(socket, principal);
             this.websocketPrincipals.set(client, { socket, principal });
+            this.syncWebSocketAuthorizationTimer();
             this.projection.connectClient(client);
+            let disconnected = false;
             const disconnect = () => {
+                if (disconnected) return;
+                disconnected = true;
+                socket.off('close', disconnect);
+                socket.off('error', disconnect);
                 this.projection.disconnectClient(client);
                 this.websocketPrincipals.delete(client);
+                this.syncWebSocketAuthorizationTimer();
             };
-            socket.on('close', disconnect);
-            socket.on('error', disconnect);
+            socket.once('close', disconnect);
+            socket.once('error', disconnect);
         });
 
         this.app.post('/rpc', async (request, reply) => {
@@ -436,27 +443,37 @@ export class DaemonServer {
             throw new Error('The local-control daemon must bind to a loopback address');
         }
 
-        if (!this.initialized) {
-            await this.initialize();
-        }
-
-        if (!this.authorization?.hasActiveClients()) {
-            throw new Error('Local-control authentication is not provisioned');
-        }
-
-        this.eventBus.emit('daemon', { type: 'starting', port: this.config.port });
-
         try {
+            if (!this.initialized) {
+                await this.initialize();
+            }
+
+            if (!this.authorization?.hasActiveClients()) {
+                throw new Error('Local-control authentication is not provisioned');
+            }
+
+            this.eventBus.emit('daemon', { type: 'starting', port: this.config.port });
             await this.app.listen({
                 port: this.config.port,
                 host: this.config.host,
             });
 
             this.isRunning = true;
-            this.websocketAuthorizationTimer = setInterval(() => this.revalidateWebSocketClients(), 500);
             this.eventBus.emit('daemon', { type: 'ready', port: this.config.port });
             this.eventBus.log('info', `Daemon started on ${this.config.host}:${this.config.port}`, 'DaemonServer');
         } catch (error) {
+            this.acceptingRpc = false;
+            this.clearWebSocketAuthorizationTimer();
+            this.cleanupTransport();
+            if (!this.appClosed) {
+                try {
+                    await this.app.close();
+                    this.appClosed = true;
+                } catch {
+                    this.eventBus.log('error', 'Error closing daemon resources after startup failure', 'DaemonServer');
+                }
+            }
+            this.isRunning = false;
             this.eventBus.log('error', 'Failed to start daemon listener', 'DaemonServer');
             throw error;
         }
@@ -464,10 +481,7 @@ export class DaemonServer {
 
     async stop(): Promise<void> {
         this.acceptingRpc = false;
-        if (this.websocketAuthorizationTimer) {
-            clearInterval(this.websocketAuthorizationTimer);
-            this.websocketAuthorizationTimer = null;
-        }
+        this.clearWebSocketAuthorizationTimer();
         if (!this.isRunning) {
             this.cleanupTransport();
             if (!this.appClosed) {
@@ -582,11 +596,36 @@ export class DaemonServer {
 
     private revalidateWebSocketClients(): void {
         for (const [client, session] of this.websocketPrincipals) {
-            if (this.authorization?.isClientStillAuthorized(session.principal, 'mission.read')) continue;
+            try {
+                if (this.authorization?.isClientStillAuthorized(session.principal, 'mission.read')) continue;
+            } catch {
+                this.eventBus.log('warn', 'WebSocket authorization revalidation failed', 'DaemonServer');
+            }
             this.projection.disconnectClient(client);
-            session.socket.close(1008, 'Authorization expired');
+            try {
+                session.socket.close(1008, 'Authorization expired');
+            } catch {
+                this.eventBus.log('warn', 'WebSocket client could not be closed after authorization failure', 'DaemonServer');
+            }
             this.websocketPrincipals.delete(client);
         }
+        this.syncWebSocketAuthorizationTimer();
+    }
+
+    private syncWebSocketAuthorizationTimer(): void {
+        if (this.websocketPrincipals.size > 0) {
+            if (this.websocketAuthorizationTimer === null) {
+                this.websocketAuthorizationTimer = setInterval(() => this.revalidateWebSocketClients(), 500);
+            }
+            return;
+        }
+        this.clearWebSocketAuthorizationTimer();
+    }
+
+    private clearWebSocketAuthorizationTimer(): void {
+        if (this.websocketAuthorizationTimer === null) return;
+        clearInterval(this.websocketAuthorizationTimer);
+        this.websocketAuthorizationTimer = null;
     }
 }
 
