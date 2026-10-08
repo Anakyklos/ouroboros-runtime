@@ -22,6 +22,7 @@ import {
     ConnectorDispatchSeam,
     ConnectorNotRegisteredError,
 } from "../capabilities/dispatch-seam.js";
+import { UnknownCapabilityError } from "../capabilities/registry.js";
 
 export interface MissionSchedulerOptions {
     engine: MissionEngine;
@@ -160,7 +161,11 @@ export class MissionScheduler {
             } catch (error) {
                 // Recovery is isolated per invocation. A missing or unavailable
                 // connector cannot prevent unrelated Missions from progressing.
-                if (error instanceof CapabilityUnavailableError || error instanceof ConnectorNotRegisteredError) {
+                if (
+                    error instanceof CapabilityUnavailableError
+                    || error instanceof ConnectorNotRegisteredError
+                    || error instanceof UnknownCapabilityError
+                ) {
                     try {
                         const mission = await this.engine.getMission(current.missionId);
                         // An unavailable connector may explain READY/EXECUTING
@@ -195,6 +200,7 @@ export class MissionScheduler {
             let mission = await this.store.getMission(candidate.missionId);
             if (!mission || TERMINAL_STATES.has(mission.state) || mission.state === MissionState.PAUSED) continue;
             if (mission.state === MissionState.WAITING_FOR_CAPABILITY) {
+                if (!this.seam.canDispatchCapability(candidate.capabilityId)) continue;
                 try {
                     await this.engine.restoreWaitingToReady(mission.missionId);
                     mission = await this.store.getMission(candidate.missionId);
@@ -280,7 +286,9 @@ export class MissionScheduler {
                 return true;
             };
             if (capabilityWaiting) {
-                if (!revision.steps.some(isReadyStep)) continue;
+                const readySteps = revision.steps.filter(isReadyStep);
+                if (readySteps.length === 0) continue;
+                if (!readySteps.some((step) => this.seam.canDispatchCapability(step.capabilityRequirement))) continue;
                 try {
                     await this.engine.restoreWaitingToReady(mission.missionId);
                 } catch {
@@ -336,7 +344,11 @@ export class MissionScheduler {
         error: unknown,
         waitingMissionIds: string[],
     ): Promise<void> {
-        if (error instanceof CapabilityUnavailableError || error instanceof ConnectorNotRegisteredError) {
+        if (
+            error instanceof CapabilityUnavailableError
+            || error instanceof ConnectorNotRegisteredError
+            || error instanceof UnknownCapabilityError
+        ) {
             const mission = await this.engine.getMission(missionId);
             if (!TERMINAL_STATES.has(mission.state) && mission.state !== MissionState.PAUSED) {
                 await this.engine.setWaiting(

@@ -7,12 +7,16 @@ import { startHeadlessDaemon, type HeadlessDaemonDependencies } from './main.js'
 import type { ConnectorDispatchSeam } from '../capabilities/dispatch-seam.js';
 import { SqliteMissionStore } from '../mission/sqlite-mission-store.js';
 import { MissionEngine } from '../mission/mission-engine.js';
+import { MissionScheduler } from '../mission/mission-scheduler.js';
 import { PlanPolicyValidator } from '../mission/policy.js';
 import { FakeCapabilityResolver, FakeClock, FakeIdGenerator, FakeVerificationAuthority, makeDefaultCapabilityCatalog } from '../mission/testing.js';
 import { CapabilityRegistry } from '../capabilities/registry.js';
 import { EffectClass, ReconciliationSupport } from '../capabilities/contracts.js';
 import { defineCapabilityDescriptor } from '../capabilities/fixtures.js';
 import { CapabilityResultStatus, CONNECTOR_CONTRACT_VERSION_1, type CapabilityConnector } from '../capabilities/connector.js';
+import { ConnectorDispatchSeam } from '../capabilities/dispatch-seam.js';
+import { MissionSchedulerDriver } from './mission-scheduler-driver.js';
+import type { MissionSchedulerDriverTimer } from './mission-scheduler-driver.js';
 
 const MISSION_ID = 'resident-scheduler-mission-1';
 const CAPABILITY_ID = 'lifeos.query';
@@ -115,7 +119,7 @@ function makeConnector(
 async function startDaemon(
     dataDir: string,
     port: number,
-    configure: NonNullable<HeadlessDaemonDependencies['configureCapabilitiesForTests']>,
+    configure: NonNullable<HeadlessDaemonDependencies['configureCapabilitiesForTests']> = () => {},
 ) {
     const stop = await startHeadlessDaemon({
         dataDir,
@@ -279,4 +283,120 @@ describe('resident Mission scheduler daemon composition', () => {
         await waitFor(() => readDurableState(dataDir), (item) => item.invocationStatus === 'completed');
         await stop();
     }, 15_000);
+
+    it('recovers a registry-absent Mission into a durable capability wait and resumes only after registration on restart', async () => {
+        const dataDir = await mkdtemp(join(tmpdir(), 'ouroboros-scheduler-registry-empty-'));
+        directories.push(dataDir);
+        await seedMission(dataDir);
+        const port = await unusedPort();
+        const stopWithoutRegistry = await startDaemon(dataDir, port);
+        stopDaemons.push(stopWithoutRegistry);
+        const waiting = await waitFor(
+            () => readDurableState(dataDir),
+            (item) => item.missionState === 'waiting_for_capability' || item.missionState === 'blocked',
+        );
+        expect(waiting.missionState).toBe('waiting_for_capability');
+        expect(waiting.invocationStatus).toBeUndefined();
+        await stopWithoutRegistry();
+
+        let externalInvokeCount = 0;
+        const descriptor = makeDescriptor(ReconciliationSupport.NONE);
+        const connector = makeConnector(descriptor, async (request) => {
+            externalInvokeCount++;
+            return {
+                status: CapabilityResultStatus.COMPLETED,
+                requestId: request.requestId,
+                summary: 'Registered owner completed the read',
+                evidence: [],
+            };
+        });
+        const stopAfterRegistration = await startDaemon(dataDir, port, (registry, seam) => {
+            registry.register(descriptor);
+            seam.registerConnector(CAPABILITY_ID, connector);
+        });
+        stopDaemons.push(stopAfterRegistration);
+        const resumed = await waitFor(() => readDurableState(dataDir), (item) => item.invocationStatus === 'completed');
+        expect(resumed.invocationStatus).toBe('completed');
+        expect(externalInvokeCount).toBe(1);
+        await stopAfterRegistration();
+    });
+
+    it('does not wake itself while a registered capability has no connector', async () => {
+        const dataDir = await mkdtemp(join(tmpdir(), 'ouroboros-scheduler-no-connector-'));
+        directories.push(dataDir);
+        await seedMission(dataDir);
+        const store = new SqliteMissionStore(join(dataDir, 'missions.db'));
+        await store.initialize();
+        const resolver = new FakeCapabilityResolver();
+        resolver.registerMany(makeDefaultCapabilityCatalog());
+        const clock = new FakeClock(DATA_TIME);
+        const engine = new MissionEngine({
+            store,
+            policy: new PlanPolicyValidator(resolver),
+            clock,
+            ids: new FakeIdGenerator('driver-loop'),
+            interpreter: (intent) => intent.originalIntent,
+            verificationAuthority: new FakeVerificationAuthority(),
+        });
+        const registry = new CapabilityRegistry();
+        registry.register(makeDescriptor(ReconciliationSupport.NONE));
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam: new ConnectorDispatchSeam(engine, registry, clock),
+            clock,
+        });
+        const timer = new CountingFakeTimer();
+        let passes = 0;
+        let mutations = 0;
+        let stateChanges = 0;
+        const unsubscribe = store.onMutation?.((mutation) => {
+            mutations++;
+            if (mutation.entity === 'mission' && mutation.kind === 'state_changed') stateChanges++;
+        });
+        const driver = new MissionSchedulerDriver({
+            scheduler: { runOnce: async () => { passes++; return scheduler.runOnce(); } },
+            store,
+            timer,
+        });
+
+        const started = driver.start();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await driver.stop();
+        await started;
+        const passesAtStop = passes;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        const mission = await store.getMission(MISSION_ID);
+        const invocations = await store.listInvocations(MISSION_ID);
+
+        expect(mission?.state).toBe('waiting_for_capability');
+        expect(passesAtStop).toBeLessThanOrEqual(2);
+        expect(passes).toBe(passesAtStop);
+        expect(stateChanges).toBeLessThanOrEqual(1);
+        expect(mutations).toBeLessThanOrEqual(2);
+        expect(timer.pendingTimers).toBe(0);
+        expect(invocations).toHaveLength(0);
+        unsubscribe?.();
+        await store.close();
+    });
 });
+
+class CountingFakeTimer implements MissionSchedulerDriverTimer {
+    private currentTime = new Date(DATA_TIME);
+    private nextId = 1;
+    private readonly timers = new Map<number, () => void>();
+
+    now(): Date { return new Date(this.currentTime); }
+
+    setTimeout(callback: () => void, _delayMs: number): ReturnType<typeof setTimeout> {
+        const id = this.nextId++;
+        this.timers.set(id, callback);
+        return id as unknown as ReturnType<typeof setTimeout>;
+    }
+
+    clearTimeout(handle: ReturnType<typeof setTimeout>): void {
+        this.timers.delete(handle as unknown as number);
+    }
+
+    get pendingTimers(): number { return this.timers.size; }
+}
