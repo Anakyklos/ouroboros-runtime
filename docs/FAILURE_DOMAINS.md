@@ -361,22 +361,35 @@ not automatically retried until another relevant durable change or restart.
 - **Propagation / backpressure:** EventBus redacts values and catches listener
   exceptions. Public event types/payloads are allowlisted. Projection sends a
   snapshot before queued handshake events; default handshake capacity is 32
-  events per client and the default buffered socket limit is 1 MiB. Exceeding
-  either limit, an invalid socket, snapshot read failure, or send exception
-  closes only that client. There is no history replay and no total connected
-  client cap.
+  events per client and the default buffered socket limit is 1 MiB. The
+  projection map also owns a finite aggregate limit of 64 reservations/clients
+  by default (`maxProjectionClients` may configure a positive safe integer).
+  The slot is reserved after authentication, scope and Origin checks, before
+  WebSocket upgrade and snapshot I/O. At capacity the daemon returns HTTP 503
+  without a snapshot or connected-client/timer registration. Disconnect,
+  revocation, expiry, snapshot failure, request error and transport cleanup
+  release the slot. Exceeding a per-client bound, an invalid socket, snapshot
+  read failure, or send exception closes only that client. The default 64 is a
+  bounded fan-out choice alongside the existing per-client limits, not a
+  measured memory budget: at most 2,048 handshake event entries can be queued
+  across 64 clients, while buffered bytes remain governed per socket. There is
+  no history replay.
 - **Restart / truth / uncertainty:** sequence, clients, and pending handshake
   events are volatile and reset on process restart. A reconnect obtains a
   current snapshot; disconnect does not cancel, retry, or replay Mission or
   connector effects. A missed transient event is not recovered as an event,
   but current durable facts can be reconstructed from the snapshot. The stream
   does not promise distributed exactly-once delivery and is not Mission truth.
-- **Evidence / gap:** `daemon-projection.test.ts` covers bounded handshake,
-  slow-client isolation, send failure, and snapshot failure; `DAEMON_EVENT_CONTRACT.md`
-  documents reconnect from snapshot. **P2:** per-client buffers are bounded,
-  but total clients and transient event history are not bounded/persisted.
-  Relevant code: `event-bus.ts:127-150`,
-  `daemon-projection.ts:34-72,79-105,127-203`, `server.ts:91-155`.
+- **Evidence / gap:** `daemon-projection.test.ts` covers the finite default,
+  configured admission, handshake reservations, cleanup and per-client
+  backpressure/failure. `local-control-auth.e2e.test.ts` exercises concurrent
+  handshakes through real Fastify/WebSocket with temporary SQLite, capacity
+  rejection without snapshot, continued healthy event delivery and RPC,
+  revocation/disconnect release, and shared auth-timer ownership.
+  `DAEMON_EVENT_CONTRACT.md` documents reconnect from snapshot. **P2:** this is
+  a cardinality bound, not a process-wide byte budget; transient event history
+  is still not persisted or replayed. Relevant code:
+  `event-bus.ts:127-150`, `daemon-projection.ts`, `server.ts`.
 
 ## Persistence ownership summary
 

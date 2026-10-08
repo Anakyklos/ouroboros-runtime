@@ -60,6 +60,24 @@ Todo `POST /rpc` exige bearer credential e o escopo server-side correspondente �
 
 O handshake de `GET /ws` autentica e exige `mission.read` antes da conexão e do snapshot. O browser troca seu bearer em memória por um cookie HttpOnly, SameSite=Strict, vinculado à Origin e válido por cinco minutos. O servidor revalida credenciais e escopo de streams ativos a cada 500 ms, fechando conexões após expiração, rotação ou revogação. Provisionamento, rotação e revogação offline estão descritos em [LOCAL_CONTROL_AUTH.md](LOCAL_CONTROL_AUTH.md). O daemon não inicia sem ao menos uma credencial ativa.
 
+### Admissão agregada
+
+Após autenticação, validação de `mission.read` e validação de Origin, o daemon
+reserva um slot antes do upgrade WebSocket e da leitura assíncrona do snapshot.
+O limite padrão é 64 slots simultâneos entre handshakes e streams ativos; a
+configuração `maxProjectionClients` pode definir outro inteiro positivo seguro.
+Quando a capacidade está cheia, o handshake recebe HTTP 503 com erro genérico,
+sem snapshot, registro de cliente conectado ou timer de revalidação. A
+verificação de capacidade não substitui autenticação/autorização: clientes sem
+credencial, escopo ou Origin válidos continuam recebendo a rejeição própria da
+boundary mesmo quando cheia.
+
+O slot é liberado em disconnect, falha de snapshot/request, revogação, expiração
+e cleanup de shutdown/startup failure. A capacidade cheia não altera estado de
+Mission, não fecha streams saudáveis e não afeta RPC HTTP autorizado. O limite
+é de cardinalidade, não um orçamento global de bytes; permanecem os limites
+individuais de fila de handshake e de bytes buffered.
+
 ## Lifecycle
 
 O daemon registra um único wildcard listener e mantém seu unsubscribe. `stop()` remove esse listener e fecha clientes. A conexão frontend remove handlers do socket, cancela o timer de backoff e invalida callbacks antigos. Cada instância mantém no máximo um timer de reconexão.

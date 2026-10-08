@@ -10,7 +10,7 @@ import websocket from '@fastify/websocket';
 import type { ServerResponse } from 'node:http';
 import { EventBus, globalEventBus } from './event-bus.js';
 import { RpcGateway, type DaemonRpcGatewayPort } from './rpc-gateway.js';
-import { DaemonProjection, type ProjectionClient } from './daemon-projection.js';
+import { DaemonProjection, type ProjectionClient, type ProjectionClientReservation } from './daemon-projection.js';
 import { projectInvocation, projectMission } from './durable-projection.js';
 import {
     isAllowedDaemonEvent,
@@ -35,6 +35,7 @@ import { projectDaemonStatus } from './durable-projection.js';
 export interface DaemonConfig {
     port: number;
     host: string;
+    maxProjectionClients?: number;
 }
 
 const DEFAULT_CONFIG: DaemonConfig = {
@@ -116,7 +117,10 @@ export class DaemonServer {
     private readonly authorization?: LocalControlAuthorizationPort;
     private readonly websocketPrincipals = new Map<ProjectionClient, { socket: { close(code?: number, reason?: string): void }; principal: LocalControlAuthenticatedClient }>();
     private websocketAuthorizationTimer: ReturnType<typeof setInterval> | null = null;
-    private readonly websocketPrincipalByRequest = new WeakMap<object, LocalControlAuthenticatedClient>();
+    private readonly websocketAdmissionByRequest = new WeakMap<object, {
+        principal: LocalControlAuthenticatedClient;
+        reservation: ProjectionClientReservation;
+    }>();
 
     constructor(
         storage: StoragePort,
@@ -140,6 +144,7 @@ export class DaemonServer {
             onShutdownRequested,
         );
         this.projection = new DaemonProjection({
+            maxClients: this.config.maxProjectionClients,
             snapshot: async (cursor) => ({
                 ...await this.rpcGateway.getProjectionSnapshot(),
                 cursor,
@@ -244,7 +249,20 @@ export class DaemonServer {
         this.app.server.closeIdleConnections?.();
     }
 
+    private releasePendingWebSocketAdmission(request: object): void {
+        const admission = this.websocketAdmissionByRequest.get(request);
+        if (!admission) return;
+        this.websocketAdmissionByRequest.delete(request);
+        this.projection.releaseReservation(admission.reservation);
+    }
+
     private setupRoutes(): void {
+        this.app.addHook('onError', async (request) => {
+            this.releasePendingWebSocketAdmission(request);
+        });
+        this.app.addHook('onResponse', async (request) => {
+            this.releasePendingWebSocketAdmission(request);
+        });
         this.app.addHook('onRequest', async (request, reply) => {
             const origin = request.headers.origin;
             if (origin !== undefined) {
@@ -317,22 +335,52 @@ export class DaemonServer {
                 if (!principal.scopes.includes('mission.read')) {
                     return sendBoundaryError(reply, 403, 'FORBIDDEN', 'The requested operation is not authorized');
                 }
-                this.websocketPrincipalByRequest.set(request, principal);
+                if (!this.acceptingRpc) {
+                    return sendBoundaryError(reply, 503, 'SERVICE_UNAVAILABLE', 'The daemon is not accepting WebSocket clients');
+                }
+                const reservation = this.projection.reserveClient();
+                if (!reservation) {
+                    return sendBoundaryError(reply, 503, 'SERVICE_UNAVAILABLE', 'WebSocket client capacity is unavailable');
+                }
+                this.websocketAdmissionByRequest.set(request, { principal, reservation });
             },
         }, (socket, request) => {
+            const admission = this.websocketAdmissionByRequest.get(request);
+            this.websocketAdmissionByRequest.delete(request);
             if (!this.acceptingRpc) {
+                if (admission) this.projection.releaseReservation(admission.reservation);
                 socket.close(1001, 'Daemon is shutting down');
                 return;
             }
-            const principal = this.websocketPrincipalByRequest.get(request);
-            if (!principal || !this.authorization?.isClientStillAuthorized(principal, 'mission.read')) {
+            let stillAuthorized = false;
+            try {
+                stillAuthorized = Boolean(admission && this.authorization?.isClientStillAuthorized(admission.principal, 'mission.read'));
+            } catch {
+                this.eventBus.log('warn', 'WebSocket authorization check failed before projection admission', 'DaemonServer');
+            }
+            if (!admission || !stillAuthorized) {
+                if (admission) this.projection.releaseReservation(admission.reservation);
                 socket.close(1008, 'Not authorized');
                 return;
             }
-            const client = this.createAuthorizedProjectionClient(socket, principal);
-            this.websocketPrincipals.set(client, { socket, principal });
+            const client = this.createAuthorizedProjectionClient(socket, admission.principal);
+            const snapshot = this.projection.connectClient(client, admission.reservation);
+            this.websocketPrincipals.set(client, { socket, principal: admission.principal });
             this.syncWebSocketAuthorizationTimer();
-            this.projection.connectClient(client);
+            void snapshot.then((admitted) => {
+                if (admitted) return;
+                this.projection.releaseReservation(admission.reservation);
+                this.projection.disconnectClient(client);
+                this.websocketPrincipals.delete(client);
+                this.syncWebSocketAuthorizationTimer();
+                socket.close(1011, 'WebSocket client could not be admitted');
+            }).catch(() => {
+                this.projection.releaseReservation(admission.reservation);
+                this.projection.disconnectClient(client);
+                this.websocketPrincipals.delete(client);
+                this.syncWebSocketAuthorizationTimer();
+                socket.close(1011, 'WebSocket projection failed');
+            });
             let disconnected = false;
             const disconnect = () => {
                 if (disconnected) return;

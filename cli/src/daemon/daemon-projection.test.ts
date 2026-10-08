@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { DaemonProjection, type ProjectionClient } from "./daemon-projection.js";
+import { DaemonProjection, DEFAULT_MAX_PROJECTION_CLIENTS, type ProjectionClient } from "./daemon-projection.js";
 import type {
   DaemonMissionEventData,
   DaemonSnapshot,
@@ -89,6 +89,19 @@ function readEnvelope(messages: string[], index: number): Record<string, any> {
 }
 
 describe("DaemonProjection", () => {
+  it("uses a finite default capacity", () => {
+    const projection = new DaemonProjection({ snapshot: createSnapshot });
+    for (let index = 0; index < DEFAULT_MAX_PROJECTION_CLIENTS; index += 1) {
+      expect(projection.reserveClient()).not.toBeNull();
+    }
+    expect(DEFAULT_MAX_PROJECTION_CLIENTS).toBeGreaterThan(0);
+    expect(projection.connectedClientCount).toBe(0);
+    expect(projection.admittedClientCount).toBe(DEFAULT_MAX_PROJECTION_CLIENTS);
+    expect(projection.reserveClient()).toBeNull();
+    projection.closeClients();
+    expect(projection.connectedClientCount).toBe(0);
+  });
+
   it("uses one snapshot envelope before contiguous normal events", async () => {
     const projection = new DaemonProjection({
       snapshot: createSnapshot,
@@ -116,6 +129,63 @@ describe("DaemonProjection", () => {
     expect(event.sequence).toBe(2);
     expect(event.data).toEqual(missionEvent);
     expect(projection.currentSequence).toBe(2);
+  });
+
+  it("rejects clients above the configured global admission limit before sending a snapshot", async () => {
+    const projection = new DaemonProjection({
+      snapshot: createSnapshot,
+      maxClients: 2,
+    });
+    const first = new FakeClient();
+    const second = new FakeClient();
+    const third = new FakeClient();
+
+    await projection.connectClient(first);
+    await projection.connectClient(second);
+    await projection.connectClient(third);
+
+    expect(projection.admittedClientCount).toBe(2);
+    expect(first.messages).toHaveLength(1);
+    expect(second.messages).toHaveLength(1);
+    expect(third.messages).toHaveLength(0);
+    expect(third.closeCalls).toBe(1);
+  });
+
+  it("counts handshake reservations and releases them on snapshot failure and transport cleanup", async () => {
+    let failFirstSnapshot = true;
+    const projection = new DaemonProjection({
+      snapshot: async (cursor) => {
+        if (failFirstSnapshot) {
+          failFirstSnapshot = false;
+          throw new Error("private snapshot failure");
+        }
+        return createSnapshot(cursor);
+      },
+      maxClients: 1,
+    });
+    const failed = new FakeClient();
+    await projection.connectClient(failed);
+    expect(failed.closeCalls).toBe(1);
+    expect(projection.connectedClientCount).toBe(0);
+
+    const reservation = projection.reserveClient();
+    expect(reservation).not.toBeNull();
+    expect(projection.reserveClient()).toBeNull();
+    const closedDuringUpgrade = new FakeClient();
+    closedDuringUpgrade.readyState = 3;
+    expect(await projection.connectClient(closedDuringUpgrade, reservation!)).toBe(false);
+    expect(projection.admittedClientCount).toBe(0);
+
+    const cleanupReservation = projection.reserveClient();
+    expect(cleanupReservation).not.toBeNull();
+    projection.closeClients();
+    expect(projection.connectedClientCount).toBe(0);
+    expect(projection.admittedClientCount).toBe(0);
+
+    const next = new FakeClient();
+    await projection.connectClient(next);
+    expect(next.messages).toHaveLength(1);
+    expect(projection.connectedClientCount).toBe(1);
   });
 
   it("queues a bounded event during an asynchronous handshake and flushes after snapshot", async () => {

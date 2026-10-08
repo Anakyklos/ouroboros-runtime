@@ -22,15 +22,19 @@ import { writeLocalControlClientCredential } from "./local-control-auth.js";
 import { establishDaemonBrowserSession, setDaemonBearerToken } from "../../../web/src/lib/daemon-auth.js";
 
 interface RawFrame { opcode: number; payload: Buffer; }
+interface RawHandshakeResponse { status: number; headers: string; body: string; }
 
 class RawWebSocketProbe {
   private buffer = Buffer.alloc(0);
   private frames: RawFrame[] = [];
   private frameWaiters: Array<(frame: RawFrame) => void> = [];
-  private headerResolver!: (response: { status: number; headers: string }) => void;
+  private headerResolver!: (response: RawHandshakeResponse) => void;
   private headerRejecter!: (error: Error) => void;
   private headerTimer: ReturnType<typeof setTimeout>;
-  readonly response = new Promise<{ status: number; headers: string }>((resolve, reject) => {
+  private responseBody = Buffer.alloc(0);
+  private expectedResponseBodyLength = 0;
+  private isUpgradeResponse = false;
+  readonly response = new Promise<RawHandshakeResponse>((resolve, reject) => {
     this.headerResolver = resolve;
     this.headerRejecter = reject;
   });
@@ -79,6 +83,17 @@ class RawWebSocketProbe {
   close(): void { this.socket.destroy(); }
 
   private onData(chunk: Buffer): void {
+    if (this.headerResolved && !this.isUpgradeResponse) {
+      this.responseBody = Buffer.concat([this.responseBody, chunk]);
+      if (this.responseBody.length >= this.expectedResponseBodyLength) {
+        this.headerResolver({
+          status: this.responseStatus,
+          headers: this.headerText ?? "",
+          body: this.responseBody.subarray(0, this.expectedResponseBodyLength).toString("utf8"),
+        });
+      }
+      return;
+    }
     this.buffer = Buffer.concat([this.buffer, chunk]);
     const separator = this.buffer.indexOf("\r\n\r\n");
     if (separator >= 0 && !this.headerResolved) {
@@ -88,7 +103,22 @@ class RawWebSocketProbe {
       this.headerText = header;
       const status = Number(/^HTTP\/1\.1 (\d+)/.exec(header)?.[1] ?? 0);
       this.buffer = this.buffer.subarray(separator + 4);
-      this.headerResolver({ status, headers: header });
+      this.responseStatus = status;
+      this.isUpgradeResponse = status === 101;
+      if (this.isUpgradeResponse) {
+        this.headerResolver({ status, headers: header, body: "" });
+      } else {
+        this.expectedResponseBodyLength = Number(/^content-length:\s*(\d+)/im.exec(header)?.[1] ?? 0);
+        this.responseBody = Buffer.from(this.buffer);
+        this.buffer = Buffer.alloc(0);
+        if (this.responseBody.length >= this.expectedResponseBodyLength) {
+          this.headerResolver({
+            status,
+            headers: header,
+            body: this.responseBody.subarray(0, this.expectedResponseBodyLength).toString("utf8"),
+          });
+        }
+      }
     }
     if (!this.headerResolved || !/^HTTP\/1\.1 101 /.test(this.headerText ?? "")) return;
     this.readFrames();
@@ -96,6 +126,7 @@ class RawWebSocketProbe {
 
   private headerResolved = false;
   private headerText: string | null = null;
+  private responseStatus = 0;
 
   private readFrames(): void {
     while (this.buffer.length >= 2) {
@@ -128,6 +159,14 @@ async function unusedPort(): Promise<number> {
   if (!address || typeof address === "string") throw new Error("could not allocate loopback port");
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   return address.port;
+}
+
+async function waitForCondition(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for the expected local test state");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 describe("local-control authentication over real Fastify and SQLite", () => {
@@ -644,6 +683,130 @@ describe("local-control authentication over real Fastify and SQLite", () => {
       await timerServer.stop();
       setIntervalSpy.mockRestore();
       clearIntervalSpy.mockRestore();
+    }
+  });
+
+  it("bounds concurrent projection clients and releases capacity without affecting healthy streams or RPC", async () => {
+    const targetPort = await unusedPort();
+    const targetEventBus = new EventBus();
+    const delegate = new RpcGateway(daemonStorage, targetEventBus, missionStore);
+    let snapshotReads = 0;
+    let releaseSnapshots!: () => void;
+    const snapshotsReleased = new Promise<void>((resolve) => { releaseSnapshots = resolve; });
+    const gatedGateway: DaemonRpcGatewayPort = {
+      registerMethod: (name, handler) => delegate.registerMethod(name, handler),
+      handleRequest: (request) => delegate.handleRequest(request),
+      getProjectionSnapshot: async (cursor) => {
+        snapshotReads += 1;
+        await snapshotsReleased;
+        return delegate.getProjectionSnapshot(cursor);
+      },
+    };
+    const boundedServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1", maxProjectionClients: 2 },
+      targetEventBus,
+      missionStore,
+      gatedGateway,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    const setIntervalSpy = spyOn(globalThis, "setInterval");
+    const authIntervals = () => setIntervalSpy.mock.calls.filter((call) => call[1] === 500);
+    const firstToken = credentialStore.provision("capacity-first", ["mission.read"], Date.now() + 60_000).token;
+    const secondToken = credentialStore.provision("capacity-second", ["mission.read"], Date.now() + 60_000).token;
+    const thirdToken = credentialStore.provision("capacity-third", ["mission.read"], Date.now() + 60_000).token;
+    const fourthToken = credentialStore.provision("capacity-fourth", ["mission.read"], Date.now() + 60_000).token;
+    const rpcToken = credentialStore.provision("capacity-rpc", ["mission.read"], Date.now() + 60_000).token;
+    let first: RawWebSocketProbe | undefined;
+    let second: RawWebSocketProbe | undefined;
+    let overCapacity: RawWebSocketProbe | undefined;
+    let replacement: RawWebSocketProbe | undefined;
+    let afterDisconnect: RawWebSocketProbe | undefined;
+    try {
+      await boundedServer.start();
+      [first, second] = await Promise.all([
+        RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${firstToken}` }),
+        RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${secondToken}` }),
+      ]);
+      expect((await Promise.all([first.response, second.response])).map(({ status }) => status)).toEqual([101, 101]);
+      await waitForCondition(() => snapshotReads === 2);
+      expect(authIntervals()).toHaveLength(1);
+
+      const missionStateBeforeCapacityRejection = (await missionStore.getMission(missionId))?.state;
+      overCapacity = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${thirdToken}` });
+      const rejected = await overCapacity.response;
+      expect(rejected.status).toBe(503);
+      expect(JSON.parse(rejected.body)).toEqual({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: "SERVICE_UNAVAILABLE", message: "WebSocket client capacity is unavailable" },
+      });
+      expect(rejected.headers).not.toContain("Set-Cookie");
+      expect(snapshotReads).toBe(2);
+      expect(authIntervals()).toHaveLength(1);
+      expect(rejected.body).not.toContain(missionId);
+      expect(rejected.headers).not.toContain(missionId);
+      expect(rejected.headers).not.toContain(firstToken);
+      expect(rejected.body).not.toContain(firstToken);
+      expect((await missionStore.getMission(missionId))?.state).toBe(missionStateBeforeCapacityRejection);
+
+      const anonymous = await RawWebSocketProbe.connect(targetPort, {});
+      expect((await anonymous.response).status).toBe(401);
+      anonymous.close();
+      const wrongScope = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${controlToken}` });
+      expect((await wrongScope.response).status).toBe(403);
+      wrongScope.close();
+      const wrongOrigin = await RawWebSocketProbe.connect(targetPort, {
+        Authorization: `Bearer ${thirdToken}`,
+        Origin: "http://attacker.invalid",
+      });
+      expect((await wrongOrigin.response).status).toBe(403);
+      wrongOrigin.close();
+      expect(snapshotReads).toBe(2);
+      expect(authIntervals()).toHaveLength(1);
+
+      const rpcWhileFull = await fetch(`http://127.0.0.1:${targetPort}/rpc`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${rpcToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "system.version", method: "system.version", params: {} }),
+      });
+      expect(rpcWhileFull.status).toBe(200);
+
+      credentialStore.provision("capacity-first", ["mission.control"], Date.now() + 60_000);
+      expect((await first.nextFrame(2_000)).opcode).toBe(8);
+      replacement = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${thirdToken}` });
+      expect((await replacement.response).status).toBe(101);
+      await waitForCondition(() => snapshotReads === 3);
+      expect(authIntervals()).toHaveLength(1);
+
+      releaseSnapshots();
+      expect((await second.nextFrame()).payload.toString("utf8")).toContain(missionId);
+      expect((await replacement.nextFrame()).payload.toString("utf8")).toContain(missionId);
+      targetEventBus.emit("daemon", { type: "ready", port: targetPort });
+      expect((await second.nextFrame()).payload.toString("utf8")).toContain('"event":"daemon"');
+      expect((await replacement.nextFrame()).payload.toString("utf8")).toContain('"event":"daemon"');
+
+      replacement.close();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      afterDisconnect = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${fourthToken}` });
+      expect((await afterDisconnect.response).status).toBe(101);
+      expect((await afterDisconnect.nextFrame()).payload.toString("utf8")).toContain(missionId);
+      expect(snapshotReads).toBe(4);
+      expect(authIntervals()).toHaveLength(1);
+      targetEventBus.emit("daemon", { type: "ready", port: targetPort });
+      expect((await second.nextFrame()).payload.toString("utf8")).toContain('"event":"daemon"');
+      expect((await afterDisconnect.nextFrame()).payload.toString("utf8")).toContain('"event":"daemon"');
+    } finally {
+      releaseSnapshots();
+      first?.close();
+      second?.close();
+      overCapacity?.close();
+      replacement?.close();
+      afterDisconnect?.close();
+      await boundedServer.stop();
+      setIntervalSpy.mockRestore();
     }
   });
 
