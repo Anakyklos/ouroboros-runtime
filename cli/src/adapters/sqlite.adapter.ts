@@ -200,19 +200,27 @@ export class SqliteAdapter implements StoragePort {
         db.prepare(`UPDATE sessions SET ${updates.join(', ')} WHERE id = ?`).run(...values);
     }
 
-    async listSessions(filter?: { status?: Session['status'] }): Promise<SessionSummary[]> {
+    async listSessions(filter?: { status?: Session['status']; limit?: number }): Promise<SessionSummary[]> {
         let stmt: Statement;
         const params: SQLQueryBindings[] = [];
+        const limit = Number.isSafeInteger(filter?.limit) && (filter?.limit ?? 0) > 0 ? filter?.limit : undefined;
 
         // Optimize: Select only summary fields, excluding large context_snapshot
         const queryCols = 'id, created_at, updated_at, status, metadata';
 
         if (filter?.status) {
-            stmt = this.getStatement('listSessionsByStatus', `SELECT ${queryCols} FROM sessions WHERE status = ? ORDER BY created_at DESC`);
+            stmt = this.getStatement(
+                limit === undefined ? 'listSessionsByStatus' : 'listSessionsByStatusLimited',
+                `SELECT ${queryCols} FROM sessions WHERE status = ? ORDER BY created_at DESC${limit === undefined ? '' : ' LIMIT ?'}`,
+            );
             params.push(filter.status);
         } else {
-            stmt = this.getStatement('listSessionsAll', `SELECT ${queryCols} FROM sessions ORDER BY created_at DESC`);
+            stmt = this.getStatement(
+                limit === undefined ? 'listSessionsAll' : 'listSessionsAllLimited',
+                `SELECT ${queryCols} FROM sessions ORDER BY created_at DESC${limit === undefined ? '' : ' LIMIT ?'}`,
+            );
         }
+        if (limit !== undefined) params.push(limit);
 
         const rows = stmt.all(...params) as Array<{
             id: string;

@@ -569,8 +569,10 @@ export class SessionManager {
         return this.storage.getSession(id);
     }
 
-    async listSessions(status?: string): Promise<SessionSummary[]> {
-        const filter = status ? { status: status as Session['status'] } : undefined;
+    async listSessions(status?: string, limit?: number): Promise<SessionSummary[]> {
+        const filter = status || limit !== undefined
+            ? { ...(status ? { status: status as Session['status'] } : {}), ...(limit !== undefined ? { limit } : {}) }
+            : undefined;
         return this.storage.listSessions(filter);
     }
 

@@ -3,6 +3,9 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
+const daemonHttpTarget = process.env.OUROBOROS_DEV_DAEMON_URL || 'http://localhost:7777'
+const daemonWebSocketTarget = daemonHttpTarget.replace(/^http/, 'ws')
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
@@ -16,16 +19,21 @@ export default defineConfig({
     allowedHosts: ['hematoxylic-chiasmal-thea.ngrok-free.dev'],
     proxy: {
       '/api': {
-        target: 'http://localhost:7777',
+        target: daemonHttpTarget,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
       '/ws': {
-        target: 'ws://localhost:7777',
+        target: daemonWebSocketTarget,
         ws: true,
+        changeOrigin: false,
+      },
+      '/auth/browser-session': {
+        target: daemonHttpTarget,
+        changeOrigin: false,
       },
       '/rpc': {
-        target: 'http://localhost:7777',
+        target: daemonHttpTarget,
         changeOrigin: true,
       },
     },

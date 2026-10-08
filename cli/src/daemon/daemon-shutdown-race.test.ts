@@ -6,6 +6,7 @@ import { DaemonShutdownCoordinator } from './shutdown-coordinator.js';
 import { MissionState, type Mission } from '../mission/contracts.js';
 import type { StoragePort } from '../ports/storage.port.js';
 import type { FastifyInstance } from 'fastify';
+import { permissiveLocalControlTestAuth } from './local-control-test-auth.js';
 
 function pausedMission(): Mission {
     return {
@@ -47,7 +48,7 @@ describe('RPC shutdown and pending Mission command', () => {
         const onSendReached = new Promise<void>((resolve) => { reachedOnSend = resolve; });
         const onSendRelease = new Promise<void>((resolve) => { releaseOnSend = resolve; });
         const port = await freePort();
-        const server = new DaemonServer({} as StoragePort, { port, host: '127.0.0.1' }, new EventBus());
+        const server = new DaemonServer({} as StoragePort, { port, host: '127.0.0.1' }, new EventBus(), undefined, undefined, undefined, undefined, permissiveLocalControlTestAuth);
         fastifyApp(server).addHook('onSend', async (request, _reply, payload) => {
             if ((request.body as { method?: string } | undefined)?.method === 'system.version') {
                 reachedOnSend();
@@ -88,6 +89,9 @@ describe('RPC shutdown and pending Mission command', () => {
             new EventBus(),
             undefined,
             failingGateway,
+            undefined,
+            undefined,
+            permissiveLocalControlTestAuth,
         );
         await server.start();
 
@@ -96,8 +100,9 @@ describe('RPC shutdown and pending Mission command', () => {
                 method: 'POST', headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ jsonrpc: '2.0', id: 'failing-handler', method: 'system.version' }),
             });
-            await response.arrayBuffer();
-            expect(response.status).toBe(500);
+            const responseText = await response.text();
+            expect(response.status).toBe(200);
+            expect(responseText).not.toContain('PRIVATE');
             expect(inFlightRpc(server)).toBe(0);
         } finally {
             await server.stop();
@@ -123,6 +128,7 @@ describe('RPC shutdown and pending Mission command', () => {
             undefined,
             undefined,
             () => { shutdownPromise = lifecycle.requestShutdown('RPC'); },
+            permissiveLocalControlTestAuth,
         );
         lifecycle = new DaemonShutdownCoordinator({
             stopServer: () => server.stop(),
@@ -182,6 +188,8 @@ describe('RPC shutdown and pending Mission command', () => {
             undefined,
             undefined,
             authority,
+            undefined,
+            permissiveLocalControlTestAuth,
         );
         lifecycle = new DaemonShutdownCoordinator({
             stopServer: () => server.stop(),
@@ -250,7 +258,7 @@ describe('RPC shutdown and pending Mission command', () => {
         const eventBus = new EventBus();
         const logMessages: string[] = [];
         eventBus.on('log', (event) => logMessages.push(event.message));
-        const server = new DaemonServer({} as StoragePort, { port, host: '127.0.0.1' }, eventBus);
+        const server = new DaemonServer({} as StoragePort, { port, host: '127.0.0.1' }, eventBus, undefined, undefined, undefined, undefined, permissiveLocalControlTestAuth);
         fastifyApp(server).addHook('onSend', async (request, _reply, payload) => {
             if ((request.body as { method?: string } | undefined)?.method === 'system.version') {
                 reachedOnSend();
@@ -307,6 +315,7 @@ describe('RPC shutdown and pending Mission command', () => {
             undefined,
             authority,
             () => { void lifecycle.requestShutdown('RPC'); },
+            permissiveLocalControlTestAuth,
         );
         lifecycle = new DaemonShutdownCoordinator({
             stopServer: () => server.stop(),

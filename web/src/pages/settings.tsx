@@ -3,6 +3,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useSettingsStore, type Theme, type UILayout } from "@/stores/settings-store";
+import { setDaemonBearerToken, establishDaemonBrowserSession, normalizeDaemonWebSocketUrl, waitForDaemonSnapshot } from "@/lib/daemon-auth";
 import { 
   Moon, 
   Sun, 
@@ -37,6 +38,7 @@ function SettingsSection({ title, icon, children }: SettingsSectionProps) {
 export function Settings() {
   const settings = useSettingsStore();
   const [hasChanges, setHasChanges] = useState(false);
+  const [daemonCredential, setDaemonCredential] = useState("");
 
   const handleChange = <T,>(setter: (value: T) => void, value: T) => {
     setter(value);
@@ -230,33 +232,29 @@ export function Settings() {
               </div>
 
               <div>
-                <label className="text-sm font-medium mb-2 block">API Key (optional)</label>
+                <label className="text-sm font-medium mb-2 block">Daemon bearer credential</label>
                 <input
                   type="password"
-                  value={settings.daemonConfig.apiKey}
-                  onChange={(e) => handleChange(settings.setDaemonConfig, { apiKey: e.target.value })}
-                  placeholder="Enter API key if required"
+                  value={daemonCredential}
+                  onChange={(e) => { setDaemonCredential(e.target.value); setDaemonBearerToken(e.target.value); }}
+                  placeholder="Enter local-control credential"
                   className="w-full px-3 py-2 rounded-lg bg-[var(--secondary)] border border-[var(--border)] 
                     focus:border-emerald focus:outline-none font-mono text-sm"
                 />
                 <p className="text-xs text-[var(--muted-foreground)] mt-1">
-                  Authentication key for secured daemon instances
+                  Kept in browser memory and exchanged for a short-lived HttpOnly stream session
                 </p>
               </div>
 
               <button
                 onClick={async () => {
                   try {
-                    const ws = new WebSocket(settings.daemonConfig.websocketUrl);
-                    ws.onopen = () => {
-                      ws.close();
-                      alert("Connection successful!");
-                    };
-                    ws.onerror = () => {
-                      alert("Connection failed. Check the WebSocket URL.");
-                    };
+                    const websocketUrl = normalizeDaemonWebSocketUrl(settings.daemonConfig.websocketUrl);
+                    await establishDaemonBrowserSession(websocketUrl);
+                    await waitForDaemonSnapshot(websocketUrl);
+                    alert("Connection successful!");
                   } catch (e) {
-                    alert("Connection failed: " + String(e));
+                    alert("Connection failed: " + (e instanceof Error ? e.message : "daemon unavailable"));
                   }
                 }}
                 className="px-4 py-2 rounded-lg border border-emerald text-emerald hover:bg-emerald hover:text-black transition-colors"

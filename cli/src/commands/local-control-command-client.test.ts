@@ -155,6 +155,7 @@ describe("LocalControlCommandClient", () => {
   it("uses the command RPC method with one request and its versioned payload", async () => {
     const requests: Array<{ method: string; params: unknown }> = [];
     const rpc = new LoopbackJsonRpcTransport({
+      authorization: "Bearer test-credential",
       fetch: async (_url, init) => {
         const body = JSON.parse(String(init?.body)) as { jsonrpc: string; id: string; method: string; params: unknown };
         requests.push({ method: body.method, params: body.params });

@@ -5,6 +5,7 @@ import { DAEMON_EVENT_VERSION } from "../../../shared/daemon-event-contract.js";
 import { LOCAL_CONTROL_PROTOCOL_VERSION } from "../../../shared/local-control-read-contract.js";
 import { LOCAL_CONTROL_COMMAND_PROTOCOL_VERSION } from "../../../shared/local-control-command-contract.js";
 import { EventBus } from './event-bus.js';
+import { permissiveLocalControlTestAuth } from './local-control-test-auth.js';
 import type { StoragePort } from "../ports/storage.port.js";
 import { SqliteMissionStore } from "../mission/sqlite-mission-store.js";
 import { MissionEngine } from "../mission/mission-engine.js";
@@ -121,7 +122,7 @@ describe("DaemonServer", () => {
     }, eventBus, missionStore, undefined, new MissionEngine({
       store: missionStore,
       policy: new PlanPolicyValidator(resolver),
-    }));
+    }), undefined, permissiveLocalControlTestAuth);
 
     await server.start();
     expect(eventBus.listenerCount("*")).toBe(1);
@@ -309,8 +310,8 @@ describe("DaemonServer", () => {
         body: JSON.stringify({ jsonrpc: "2.0", id: `legacy-${index}`, ...request }),
       });
       const body = await response.json() as { error?: { code?: number; message?: string } };
-      expect(body.error?.code).toBe(-32601);
-      expect(body.error?.message).toContain("Method not found");
+      expect(body.error?.code).toBe("FORBIDDEN");
+      expect(body.error?.message).toContain("not authorized");
     }
   });
 
@@ -321,7 +322,7 @@ describe("DaemonServer", () => {
     const legacyServer = new DaemonServer(storage, {
       port: TEST_PORT + 1,
       host: "127.0.0.1",
-    }, new EventBus(), undefined, legacyGateway);
+    }, new EventBus(), undefined, legacyGateway, undefined, undefined, permissiveLocalControlTestAuth);
 
     try {
       await legacyServer.start();
@@ -330,12 +331,8 @@ describe("DaemonServer", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: "legacy-opt-in", method: "daemon.list_agents" }),
       });
-      const body = await response.json() as { result?: { agents?: Record<string, string> } };
-      expect(body.result?.agents).toMatchObject({
-        gemini: "unavailable",
-        antigravity: "unavailable",
-        jules: "unavailable",
-      });
+      const body = await response.json() as { error?: { code?: string } };
+      expect(body.error?.code).toBe("FORBIDDEN");
     } finally {
       await legacyServer.stop();
     }

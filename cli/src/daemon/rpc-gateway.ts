@@ -15,6 +15,8 @@ import { projectDaemonStatus } from './durable-projection.js';
 import type { MissionStore } from '../mission/ports.js';
 import type { CapabilityRegistryApi } from '../capabilities/registry.js';
 import { LocalControlCommandService, type MissionCommandAuthority } from './local-control-command.js';
+import { SESSION_RPC_MAX_ITEMS } from '../../../shared/session-rpc-contract.js';
+import { projectSessionGetResult, projectSessionListResult } from './session-rpc-projection.js';
 
 export interface DaemonRpcGatewayPort extends RpcPort {
     getProjectionSnapshot(cursor?: number): Promise<DaemonSnapshot>;
@@ -86,7 +88,7 @@ export class RpcGateway implements DaemonRpcGatewayPort {
                 id: request.id,
                 error: {
                     code: RPC_ERROR_CODES.METHOD_NOT_FOUND,
-                    message: `Method not found: ${request.method}`,
+                    message: 'Method not found',
                 },
             };
         }
@@ -97,13 +99,13 @@ export class RpcGateway implements DaemonRpcGatewayPort {
                 id: request.id,
                 result: await handler(request.params ?? {}),
             };
-        } catch (err) {
+        } catch {
             return {
                 jsonrpc: '2.0',
                 id: request.id,
                 error: {
                     code: RPC_ERROR_CODES.INTERNAL_ERROR,
-                    message: err instanceof Error ? err.message : String(err),
+                    message: 'The RPC request could not be completed',
                 },
             };
         }
@@ -131,13 +133,13 @@ export class RpcGateway implements DaemonRpcGatewayPort {
     }
 
     private registerReadOnlySessionMethods(): void {
-        this.registerMethod('session.list', async (params) => ({
-            sessions: await this.sessionManager.listSessions(params.status as string | undefined),
-        }));
+        this.registerMethod('session.list', async (params) => projectSessionListResult(
+            await this.sessionManager.listSessions(params.status as string | undefined, SESSION_RPC_MAX_ITEMS + 1),
+        ));
         this.registerMethod('session.get', async (params) => {
             const session = await this.sessionManager.getSession(params.id as string);
             if (!session) throw new Error(`Session not found: ${params.id}`);
-            return { session };
+            return projectSessionGetResult(session);
         });
     }
 
