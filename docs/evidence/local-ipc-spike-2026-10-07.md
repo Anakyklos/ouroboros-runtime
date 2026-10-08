@@ -46,9 +46,19 @@ or make that follow-up an architectural mandate.
   boundary is the current UID and owner-only filesystem permissions. Other
   processes under the same UID can connect.
 - Parent directory ownership/mode and socket inode are checked around bind,
-  chmod, stale cleanup, and shutdown. A same-UID process can still race path
-  replacement inside its own directory; this is within the same-user boundary
-  and should be reconsidered if that boundary changes.
+  chmod, stale cleanup, and shutdown. Each instance binds at a private random
+  pathname, captures its `dev`/`ino` in the listen callback, verifies the
+  pathname still matches, and applies `0600`. It publishes an atomic hard link
+  at the requested path. `link(2)` fails if another pathname already exists,
+  so a contender never replaces or cleans the winner. The private bind alias
+  is removed after publication; Bun's `net.Server.close()` only targets that
+  private alias. Cleanup removes the public path only while its inode still
+  matches the instance's published identity. Deterministic tests cover two
+  contenders, replacement before mode setup, post-publication initialization
+  failure, replacement of the public pathname, and shutdown with a substitute.
+- A same-UID process can still race path replacement inside its own directory;
+  this is within the same-user boundary and should be reconsidered if that
+  boundary changes.
 
 ## Parity, lifecycle, and limits exercised
 

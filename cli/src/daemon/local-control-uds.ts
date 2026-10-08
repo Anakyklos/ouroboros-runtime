@@ -1,6 +1,8 @@
-import { chmod, lstat, unlink } from "node:fs/promises";
+import { link, lstat } from "node:fs/promises";
+import { chmodSync, lstatSync, renameSync, unlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { createServer, createConnection, type Server, type Socket } from "node:net";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { isAbsolute } from "node:path";
 import type {
   LocalControlReadRequest,
@@ -60,14 +62,92 @@ async function prepareSocketPath(socketPath: string): Promise<void> {
   if (!current?.isSocket() || current.dev !== existing.dev || current.ino !== existing.ino) {
     throw new Error("UDS path changed during stale socket inspection");
   }
-  await unlink(socketPath);
+  unlinkSocketPathIfOwned(socketPath, existing);
+}
+
+interface SocketIdentity {
+  dev: number;
+  ino: number;
+}
+
+/** Remove a socket pathname only while its current inode still matches. */
+function unlinkSocketPathIfOwned(socketPath: string, identity: SocketIdentity): boolean {
+  try {
+    const current = lstatSync(socketPath);
+    if (!current.isSocket() || current.dev !== identity.dev || current.ino !== identity.ino) return false;
+    unlinkSync(socketPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function unlinkSocketPathIfOwnedOrMissing(socketPath: string, identity: SocketIdentity): boolean {
+  try {
+    const current = lstatSync(socketPath);
+    if (!current.isSocket() || current.dev !== identity.dev || current.ino !== identity.ino) return false;
+    unlinkSync(socketPath);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
+/** Keep a substituted pathname out of Bun's unconditional Unix-listener close cleanup. */
+function preserveReplacementForClose(socketPath: string, identity: SocketIdentity | null): string | null {
+  let current;
+  try {
+    current = lstatSync(socketPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  if (identity && current.isSocket() && current.dev === identity.dev && current.ino === identity.ino) return null;
+
+  const preservedPath = `${socketPath}.preserved-${process.pid}-${randomUUID()}`;
+  renameSync(socketPath, preservedPath);
+  return preservedPath;
+}
+
+function restorePreservedPath(preservedPath: string | null, socketPath: string): void {
+  if (!preservedPath) return;
+  try {
+    lstatSync(socketPath);
+    // Another pathname now occupies the requested name; never overwrite it.
+    throw new Error("A newer UDS pathname appeared while preserving a replacement socket");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  renameSync(preservedPath, socketPath);
+}
+
+async function closeServerPreservingPathname(
+  server: Server,
+  socketPath: string,
+  identity: SocketIdentity | null,
+): Promise<void> {
+  if (!identity) {
+    // listen() failed before this instance acquired a socket inode. Closing its
+    // unbound Server does not authorize touching the winner's pathname.
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    return;
+  }
+  const preservedPath = preserveReplacementForClose(socketPath, identity);
+  const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+  // Bun's net.Server.close() unlinks the configured pathname. Do not let that
+  // runtime cleanup target a substitute inode.
+  unlinkSocketPathIfOwned(socketPath, identity);
+  restorePreservedPath(preservedPath, socketPath);
+  await closed;
 }
 
 /** Experimental newline-framed read-only UDS adapter for the v1 read contract. */
 export class LocalControlUdsServer {
   private readonly sockets = new Set<Socket>();
   private server: Server | null = null;
-  private socketIdentity: { dev: number; ino: number } | null = null;
+  private bindPath: string | null = null;
+  private boundIdentity: SocketIdentity | null = null;
+  private publishedIdentity: SocketIdentity | null = null;
 
   constructor(private readonly options: LocalControlUdsServerOptions) {}
 
@@ -77,29 +157,75 @@ export class LocalControlUdsServer {
     if (!isAbsolute(this.options.socketPath) || Buffer.byteLength(this.options.socketPath) > 100) {
       throw new Error("UDS socket path must be absolute and fit the Linux socket path limit");
     }
+    const bindPath = join(dirname(this.options.socketPath), `.ouroboros-uds-${process.pid}-${randomUUID()}`);
+    if (Buffer.byteLength(bindPath) > 100) throw new Error("UDS parent directory leaves no room for a private bind pathname");
     await prepareSocketPath(this.options.socketPath);
     const server = createServer((socket) => this.accept(socket));
     this.server = server;
+    this.bindPath = bindPath;
     try {
-      await new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(this.options.socketPath, resolve);
-      });
-      const before = await lstat(this.options.socketPath);
-      await chmod(this.options.socketPath, 0o600);
-      const after = await lstat(this.options.socketPath);
-      if (!after.isSocket() || before.dev !== after.dev || before.ino !== after.ino) {
-        throw new Error("UDS path changed while applying socket permissions");
+      this.boundIdentity = await this.bind(server, bindPath);
+      await this.configureSocketPath(bindPath, this.boundIdentity);
+      await this.publishSocketPath(bindPath, this.options.socketPath);
+      this.publishedIdentity = this.boundIdentity;
+      if (!unlinkSocketPathIfOwnedOrMissing(bindPath, this.boundIdentity)) {
+        throw new Error("UDS private bind pathname changed before publication completed");
       }
-      if ((after.mode & 0o777) !== 0o600) throw new Error("UDS socket permissions could not be restricted");
-      this.socketIdentity = { dev: after.dev, ino: after.ino };
+      await this.verifyPublishedSocketPath(this.options.socketPath, this.publishedIdentity);
     } catch (error) {
+      const bindIdentity = this.boundIdentity;
+      const publishedIdentity = this.publishedIdentity;
+      await closeServerPreservingPathname(server, bindPath, bindIdentity);
+      if (bindIdentity) unlinkSocketPathIfOwned(bindPath, bindIdentity);
+      if (publishedIdentity) unlinkSocketPathIfOwned(this.options.socketPath, publishedIdentity);
       this.server = null;
-      this.socketIdentity = null;
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      const current = await lstat(this.options.socketPath).catch(() => null);
-      if (current?.isSocket()) await unlink(this.options.socketPath).catch(() => undefined);
+      this.bindPath = null;
+      this.boundIdentity = null;
+      this.publishedIdentity = null;
       throw error;
+    }
+  }
+
+  /** Bind is a seam for deterministic lifecycle tests; failed listen owns no pathname. */
+  protected async bind(server: Server, socketPath: string): Promise<SocketIdentity> {
+    return await new Promise<SocketIdentity>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, () => {
+        try {
+          const boundPath = lstatSync(socketPath);
+          if (!boundPath.isSocket()) throw new Error("UDS bind did not create a socket pathname");
+          resolve({ dev: boundPath.dev, ino: boundPath.ino });
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+  }
+
+  /** Record restrictive permissions only while the path still names our bound socket. */
+  protected async configureSocketPath(socketPath: string, identity: SocketIdentity): Promise<void> {
+    const before = lstatSync(socketPath);
+    if (!before.isSocket() || before.dev !== identity.dev || before.ino !== identity.ino) {
+      throw new Error("UDS path changed after bind");
+    }
+    chmodSync(socketPath, 0o600);
+    const after = lstatSync(socketPath);
+    if (!after.isSocket() || after.dev !== identity.dev || after.ino !== identity.ino) {
+      throw new Error("UDS path changed while applying socket permissions");
+    }
+    if ((after.mode & 0o777) !== 0o600) throw new Error("UDS socket permissions could not be restricted");
+  }
+
+  /** Atomically publish a hard link without replacing a concurrently-created pathname. */
+  protected async publishSocketPath(bindPath: string, socketPath: string): Promise<void> {
+    await link(bindPath, socketPath);
+  }
+
+  /** Confirm the published pathname still refers to the bound listener inode. */
+  protected async verifyPublishedSocketPath(socketPath: string, identity: SocketIdentity): Promise<void> {
+    const published = await lstat(socketPath);
+    if (!published.isSocket() || published.dev !== identity.dev || published.ino !== identity.ino) {
+      throw new Error("UDS path changed during publication");
     }
   }
 
@@ -154,15 +280,17 @@ export class LocalControlUdsServer {
   async stop(): Promise<void> {
     const server = this.server;
     if (!server) return;
-    this.server = null;
     for (const socket of this.sockets) socket.destroy();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    const current = await lstat(this.options.socketPath).catch(() => null);
-    const identity = this.socketIdentity;
-    this.socketIdentity = null;
-    if (current?.isSocket() && identity && current.dev === identity.dev && current.ino === identity.ino) {
-      await unlink(this.options.socketPath).catch(() => undefined);
-    }
+    const bindPath = this.bindPath;
+    const boundIdentity = this.boundIdentity;
+    const publishedIdentity = this.publishedIdentity;
+    if (bindPath) await closeServerPreservingPathname(server, bindPath, boundIdentity);
+    if (boundIdentity && bindPath) unlinkSocketPathIfOwned(bindPath, boundIdentity);
+    if (publishedIdentity) unlinkSocketPathIfOwned(this.options.socketPath, publishedIdentity);
+    this.server = null;
+    this.bindPath = null;
+    this.boundIdentity = null;
+    this.publishedIdentity = null;
   }
 }
 

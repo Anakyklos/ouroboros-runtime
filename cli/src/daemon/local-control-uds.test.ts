@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readdir, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createConnection, createServer } from "node:net";
+import { createConnection, createServer, type Server } from "node:net";
 import { LocalControlReadService } from "./local-control-read.js";
 import { DaemonServer } from "./server.js";
 import { EventBus } from "./event-bus.js";
@@ -23,6 +23,54 @@ import {
 } from "./local-control-uds.js";
 
 const temporaryDirectories: string[] = [];
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+class DelayedBindUdsServer extends LocalControlUdsServer {
+  constructor(options: ConstructorParameters<typeof LocalControlUdsServer>[0], private readonly beforeBind: () => Promise<void>) {
+    super(options);
+  }
+
+  protected override async bind(server: Server, socketPath: string): Promise<{ dev: number; ino: number }> {
+    await this.beforeBind();
+    return await super.bind(server, socketPath);
+  }
+}
+
+class ReplacementDuringInitializationUdsServer extends LocalControlUdsServer {
+  replacement: Server | null = null;
+
+  protected override async verifyPublishedSocketPath(socketPath: string, identity: { dev: number; ino: number }): Promise<void> {
+    await unlink(socketPath);
+    this.replacement = await replacementServer(socketPath);
+    await super.verifyPublishedSocketPath(socketPath, identity);
+  }
+}
+
+class ReplacementAfterBindUdsServer extends LocalControlUdsServer {
+  replacement: Server | null = null;
+  replacementPath: string | null = null;
+
+  protected override async bind(server: Server, socketPath: string): Promise<{ dev: number; ino: number }> {
+    const identity = await super.bind(server, socketPath);
+    await unlink(socketPath);
+    this.replacementPath = socketPath;
+    this.replacement = await replacementServer(socketPath);
+    return identity;
+  }
+}
+
+async function replacementServer(socketPath: string): Promise<Server> {
+  const server = createServer((socket) => {
+    socket.on("data", () => socket.write(`${JSON.stringify({ ok: true, protocolVersion: 1, operation: "status", data: { replacement: true } })}\n`));
+  });
+  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(socketPath, resolve));
+  return server;
+}
 
 async function privateDirectory(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "ouroboros-uds-"));
@@ -91,6 +139,91 @@ afterEach(async () => {
 });
 
 describe("LocalControlUdsServer", () => {
+  it("keeps the winner operational when a competing instance loses publication", async () => {
+    const directory = await privateDirectory();
+    const socketPath = join(directory, "contended.sock");
+    const bindReached = deferred();
+    const releaseBind = deferred();
+    const read = async () => ({ ok: true, protocolVersion: 1, operation: "status", data: { winner: true } }) as LocalControlReadResponse;
+    const loser = new DelayedBindUdsServer({ socketPath, read }, async () => {
+      bindReached.resolve();
+      await releaseBind.promise;
+    });
+    const loserStart = loser.start();
+    await bindReached.promise;
+
+    const winner = new LocalControlUdsServer({ socketPath, read });
+    await winner.start();
+    releaseBind.resolve();
+    await expect(loserStart).rejects.toThrow();
+    expect(await requestLocalControlUds(socketPath, { operation: "status", protocolVersion: 1 })).toMatchObject({
+      ok: true,
+      data: { winner: true },
+    });
+    await loser.stop();
+    expect(await requestLocalControlUds(socketPath, { operation: "status", protocolVersion: 1 })).toMatchObject({
+      ok: true,
+      data: { winner: true },
+    });
+    await winner.stop();
+  });
+
+  it("preserves a replacement socket after post-bind initialization failure and normal shutdown", async () => {
+    const directory = await privateDirectory();
+    const socketPath = join(directory, "replace.sock");
+    const failed = new ReplacementDuringInitializationUdsServer({
+      socketPath,
+      read: async () => ({ ok: true, protocolVersion: 1, operation: "status", data: {} }) as LocalControlReadResponse,
+    });
+    await expect(failed.start()).rejects.toThrow("UDS path changed during publication");
+    expect(failed.replacement).not.toBeNull();
+    await expect(requestLocalControlUds(socketPath, { operation: "status", protocolVersion: 1 })).resolves.toMatchObject({
+      ok: true,
+      data: { replacement: true },
+    });
+    await failed.stop();
+    await expect(requestLocalControlUds(socketPath, { operation: "status", protocolVersion: 1 })).resolves.toMatchObject({
+      ok: true,
+      data: { replacement: true },
+    });
+    await new Promise<void>((resolve, reject) => failed.replacement!.close((error) => error ? reject(error) : resolve()));
+
+    const normal = new LocalControlUdsServer({
+      socketPath,
+      read: async () => ({ ok: true, protocolVersion: 1, operation: "status", data: { owner: true } }) as LocalControlReadResponse,
+    });
+    await normal.start();
+    await unlink(socketPath);
+    const replacement = await replacementServer(socketPath);
+    await normal.stop();
+    await expect(requestLocalControlUds(socketPath, { operation: "status", protocolVersion: 1 })).resolves.toMatchObject({
+      ok: true,
+      data: { replacement: true },
+    });
+    await new Promise<void>((resolve, reject) => replacement.close((error) => error ? reject(error) : resolve()));
+  });
+
+  it("does not remove a third-party socket when initialization fails before publication", async () => {
+    const directory = await privateDirectory();
+    const failed = new ReplacementAfterBindUdsServer({
+      socketPath: join(directory, "requested.sock"),
+      read: async () => ({ ok: true, protocolVersion: 1, operation: "status", data: {} }) as LocalControlReadResponse,
+    });
+    await expect(failed.start()).rejects.toThrow("UDS path changed after bind");
+    expect(failed.replacement).not.toBeNull();
+    const replacementPath = failed.replacementPath!;
+    await expect(requestLocalControlUds(replacementPath, { operation: "status", protocolVersion: 1 })).resolves.toMatchObject({
+      ok: true,
+      data: { replacement: true },
+    });
+    await failed.stop();
+    await expect(requestLocalControlUds(replacementPath, { operation: "status", protocolVersion: 1 })).resolves.toMatchObject({
+      ok: true,
+      data: { replacement: true },
+    });
+    await new Promise<void>((resolve, reject) => failed.replacement!.close((error) => error ? reject(error) : resolve()));
+  });
+
   it("enforces a private socket and safely removes it on shutdown", async () => {
     const directory = await privateDirectory();
     const socketPath = join(directory, "control.sock");
@@ -191,7 +324,8 @@ describe("LocalControlUdsServer", () => {
       await expect(requestLocalControlUds(udsPath(directory), { operation: "mission.list", protocolVersion: 1, limit: 100_000 } as LocalControlReadRequest)).resolves.toMatchObject({ ok: false, code: "INVALID_LIMIT" });
       const idleClient = createConnection(socketPath);
       await new Promise<void>((resolve, reject) => idleClient.once("connect", resolve).once("error", reject));
-      const stalePath = join(directory, "live.sock");
+      const staleBindPath = join(directory, "stale-bind.sock");
+      const stalePath = join(directory, "stale.sock");
       const competing = new LocalControlUdsServer({ socketPath, read: (request) => service.read(request) });
       await expect(competing.start()).rejects.toThrow("already accepting connections");
       idleClient.destroy();
@@ -204,8 +338,10 @@ describe("LocalControlUdsServer", () => {
       expect(await requestLocalControlUds(socketPath, { operation: "mission.list", protocolVersion: 1 })).toMatchObject({ ok: true });
       await uds.stop();
       const staleListener = createServer();
-      await new Promise<void>((resolve, reject) => staleListener.once("error", reject).listen(stalePath, resolve));
+      await new Promise<void>((resolve, reject) => staleListener.once("error", reject).listen(staleBindPath, resolve));
+      await link(staleBindPath, stalePath);
       await new Promise<void>((resolve, reject) => staleListener.close((error) => error ? reject(error) : resolve()));
+      expect((await stat(stalePath)).isSocket()).toBe(true);
       const staleUds = new LocalControlUdsServer({ socketPath: stalePath, read: (request) => service.read(request) });
       await staleUds.start();
       expect(await requestLocalControlUds(stalePath, { operation: "status", protocolVersion: 1 })).toMatchObject({ ok: true });
