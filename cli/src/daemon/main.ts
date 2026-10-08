@@ -149,8 +149,6 @@ export async function startHeadlessDaemon(
             )
         ))(storage, missionStore, missionEngine, () => { void requestShutdown('RPC'); });
 
-        await schedulerDriver.start();
-
         const onSignal = (signal: 'SIGINT' | 'SIGTERM') => {
             console.log(`Daemon shutdown requested by ${signal}.`);
             void requestShutdown(signal);
@@ -171,6 +169,10 @@ export async function startHeadlessDaemon(
             detachSignalListeners();
             throw error;
         }
+
+        // A slow/hung connector must not hold daemon startup or prevent signal
+        // handlers from owning shutdown while the initial pass is in flight.
+        void schedulerDriver.start().catch(() => {});
 
         console.log(`Ouroboros daemon ready on http://127.0.0.1:${port}`);
         return () => requestShutdown('RPC');

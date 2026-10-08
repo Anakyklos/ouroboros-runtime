@@ -143,6 +143,15 @@ async function readDurableState(dataDir: string): Promise<Record<string, unknown
     };
 }
 
+async function requestRpcShutdown(port: number): Promise<Record<string, unknown>> {
+    const response = await fetch(`http://127.0.0.1:${port}/rpc`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 'pending-scheduler-shutdown', method: 'system.shutdown' }),
+    });
+    return await response.json() as Record<string, unknown>;
+}
+
 describe('resident Mission scheduler daemon composition', () => {
     const directories: string[] = [];
     const stopDaemons: Array<() => Promise<void>> = [];
@@ -232,5 +241,42 @@ describe('resident Mission scheduler daemon composition', () => {
         expect(invocations[0]?.delivery.state).toBe('uncertain');
         expect(invocations[0]?.status).toBe('blocked');
         await reopened.close();
+    }, 15_000);
+
+    it('starts the daemon listener while the initial connector invocation is still pending', async () => {
+        const dataDir = await mkdtemp(join(tmpdir(), 'ouroboros-scheduler-pending-'));
+        directories.push(dataDir);
+        await seedMission(dataDir);
+        const port = await unusedPort();
+        let externalInvokeCount = 0;
+        let releaseInvocation!: () => void;
+        const descriptor = makeDescriptor(ReconciliationSupport.NONE);
+        const connector = makeConnector(descriptor, async (request) => {
+            externalInvokeCount++;
+            await new Promise<void>((resolve) => { releaseInvocation = resolve; });
+            return {
+                status: CapabilityResultStatus.COMPLETED,
+                requestId: request.requestId,
+                summary: 'Fixture owner completed the pending read',
+                evidence: [],
+            };
+        });
+        const configure = (registry: CapabilityRegistry, seam: ConnectorDispatchSeam) => {
+            registry.register(descriptor);
+            seam.registerConnector(CAPABILITY_ID, connector);
+        };
+
+        const startedAt = Date.now();
+        const stop = await startDaemon(dataDir, port, configure);
+        stopDaemons.push(stop);
+        expect(Date.now() - startedAt).toBeLessThan(1_000);
+        await waitFor(() => readDurableState(dataDir), (item) => item.deliveryState === 'submitted');
+        expect(externalInvokeCount).toBe(1);
+
+        expect(await requestRpcShutdown(port)).toMatchObject({ result: { status: 'shutting_down' } });
+
+        releaseInvocation();
+        await waitFor(() => readDurableState(dataDir), (item) => item.invocationStatus === 'completed');
+        await stop();
     }, 15_000);
 });

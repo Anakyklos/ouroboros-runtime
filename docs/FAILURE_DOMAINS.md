@@ -111,9 +111,9 @@ composed here.
 
 **Implemented and verified:** `main.ts` now composes one `MissionScheduler`,
 one `ConnectorDispatchSeam` bound to the same registry used by
-`PlanPolicyValidator`, and one `MissionSchedulerDriver`. The driver starts a
-recovery pass before the listener starts, subscribes to committed MissionStore
-changes, coalesces wakeups while one pass is active, and consumes only a valid
+`PlanPolicyValidator`, and one `MissionSchedulerDriver`. After the listener
+starts, the driver begins recovery asynchronously and subscribes to committed
+MissionStore changes, coalesces wakeups while one pass is active, and consumes only a valid
 future `nextWakeAt` as a one-shot timer. An elapsed wake does not create an
 immediate retry loop. Mission creation/state transitions and invocation
 creation/completion wake the driver; other store notifications remain facts,
@@ -132,7 +132,9 @@ cleanup and sanitized failure reporting. `mission-scheduler-daemon.e2e.test.ts`
 composes the actual headless server and SQLite store with test-only typed
 connectors: a confirmed effect is invoked once across daemon restart, and an
 exception after possible submission stays `blocked/uncertain` without a second
-invoke. `headless-shutdown.e2e.test.ts` starts the actual Bun daemon in a
+invoke. It also holds an initial invocation pending, verifies the listener is
+available, and requests RPC shutdown before allowing the owner result to settle.
+`headless-shutdown.e2e.test.ts` starts the actual Bun daemon in a
 subprocess and proves a paused non-terminal Mission is recovered on each
 restart while its confirmed Invocation remains intact.
 
