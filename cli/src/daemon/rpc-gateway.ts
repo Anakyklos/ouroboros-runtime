@@ -26,6 +26,7 @@ export class RpcGateway implements DaemonRpcGatewayPort {
     private readonly sessionManager: SessionManager;
     private readonly localControlRead: LocalControlReadService;
     private readonly localControlCommand?: LocalControlCommandService;
+    private readonly onShutdownRequested?: () => void;
 
     constructor(
         storage: StoragePort,
@@ -33,7 +34,9 @@ export class RpcGateway implements DaemonRpcGatewayPort {
         missionStore?: MissionStore,
         capabilityRegistry?: Pick<CapabilityRegistryApi, 'listDescriptors'>,
         missionCommandAuthority?: MissionCommandAuthority,
+        onShutdownRequested?: () => void,
     ) {
+        this.onShutdownRequested = onShutdownRequested;
         this.sessionManager = new SessionManager(storage, eventBus);
         this.localControlRead = new LocalControlReadService({
             getStatus: () => projectDaemonStatus(this.sessionManager.getStatusSnapshot()),
@@ -114,7 +117,15 @@ export class RpcGateway implements DaemonRpcGatewayPort {
             timestamp: new Date().toISOString(),
         }));
         this.registerMethod('system.shutdown', async () => {
-            setTimeout(() => process.exit(0), 100);
+            if (this.onShutdownRequested) {
+                setImmediate(() => {
+                    try {
+                        this.onShutdownRequested?.();
+                    } catch {
+                        // The lifecycle owner reports its own sanitized failure.
+                    }
+                });
+            }
             return { status: 'shutting_down' };
         });
         this.registerMethod('system.version', async () => ({

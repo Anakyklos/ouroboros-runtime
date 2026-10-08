@@ -31,7 +31,7 @@ execution primitives from #50. This audit does not treat a scheduler, worker
 tree, restart manager, or restart policy as implemented. The concrete boundary
 to audit is the composition and behavior that exists above.
 
-## Startup and shutdown observed
+## Startup and shutdown observed at the #101 audit (before #117)
 
 ```text
 package daemon / start:headless
@@ -65,8 +65,48 @@ after both stores and the server object are initialized. RPC `system.shutdown`
 returns and schedules `process.exit(0)` after 100 ms; it does not call
 `DaemonServer.stop()` or either store's `close()` (`rpc-gateway.ts:109-124`).
 That timer can interrupt in-flight RPC work, including a Mission command, so
-the client's command result can be uncertain. This path is distinct from the
-SIGINT/SIGTERM sequence.
+the client's command result can be uncertain. This path was distinct from the
+SIGINT/SIGTERM sequence. The following #117 update records the replacement
+behavior and its direct evidence.
+
+## Issue #117 lifecycle update
+
+**Implemented and verified:** `main.ts` now owns one
+`DaemonShutdownCoordinator`. SIGINT, SIGTERM, and the modern RPC gateway's
+injected shutdown request enter the same idempotent sequence. `RpcGateway`
+returns the existing `{ status: "shutting_down" }` result and does not call
+`process.exit` or own resource cleanup.
+
+The coordinator asks `DaemonServer` to close admission first. The server rejects
+new RPC work with HTTP 503, rejects new WebSocket subscriptions, and waits up to
+4 seconds for accepted RPC responses to finish. It then unsubscribes projection
+listeners, closes projection clients and transport connections, and closes
+Fastify. The coordinator attempts both SQLite store closes in order even if an
+earlier step fails. Each close is bounded to 5 seconds. Failed or timed-out
+steps report only their resource stage and outcome; after all close attempts,
+failure sets a nonzero exit status and is explicitly classified as forced
+termination. Mission state is not changed by daemon shutdown.
+
+**Evidence:** `rpc-gateway-lifecycle.test.ts` proves the RPC request reaches the
+injected owner without exiting the process. `shutdown-coordinator.test.ts`
+proves concurrent signal/RPC requests share one ordered close, both stores are
+attempted after failure, diagnostics omit private exception text, and a hung
+close is bounded. `daemon-shutdown-race.test.ts` runs the real Fastify/RPC path:
+it holds a Mission command open, confirms later requests receive 503, and
+confirms the command response completes before stores close. The subprocess E2E
+`headless-shutdown.e2e.test.ts` starts the actual Bun daemon against temporary
+SQLite files with a live projection WebSocket, shuts it down through RPC,
+observes the socket close, restarts it on the same port, reads the Mission and
+acknowledged Invocation, then sends SIGTERM and SIGINT together.
+The test reopens SQLite and confirms the completed effect's acknowledged
+delivery and attempt record are unchanged.
+
+**Limits:** an accepted RPC that does not settle within the 4-second drain
+window has an unknown outcome; shutdown proceeds with cleanup attempts and
+reports the drain timeout. The daemon does not cancel or terminalize that
+Mission, and this lifecycle change does not add scheduler recovery or a general
+process supervisor. The durable E2E covers the current headless composition,
+not a production connector dispatch owner, which is not composed here.
 
 ## Domain inventory
 
@@ -321,10 +361,9 @@ describes the observed gap, not an asserted incident.
 - **P0:** none identified by this code audit.
 - **P1:** Mission scheduling/recovery/wakeup is not composed in production;
   durable non-terminal Mission rows therefore have no automatic resumption
-  owner in this daemon. RPC `system.shutdown` bypasses graceful cleanup and can
-  interrupt in-flight command responses.
-- **P2:** startup/shutdown lack compensating cleanup on intermediate failure;
-  persisted active session rows have no worker reconstruction in the modern
+  owner in this daemon. The former RPC shutdown cleanup bypass was addressed in
+  #117; accepted work that exceeds the bounded drain remains outcome-unknown.
+- **P2:** persisted active session rows have no worker reconstruction in the modern
   composition; scheduler recovery scans all Missions without a batch bound;
   provider snapshots are not automatically persisted/restored and configured
   provider waiters have no count bound; projection bounds each client but not
