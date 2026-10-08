@@ -106,19 +106,19 @@ and 100 paired samples per operation:
 
 | Measurement | Loopback HTTP | UDS |
 |---|---:|---:|
-| Listener start | 5.6 / 6.6 / 24.9 | 0.5 / 0.8 / 1.9 |
-| Listener shutdown | 0.4 / 0.7 / 2.8 | 0.3 / 0.4 / 1.2 |
-| Listener restart (bind after stop) | 5.2 / 6.8 / 8.5 | 0.5 / 0.6 / 0.9 |
-| Client reconnect through snapshot/health-ready | 1.2 / 1.6 / 2.0 | 0.5 / 0.5 / 0.6 |
-| `protocol.negotiate` | 0.3 / 0.8 / 19.8 | 0.1 / 0.3 / 5.4 |
-| `health` | 0.3 / 0.7 / 1.7 | 0.1 / 0.3 / 0.9 |
-| `status` | 0.4 / 0.6 / 1.8 | 0.1 / 0.3 / 0.8 |
-| `mission.list` | 0.7 / 1.1 / 5.6 | 0.3 / 0.7 / 1.6 |
-| `mission.show` | 0.5 / 0.8 / 1.5 | 0.2 / 0.4 / 0.8 |
-| `invocation.list` | 0.8 / 1.2 / 2.0 | 0.4 / 0.7 / 1.1 |
-| `invocation.show` | 0.4 / 0.8 / 1.4 | 0.1 / 0.3 / 6.0 |
-| `capability_registry.list` | 0.4 / 0.7 / 1.3 | 0.1 / 0.3 / 0.7 |
-| `diagnostics.list` | 0.3 / 0.6 / 1.3 | 0.1 / 0.3 / 0.6 |
+| Listener start | 3.1 / 4.2 / 13.9 | 0.3 / 0.5 / 0.9 |
+| Listener shutdown | 0.2 / 0.4 / 1.4 | 0.2 / 0.3 / 0.6 |
+| Listener restart (bind after stop) | 3.0 / 3.7 / 4.8 | 0.3 / 0.4 / 0.6 |
+| Client reconnect through snapshot/health-ready | 0.9 / 1.2 / 1.5 | 0.3 / 0.4 / 0.4 |
+| `protocol.negotiate` | 0.2 / 0.4 / 17.3 | 0.1 / 0.2 / 3.7 |
+| `health` | 0.3 / 0.4 / 1.7 | 0.1 / 0.2 / 0.8 |
+| `status` | 0.3 / 0.5 / 1.2 | 0.1 / 0.2 / 0.6 |
+| `mission.list` | 0.5 / 1.0 / 3.2 | 0.2 / 0.6 / 1.3 |
+| `mission.show` | 0.3 / 0.6 / 2.0 | 0.1 / 0.3 / 0.6 |
+| `invocation.list` | 0.3 / 0.9 / 1.7 | 0.2 / 0.5 / 1.1 |
+| `invocation.show` | 0.2 / 0.5 / 2.3 | 0.1 / 0.3 / 5.1 |
+| `capability_registry.list` | 0.2 / 0.5 / 1.1 | 0.1 / 0.2 / 0.5 |
+| `diagnostics.list` | 0.2 / 0.4 / 2.3 | 0.1 / 0.2 / 0.6 |
 
 The UDS median was lower for each measured read operation in this collection.
 Both paths returned semantically equivalent results for identical requests.
@@ -126,8 +126,8 @@ Typical request sizes were 42–88 bytes; responses were 99–642 bytes for thes
 fixtures.
 
 Across the five paired two-second idle windows, aggregate process CPU was
-8.8–22.2 ms (median 10.3 ms). The paired clients' process RSS delta at connect
-was 0–584 KiB (median 0 KiB); RSS then fell by 2.7–5.9 MiB during idle,
+6.4–10.7 ms (median 7.9 ms). The paired clients' process RSS delta at connect
+was 0–896 KiB (median 0 KiB); RSS then fell by 2.5–5.5 MiB during idle,
 consistent with process-wide allocator/GC changes. These are aggregate
 observations, not per-transport CPU/RSS attribution or a memory-benefit claim.
 The WebSocket handshake plus snapshot measured 1,598 bytes; the UDS health
