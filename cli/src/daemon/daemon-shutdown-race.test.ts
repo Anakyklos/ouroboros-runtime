@@ -264,17 +264,20 @@ describe('RPC shutdown and pending Mission command', () => {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ jsonrpc: '2.0', id: 'timeout-version', method: 'system.version' }),
         }).then((response) => response.arrayBuffer(), (error: unknown) => error);
-        const releaseTimer = setTimeout(releaseOnSend, 4_100);
         try {
             await onSendReached;
             await expect(server.stop()).rejects.toThrow('Accepted RPC response drain timed out');
+            releaseOnSend();
             await responsePromise;
+            const closeDeadline = Date.now() + 1_000;
+            while (inFlightRpc(server) !== 0 && Date.now() < closeDeadline) {
+                await new Promise((resolve) => setTimeout(resolve, 5));
+            }
             expect(logMessages).toContain('RPC shutdown drain timed out; pending results may be unknown');
             expect(logMessages).toContain('Daemon transport closed after RPC drain timeout; pending results may be unknown');
             expect(logMessages).not.toContain('Daemon stopped gracefully');
             expect(inFlightRpc(server)).toBe(0);
         } finally {
-            clearTimeout(releaseTimer);
             releaseOnSend();
             await responsePromise;
             await server.stop().catch(() => undefined);
