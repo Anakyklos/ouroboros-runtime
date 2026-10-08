@@ -7,6 +7,7 @@
 
 import Fastify, { FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
+import type { ServerResponse } from 'node:http';
 import { EventBus, globalEventBus } from './event-bus.js';
 import { RpcGateway, type DaemonRpcGatewayPort } from './rpc-gateway.js';
 import { DaemonProjection, type ProjectionClient } from './daemon-projection.js';
@@ -33,6 +34,15 @@ const DEFAULT_CONFIG: DaemonConfig = {
     host: '127.0.0.1',
 };
 
+const RPC_DRAIN_TIMEOUT_MS = 4_000;
+
+class RpcDrainTimeoutError extends Error {
+    constructor() {
+        super('Accepted RPC response drain timed out');
+        this.name = 'RpcDrainTimeoutError';
+    }
+}
+
 export class DaemonServer {
     private app: FastifyInstance;
     private config: DaemonConfig;
@@ -43,6 +53,11 @@ export class DaemonServer {
     private missionMutationUnsubscribe: (() => void) | null = null;
     private isRunning = false;
     private initialized = false;
+    private acceptingRpc = true;
+    private inFlightRpc = 0;
+    private inFlightResponses = new Set<ServerResponse>();
+    private rpcDrainWaiters: Array<() => void> = [];
+    private appClosed = false;
 
     constructor(
         storage: StoragePort,
@@ -51,6 +66,7 @@ export class DaemonServer {
         missionStore?: MissionStore,
         rpcGateway?: DaemonRpcGatewayPort,
         missionCommandAuthority?: MissionCommandAuthority,
+        onShutdownRequested?: () => void,
     ) {
         this.config = { ...DEFAULT_CONFIG, ...config };
         this.eventBus = eventBus;
@@ -60,6 +76,7 @@ export class DaemonServer {
             missionStore,
             undefined,
             missionCommandAuthority,
+            onShutdownRequested,
         );
         this.projection = new DaemonProjection({
             snapshot: async (cursor) => ({
@@ -178,11 +195,16 @@ export class DaemonServer {
             };
         });
 
-        this.app.get('/health', async () => {
+        this.app.get('/health', async (_request, reply) => {
+            if (!this.acceptingRpc) return reply.code(503).send({ status: 'shutting_down' });
             return { status: 'ok', timestamp: new Date().toISOString() };
         });
 
         this.app.get('/ws', { websocket: true }, (socket) => {
+            if (!this.acceptingRpc) {
+                socket.close(1001, 'Daemon is shutting down');
+                return;
+            }
             const client = socket as unknown as ProjectionClient;
             this.projection.connectClient(client);
             socket.on('close', () => this.projection.disconnectClient(client));
@@ -205,14 +227,21 @@ export class DaemonServer {
                 });
             }
 
-            const response = await this.rpcGateway.handleRequest({
+            if (!this.acceptingRpc) {
+                return reply.code(503).send({
+                    jsonrpc: '2.0',
+                    id: rpcRequest.id,
+                    error: { code: -32000, message: 'Daemon is shutting down' },
+                });
+            }
+
+            this.beginRpcRequest(reply.raw);
+            return await this.rpcGateway.handleRequest({
                 jsonrpc: '2.0',
                 id: rpcRequest.id,
                 method: rpcRequest.method,
                 params: rpcRequest.params,
             });
-
-            return response;
         });
     }
 
@@ -236,31 +265,89 @@ export class DaemonServer {
             this.isRunning = true;
             this.eventBus.emit('daemon', { type: 'ready', port: this.config.port });
             this.eventBus.log('info', `Daemon started on ${this.config.host}:${this.config.port}`, 'DaemonServer');
-        } catch (err) {
-            this.eventBus.log('error', `Failed to start daemon: ${err}`, 'DaemonServer');
-            throw err;
+        } catch (error) {
+            this.eventBus.log('error', 'Failed to start daemon listener', 'DaemonServer');
+            throw error;
         }
     }
 
     async stop(): Promise<void> {
+        this.acceptingRpc = false;
         if (!this.isRunning) {
             this.cleanupTransport();
+            if (!this.appClosed) {
+                try {
+                    await this.app.close();
+                    this.appClosed = true;
+                } catch (error) {
+                    this.eventBus.log('error', 'Error closing daemon resources', 'DaemonServer');
+                    throw error;
+                }
+            }
             return;
         }
 
         this.eventBus.emit('daemon', { type: 'shutting_down' });
+        const drained = await this.waitForRpcDrain();
+        if (!drained) {
+            for (const response of this.inFlightResponses) response.destroy();
+        }
         this.cleanupTransport();
 
         try {
             await this.app.close();
+            this.appClosed = true;
             this.isRunning = false;
-            this.eventBus.emit('daemon', { type: 'stopped' });
-            this.eventBus.log('info', 'Daemon stopped gracefully', 'DaemonServer');
-        } catch (err) {
+            if (drained) {
+                this.eventBus.emit('daemon', { type: 'stopped' });
+                this.eventBus.log('info', 'Daemon stopped gracefully', 'DaemonServer');
+            } else {
+                this.eventBus.log('warn', 'Daemon transport closed after RPC drain timeout; pending results may be unknown', 'DaemonServer');
+            }
+        } catch (error) {
             this.isRunning = false;
-            this.eventBus.log('error', `Error stopping daemon: ${err}`, 'DaemonServer');
-            throw err;
+            this.eventBus.log('error', 'Error stopping daemon resources', 'DaemonServer');
+            throw error;
         }
+        if (!drained) throw new RpcDrainTimeoutError();
+    }
+
+    private async waitForRpcDrain(): Promise<boolean> {
+        if (this.inFlightRpc === 0) return true;
+        return await new Promise<boolean>((resolve) => {
+            const finish = () => {
+                if (timeout) clearTimeout(timeout);
+                resolve(true);
+            };
+            const timeout = setTimeout(() => {
+                this.rpcDrainWaiters = this.rpcDrainWaiters.filter((waiter) => waiter !== finish);
+                this.eventBus.log('warn', 'RPC shutdown drain timed out; pending results may be unknown', 'DaemonServer');
+                resolve(false);
+            }, RPC_DRAIN_TIMEOUT_MS);
+            this.rpcDrainWaiters.push(finish);
+        });
+    }
+
+    private beginRpcRequest(response: ServerResponse): void {
+        this.inFlightRpc += 1;
+        let finished = false;
+        const finishRpc = () => {
+            if (finished) return;
+            finished = true;
+            this.inFlightResponses.delete(response);
+            this.inFlightRpc -= 1;
+            if (this.inFlightRpc === 0) {
+                for (const resolve of this.rpcDrainWaiters.splice(0)) resolve();
+            }
+        };
+
+        if (response.writableFinished || response.destroyed) {
+            finishRpc();
+            return;
+        }
+        this.inFlightResponses.add(response);
+        response.once('finish', finishRpc);
+        response.once('close', finishRpc);
     }
 
     get running(): boolean {
