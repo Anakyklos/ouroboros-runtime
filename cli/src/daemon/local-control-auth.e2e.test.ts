@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
 import { createConnection, createServer as createNetServer, type Socket } from "node:net";
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolve } from "node:path";
-import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { SqliteAdapter } from "../adapters/sqlite.adapter.js";
 import { SqliteMissionStore } from "../mission/sqlite-mission-store.js";
@@ -34,10 +34,10 @@ class RawWebSocketProbe {
     this.headerRejecter = reject;
   });
 
-  constructor(readonly socket: Socket) {
+  constructor(readonly socket: Socket, private readonly description = "WebSocket") {
     this.headerTimer = setTimeout(() => {
       this.close();
-      this.headerRejecter(new Error("WebSocket handshake timed out"));
+      this.headerRejecter(new Error(`${this.description} handshake timed out`));
     }, 5_000);
     socket.on("data", (chunk) => this.onData(Buffer.from(chunk)));
     socket.once("close", () => {
@@ -46,9 +46,9 @@ class RawWebSocketProbe {
     });
   }
 
-  static async connect(port: number, headers: Record<string, string>): Promise<RawWebSocketProbe> {
+  static async connect(port: number, headers: Record<string, string>, description?: string): Promise<RawWebSocketProbe> {
     const socket = createConnection({ host: "127.0.0.1", port });
-    const probe = new RawWebSocketProbe(socket);
+    const probe = new RawWebSocketProbe(socket, description);
     await new Promise<void>((resolve, reject) => {
       socket.once("connect", resolve);
       socket.once("error", reject);
@@ -134,7 +134,8 @@ describe("local-control authentication over real Fastify and SQLite", () => {
   let port: number;
   let frontendPort: number;
   let frontendOrigin: string;
-  let viteServer: { listen(): Promise<void>; close(): Promise<void> } | undefined;
+  let viteServer: ChildProcess | undefined;
+  let viteOutput = "";
   let previousProxyTarget: string | undefined;
   let daemonStorage: SqliteAdapter;
   let missionStore: SqliteMissionStore;
@@ -170,16 +171,6 @@ describe("local-control authentication over real Fastify and SQLite", () => {
     frontendOrigin = `http://127.0.0.1:${frontendPort}`;
     previousProxyTarget = process.env.OUROBOROS_DEV_DAEMON_URL;
     process.env.OUROBOROS_DEV_DAEMON_URL = `http://127.0.0.1:${port}`;
-    const viteEntry = resolve(process.cwd(), "web/node_modules/vite/dist/node/index.js");
-    const { createServer } = createRequire(import.meta.url)(viteEntry) as {
-      createServer(options: Record<string, unknown>): Promise<{ listen(): Promise<void>; close(): Promise<void> }>;
-    };
-    viteServer = await createServer({
-      configFile: resolve(process.cwd(), "web/vite.config.ts"),
-      logLevel: "silent",
-      server: { host: "127.0.0.1", port: frontendPort, strictPort: true, allowedHosts: ["127.0.0.1"] },
-    });
-    await viteServer.listen();
     daemonStorage = new SqliteAdapter(join(directory, "daemon.db"));
     await daemonStorage.initialize();
     missionStore = new SqliteMissionStore(join(directory, "missions.db"));
@@ -203,18 +194,54 @@ describe("local-control authentication over real Fastify and SQLite", () => {
       new EventBus(), missionStore, undefined, missionEngine, () => { shutdownRequests += 1; }, authorizer,
     );
     await server.start();
-  });
+    viteServer = spawn("node", [
+      resolve(process.cwd(), "web/node_modules/vite/bin/vite.js"),
+      "--config", resolve(process.cwd(), "web/vite.config.ts"),
+      "--host", "127.0.0.1", "--port", String(frontendPort), "--strictPort",
+    ], {
+      cwd: resolve(process.cwd(), "web"),
+      env: { ...process.env, OUROBOROS_DEV_DAEMON_URL: `http://127.0.0.1:${port}` },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    viteServer.stdout?.on("data", (chunk: Buffer) => { viteOutput = `${viteOutput}${chunk.toString("utf8")}`.slice(-2_000); });
+    viteServer.stderr?.on("data", (chunk: Buffer) => { viteOutput = `${viteOutput}${chunk.toString("utf8")}`.slice(-2_000); });
+    await waitForFrontend();
+  }, 20_000);
 
   afterAll(async () => {
     await server?.stop();
-    await viteServer?.close();
+    if (viteServer && viteServer.exitCode === null) {
+      const viteExited = new Promise<void>((resolveExit) => viteServer!.once("exit", () => resolveExit()));
+      viteServer.kill("SIGTERM");
+      await viteExited;
+    }
     credentialStore?.close();
     await daemonStorage?.close();
     await missionStore?.close();
     if (previousProxyTarget === undefined) delete process.env.OUROBOROS_DEV_DAEMON_URL;
     else process.env.OUROBOROS_DEV_DAEMON_URL = previousProxyTarget;
     if (directory) await rm(directory, { recursive: true, force: true });
-  });
+  }, 20_000);
+
+  async function waitForFrontend(): Promise<void> {
+    const deadline = Date.now() + 10_000;
+    let lastError = "no response";
+    while (Date.now() < deadline) {
+      if (viteServer?.exitCode !== null && viteServer?.exitCode !== undefined) {
+        throw new Error(`Vite exited before becoming ready (${viteServer.exitCode})`);
+      }
+      try {
+        const response = await fetch(frontendOrigin);
+        if (response.ok) return;
+        lastError = `HTTP ${response.status}`;
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        // The development server is still binding its loopback port.
+      }
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    throw new Error(`Vite did not become ready on its loopback port (${lastError}): ${viteOutput || "no process output"}`);
+  }
 
   it("denies anonymous, invalid-token, malformed, and unknown RPC without reads or effects", async () => {
     const before = await missionStore.getMission(missionId);
@@ -366,7 +393,7 @@ describe("local-control authentication over real Fastify and SQLite", () => {
       const firstConnection = await RawWebSocketProbe.connect(frontendPort, {
         Origin: frontendOrigin,
         Cookie: firstCookie,
-      });
+      }, "initial Vite proxy");
       expect((await firstConnection.response).status).toBe(101);
       expect((await firstConnection.nextFrame()).payload.toString("utf8")).toContain(missionId);
       firstConnection.close();
@@ -379,14 +406,14 @@ describe("local-control authentication over real Fastify and SQLite", () => {
       const reconnected = await RawWebSocketProbe.connect(frontendPort, {
         Origin: frontendOrigin,
         Cookie: reconnectCookie,
-      });
+      }, "reconnected Vite proxy");
       expect((await reconnected.response).status).toBe(101);
       expect((await reconnected.nextFrame()).payload.toString("utf8")).toContain(missionId);
       reconnected.close();
     } finally {
       setDaemonBearerToken("");
     }
-  });
+  }, 15_000);
 
   it("keeps public health metadata minimal and rejects Origin outside the explicit allowlist", async () => {
     const response = await fetch(`http://127.0.0.1:${port}/health`, { headers: { origin: "http://attacker.invalid" } });
