@@ -72,6 +72,7 @@ import {
     assertConnectorMatchesDescriptor,
     authorizationProjection,
     type CapabilityRegistry,
+    UnknownCapabilityError,
 } from "./registry.js";
 import {
     CapabilityResultStatus,
@@ -294,6 +295,21 @@ export class ConnectorDispatchSeam {
     /** True when a connector is registered for the id (not an auth grant). */
     hasConnector(capabilityId: string): boolean {
         return this.connectors.has(capabilityId);
+    }
+
+    /**
+     * Report whether durable work can pass the registry and connector
+     * presence gates. This is a scheduling hint only; dispatch still repeats
+     * every authorization and contract check at the seam.
+     */
+    canDispatchCapability(capabilityId: string): boolean {
+        if (!this.hasConnector(capabilityId)) return false;
+        try {
+            return this.registry.requireDescriptor(capabilityId).availability === "available";
+        } catch (error) {
+            if (error instanceof UnknownCapabilityError) return false;
+            throw error;
+        }
     }
 
     /**
