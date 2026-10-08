@@ -1,9 +1,9 @@
 # Decisão de segurança: autenticação e autorização do controle local
 
-> **Estado:** APROVADA por Pedro em 2026-10-08; **implementação PENDENTE** na [issue #122](https://github.com/Anakyklos/ouroboros-runtime/issues/122).
-> **Autoridade:** decisão normativa do owner sobre o trust model do Ouroboros. Não representa comportamento implementado, nem altera por si só o contrato público em produção.
+> **Estado:** APROVADA por Pedro em 2026-10-08; implementada pela [issue #122](https://github.com/Anakyklos/ouroboros-runtime/issues/122) e [PR #124](https://github.com/Anakyklos/ouroboros-runtime/pull/124), incorporada à `main` em `37eaaef980b1ee62fe772cebb34081a866deec8c`.
+> **Autoridade:** decisão normativa do owner sobre o trust model do Ouroboros. Os fatos de implementação abaixo refletem o código e as provas; o texto normativo não altera por si só o contrato público em produção.
 > **Vínculos:** [epic #70](https://github.com/Anakyklos/ouroboros-runtime/issues/70), [issue #100 / PR #119](https://github.com/Anakyklos/ouroboros-runtime/pull/119), `docs/ARCHITECTURE.md`, `docs/DAEMON_EVENT_CONTRACT.md`, `docs/MISSION_CONTRACT.md`.
-> **Baseline auditado:** `main` em `94bbb3329127fb5e647228e39de54b4391bf5dc8`.
+> **Baseline da implementação #122/#124:** `main` em `37eaaef980b1ee62fe772cebb34081a866deec8c`.
 
 ## Contexto e evidência
 
@@ -67,7 +67,13 @@ A issue [#122](https://github.com/Anakyklos/ouroboros-runtime/issues/122) define
 
 ## Evolução documental e precedência
 
-- **Aprovado:** esta política de autorização para controle local; **pendente:** implementação e provas.
-- O documento `docs/DAEMON_EVENT_CONTRACT.md` descreve corretamente o **estado corrente sem auth WS** até #122 ser implementada. Após merge da implementação, atualizar esse contrato para refletir o comportamento verificado.
+- **Aprovado e implementado:** esta política de autorização para controle local, entregue por #122/#124 e incorporada à `main`.
+- `docs/DAEMON_EVENT_CONTRACT.md` descreve o comportamento verificado: handshake WebSocket exige `mission.read`, e streams ativos são revalidados a cada 500 ms.
 - `docs/ARCHITECTURE.md` e #70 mantêm a direção mais ampla: daemon autoritativo + contrato local versionado + interfaces substituíveis. O HTTP loopback desta correção não redefine o IPC preferido de longo prazo.
 - Nenhum modelo, UI ou cliente pode expandir unilateralmente os escopos ou alterar esta decisão normativa.
+
+## Lifecycle de revalidação WebSocket (#125)
+
+**Implementado na issue #125:** o daemon mantém zero timers periódicos de autorização enquanto não há streams WebSocket autenticados. A primeira conexão válida com `mission.read` inicia um único intervalo de 500 ms; conexões adicionais compartilham esse intervalo. Fechar o último stream o cancela. Rejeições de handshake não iniciam o timer, e stop/startup failure limpam o timer e os listeners do servidor.
+
+**Evidência:** `cli/src/daemon/local-control-auth.e2e.test.ts` exercita o servidor Fastify real, credenciais no SQLite temporário, health/RPC em idle, handshake anônimo/escopo/Origin rejeitado, dois streams compartilhando um timer, disconnect/reconnect, rotação, expiração, perda de `mission.read` e cleanup após falha de bind. O limite de revalidação permanece 500 ms; o intervalo só existe enquanto houver streams autenticados. Esses testes não medem redução quantitativa de CPU ou RAM.

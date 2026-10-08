@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
 import { createConnection, createServer as createNetServer, type Socket } from "node:net";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -566,6 +566,204 @@ describe("local-control authentication over real Fastify and SQLite", () => {
     const closed = await authorized.nextFrame(2_000);
     expect(closed.opcode).toBe(8);
     authorized.close();
+  });
+
+  it("owns one authorization interval only while authenticated WebSocket streams are active", async () => {
+    const targetPort = await unusedPort();
+    const timerToken = credentialStore.provision("timer-lifecycle-client", ["mission.read"], Date.now() + 60_000).token;
+    const timerServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1" },
+      new EventBus(),
+      missionStore,
+      undefined,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    const setIntervalSpy = spyOn(globalThis, "setInterval");
+    const clearIntervalSpy = spyOn(globalThis, "clearInterval");
+    let first: RawWebSocketProbe | undefined;
+    let second: RawWebSocketProbe | undefined;
+    try {
+      await timerServer.start();
+      const authIntervals = () => setIntervalSpy.mock.calls.filter((call) => call[1] === 500);
+      expect(authIntervals()).toHaveLength(0);
+      expect((await fetch(`http://127.0.0.1:${targetPort}/health`)).status).toBe(200);
+      const versionResponse = await fetch(`http://127.0.0.1:${targetPort}/rpc`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${timerToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "system.version", method: "system.version", params: {} }),
+      });
+      expect(versionResponse.status).toBe(200);
+      expect(authIntervals()).toHaveLength(0);
+
+      const anonymous = await RawWebSocketProbe.connect(targetPort, {});
+      expect((await anonymous.response).status).toBe(401);
+      anonymous.close();
+      const wrongScope = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${controlToken}` });
+      expect((await wrongScope.response).status).toBe(403);
+      wrongScope.close();
+      const wrongOrigin = await RawWebSocketProbe.connect(targetPort, {
+        Authorization: `Bearer ${timerToken}`,
+        Origin: "http://attacker.invalid",
+      });
+      expect((await wrongOrigin.response).status).toBe(403);
+      wrongOrigin.close();
+      expect(authIntervals()).toHaveLength(0);
+
+      first = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${timerToken}` });
+      expect((await first.response).status).toBe(101);
+      expect((await first.nextFrame()).payload.toString("utf8")).toContain(missionId);
+      expect(authIntervals()).toHaveLength(1);
+
+      second = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${timerToken}` });
+      expect((await second.response).status).toBe(101);
+      expect((await second.nextFrame()).payload.toString("utf8")).toContain(missionId);
+      expect(authIntervals()).toHaveLength(1);
+
+      first.close();
+      await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+      expect(clearIntervalSpy).not.toHaveBeenCalled();
+      second.close();
+      await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+      expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
+
+      for (let reconnectCount = 0; reconnectCount < 3; reconnectCount += 1) {
+        const reconnect = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${timerToken}` });
+        expect((await reconnect.response).status).toBe(101);
+        expect((await reconnect.nextFrame()).payload.toString("utf8")).toContain(missionId);
+        expect(authIntervals()).toHaveLength(2 + reconnectCount);
+        reconnect.close();
+        await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+        expect(clearIntervalSpy).toHaveBeenCalledTimes(2 + reconnectCount);
+      }
+    } finally {
+      first?.close();
+      second?.close();
+      await timerServer.stop();
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
+  it("closes streams after credential rotation, expiry, or mission.read scope loss before forwarding events", async () => {
+    const cases = [
+      {
+        clientId: "rotation-stream",
+        invalidate: () => credentialStore.provision("rotation-stream", ["mission.read"], Date.now() + 60_000),
+      },
+      {
+        clientId: "scope-loss-stream",
+        invalidate: () => credentialStore.provision("scope-loss-stream", ["mission.control"], Date.now() + 60_000),
+      },
+    ];
+    for (const scenario of cases) {
+      const credential = credentialStore.provision(scenario.clientId, ["mission.read"], Date.now() + 60_000);
+      const stream = await RawWebSocketProbe.connect(port, { Authorization: `Bearer ${credential.token}` });
+      expect((await stream.response).status).toBe(101);
+      expect((await stream.nextFrame()).payload.toString("utf8")).toContain(missionId);
+      scenario.invalidate();
+      eventBus.emit("daemon", { type: "ready", port });
+      const close = await stream.nextFrame(2_000);
+      expect(close.opcode).toBe(8);
+      expect(close.payload.toString("utf8")).not.toContain(credential.token);
+      stream.close();
+    }
+
+    const expiring = credentialStore.provision("expiry-stream", ["mission.read"], Date.now() + 900);
+    const expiringStream = await RawWebSocketProbe.connect(port, { Authorization: `Bearer ${expiring.token}` });
+    expect((await expiringStream.response).status).toBe(101);
+    expect((await expiringStream.nextFrame()).payload.toString("utf8")).toContain(missionId);
+    const expiryClose = await expiringStream.nextFrame(2_000);
+    expect(expiryClose.opcode).toBe(8);
+    expect(expiryClose.payload.toString("utf8")).not.toContain(expiring.token);
+    expiringStream.close();
+  });
+
+  it("removes daemon listeners after a listener startup failure", async () => {
+    const failedEventBus = new EventBus();
+    const failedServer = new DaemonServer(
+      daemonStorage,
+      { port, host: "127.0.0.1" },
+      failedEventBus,
+      missionStore,
+      undefined,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    await expect(failedServer.start()).rejects.toThrow();
+    expect(failedEventBus.listenerCount("*")).toBe(0);
+    await failedServer.stop();
+    expect(failedEventBus.listenerCount("*")).toBe(0);
+  });
+
+  it("isolates a revalidation exception to its WebSocket client and sanitizes diagnostics", async () => {
+    const targetPort = await unusedPort();
+    const failureCanary = "PRIVATE_REVALIDATION_FAILURE_CANARY";
+    let faultyClientChecks = 0;
+    const faultyAuthorization = new Proxy(authorizer, {
+      get(target, property, receiver) {
+        if (property === "isClientStillAuthorized") {
+          return (principal: { clientId: string }, scope: "mission.read" | "mission.control" | "daemon.admin") => {
+            if (principal.clientId === "faulty-stream") {
+              faultyClientChecks += 1;
+              if (faultyClientChecks > 2) throw new Error(failureCanary);
+            }
+            return target.isClientStillAuthorized(principal, scope);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const isolatedEventBus = new EventBus();
+    const logMessages: string[] = [];
+    const unsubscribeLogs = isolatedEventBus.on("log", (entry) => logMessages.push(entry.message));
+    const isolatedServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1" },
+      isolatedEventBus,
+      missionStore,
+      undefined,
+      undefined,
+      undefined,
+      faultyAuthorization,
+    );
+    let faultyStream: RawWebSocketProbe | undefined;
+    let healthyStream: RawWebSocketProbe | undefined;
+    try {
+      const faultyToken = credentialStore.provision("faulty-stream", ["mission.read"], Date.now() + 60_000).token;
+      const healthyToken = credentialStore.provision("healthy-stream", ["mission.read"], Date.now() + 60_000).token;
+      await isolatedServer.start();
+      faultyStream = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${faultyToken}` });
+      healthyStream = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${healthyToken}` });
+      expect((await faultyStream.response).status).toBe(101);
+      expect((await healthyStream.response).status).toBe(101);
+      expect((await faultyStream.nextFrame()).payload.toString("utf8")).toContain(missionId);
+      expect((await healthyStream.nextFrame()).payload.toString("utf8")).toContain(missionId);
+      expect((await faultyStream.nextFrame(1_500)).opcode).toBe(8);
+
+      isolatedEventBus.emit("daemon", { type: "ready", port: targetPort });
+      const healthyEvents: string[] = [];
+      for (let index = 0; index < 3; index += 1) {
+        const frame = await healthyStream.nextFrame(1_000);
+        if (frame.opcode !== 1) break;
+        const payload = frame.payload.toString("utf8");
+        healthyEvents.push(payload);
+        if (payload.includes('"event":"daemon"')) break;
+      }
+      expect(healthyEvents.some((payload) => payload.includes('"event":"daemon"'))).toBe(true);
+      expect(healthyEvents.join(" ")).not.toContain(failureCanary);
+      expect(logMessages.join(" ")).not.toContain(failureCanary);
+      expect(JSON.stringify(logMessages)).not.toContain(faultyToken);
+    } finally {
+      faultyStream?.close();
+      healthyStream?.close();
+      await isolatedServer.stop();
+      unsubscribeLogs();
+    }
   });
 
   it("routes the browser exchange through real Vite and reconnects through the proxied WS snapshot", async () => {
