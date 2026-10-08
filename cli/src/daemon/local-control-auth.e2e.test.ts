@@ -13,6 +13,7 @@ import { MissionEngine } from "../mission/mission-engine.js";
 import { PlanPolicyValidator } from "../mission/policy.js";
 import { FakeCapabilityResolver } from "../mission/testing.js";
 import { DaemonServer } from "./server.js";
+import { RpcGateway, type DaemonRpcGatewayPort } from "./rpc-gateway.js";
 import { EventBus } from "./event-bus.js";
 import { LocalControlAuthorizer, LocalControlCredentialStore, getBrowserSessionCookieName } from "./local-control-auth.js";
 import type { LocalControlAuthScope } from "../../../shared/local-control-auth-contract.js";
@@ -142,6 +143,8 @@ describe("local-control authentication over real Fastify and SQLite", () => {
   let credentialStore: LocalControlCredentialStore;
   let authorizer: LocalControlAuthorizer;
   let server: DaemonServer;
+  let eventBus: EventBus;
+  let injectedGatewayServer: DaemonServer | undefined;
   let missionEngine: MissionEngine;
   let shutdownRequests = 0;
   let readToken: string;
@@ -188,10 +191,11 @@ describe("local-control authentication over real Fastify and SQLite", () => {
       allowedCapabilityScope: { capabilityIds: [], allowedEffectClasses: [], allowedRefPrefixes: [] },
     });
     missionId = mission.missionId;
+    eventBus = new EventBus();
     server = new DaemonServer(
       daemonStorage,
       { port, host: "127.0.0.1" },
-      new EventBus(), missionStore, undefined, missionEngine, () => { shutdownRequests += 1; }, authorizer,
+      eventBus, missionStore, undefined, missionEngine, () => { shutdownRequests += 1; }, authorizer,
     );
     await server.start();
     viteServer = spawn("node", [
@@ -209,6 +213,7 @@ describe("local-control authentication over real Fastify and SQLite", () => {
   }, 20_000);
 
   afterAll(async () => {
+    await injectedGatewayServer?.stop();
     await server?.stop();
     if (viteServer && viteServer.exitCode === null) {
       const viteExited = new Promise<void>((resolveExit) => viteServer!.once("exit", () => resolveExit()));
@@ -324,6 +329,132 @@ describe("local-control authentication over real Fastify and SQLite", () => {
     const response = await cli.read({ operation: "mission.show", missionId });
     expect(response.data.item?.missionId).toBe(missionId);
     expect((await readFile(credentialPath, "utf8"))).not.toContain("PRIVATE");
+  });
+
+  it("returns only the versioned allowlisted session projection to mission.read", async () => {
+    const contextCanary = "CANARY_PRIVATE_CONTEXT_124";
+    const metadataCanary = "CANARY_PRIVATE_METADATA_124";
+    const stored = await daemonStorage.createSession({
+      status: "active",
+      contextSnapshot: contextCanary,
+      metadata: { private: metadataCanary, nested: { arbitrary: metadataCanary } },
+    });
+    const capturedLogs: string[] = [];
+    const unsubscribe = eventBus.on("log", (entry) => capturedLogs.push(entry.message));
+    try {
+      const getResponse = await rpc("session.get", { id: stored.id }, readToken);
+      const getBody = await getResponse.json() as { result?: { contractVersion?: number; session?: Record<string, unknown> }; error?: unknown };
+      const listResponse = await rpc("session.list", {}, readToken);
+      const listBody = await listResponse.json() as { result?: { contractVersion?: number; truncated?: boolean; sessions?: Array<Record<string, unknown>> }; error?: unknown };
+
+      expect(getResponse.status).toBe(200);
+      expect(listResponse.status).toBe(200);
+      expect(JSON.stringify({ getBody, listBody })).not.toContain(contextCanary);
+      expect(JSON.stringify({ getBody, listBody })).not.toContain(metadataCanary);
+      expect(getBody.result).toEqual({
+        contractVersion: 1,
+        session: {
+          id: stored.id,
+          status: "active",
+          createdAt: stored.createdAt.toISOString(),
+          updatedAt: stored.updatedAt.toISOString(),
+        },
+      });
+      expect(listBody.result?.contractVersion).toBe(1);
+      expect(listBody.result?.truncated).toBe(false);
+      expect(listBody.result?.sessions?.find((session) => session.id === stored.id)).toEqual(getBody.result?.session);
+
+      const browserSession = await fetch(`http://127.0.0.1:${port}/auth/browser-session`, {
+        method: "POST", headers: { authorization: `Bearer ${readToken}`, origin: frontendOrigin },
+      });
+      const cookie = browserSession.headers.get("set-cookie")!.split(";", 1)[0]!;
+      const stream = await RawWebSocketProbe.connect(port, { Origin: frontendOrigin, Cookie: cookie });
+      expect((await stream.response).status).toBe(101);
+      const snapshot = (await stream.nextFrame()).payload.toString("utf8");
+      expect(snapshot).not.toContain(contextCanary);
+      expect(snapshot).not.toContain(metadataCanary);
+      stream.close();
+      expect(JSON.stringify(capturedLogs)).not.toContain(contextCanary);
+      expect(JSON.stringify(capturedLogs)).not.toContain(metadataCanary);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("reprojects untrusted session results and errors from an injected gateway", async () => {
+    const contextCanary = "CANARY_PRIVATE_CONTEXT_124";
+    const metadataCanary = "CANARY_PRIVATE_METADATA_124";
+    const stored = await daemonStorage.createSession({
+      status: "active",
+      contextSnapshot: contextCanary,
+      metadata: { private: metadataCanary },
+    });
+    const targetPort = await unusedPort();
+    const injectedEventBus = new EventBus();
+    const injectedLogMessages: string[] = [];
+    const unsubscribe = injectedEventBus.on("log", (entry) => injectedLogMessages.push(entry.message));
+    const delegate = new RpcGateway(daemonStorage, injectedEventBus, missionStore);
+    const injectedGateway: DaemonRpcGatewayPort = {
+      registerMethod: (name, handler) => delegate.registerMethod(name, handler),
+      getProjectionSnapshot: (cursor) => delegate.getProjectionSnapshot(cursor),
+      handleRequest: async (request) => {
+        if (request.method === "session.get") {
+          const session = await daemonStorage.getSession(String(request.params?.id));
+          if (!session) return { jsonrpc: "2.0", id: request.id, error: { code: -32001, message: contextCanary } };
+          return { jsonrpc: "2.0", id: request.id, result: { session, privateDiagnostic: metadataCanary } };
+        }
+        if (request.method === "session.list") {
+          return { jsonrpc: "2.0", id: request.id, result: { sessions: await daemonStorage.listSessions(), privateDiagnostic: metadataCanary } };
+        }
+        return delegate.handleRequest(request);
+      },
+    };
+    injectedGatewayServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1" },
+      injectedEventBus,
+      missionStore,
+      injectedGateway,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    await injectedGatewayServer.start();
+    try {
+      const getResponse = await fetch(`http://127.0.0.1:${targetPort}/rpc`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${readToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "session.get", method: "session.get", params: { id: stored.id } }),
+      });
+      const getBody = await getResponse.text();
+      const listResponse = await fetch(`http://127.0.0.1:${targetPort}/rpc`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${readToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "session.list", method: "session.list", params: {} }),
+      });
+      const listBody = await listResponse.text();
+      const errorResponse = await fetch(`http://127.0.0.1:${targetPort}/rpc`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${readToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "missing", method: "session.get", params: { id: "missing" } }),
+      });
+      const errorBody = await errorResponse.text();
+      const errorJson = JSON.parse(errorBody) as { error?: { message?: string } };
+
+      expect(getResponse.status).toBe(200);
+      expect(listResponse.status).toBe(200);
+      expect(errorResponse.status).toBe(200);
+      expect(errorJson.error?.message).toBe("The RPC request could not be completed");
+      expect(`${getBody}${listBody}${errorBody}`).not.toContain(contextCanary);
+      expect(`${getBody}${listBody}${errorBody}`).not.toContain(metadataCanary);
+      expect(JSON.stringify(injectedLogMessages)).not.toContain(contextCanary);
+      expect(JSON.stringify(injectedLogMessages)).not.toContain(metadataCanary);
+    } finally {
+      await injectedGatewayServer.stop();
+      injectedGatewayServer = undefined;
+      unsubscribe();
+      injectedEventBus.clear();
+    }
   });
 
   it("sanitizes injected gateway exceptions at the authenticated HTTP boundary", async () => {

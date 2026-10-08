@@ -23,3 +23,24 @@ OUROBOROS_DATA_DIR=.ouroboros bun run ouroboros auth revoke operator-cli
 The registry stores a SHA-256 hash of each secret, grants, expiry, and revocation state in `local-control-auth.db` under the private data directory. The bearer secret is generated with a cryptographic random source and is never printed by the provisioning command. Protect backups and access to the same operating-system user accordingly.
 
 For browser access, add the exact frontend origin to `OUROBOROS_ALLOWED_ORIGINS`, for example `http://localhost:5173`. The frontend keeps the bearer only in page memory, exchanges it for a five-minute HttpOnly stream cookie, and must reauthenticate after reload. The cookie is bound to its issuing Origin. Do not put bearer values in URLs, command arguments, logs, or screenshots.
+
+## Read-only session RPC projection
+
+`session.get` and `session.list` require `mission.read` and return contract version 1 from `shared/session-rpc-contract.ts`. Each item contains only `id`, `status`, `createdAt`, and `updatedAt`; `contextSnapshot` and arbitrary `metadata` remain internal storage fields. Lists include at most 100 sessions and set `truncated` when more rows are available. For example:
+
+```json
+{
+  "contractVersion": 1,
+  "sessions": [
+    {
+      "id": "session-id",
+      "status": "active",
+      "createdAt": "2026-10-08T12:00:00.000Z",
+      "updatedAt": "2026-10-08T12:00:00.000Z"
+    }
+  ],
+  "truncated": false
+}
+```
+
+`session.get` uses the same item shape under `session`. The default gateway and the authenticated HTTP boundary both rebuild these responses from the allowlist, including when an alternate gateway is injected. Invalid session results and gateway errors use the bounded generic RPC error response.

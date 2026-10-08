@@ -57,6 +57,13 @@ test('SqliteAdapter enforces session foreign keys, cascades children, and keeps 
             contextSnapshot: 'integration fixture',
             metadata: { source: 'sqlite-foreign-key-test' },
         });
+        await adapter.createSession({
+            status: 'paused',
+            contextSnapshot: 'second fixture',
+            metadata: { source: 'sqlite-foreign-key-test' },
+        });
+        expect(await adapter.listSessions({ limit: 1 })).toHaveLength(1);
+        expect(await adapter.listSessions({ status: 'active', limit: 1 })).toHaveLength(1);
         await adapter.saveWave({
             sessionId: session.id,
             waveNumber: 1,

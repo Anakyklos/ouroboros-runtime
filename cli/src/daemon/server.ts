@@ -27,6 +27,7 @@ import {
     type LocalControlAuthorizationPort,
 } from './local-control-auth.js';
 import type { LocalControlAuthenticatedClient } from '../../../shared/local-control-auth-contract.js';
+import { projectSessionGetResult, projectSessionListResult } from './session-rpc-projection.js';
 
 export interface DaemonConfig {
     port: number;
@@ -343,6 +344,20 @@ export class DaemonServer {
                         jsonrpc: '2.0',
                         id: rpcRequest.id,
                         error: { code: result.error.code, message: 'The RPC request could not be completed' },
+                    };
+                }
+                if (rpcRequest.method === 'session.get') {
+                    return {
+                        jsonrpc: '2.0',
+                        id: rpcRequest.id,
+                        result: projectSessionGetResult(result.result),
+                    };
+                }
+                if (rpcRequest.method === 'session.list') {
+                    return {
+                        jsonrpc: '2.0',
+                        id: rpcRequest.id,
+                        result: projectSessionListResult(result.result),
                     };
                 }
                 return result;
