@@ -328,15 +328,16 @@ export class MissionScheduler {
             }
             if (hasUnavailableReadyStep || becameUnavailable) {
                 const latest = await this.store.getMission(mission.missionId);
-                if (latest && !TERMINAL_STATES.has(latest.state) && latest.state !== MissionState.PAUSED
-                    && latest.state !== MissionState.WAITING_FOR_CAPABILITY) {
-                    await this.engine.setWaiting(
-                        mission.missionId,
-                        MissionState.WAITING_FOR_CAPABILITY,
-                        'At least one ready capability is not currently dispatchable',
-                    );
+                if (latest && canWaitForCapability(latest.state)) {
+                    if (latest.state !== MissionState.WAITING_FOR_CAPABILITY) {
+                        await this.engine.setWaiting(
+                            mission.missionId,
+                            MissionState.WAITING_FOR_CAPABILITY,
+                            'At least one ready capability is not currently dispatchable',
+                        );
+                    }
+                    waitingMissionIds.push(mission.missionId);
                 }
-                waitingMissionIds.push(mission.missionId);
             }
         }
 
@@ -367,12 +368,14 @@ export class MissionScheduler {
     ): Promise<void> {
         if (isCapabilityWaitError(error)) {
             const mission = await this.engine.getMission(missionId);
-            if (!TERMINAL_STATES.has(mission.state) && mission.state !== MissionState.PAUSED) {
-                await this.engine.setWaiting(
-                    missionId,
-                    MissionState.WAITING_FOR_CAPABILITY,
-                    error instanceof Error ? error.message : String(error),
-                );
+            if (canWaitForCapability(mission.state)) {
+                if (mission.state !== MissionState.WAITING_FOR_CAPABILITY) {
+                    await this.engine.setWaiting(
+                        missionId,
+                        MissionState.WAITING_FOR_CAPABILITY,
+                        error instanceof Error ? error.message : String(error),
+                    );
+                }
                 waitingMissionIds.push(missionId);
             }
             return;
@@ -395,6 +398,12 @@ function isCapabilityWaitError(error: unknown): error is
     return error instanceof CapabilityUnavailableError
         || error instanceof ConnectorNotRegisteredError
         || error instanceof UnknownCapabilityError;
+}
+
+function canWaitForCapability(state: MissionState): boolean {
+    return state === MissionState.READY
+        || state === MissionState.EXECUTING
+        || state === MissionState.WAITING_FOR_CAPABILITY;
 }
 
 /** Compatibility name for callers that describe the component by purpose. */

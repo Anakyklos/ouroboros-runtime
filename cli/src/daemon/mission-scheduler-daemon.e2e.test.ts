@@ -623,6 +623,177 @@ describe('resident Mission scheduler daemon composition', () => {
             }
         }
     }, 15_000);
+
+    it('preserves BLOCKED when another ready step has a capability wait', async () => {
+        const observations: Array<{
+            failureMode: 'uncertain_handoff' | 'contract_mismatch';
+            firstMissionState: string | undefined;
+            firstInvocations: Awaited<ReturnType<SqliteMissionStore['listInvocations']>>;
+            firstIdleStable: boolean;
+            firstPasses: number;
+            restartedMissionState: string | undefined;
+            restartedInvocations: Awaited<ReturnType<SqliteMissionStore['listInvocations']>>;
+            bInvokes: number;
+        }> = [];
+        for (const failureMode of ['uncertain_handoff', 'contract_mismatch'] as const) {
+            const dataDir = await mkdtemp(join(tmpdir(), `ouroboros-scheduler-blocked-${failureMode}-`));
+            directories.push(dataDir);
+            await seedMixedAvailabilityMission(dataDir);
+
+            const store = new SqliteMissionStore(join(dataDir, 'missions.db'));
+            await store.initialize();
+            const clock = new FakeClock(DATA_TIME);
+            const resolver = new FakeCapabilityResolver();
+            resolver.registerMany(makeDefaultCapabilityCatalog());
+            const engine = new MissionEngine({
+                store,
+                policy: new PlanPolicyValidator(resolver),
+                clock,
+                ids: new FakeIdGenerator(`blocked-${failureMode}`),
+                interpreter: (intent) => intent.originalIntent,
+                verificationAuthority: new FakeVerificationAuthority(),
+            });
+            const registry = new CapabilityRegistry();
+            const bDescriptor = failureMode === 'contract_mismatch'
+                ? defineCapabilityDescriptor({
+                    capabilityId: SECOND_CAPABILITY_ID,
+                    moduleOwner: 'runstead',
+                    purpose: 'Contract intentionally diverges from the accepted policy catalog',
+                    effectClass: EffectClass.EXECUTION,
+                    allowedInputRefPrefixes: ['refs/runstead/'],
+                    ownsStorage: false,
+                    requiresOwnerVerification: false,
+                    reconciliationSupport: ReconciliationSupport.NONE,
+                })
+                : makeSecondDescriptor();
+            registry.register(bDescriptor);
+            const seam = new ConnectorDispatchSeam(engine, registry, clock);
+            let bInvokes = 0;
+            seam.registerConnector(SECOND_CAPABILITY_ID, makeConnectorFor(
+                SECOND_CAPABILITY_ID,
+                bDescriptor,
+                async () => {
+                    bInvokes++;
+                    if (failureMode === 'uncertain_handoff') {
+                        throw new Error('disconnect after possible handoff');
+                    }
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId: 'must-not-be-invoked',
+                        summary: 'Contract mismatch must stop before invocation',
+                        evidence: [],
+                    };
+                },
+            ));
+            const scheduler = new MissionScheduler({ engine, store, seam, clock });
+            let passes = 0;
+            let mutations = 0;
+            const unsubscribe = store.onMutation?.(() => { mutations++; });
+            let driver!: MissionSchedulerDriver;
+            driver = new MissionSchedulerDriver({
+                scheduler: { runOnce: async () => {
+                    passes++;
+                    if (passes >= 8) void driver.stop();
+                    return scheduler.runOnce();
+                } },
+                store,
+                timer: new CountingFakeTimer(),
+            });
+
+            let firstMissionState: string | undefined;
+            let firstInvocations: Awaited<ReturnType<SqliteMissionStore['listInvocations']>> = [];
+            let firstIdleStable = false;
+            let firstPasses = 0;
+            try {
+                await driver.start();
+                firstMissionState = (await store.getMission(MISSION_ID))?.state;
+                firstInvocations = await store.listInvocations(MISSION_ID);
+                const settledPasses = passes;
+                const settledMutations = mutations;
+                clock.advance(60_000);
+                await new Promise((resolve) => setTimeout(resolve, 25));
+                firstIdleStable = passes === settledPasses && mutations === settledMutations;
+                firstPasses = passes;
+            } finally {
+                await driver.stop();
+                unsubscribe?.();
+                await store.close();
+            }
+
+            // Recomposition with the same absent A and failing B must keep
+            // the durable block and must never replay B's uncertain effect.
+            const reopened = new SqliteMissionStore(join(dataDir, 'missions.db'));
+            await reopened.initialize();
+            const restartedClock = new FakeClock(DATA_TIME);
+            const restartedResolver = new FakeCapabilityResolver();
+            restartedResolver.registerMany(makeDefaultCapabilityCatalog());
+            const restartedEngine = new MissionEngine({
+                store: reopened,
+                policy: new PlanPolicyValidator(restartedResolver),
+                clock: restartedClock,
+                ids: new FakeIdGenerator(`blocked-restart-${failureMode}`),
+                interpreter: (intent) => intent.originalIntent,
+                verificationAuthority: new FakeVerificationAuthority(),
+            });
+            const restartedRegistry = new CapabilityRegistry();
+            restartedRegistry.register(bDescriptor);
+            const restartedSeam = new ConnectorDispatchSeam(restartedEngine, restartedRegistry, restartedClock);
+            restartedSeam.registerConnector(SECOND_CAPABILITY_ID, makeConnectorFor(
+                SECOND_CAPABILITY_ID,
+                bDescriptor,
+                async () => {
+                    bInvokes++;
+                    throw new Error('restart must not replay a blocked capability');
+                },
+            ));
+            const restartedScheduler = new MissionScheduler({
+                engine: restartedEngine,
+                store: reopened,
+                seam: restartedSeam,
+                clock: restartedClock,
+            });
+            const restartedDriver = new MissionSchedulerDriver({ scheduler: restartedScheduler, store: reopened });
+            let restartedMissionState: string | undefined;
+            let restartedInvocations: Awaited<ReturnType<SqliteMissionStore['listInvocations']>> = [];
+            try {
+                await restartedDriver.start();
+                restartedMissionState = (await reopened.getMission(MISSION_ID))?.state;
+                restartedInvocations = await reopened.listInvocations(MISSION_ID);
+            } finally {
+                await restartedDriver.stop();
+                await reopened.close();
+            }
+            observations.push({
+                failureMode,
+                firstMissionState,
+                firstInvocations,
+                firstIdleStable,
+                firstPasses,
+                restartedMissionState,
+                restartedInvocations,
+                bInvokes,
+            });
+        }
+
+        expect(observations.map((result) => result.firstMissionState)).toEqual(['blocked', 'blocked']);
+        expect(observations.map((result) => result.restartedMissionState)).toEqual(['blocked', 'blocked']);
+        for (const result of observations) {
+            expect(result.firstIdleStable).toBe(true);
+            expect(result.firstPasses).toBeLessThanOrEqual(3);
+            expect(result.restartedInvocations).toHaveLength(result.firstInvocations.length);
+            if (result.failureMode === 'uncertain_handoff') {
+                expect(result.firstInvocations).toHaveLength(1);
+                expect(result.firstInvocations[0]?.status).toBe('blocked');
+                expect(result.firstInvocations[0]?.delivery.state).toBe('uncertain');
+                expect(result.restartedInvocations[0]?.delivery.state).toBe('uncertain');
+                expect(result.bInvokes).toBe(1);
+            } else {
+                expect(result.firstInvocations).toHaveLength(0);
+                expect(result.restartedInvocations).toHaveLength(0);
+                expect(result.bInvokes).toBe(0);
+            }
+        }
+    }, 15_000);
 });
 
 class CountingFakeTimer implements MissionSchedulerDriverTimer {
