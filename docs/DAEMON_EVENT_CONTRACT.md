@@ -54,6 +54,12 @@ O WebSocket é observacional. Fechar, perder ou reconectar o cliente não chama 
 
 Cada cliente é avaliado isoladamente. Exceção em `send`, estado de socket inválido ou `bufferedAmount` acima do limite finito remove somente aquele cliente. A fila temporária de handshake também é bounded. Não há fila ilimitada em RAM e um cliente lento não bloqueia siblings.
 
+## Autenticação do transporte
+
+Todo `POST /rpc` exige bearer credential e o escopo server-side correspondente à operação. O mapa de operações é fechado; métodos desconhecidos ou parâmetros sem classificação são negados antes do gateway. `GET /health` permanece público e contém somente estado mínimo do processo. Requests com `Origin` só são aceitos quando a origem exata está configurada em `OUROBOROS_ALLOWED_ORIGINS`; preflight aceita apenas `POST`, `Authorization` e `Content-Type`.
+
+O handshake de `GET /ws` autentica e exige `mission.read` antes da conexão e do snapshot. O browser troca seu bearer em memória por um cookie HttpOnly, SameSite=Strict, vinculado à Origin e válido por cinco minutos. O servidor revalida credenciais e escopo de streams ativos a cada 500 ms, fechando conexões após expiração, rotação ou revogação. Provisionamento, rotação e revogação offline estão descritos em [LOCAL_CONTROL_AUTH.md](LOCAL_CONTROL_AUTH.md). O daemon não inicia sem ao menos uma credencial ativa.
+
 ## Lifecycle
 
 O daemon registra um único wildcard listener e mantém seu unsubscribe. `stop()` remove esse listener e fecha clientes. A conexão frontend remove handlers do socket, cancela o timer de backoff e invalida callbacks antigos. Cada instância mantém no máximo um timer de reconexão.
@@ -64,4 +70,4 @@ Diagnósticos contêm somente códigos enumerados. Payloads malformados, versõe
 
 ## Limitações deliberadas
 
-Este contrato não implementa autenticação WebSocket, exactly-once distribuído, replay histórico, novo scheduler, nova persistence layer, provider, migração para Go, redesign completo da Mission Control ou as Issues #59 e #65/#66/#67.
+Este contrato não implementa exactly-once distribuído, replay histórico, novo scheduler, nova persistence layer, provider, migração para Go, redesign completo da Mission Control ou as Issues #59 e #65/#66/#67.

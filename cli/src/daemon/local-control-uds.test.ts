@@ -6,6 +6,7 @@ import { createConnection, createServer, type Server } from "node:net";
 import { LocalControlReadService } from "./local-control-read.js";
 import { DaemonServer } from "./server.js";
 import { EventBus } from "./event-bus.js";
+import { permissiveLocalControlTestAuth } from "./local-control-test-auth.js";
 import { SqliteMissionStore } from "../mission/sqlite-mission-store.js";
 import type { Mission } from "../mission/contracts.js";
 import type { StoragePort } from "../ports/storage.port.js";
@@ -274,7 +275,7 @@ describe("LocalControlUdsServer", () => {
       getProjectionSnapshot: async () => { throw new Error("not used by read parity test"); },
     };
     const port = await freePort();
-    const http = new DaemonServer(storage, { port, host: "127.0.0.1" }, new EventBus(), missionStore, gateway);
+    const http = new DaemonServer(storage, { port, host: "127.0.0.1" }, new EventBus(), missionStore, gateway, undefined, undefined, permissiveLocalControlTestAuth);
     const socketPath = join(directory, "control.sock");
     const uds = new LocalControlUdsServer({ socketPath, read: (request) => service.read(request) });
     try {

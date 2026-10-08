@@ -6,7 +6,6 @@ export type UILayout = "snake" | "swiss";
 
 interface DaemonConfig {
   websocketUrl: string;
-  apiKey: string;
 }
 
 interface SettingsState {
@@ -56,7 +55,6 @@ export const useSettingsStore = create<SettingsState>()(
       reducedMotion: false,
       daemonConfig: {
         websocketUrl: "ws://localhost:7777",
-        apiKey: "",
       },
       autoScrollLogs: true,
       maxLogEntries: 500,
@@ -92,6 +90,18 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "ouroboros-settings",
+      partialize: (state) => ({ ...state, daemonConfig: { websocketUrl: state.daemonConfig.websocketUrl } }),
+      merge: (persisted, current) => {
+        const saved = persisted as Partial<SettingsState>;
+        const daemonConfig = saved.daemonConfig as { websocketUrl?: unknown } | undefined;
+        return {
+          ...current,
+          ...saved,
+          daemonConfig: {
+            websocketUrl: typeof daemonConfig?.websocketUrl === "string" ? daemonConfig.websocketUrl : current.daemonConfig.websocketUrl,
+          },
+        };
+      },
     }
   )
 );

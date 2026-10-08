@@ -4,7 +4,7 @@ export type DaemonShutdownReason = 'SIGINT' | 'SIGTERM' | 'RPC' | 'startup_failu
 export type ShutdownDiagnosticOutcome = 'failed' | 'timed_out' | 'forced_termination';
 
 export interface ShutdownDiagnostic {
-    stage: 'server' | 'mission_scheduler' | 'storage' | 'mission_store' | 'process';
+    stage: 'server' | 'mission_scheduler' | 'storage' | 'mission_store' | 'local_control_auth' | 'process';
     outcome: ShutdownDiagnosticOutcome;
 }
 
@@ -13,6 +13,7 @@ export interface DaemonShutdownOptions {
     stopMissionScheduler?: () => Promise<void>;
     closeStorage: () => Promise<void>;
     closeMissionStore: () => Promise<void>;
+    closeLocalControlAuth?: () => Promise<void>;
     onDiagnostic?: (diagnostic: ShutdownDiagnostic) => void;
     forceTerminate?: () => void;
     setExitCode?: (code: number) => void;
@@ -58,7 +59,7 @@ export class DaemonShutdownCoordinator {
         }, forceTimeoutMs);
 
         const close = async (
-            stage: 'server' | 'storage' | 'mission_store',
+            stage: 'server' | 'storage' | 'mission_store' | 'local_control_auth',
             action: () => Promise<void>,
         ): Promise<void> => {
             let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -111,6 +112,9 @@ export class DaemonShutdownCoordinator {
                 // that connection open until forced process termination.
                 failed = true;
                 this.report({ stage: 'mission_store', outcome: 'timed_out' });
+            }
+            if (this.options.closeLocalControlAuth) {
+                await close('local_control_auth', this.options.closeLocalControlAuth);
             }
         } finally {
             clearTimeout(watchdog);

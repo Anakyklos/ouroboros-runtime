@@ -16,12 +16,14 @@ import { defineCapabilityDescriptor } from '../capabilities/fixtures.js';
 import { CapabilityResultStatus, CONNECTOR_CONTRACT_VERSION_1, type CapabilityConnector } from '../capabilities/connector.js';
 import { ConnectorDispatchSeam } from '../capabilities/dispatch-seam.js';
 import { MissionSchedulerDriver } from './mission-scheduler-driver.js';
+import { LocalControlCredentialStore } from './local-control-auth.js';
 import type { MissionSchedulerDriverTimer } from './mission-scheduler-driver.js';
 
 const MISSION_ID = 'resident-scheduler-mission-1';
 const CAPABILITY_ID = 'lifeos.query';
 const SECOND_CAPABILITY_ID = 'runstead.code-review';
 const DATA_TIME = '2026-10-08T10:00:00.000Z';
+const authTokens = new Map<number, string>();
 
 async function unusedPort(): Promise<number> {
     const server = createNetServer();
@@ -200,6 +202,10 @@ async function startDaemon(
     port: number,
     configure: NonNullable<HeadlessDaemonDependencies['configureCapabilitiesForTests']> = () => {},
 ) {
+    const authStore = new LocalControlCredentialStore(join(dataDir, 'local-control-auth.db'));
+    const credential = authStore.provision('scheduler-e2e', ['mission.read', 'mission.control', 'daemon.admin'], Date.now() + 60 * 60_000);
+    authStore.close();
+    authTokens.set(port, credential.token);
     const stop = await startHeadlessDaemon({
         dataDir,
         port,
@@ -229,7 +235,7 @@ async function readDurableState(dataDir: string): Promise<Record<string, unknown
 async function requestRpcShutdown(port: number): Promise<Record<string, unknown>> {
     const response = await fetch(`http://127.0.0.1:${port}/rpc`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', Authorization: `Bearer ${authTokens.get(port)}` },
         body: JSON.stringify({ jsonrpc: '2.0', id: 'pending-scheduler-shutdown', method: 'system.shutdown' }),
     });
     return await response.json() as Record<string, unknown>;

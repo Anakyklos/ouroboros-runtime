@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createServer as createNetServer } from 'node:net';
+import { createConnection, createServer as createNetServer, type Socket } from 'node:net';
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SqliteMissionStore } from '../mission/sqlite-mission-store.js';
+import { LocalControlCredentialStore } from './local-control-auth.js';
 import {
     EffectClass,
     InvocationStatus,
@@ -20,6 +22,7 @@ const MAIN = join(ROOT, 'cli/src/daemon/main.ts');
 const MISSION_ID = 'shutdown-e2e-mission';
 const INVOCATION_ID = 'shutdown-e2e-invocation';
 const NOW = '2026-10-07T12:00:00.000Z';
+const authTokens = new Map<number, string>();
 
 function mission(state: MissionState = MissionState.COMPLETED): Mission {
     return {
@@ -100,6 +103,10 @@ async function unusedPort(): Promise<number> {
 }
 
 function startDaemon(directory: string, port: number): ChildProcess {
+    const authStore = new LocalControlCredentialStore(join(directory, '.ouroboros', 'local-control-auth.db'));
+    const credential = authStore.provision('headless-e2e', ['mission.read', 'mission.control', 'daemon.admin'], Date.now() + 60 * 60_000);
+    authStore.close();
+    authTokens.set(port, credential.token);
     return spawn(process.execPath, [MAIN], {
         cwd: directory,
         env: {
@@ -107,6 +114,7 @@ function startDaemon(directory: string, port: number): ChildProcess {
             HOME: directory,
             TMPDIR: directory,
             OUROBOROS_PORT: String(port),
+            OUROBOROS_ALLOWED_ORIGINS: 'http://localhost:5173',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -141,10 +149,43 @@ async function waitForExit(child: ChildProcess, timeoutMs = 8_000): Promise<numb
 async function rpc(port: number, method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>> {
     const response = await fetch(`http://127.0.0.1:${port}/rpc`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', Authorization: `Bearer ${authTokens.get(port)}` },
         body: JSON.stringify({ jsonrpc: '2.0', id: `${method}-e2e`, method, params }),
     });
     return await response.json() as Record<string, unknown>;
+}
+
+async function authenticatedWebSocket(port: number, token: string): Promise<Socket> {
+    const session = await fetch(`http://127.0.0.1:${port}/auth/browser-session`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, Origin: 'http://localhost:5173' },
+    });
+    if (!session.ok) throw new Error('Could not establish the browser stream session');
+    const cookie = session.headers.get('set-cookie')?.split(';', 1)[0];
+    if (!cookie) throw new Error('Browser stream session cookie was missing');
+    const socket = createConnection({ host: '127.0.0.1', port });
+    await new Promise<void>((resolve, reject) => {
+        socket.once('connect', resolve);
+        socket.once('error', reject);
+    });
+    const key = randomBytes(16).toString('base64');
+    socket.write([
+        `GET /ws HTTP/1.1`, `Host: 127.0.0.1:${port}`, 'Upgrade: websocket', 'Connection: Upgrade',
+        `Sec-WebSocket-Key: ${key}`, 'Sec-WebSocket-Version: 13', 'Origin: http://localhost:5173', `Cookie: ${cookie}`, '', '',
+    ].join('\r\n'));
+    await new Promise<void>((resolve, reject) => {
+        let response = '';
+        const timeout = setTimeout(() => reject(new Error('Authenticated WebSocket handshake timed out')), 3_000);
+        socket.on('data', (chunk) => {
+            response += chunk.toString('utf8');
+            if (!response.includes('\r\n\r\n')) return;
+            clearTimeout(timeout);
+            if (!response.startsWith('HTTP/1.1 101 ')) reject(new Error('Authenticated WebSocket handshake was rejected'));
+            else resolve();
+        });
+        socket.once('error', (error) => { clearTimeout(timeout); reject(error); });
+    });
+    return socket;
 }
 
 describe('headless daemon lifecycle over real RPC and SQLite', () => {
@@ -178,13 +219,8 @@ describe('headless daemon lifecycle over real RPC and SQLite', () => {
         const first = startDaemon(directory, port);
         children.push(first);
         await waitUntilReady(first, port);
-        const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
-        await new Promise<void>((resolve, reject) => {
-            const timeout = setTimeout(() => reject(new Error('WebSocket projection did not connect')), 3_000);
-            socket.addEventListener('open', () => { clearTimeout(timeout); resolve(); }, { once: true });
-            socket.addEventListener('error', () => { clearTimeout(timeout); reject(new Error('WebSocket projection failed to connect')); }, { once: true });
-        });
-        const socketClosed = new Promise<void>((resolve) => socket.addEventListener('close', () => resolve(), { once: true }));
+        const socket = await authenticatedWebSocket(port, authTokens.get(port)!);
+        const socketClosed = new Promise<void>((resolve) => socket.once('close', resolve));
         const shutdown = await rpc(port, 'system.shutdown');
         expect(shutdown).toMatchObject({ result: { status: 'shutting_down' } });
         await socketClosed;

@@ -3,6 +3,7 @@ import { useLogStore } from "@/stores/log-store";
 import { useMissionControlStore, type DaemonCapabilities } from "@/stores/mission-control-store";
 import { useDaemonProjectionStore } from "@/stores/daemon-projection-store";
 import { DaemonWebSocketConnection } from "@/lib/daemon-websocket-connection";
+import { establishDaemonBrowserSession } from "@/lib/daemon-auth";
 import type {
   AllowedDaemonEvent,
   DaemonEventEnvelope,
@@ -103,6 +104,7 @@ export function useEventBus(options: UseEventBusOptions = {}) {
 
     const connection = new DaemonWebSocketConnection({
       url,
+      prepareConnection: () => establishDaemonBrowserSession(url),
       maxReconnectAttempts,
       onStatus: (status) => {
         setConnectionStatus(status);

@@ -22,6 +22,7 @@ export interface DaemonWebSocketConnectionOptions {
   url: string;
   maxReconnectAttempts?: number;
   createWebSocket?: (url: string) => WebSocketLike;
+  prepareConnection?: () => Promise<void>;
   setTimeout?: (callback: () => void, delay: number) => unknown;
   clearTimeout?: (handle: unknown) => void;
   onStatus?: (status: "connected" | "disconnected" | "reconnecting") => void;
@@ -41,6 +42,7 @@ export class DaemonWebSocketConnection {
   private readonly url: string;
   private readonly maxReconnectAttempts: number;
   private readonly createWebSocket: (url: string) => WebSocketLike;
+  private readonly prepareConnection?: () => Promise<void>;
   private readonly setTimer: (callback: () => void, delay: number) => unknown;
   private readonly clearTimer: (handle: unknown) => void;
   private readonly onStatus?: DaemonWebSocketConnectionOptions["onStatus"];
@@ -58,6 +60,7 @@ export class DaemonWebSocketConnection {
     this.url = options.url;
     this.maxReconnectAttempts = Math.max(0, options.maxReconnectAttempts ?? 10);
     this.createWebSocket = options.createWebSocket ?? defaultCreateWebSocket;
+    this.prepareConnection = options.prepareConnection;
     this.setTimer = options.setTimeout ?? ((callback, delay) => setTimeout(callback, delay));
     this.clearTimer = options.clearTimeout ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
     this.onStatus = options.onStatus;
@@ -109,13 +112,25 @@ export class DaemonWebSocketConnection {
     return this.stream.cursor;
   }
 
-  private connect(): void {
+  private async connect(): Promise<void> {
     if (this.stopped) return;
     if (this.socket && (this.socket.readyState === CONNECTING_READY_STATE || this.socket.readyState === OPEN_READY_STATE)) {
       return;
     }
 
     this.stream.resetForConnection();
+    const preparationGeneration = ++this.generation;
+    if (this.prepareConnection) {
+      try {
+        await this.prepareConnection();
+      } catch {
+        if (this.stopped || preparationGeneration !== this.generation) return;
+        this.onDiagnostic?.({ code: "transport_error" });
+        this.scheduleReconnect();
+        return;
+      }
+      if (this.stopped || preparationGeneration !== this.generation) return;
+    }
     let socket: WebSocketLike;
     try {
       socket = this.createWebSocket(this.url);

@@ -14,6 +14,7 @@ import {
   type LocalControlCommandResponse,
 } from "../../../shared/local-control-command-contract.js";
 import { DAEMON_MISSION_STATES } from "../../../shared/daemon-event-contract.js";
+import { defaultLocalControlClientCredentialPath, readLocalControlClientCredential } from "../daemon/local-control-auth.js";
 
 /** Transport-neutral request surface consumed by the factual CLI. */
 export interface LocalControlReadTransport {
@@ -355,12 +356,16 @@ export class LoopbackJsonRpcTransport implements LocalControlReadTransport {
   private nextId = 1;
   private readonly baseUrl: string;
 
-  constructor(options: { baseUrl?: string; fetch?: typeof fetch } = {}) {
+  constructor(options: { baseUrl?: string; fetch?: typeof fetch; credentialFile?: string; authorization?: string } = {}) {
     this.baseUrl = options.baseUrl ?? `http://127.0.0.1:${process.env.OUROBOROS_PORT || "7777"}`;
     this.fetchImpl = options.fetch ?? fetch;
+    this.credentialFile = options.credentialFile;
+    this.testAuthorization = options.authorization;
   }
 
   private readonly fetchImpl: typeof fetch;
+  private readonly credentialFile?: string;
+  private readonly testAuthorization?: string;
 
   async request(params: LocalControlReadRequest): Promise<unknown> {
     return this.call("local_control.read", params);
@@ -369,11 +374,21 @@ export class LoopbackJsonRpcTransport implements LocalControlReadTransport {
   /** Send one generic JSON-RPC request; domain clients select their own method and contract. */
   async call(method: string, params: unknown): Promise<unknown> {
     const id = String(this.nextId++);
+    let authorization: string;
+    try {
+      if (this.testAuthorization) authorization = this.testAuthorization;
+      else {
+        const path = this.credentialFile ?? process.env.OUROBOROS_CLIENT_CREDENTIAL_FILE ?? defaultLocalControlClientCredentialPath();
+        authorization = `Bearer ${readLocalControlClientCredential(path).token}`;
+      }
+    } catch {
+      throw new DaemonUnavailableError();
+    }
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}/rpc`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: authorization },
         body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
       });
     } catch {

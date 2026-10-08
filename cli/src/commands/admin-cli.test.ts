@@ -9,6 +9,10 @@ import {
   type LocalControlCommandResponse,
 } from "../../../shared/local-control-command-contract.js";
 import { runAdminCli } from "./admin-cli.js";
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readLocalControlClientCredential } from "../daemon/local-control-auth.js";
 import {
   DaemonUnavailableError,
   LocalControlCommandClient,
@@ -125,6 +129,34 @@ function commandSuccess(operation: "mission.pause" | "mission.resume" | "mission
 }
 
 describe("factual admin CLI", () => {
+  it("provisions an explicitly scoped credential into a private file without printing its bearer value", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "ouroboros-cli-auth-"));
+    const credentialFile = join(dataDir, "operator.json");
+    const previousDataDir = process.env.OUROBOROS_DATA_DIR;
+    const previousCredentialFile = process.env.OUROBOROS_CLIENT_CREDENTIAL_FILE;
+    process.env.OUROBOROS_DATA_DIR = join(dataDir, "daemon-data");
+    process.env.OUROBOROS_CLIENT_CREDENTIAL_FILE = credentialFile;
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    try {
+      expect(await runAdminCli(["auth", "provision", "operator-cli", "mission.read,mission.control"] , {
+        stdout: (value) => stdout.push(value), stderr: (value) => stderr.push(value),
+      })).toBe(0);
+      const credential = readLocalControlClientCredential(credentialFile);
+      expect(credential.clientId).toBe("operator-cli");
+      expect(credential.token).toMatch(/^oc1\./);
+      expect((await stat(credentialFile)).mode & 0o777).toBe(0o600);
+      expect(stdout.join("")).not.toContain(credential.token);
+      expect(stderr).toEqual([]);
+    } finally {
+      if (previousDataDir === undefined) delete process.env.OUROBOROS_DATA_DIR;
+      else process.env.OUROBOROS_DATA_DIR = previousDataDir;
+      if (previousCredentialFile === undefined) delete process.env.OUROBOROS_CLIENT_CREDENTIAL_FILE;
+      else process.env.OUROBOROS_CLIENT_CREDENTIAL_FILE = previousCredentialFile;
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("passes pause with the exact operation, Mission id, and supplied reason", async () => {
     const paused = { ...mission, state: "paused" };
     const cli = commandHarness(async () => commandSuccess("mission.pause", paused));
@@ -200,7 +232,7 @@ describe("factual admin CLI", () => {
   });
 
   it("fails honestly when the daemon connection is unavailable and does not expose transport details", async () => {
-    const rpc = new LoopbackJsonRpcTransport({ fetch: async () => { throw new Error("PRIVATE socket failure"); } });
+    const rpc = new LoopbackJsonRpcTransport({ authorization: "Bearer test-credential", fetch: async () => { throw new Error("PRIVATE socket failure"); } });
     const commandClient = new LocalControlCommandClient({ request: (params) => rpc.call("local_control.command", params) });
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -326,6 +358,7 @@ describe("factual admin CLI", () => {
   it("rejects malformed JSON-RPC responses", async () => {
     const transport = new LoopbackJsonRpcTransport({
       baseUrl: "http://127.0.0.1:7777",
+      authorization: "Bearer test-credential",
       fetch: async () => new Response("not-json", { status: 200 }),
     });
 
@@ -335,6 +368,7 @@ describe("factual admin CLI", () => {
   it("rejects a malformed JSON-RPC envelope", async () => {
     const transport = new LoopbackJsonRpcTransport({
       baseUrl: "http://127.0.0.1:7777",
+      authorization: "Bearer test-credential",
       fetch: async () => new Response(JSON.stringify({ jsonrpc: "2.0", id: "wrong", result: {} }), { status: 200 }),
     });
 
@@ -343,6 +377,7 @@ describe("factual admin CLI", () => {
 
   it("rejects a JSON-RPC envelope carrying an unknown field", async () => {
     const transport = new LoopbackJsonRpcTransport({
+      authorization: "Bearer test-credential",
       baseUrl: "http://127.0.0.1:7777",
       fetch: async (_input, init) => {
         const request = JSON.parse(String(init?.body)) as { id: string };

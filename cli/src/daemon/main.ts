@@ -4,7 +4,6 @@
  * Usage: bun run cli/src/daemon/main.ts
  */
 
-import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DaemonServer, globalEventBus } from './index.js';
 import { SqliteAdapter } from '../adapters/sqlite.adapter.js';
@@ -22,8 +21,14 @@ import {
     type DaemonShutdownReason,
     type ShutdownDiagnostic,
 } from './shutdown-coordinator.js';
+import {
+    LocalControlAuthorizer,
+    LocalControlCredentialStore,
+    securePrivateDirectory,
+    type LocalControlAuthorizationPort,
+} from './local-control-auth.js';
 
-const DATA_DIR = '.ouroboros';
+const DATA_DIR = process.env.OUROBOROS_DATA_DIR || '.ouroboros';
 const PORT = Number(process.env.OUROBOROS_PORT) || 7777;
 
 interface InitializableStorage extends StoragePort {
@@ -51,6 +56,7 @@ export interface HeadlessDaemonDependencies {
         missionStore: MissionStore,
         missionEngine: MissionEngine,
         requestShutdown: () => void,
+        authorization: LocalControlAuthorizationPort,
     ) => HeadlessServer;
     /** Test-only fixture seam; production composition leaves the registry empty. */
     configureCapabilitiesForTests?: (
@@ -70,6 +76,8 @@ export async function startHeadlessDaemon(
     const port = dependencies.port ?? PORT;
     let storage: InitializableStorage | undefined;
     let missionStore: InitializableMissionStore | undefined;
+    let localControlCredentialStore: LocalControlCredentialStore | undefined;
+    let localControlAuthorization: LocalControlAuthorizer | undefined;
     let server: HeadlessServer | undefined;
     let schedulerDriver: MissionSchedulerDriver | undefined;
     let detachSignalListeners = (): void => {};
@@ -89,6 +97,10 @@ export async function startHeadlessDaemon(
         stopMissionScheduler: async () => { await schedulerDriver?.stop(); },
         closeStorage: async () => { await storage?.close(); },
         closeMissionStore: async () => { await missionStore?.close(); },
+        closeLocalControlAuth: async () => {
+            localControlAuthorization?.close();
+            localControlCredentialStore?.close();
+        },
         onDiagnostic,
         forceTerminate: dependencies.forceTerminate ?? (() => process.exit(1)),
         setExitCode: dependencies.setExitCode ?? ((code) => { process.exitCode = code; }),
@@ -106,13 +118,22 @@ export async function startHeadlessDaemon(
                 case 'error': console.error(prefix, event.message); break;
             }
         });
-        await mkdir(dataDir, { recursive: true });
+        securePrivateDirectory(dataDir);
         storage = (dependencies.createStorage ?? ((path) => new SqliteAdapter(path)))(join(dataDir, 'daemon.db'));
         await storage.initialize();
 
         missionStore = (dependencies.createMissionStore ?? ((path) => new SqliteMissionStore(path)))
             (join(dataDir, 'missions.db'));
         await missionStore.initialize();
+
+        localControlCredentialStore = new LocalControlCredentialStore(join(dataDir, 'local-control-auth.db'));
+        localControlAuthorization = new LocalControlAuthorizer(
+            localControlCredentialStore,
+            (process.env.OUROBOROS_ALLOWED_ORIGINS ?? '').split(',').map((origin) => origin.trim()).filter(Boolean),
+        );
+        if (!localControlAuthorization.hasActiveClients()) {
+            throw new Error('Local-control authentication must be provisioned before daemon startup');
+        }
 
         const capabilityRegistry = new CapabilityRegistry();
         const missionEngine = new MissionEngine({
@@ -137,7 +158,7 @@ export async function startHeadlessDaemon(
             console.log(`Found ${activeSessions.length} active daemon session(s).`);
         }
 
-        server = (dependencies.createServer ?? ((sessionStorage, durableMissions, engine, onShutdown) =>
+        server = (dependencies.createServer ?? ((sessionStorage, durableMissions, engine, onShutdown, authorization) =>
             new DaemonServer(
                 sessionStorage,
                 { port, host: '127.0.0.1' },
@@ -146,8 +167,9 @@ export async function startHeadlessDaemon(
                 undefined,
                 engine,
                 onShutdown,
+                authorization,
             )
-        ))(storage, missionStore, missionEngine, () => { void requestShutdown('RPC'); });
+        ))(storage, missionStore, missionEngine, () => { void requestShutdown('RPC'); }, localControlAuthorization);
 
         const onSignal = (signal: 'SIGINT' | 'SIGTERM') => {
             console.log(`Daemon shutdown requested by ${signal}.`);

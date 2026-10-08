@@ -8,6 +8,13 @@ import {
   ProtocolVersionMismatchError,
   RpcProtocolError,
 } from "./local-control-client.js";
+import { join } from "node:path";
+import {
+  LocalControlCredentialStore,
+  defaultLocalControlClientCredentialPath,
+  writeLocalControlClientCredential,
+} from "../daemon/local-control-auth.js";
+import { LOCAL_CONTROL_AUTH_SCOPES, type LocalControlAuthScope } from "../../../shared/local-control-auth-contract.js";
 
 export interface AdminCliDependencies {
   client?: Pick<LocalControlReadClient, "read">;
@@ -31,6 +38,9 @@ function usage(): string {
     "  ouroboros mission resume <id>",
     "  ouroboros mission cancel <id> [reason]",
     "  ouroboros capabilities",
+    "  ouroboros auth provision <client-id> <scope,scope> [days] [credential-file]",
+    "  ouroboros auth rotate <client-id> <scope,scope> [days] [credential-file]",
+    "  ouroboros auth revoke <client-id>",
   ].join("\n");
 }
 
@@ -50,6 +60,40 @@ export async function runAdminCli(args: readonly string[], dependencies: AdminCl
   }
 
   try {
+    if (args[0] === "auth") {
+      const dataDir = process.env.OUROBOROS_DATA_DIR || ".ouroboros";
+      const registry = new LocalControlCredentialStore(join(dataDir, "local-control-auth.db"));
+      try {
+        const action = args[1];
+        const clientId = args[2];
+        if ((action === "provision" || action === "rotate") && clientId && args.length >= 4 && args.length <= 6) {
+          const scopes = args[3].split(",") as LocalControlAuthScope[];
+          if (!scopes.length || scopes.some((scope) => !LOCAL_CONTROL_AUTH_SCOPES.includes(scope)) || new Set(scopes).size !== scopes.length) {
+            stderr("invalid scope list\n");
+            return 2;
+          }
+          const days = args[4] === undefined ? 90 : Number(args[4]);
+          if (!Number.isSafeInteger(days) || days < 1 || days > 365) {
+            stderr("credential lifetime must be between 1 and 365 days\n");
+            return 2;
+          }
+          const path = args[5] ?? process.env.OUROBOROS_CLIENT_CREDENTIAL_FILE ?? defaultLocalControlClientCredentialPath(clientId);
+          const credential = registry.provision(clientId, scopes, Date.now() + days * 24 * 60 * 60_000);
+          writeLocalControlClientCredential(path, { schemaVersion: 1, clientId, token: credential.token });
+          writeJson(stdout, { result: action === "rotate" ? "rotated" : "provisioned", clientId, scopes: credential.scopes, expiresAt: new Date(credential.expiresAt).toISOString(), credentialFile: path });
+          return 0;
+        }
+        if (action === "revoke" && clientId && args.length === 3) {
+          const revoked = registry.revoke(clientId);
+          writeJson(stdout, { result: revoked ? "revoked" : "already_inactive", clientId });
+          return 0;
+        }
+        stderr(`${usage()}\n`);
+        return 2;
+      } finally {
+        registry.close();
+      }
+    }
     switch (args[0]) {
       case "version": {
         if (args.length !== 1) break;

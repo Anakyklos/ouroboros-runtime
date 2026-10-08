@@ -5,7 +5,7 @@
  * Roda em localhost:7777 por padrão.
  */
 
-import Fastify, { FastifyInstance } from 'fastify';
+import Fastify, { FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import websocket from '@fastify/websocket';
 import type { ServerResponse } from 'node:http';
 import { EventBus, globalEventBus } from './event-bus.js';
@@ -21,12 +21,16 @@ import {
 import type { StoragePort } from '../ports/storage.port.js';
 import type { MissionMutation, MissionStore } from '../mission/ports.js';
 import type { MissionCommandAuthority } from './local-control-command.js';
+import {
+    getBrowserSessionCookieName,
+    requiredLocalControlScope,
+    type LocalControlAuthorizationPort,
+} from './local-control-auth.js';
+import type { LocalControlAuthenticatedClient } from '../../../shared/local-control-auth-contract.js';
 
 export interface DaemonConfig {
     port: number;
     host: string;
-    sessionToken?: string;
-    apiKey?: string;
 }
 
 const DEFAULT_CONFIG: DaemonConfig = {
@@ -58,6 +62,10 @@ export class DaemonServer {
     private inFlightResponses = new Set<ServerResponse>();
     private rpcDrainWaiters: Array<() => void> = [];
     private appClosed = false;
+    private readonly authorization?: LocalControlAuthorizationPort;
+    private readonly websocketPrincipals = new Map<ProjectionClient, { socket: { close(code?: number, reason?: string): void }; principal: LocalControlAuthenticatedClient }>();
+    private websocketAuthorizationTimer: ReturnType<typeof setInterval> | null = null;
+    private readonly websocketPrincipalByRequest = new WeakMap<object, LocalControlAuthenticatedClient>();
 
     constructor(
         storage: StoragePort,
@@ -67,8 +75,10 @@ export class DaemonServer {
         rpcGateway?: DaemonRpcGatewayPort,
         missionCommandAuthority?: MissionCommandAuthority,
         onShutdownRequested?: () => void,
+        authorization?: LocalControlAuthorizationPort,
     ) {
         this.config = { ...DEFAULT_CONFIG, ...config };
+        this.authorization = authorization;
         this.eventBus = eventBus;
         this.rpcGateway = rpcGateway ?? new RpcGateway(
             storage,
@@ -178,11 +188,41 @@ export class DaemonServer {
         this.eventForwardingUnsubscribe?.();
         this.eventForwardingUnsubscribe = null;
         this.projection.closeClients();
+        this.websocketPrincipals.clear();
         this.app.server.closeAllConnections?.();
         this.app.server.closeIdleConnections?.();
     }
 
     private setupRoutes(): void {
+        this.app.addHook('onRequest', async (request, reply) => {
+            const origin = request.headers.origin;
+            if (origin !== undefined) {
+                if (!this.authorization?.isAllowedOrigin(origin)) {
+                    return sendBoundaryError(reply, 403, 'FORBIDDEN', 'The request is not allowed');
+                }
+                reply
+                    .header('Access-Control-Allow-Origin', origin)
+                    .header('Access-Control-Allow-Credentials', 'true')
+                    .header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+                    .header('Access-Control-Allow-Headers', 'Authorization, Content-Type')
+                    .header('Access-Control-Max-Age', '600')
+                    .header('Vary', 'Origin');
+            }
+            if (request.method === 'OPTIONS') {
+                const requestedMethod = request.headers['access-control-request-method'];
+                const requestedHeaders = request.headers['access-control-request-headers'] ?? '';
+                const allowedHeaders = requestedHeaders.split(',').map((value) => value.trim().toLowerCase()).filter(Boolean);
+                if (
+                    !origin || !this.authorization?.isAllowedOrigin(origin) ||
+                    requestedMethod !== 'POST' ||
+                    !allowedHeaders.every((header) => header === 'authorization' || header === 'content-type')
+                ) {
+                    return sendBoundaryError(reply, 403, 'FORBIDDEN', 'The request is not allowed');
+                }
+                return reply.code(204).send();
+            }
+        });
+
         this.app.get('/', async () => {
             return { 
                 service: 'Ouroboros Daemon', 
@@ -200,18 +240,62 @@ export class DaemonServer {
             return { status: 'ok', timestamp: new Date().toISOString() };
         });
 
-        this.app.get('/ws', { websocket: true }, (socket) => {
+        this.app.post('/auth/browser-session', async (request, reply) => {
+            const session = this.authorization?.createBrowserSession(
+                request.headers.authorization,
+                request.headers.origin,
+            );
+            if (!session) return sendBoundaryError(reply, request.headers.origin ? 403 : 401, 'UNAUTHORIZED', 'Authentication is required');
+            const secure = request.protocol === 'https' ? '; Secure' : '';
+            reply.header(
+                'Set-Cookie',
+                `${getBrowserSessionCookieName()}=${session.cookie}; Path=/ws; HttpOnly; SameSite=Strict; Max-Age=${session.maxAge}${secure}`,
+            );
+            return reply.code(204).send();
+        });
+
+        this.app.get('/ws', {
+            websocket: true,
+            preValidation: async (request: FastifyRequest, reply: FastifyReply) => {
+                const origin = request.headers.origin;
+                if (origin !== undefined && !this.authorization?.isAllowedOrigin(origin)) {
+                    return sendBoundaryError(reply, 403, 'FORBIDDEN', 'The request is not allowed');
+                }
+                const principal = this.authenticateWebSocketRequest(request);
+                if (!principal) return sendBoundaryError(reply, 401, 'UNAUTHORIZED', 'Authentication is required');
+                if (!principal.scopes.includes('mission.read')) {
+                    return sendBoundaryError(reply, 403, 'FORBIDDEN', 'The requested operation is not authorized');
+                }
+                this.websocketPrincipalByRequest.set(request, principal);
+            },
+        }, (socket, request) => {
             if (!this.acceptingRpc) {
                 socket.close(1001, 'Daemon is shutting down');
                 return;
             }
-            const client = socket as unknown as ProjectionClient;
+            const principal = this.websocketPrincipalByRequest.get(request);
+            if (!principal || !this.authorization?.isClientStillAuthorized(principal, 'mission.read')) {
+                socket.close(1008, 'Not authorized');
+                return;
+            }
+            const client = this.createAuthorizedProjectionClient(socket, principal);
+            this.websocketPrincipals.set(client, { socket, principal });
             this.projection.connectClient(client);
-            socket.on('close', () => this.projection.disconnectClient(client));
-            socket.on('error', () => this.projection.disconnectClient(client));
+            const disconnect = () => {
+                this.projection.disconnectClient(client);
+                this.websocketPrincipals.delete(client);
+            };
+            socket.on('close', disconnect);
+            socket.on('error', disconnect);
         });
 
         this.app.post('/rpc', async (request, reply) => {
+            const principal = this.authenticateHttpRequest(request);
+            if (!principal) return sendBoundaryError(reply, 401, 'UNAUTHORIZED', 'Authentication is required');
+
+            if (!isRecord(request.body)) {
+                return sendBoundaryError(reply, 400, 'INVALID_REQUEST', 'The RPC request is invalid');
+            }
             const rpcRequest = request.body as {
                 jsonrpc: string;
                 id: string | number;
@@ -235,13 +319,40 @@ export class DaemonServer {
                 });
             }
 
+            const requiredScope = requiredLocalControlScope(rpcRequest.method, rpcRequest.params ?? {});
+            if (!requiredScope) {
+                return sendBoundaryError(reply, 403, 'FORBIDDEN', 'The requested operation is not authorized');
+            }
+            if (!principal.scopes.includes(requiredScope)) {
+                return sendBoundaryError(reply, 403, 'FORBIDDEN', 'The requested operation is not authorized');
+            }
+            if (!this.authorization?.isClientStillAuthorized(principal, requiredScope)) {
+                return sendBoundaryError(reply, 401, 'UNAUTHORIZED', 'Authentication is required');
+            }
+
             this.beginRpcRequest(reply.raw);
-            return await this.rpcGateway.handleRequest({
-                jsonrpc: '2.0',
-                id: rpcRequest.id,
-                method: rpcRequest.method,
-                params: rpcRequest.params,
-            });
+            try {
+                const result = await this.rpcGateway.handleRequest({
+                    jsonrpc: '2.0',
+                    id: rpcRequest.id,
+                    method: rpcRequest.method,
+                    params: rpcRequest.params,
+                });
+                if (result.error) {
+                    return {
+                        jsonrpc: '2.0',
+                        id: rpcRequest.id,
+                        error: { code: result.error.code, message: 'The RPC request could not be completed' },
+                    };
+                }
+                return result;
+            } catch {
+                return {
+                    jsonrpc: '2.0',
+                    id: rpcRequest.id,
+                    error: { code: -32603, message: 'The RPC request could not be completed' },
+                };
+            }
         });
     }
 
@@ -250,8 +361,16 @@ export class DaemonServer {
             throw new Error('Daemon is already running');
         }
 
+        if (this.config.host !== '127.0.0.1' && this.config.host !== '::1') {
+            throw new Error('The local-control daemon must bind to a loopback address');
+        }
+
         if (!this.initialized) {
             await this.initialize();
+        }
+
+        if (!this.authorization?.hasActiveClients()) {
+            throw new Error('Local-control authentication is not provisioned');
         }
 
         this.eventBus.emit('daemon', { type: 'starting', port: this.config.port });
@@ -263,6 +382,7 @@ export class DaemonServer {
             });
 
             this.isRunning = true;
+            this.websocketAuthorizationTimer = setInterval(() => this.revalidateWebSocketClients(), 500);
             this.eventBus.emit('daemon', { type: 'ready', port: this.config.port });
             this.eventBus.log('info', `Daemon started on ${this.config.host}:${this.config.port}`, 'DaemonServer');
         } catch (error) {
@@ -273,6 +393,10 @@ export class DaemonServer {
 
     async stop(): Promise<void> {
         this.acceptingRpc = false;
+        if (this.websocketAuthorizationTimer) {
+            clearInterval(this.websocketAuthorizationTimer);
+            this.websocketAuthorizationTimer = null;
+        }
         if (!this.isRunning) {
             this.cleanupTransport();
             if (!this.appClosed) {
@@ -357,4 +481,58 @@ export class DaemonServer {
     get address(): string {
         return `http://${this.config.host}:${this.config.port}`;
     }
+
+    private authenticateHttpRequest(request: FastifyRequest): LocalControlAuthenticatedClient | null {
+        const authorization = request.headers.authorization;
+        if (authorization !== undefined) return this.authorization?.authenticateBearer(authorization) ?? null;
+        return this.authorization?.authenticateBrowserSession(request.headers.cookie, request.headers.origin) ?? null;
+    }
+
+    private authenticateWebSocketRequest(request: FastifyRequest): LocalControlAuthenticatedClient | null {
+        const origin = request.headers.origin;
+        if (origin !== undefined && !this.authorization?.isAllowedOrigin(origin)) return null;
+        const authorization = request.headers.authorization;
+        if (authorization !== undefined) return this.authorization?.authenticateBearer(authorization) ?? null;
+        return this.authorization?.authenticateBrowserSession(request.headers.cookie, origin) ?? null;
+    }
+
+    private createAuthorizedProjectionClient(
+        socket: { readyState: number; bufferedAmount: number; send(message: string): void; close(code?: number, reason?: string): void },
+        principal: LocalControlAuthenticatedClient,
+    ): ProjectionClient {
+        const client: ProjectionClient = {
+            get readyState() { return socket.readyState; },
+            get bufferedAmount() { return socket.bufferedAmount; },
+            send: (message) => {
+                if (!this.authorization?.isClientStillAuthorized(principal, 'mission.read')) {
+                    socket.close(1008, 'Authorization expired');
+                    return;
+                }
+                socket.send(message);
+            },
+            close: () => socket.close(),
+        };
+        return client;
+    }
+
+    private revalidateWebSocketClients(): void {
+        for (const [client, session] of this.websocketPrincipals) {
+            if (this.authorization?.isClientStillAuthorized(session.principal, 'mission.read')) continue;
+            this.projection.disconnectClient(client);
+            session.socket.close(1008, 'Authorization expired');
+            this.websocketPrincipals.delete(client);
+        }
+    }
+}
+
+function sendBoundaryError(reply: FastifyReply, status: number, code: string, message: string) {
+    return reply.code(status).send({
+        jsonrpc: '2.0',
+        id: null,
+        error: { code, message },
+    });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

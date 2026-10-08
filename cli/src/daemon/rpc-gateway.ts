@@ -86,7 +86,7 @@ export class RpcGateway implements DaemonRpcGatewayPort {
                 id: request.id,
                 error: {
                     code: RPC_ERROR_CODES.METHOD_NOT_FOUND,
-                    message: `Method not found: ${request.method}`,
+                    message: 'Method not found',
                 },
             };
         }
@@ -97,13 +97,13 @@ export class RpcGateway implements DaemonRpcGatewayPort {
                 id: request.id,
                 result: await handler(request.params ?? {}),
             };
-        } catch (err) {
+        } catch {
             return {
                 jsonrpc: '2.0',
                 id: request.id,
                 error: {
                     code: RPC_ERROR_CODES.INTERNAL_ERROR,
-                    message: err instanceof Error ? err.message : String(err),
+                    message: 'The RPC request could not be completed',
                 },
             };
         }

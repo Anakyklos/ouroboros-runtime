@@ -12,6 +12,7 @@ import { Orchestrator } from '../orchestration/Orchestrator.js';
 import { TaskStatus } from '../orchestration/types.js';
 import { mkdir, rm } from 'fs/promises';
 import { dirname } from 'path';
+import { LocalControlAuthorizer, LocalControlCredentialStore } from './local-control-auth.js';
 
 // --- MOCK ORCHESTRATOR ---
 // Monkey patch loopUntilSuccess to simulate execution without calling LLM
@@ -45,7 +46,7 @@ const BASE_URL = `http://127.0.0.1:${PORT}`;
 async function rpc(method: string, params: Record<string, unknown> = {}) {
     const response = await fetch(`${BASE_URL}/rpc`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${integrationToken}` },
         body: JSON.stringify({
             jsonrpc: '2.0',
             id: Date.now(),
@@ -55,21 +56,22 @@ async function rpc(method: string, params: Record<string, unknown> = {}) {
     });
     return response.json();
 }
+let integrationToken = '';
 
 async function main() {
     console.log('🧪 Starting Integration Test: Session Orchestration');
 
     // 1. Initialize
     await mkdir(dirname(DB_PATH), { recursive: true });
+    const authStore = new LocalControlCredentialStore('.ouroboros/local-control-auth.db');
+    integrationToken = authStore.provision('legacy-integration', ['mission.read', 'mission.control', 'daemon.admin'], Date.now() + 60 * 60_000).token;
+    const authorization = new LocalControlAuthorizer(authStore);
 
     const storage = new SqliteAdapter(DB_PATH);
     await storage.initialize();
 
     // Pass fake API key to satisfy initialization requirement
-    const server = new DaemonServer(storage, {
-        port: PORT,
-        apiKey: "test-api-key"
-    });
+    const server = new DaemonServer(storage, { port: PORT }, globalEventBus, undefined, undefined, undefined, undefined, authorization);
 
     try {
         await server.start();
@@ -133,10 +135,13 @@ async function main() {
         // 7. Shutdown
         console.log('\nShutting down...');
         await server.stop();
+        authorization.close();
+        authStore.close();
         await storage.close();
 
         // Cleanup DB
         await rm(DB_PATH, { force: true });
+        await rm('.ouroboros/local-control-auth.db', { force: true });
 
         console.log('✅ Test complete');
     }
