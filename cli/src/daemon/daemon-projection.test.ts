@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { DaemonProjection, type ProjectionClient } from "./daemon-projection.js";
+import { DaemonProjection, DEFAULT_MAX_PROJECTION_CLIENTS, type ProjectionClient } from "./daemon-projection.js";
 import type {
   DaemonMissionEventData,
   DaemonSnapshot,
@@ -89,6 +89,19 @@ function readEnvelope(messages: string[], index: number): Record<string, any> {
 }
 
 describe("DaemonProjection", () => {
+  it("uses a finite default capacity", () => {
+    const projection = new DaemonProjection({ snapshot: createSnapshot });
+    for (let index = 0; index < DEFAULT_MAX_PROJECTION_CLIENTS; index += 1) {
+      expect(projection.reserveClient()).not.toBeNull();
+    }
+    expect(DEFAULT_MAX_PROJECTION_CLIENTS).toBeGreaterThan(0);
+    expect(projection.connectedClientCount).toBe(0);
+    expect(projection.admittedClientCount).toBe(DEFAULT_MAX_PROJECTION_CLIENTS);
+    expect(projection.reserveClient()).toBeNull();
+    projection.closeClients();
+    expect(projection.connectedClientCount).toBe(0);
+  });
+
   it("uses one snapshot envelope before contiguous normal events", async () => {
     const projection = new DaemonProjection({
       snapshot: createSnapshot,
@@ -118,7 +131,76 @@ describe("DaemonProjection", () => {
     expect(projection.currentSequence).toBe(2);
   });
 
-  it("queues a bounded event during an asynchronous handshake and flushes after snapshot", async () => {
+  it("rejects clients above the configured global admission limit before sending a snapshot", async () => {
+    const projection = new DaemonProjection({
+      snapshot: createSnapshot,
+      maxClients: 2,
+    });
+    const first = new FakeClient();
+    const second = new FakeClient();
+    const third = new FakeClient();
+
+    await projection.connectClient(first);
+    await projection.connectClient(second);
+    await projection.connectClient(third);
+
+    expect(projection.admittedClientCount).toBe(2);
+    expect(first.messages).toHaveLength(1);
+    expect(second.messages).toHaveLength(1);
+    expect(third.messages).toHaveLength(0);
+    expect(third.closeCalls).toBe(1);
+  });
+
+  it("counts handshake reservations and releases them on snapshot failure and transport cleanup", async () => {
+    let failFirstSnapshot = true;
+    const projection = new DaemonProjection({
+      snapshot: async (cursor) => {
+        if (failFirstSnapshot) {
+          failFirstSnapshot = false;
+          throw new Error("private snapshot failure");
+        }
+        return createSnapshot(cursor);
+      },
+      maxClients: 1,
+    });
+    const failed = new FakeClient();
+    expect(await projection.connectClient(failed)).toBe(false);
+    expect(failed.closeCalls).toBe(1);
+    expect(projection.connectedClientCount).toBe(0);
+    expect(projection.admittedClientCount).toBe(1);
+    projection.disconnectClient(failed);
+    expect(projection.admittedClientCount).toBe(0);
+
+    const reservation = projection.reserveClient();
+    expect(reservation).not.toBeNull();
+    expect(projection.reserveClient()).toBeNull();
+    const closedDuringUpgrade = new FakeClient();
+    closedDuringUpgrade.readyState = 3;
+    expect(await projection.connectClient(closedDuringUpgrade, reservation!)).toBe(false);
+    expect(projection.admittedClientCount).toBe(0);
+
+    const cleanupReservation = projection.reserveClient();
+    expect(cleanupReservation).not.toBeNull();
+    projection.closeClients();
+    expect(projection.connectedClientCount).toBe(0);
+    expect(projection.admittedClientCount).toBe(0);
+
+    const next = new FakeClient();
+    await projection.connectClient(next);
+    expect(next.messages).toHaveLength(1);
+    expect(projection.connectedClientCount).toBe(1);
+  });
+
+  it("does not advance the event cursor when only unclaimed reservations exist", () => {
+    const projection = new DaemonProjection({ snapshot: createSnapshot, maxClients: 1 });
+    expect(projection.reserveClient()).not.toBeNull();
+
+    projection.broadcast("mission", missionEvent);
+
+    expect(projection.currentSequence).toBe(0);
+  });
+
+  it("queues an event for an actual asynchronous handshake while another slot is only reserved", async () => {
     let releaseSnapshot!: () => void;
     const snapshotReady = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
     const projection = new DaemonProjection({
@@ -127,17 +209,22 @@ describe("DaemonProjection", () => {
         return createSnapshot(cursor);
       },
       maxPendingEvents: 2,
+      maxClients: 2,
     });
+    const unusedReservation = projection.reserveClient();
+    expect(unusedReservation).not.toBeNull();
     const client = new FakeClient();
     const connecting = projection.connectClient(client);
 
     projection.broadcast("mission", missionEvent);
+    expect(projection.currentSequence).toBe(2);
     releaseSnapshot();
     await connecting;
 
     expect(client.messages).toHaveLength(2);
     expect(readEnvelope(client.messages, 0).event).toBe("snapshot");
     expect(readEnvelope(client.messages, 1).event).toBe("mission");
+    projection.releaseReservation(unusedReservation!);
   });
 
   it("closes a client when the authoritative snapshot cannot be read", async () => {
@@ -153,6 +240,29 @@ describe("DaemonProjection", () => {
     expect(client.closeCalls).toBe(1);
     expect(projection.connectedClientCount).toBe(0);
     expect(diagnostics).toEqual(["invalid_payload"]);
+  });
+
+  it("does not restore ready or advance the cursor after revocation closes during snapshot send", async () => {
+    let projection!: DaemonProjection;
+    const client = new FakeClient();
+    client.send = () => {
+      client.readyState = 2;
+      client.closeCalls += 1;
+      projection.markClientClosing(client);
+    };
+    projection = new DaemonProjection({ snapshot: createSnapshot, maxClients: 1 });
+
+    expect(await projection.connectClient(client)).toBe(false);
+    expect(projection.connectedClientCount).toBe(0);
+    expect(projection.admittedClientCount).toBe(1);
+    const cursorAfterSnapshotAttempt = projection.currentSequence;
+
+    projection.broadcast("mission", missionEvent);
+
+    expect(projection.currentSequence).toBe(cursorAfterSnapshotAttempt);
+    expect(projection.admittedClientCount).toBe(1);
+    projection.disconnectClient(client);
+    expect(projection.admittedClientCount).toBe(0);
   });
 
   it("closes a handshake whose bounded pending buffer is exceeded", async () => {
@@ -236,17 +346,36 @@ describe("DaemonProjection", () => {
     expect(diagnostics).toEqual(["invalid_payload"]);
   });
 
-  it("closes and removes every client during transport cleanup", async () => {
-    const projection = new DaemonProjection({ snapshot: createSnapshot });
+  it("retains admission capacity until a closing transport disconnects", async () => {
+    const projection = new DaemonProjection({ snapshot: createSnapshot, maxClients: 1 });
     const first = new FakeClient();
-    const second = new FakeClient();
     await projection.connectClient(first);
-    await projection.connectClient(second);
 
     projection.closeClients();
 
     expect(first.closeCalls).toBe(1);
-    expect(second.closeCalls).toBe(1);
+    expect(projection.admittedClientCount).toBe(1);
     expect(projection.connectedClientCount).toBe(0);
+    expect(projection.reserveClient()).toBeNull();
+
+    projection.disconnectClient(first);
+    expect(projection.admittedClientCount).toBe(0);
+    expect(projection.reserveClient()).not.toBeNull();
+  });
+
+  it("retains a reserved slot when an upgraded socket is rejected after revocation", () => {
+    const projection = new DaemonProjection({ snapshot: createSnapshot, maxClients: 1 });
+    const reservation = projection.reserveClient();
+    const rejected = new FakeClient();
+
+    expect(reservation).not.toBeNull();
+    expect(projection.retainClosingClient(rejected, reservation!)).toBe(true);
+    projection.releaseReservation(reservation!);
+    expect(projection.admittedClientCount).toBe(1);
+    expect(projection.connectedClientCount).toBe(0);
+    expect(projection.reserveClient()).toBeNull();
+
+    projection.disconnectClient(rejected);
+    expect(projection.admittedClientCount).toBe(0);
   });
 });

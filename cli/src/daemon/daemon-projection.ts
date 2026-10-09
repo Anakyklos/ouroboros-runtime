@@ -15,8 +15,15 @@ import {
 export interface ProjectionClient {
   readyState: number;
   bufferedAmount: number;
-  send(message: string): void;
+  send(message: string): void | boolean;
   close(): void;
+}
+
+declare const projectionClientReservationBrand: unique symbol;
+
+/** A slot reserved by the daemon before a WebSocket upgrade or snapshot read. */
+export interface ProjectionClientReservation {
+  readonly [projectionClientReservationBrand]: true;
 }
 
 export interface DaemonProjectionOptions {
@@ -25,27 +32,31 @@ export interface DaemonProjectionOptions {
   now?: () => string;
   maxBufferedAmount?: number;
   maxPendingEvents?: number;
+  maxClients?: number;
   onDiagnostic?: (diagnostic: ProtocolDiagnostic) => void;
 }
 
-type ClientPhase = "handshaking" | "ready";
+type ClientPhase = "handshaking" | "ready" | "closing";
 
 interface ClientState {
   phase: ClientPhase;
   pending: DaemonEventEnvelope[];
+  client: ProjectionClient | null;
 }
 
 const OPEN_READY_STATE = 1;
 const DEFAULT_MAX_BUFFERED_AMOUNT = 1024 * 1024;
 const DEFAULT_MAX_PENDING_EVENTS = 32;
+export const DEFAULT_MAX_PROJECTION_CLIENTS = 64;
 
 export class DaemonProjection {
-  private readonly clients = new Map<ProjectionClient, ClientState>();
+  private readonly clients = new Map<object, ClientState>();
   private readonly snapshot: DaemonProjectionOptions["snapshot"];
   private readonly createEventId: () => string;
   private readonly now: () => string;
   private readonly maxBufferedAmount: number;
   private readonly maxPendingEvents: number;
+  private readonly maxClients: number;
   private readonly onDiagnostic?: (diagnostic: ProtocolDiagnostic) => void;
   private sequence = 0;
 
@@ -61,6 +72,10 @@ export class DaemonProjection {
       (options.maxPendingEvents ?? 0) > 0
       ? options.maxPendingEvents!
       : DEFAULT_MAX_PENDING_EVENTS;
+    this.maxClients = Number.isSafeInteger(options.maxClients) &&
+      (options.maxClients ?? 0) > 0
+      ? options.maxClients!
+      : DEFAULT_MAX_PROJECTION_CLIENTS;
     this.onDiagnostic = options.onDiagnostic;
   }
 
@@ -69,15 +84,59 @@ export class DaemonProjection {
   }
 
   get connectedClientCount(): number {
+    let connected = 0;
+    for (const state of this.clients.values()) {
+      if (state.client && state.phase !== "closing") connected += 1;
+    }
+    return connected;
+  }
+
+  get admittedClientCount(): number {
     return this.clients.size;
   }
 
-  /** Register a client and send its authoritative snapshot before normal facts. */
-  async connectClient(client: ProjectionClient): Promise<void> {
-    if (client.readyState !== OPEN_READY_STATE || this.clients.has(client)) return;
+  /** Reserve aggregate capacity before upgrading a socket or reading its snapshot. */
+  reserveClient(): ProjectionClientReservation | null {
+    if (this.clients.size >= this.maxClients) return null;
+    const reservation = Object.freeze({}) as ProjectionClientReservation;
+    this.clients.set(reservation, { phase: "handshaking", pending: [], client: null });
+    return reservation;
+  }
 
-    const state: ClientState = { phase: "handshaking", pending: [] };
-    this.clients.set(client, state);
+  /** Release an unused handshake slot after request failure or shutdown. */
+  releaseReservation(reservation: ProjectionClientReservation): void {
+    const state = this.clients.get(reservation);
+    if (state?.client === null) this.clients.delete(reservation);
+  }
+
+  /** Register a client and send its authoritative snapshot before normal facts. */
+  async connectClient(
+    client: ProjectionClient,
+    reservation?: ProjectionClientReservation,
+  ): Promise<boolean> {
+    if (client.readyState !== OPEN_READY_STATE || this.clients.has(client)) {
+      if (reservation) this.releaseReservation(reservation);
+      return false;
+    }
+
+    let state: ClientState;
+    if (reservation) {
+      const reservedState = this.clients.get(reservation);
+      if (!reservedState || reservedState.client !== null) return false;
+      this.clients.delete(reservation);
+      state = { ...reservedState, client };
+      this.clients.set(client, state);
+    } else {
+      const reserved = this.reserveClient();
+      if (!reserved) {
+        try { client.close(); } catch { /* capacity rejection is isolated */ }
+        return false;
+      }
+      const reservedState = this.clients.get(reserved)!;
+      this.clients.delete(reserved);
+      state = { ...reservedState, client };
+      this.clients.set(client, state);
+    }
     const snapshotSequence = this.ensureSequence();
 
     let snapshot: DaemonSnapshot;
@@ -85,26 +144,58 @@ export class DaemonProjection {
       snapshot = await this.snapshot(snapshotSequence);
     } catch {
       this.closeClient(client, "invalid_payload");
-      return;
+      return false;
     }
 
-    if (this.clients.get(client) !== state) return;
+    if (this.clients.get(client) !== state || state.phase === "closing") return false;
 
-    const snapshotEnvelope = this.createEnvelope("snapshot", {
-      ...snapshot,
-      cursor: snapshotSequence,
-    }, snapshotSequence);
-    if (!this.sendToClient(client, snapshotEnvelope)) return;
-
+    let snapshotEnvelope: DaemonEventEnvelope;
+    try {
+      snapshotEnvelope = this.createEnvelope("snapshot", {
+        ...snapshot,
+        cursor: snapshotSequence,
+      }, snapshotSequence);
+    } catch {
+      this.closeClient(client, "invalid_payload");
+      return false;
+    }
+    if (!this.sendToClient(client, snapshotEnvelope)) return false;
+    const snapshotRecipient = this.clients.get(client);
+    if (snapshotRecipient !== state || snapshotRecipient.phase !== "handshaking") return false;
     state.phase = "ready";
     const pending = state.pending.splice(0);
     for (const envelope of pending) {
-      if (this.clients.get(client) !== state || !this.sendToClient(client, envelope)) break;
+      const current = this.clients.get(client);
+      if (current !== state || current.phase === "closing") return false;
+      if (!this.sendToClient(client, envelope)) return false;
     }
+    const current = this.clients.get(client);
+    return current === state && current.phase !== "closing";
   }
 
   disconnectClient(client: ProjectionClient): void {
-    this.removeClient(client);
+    this.clients.delete(client);
+  }
+
+  /** Mark a client as closing while retaining its aggregate admission slot. */
+  markClientClosing(client: ProjectionClient): void {
+    const state = this.clients.get(client);
+    if (!state) return;
+    state.phase = "closing";
+    state.pending.length = 0;
+  }
+
+  /** Transfer an upgraded but rejected socket reservation into closing state. */
+  retainClosingClient(client: ProjectionClient, reservation: ProjectionClientReservation): boolean {
+    if (client.readyState !== OPEN_READY_STATE || this.clients.has(client)) return false;
+    const state = this.clients.get(reservation);
+    if (!state || state.client !== null) return false;
+    this.clients.delete(reservation);
+    state.phase = "closing";
+    state.pending.length = 0;
+    state.client = client;
+    this.clients.set(client, state);
+    return true;
   }
 
   broadcast<E extends AllowedDaemonEvent>(
@@ -120,7 +211,10 @@ export class DaemonProjection {
       this.report("invalid_payload");
       return;
     }
-    if (this.clients.size === 0) return;
+    const eligible = [...this.clients.values()].filter(
+      (state) => state.client !== null && state.phase !== "closing",
+    );
+    if (eligible.length === 0) return;
 
     const sequence = this.reserveSequence();
     let envelope: DaemonEventEnvelope<DaemonEventDataMap[E]>;
@@ -131,7 +225,9 @@ export class DaemonProjection {
       return;
     }
 
-    for (const [client, state] of [...this.clients.entries()]) {
+    for (const state of eligible) {
+      const client = state.client;
+      if (!client) continue;
       if (state.phase === "handshaking") {
         if (state.pending.length >= this.maxPendingEvents) {
           this.closeClient(client, "client_backpressure");
@@ -145,7 +241,10 @@ export class DaemonProjection {
   }
 
   closeClients(): void {
-    for (const client of [...this.clients.keys()]) this.closeClient(client);
+    for (const [key, state] of [...this.clients.entries()]) {
+      if (state.client) this.closeClient(state.client);
+      else this.clients.delete(key);
+    }
   }
 
   private reserveSequence(): number {
@@ -184,8 +283,13 @@ export class DaemonProjection {
     }
 
     try {
-      client.send(JSON.stringify(envelope));
-      return true;
+      const sent = client.send(JSON.stringify(envelope));
+      const state = this.clients.get(client);
+      if (sent === false) {
+        if (state && state.phase !== "closing") this.closeClient(client, "client_send_failed");
+        return false;
+      }
+      return Boolean(state && state.phase !== "closing");
     } catch {
       this.closeClient(client, "client_send_failed");
       return false;
@@ -193,18 +297,15 @@ export class DaemonProjection {
   }
 
   private closeClient(client: ProjectionClient, diagnostic?: ProtocolDiagnostic["code"]): void {
-    const removed = this.removeClient(client);
-    if (!removed) return;
+    const state = this.clients.get(client);
+    if (!state || state.phase === "closing") return;
+    this.markClientClosing(client);
     try {
       client.close();
     } catch {
       // A broken client is already isolated; cleanup remains best effort.
     }
     if (diagnostic) this.report(diagnostic);
-  }
-
-  private removeClient(client: ProjectionClient): boolean {
-    return this.clients.delete(client);
   }
 
   private report(code: ProtocolDiagnostic["code"]): void {

@@ -60,6 +60,28 @@ Todo `POST /rpc` exige bearer credential e o escopo server-side correspondente �
 
 O handshake de `GET /ws` autentica e exige `mission.read` antes da conexão e do snapshot. O browser troca seu bearer em memória por um cookie HttpOnly, SameSite=Strict, vinculado à Origin e válido por cinco minutos. O servidor revalida credenciais e escopo de streams ativos a cada 500 ms, fechando conexões após expiração, rotação ou revogação. Provisionamento, rotação e revogação offline estão descritos em [LOCAL_CONTROL_AUTH.md](LOCAL_CONTROL_AUTH.md). O daemon não inicia sem ao menos uma credencial ativa.
 
+### Admissão agregada
+
+Após autenticação, validação de `mission.read` e validação de Origin, o daemon
+reserva um slot antes do upgrade WebSocket e da leitura assíncrona do snapshot.
+O limite padrão é 64 slots simultâneos entre handshakes e streams ativos; a
+configuração `maxProjectionClients` pode definir outro inteiro positivo seguro.
+Quando a capacidade está cheia, o handshake recebe HTTP 503 com erro genérico,
+sem snapshot, registro de cliente conectado ou timer de revalidação. A
+verificação de capacidade não substitui autenticação/autorização: clientes sem
+credencial, escopo ou Origin válidos continuam recebendo a rejeição própria da
+boundary mesmo quando cheia.
+
+O slot de um handshake HTTP é liberado quando o request falha, é abortado ou o
+daemon inicia cleanup. Depois do upgrade, o slot permanece contabilizado
+enquanto o socket estiver ativo ou fechando, inclusive após envio de close
+frame por revogação ou falha de snapshot. Só o evento real de `close` ou
+`error` do WebSocket libera essa vaga; shutdown força a terminação do transporte
+e deixa o mesmo callback concluir a liberação. A capacidade cheia não altera
+estado de Mission, não fecha streams saudáveis e não afeta RPC HTTP autorizado.
+O limite é de cardinalidade, não um orçamento global de bytes; permanecem os
+limites individuais de fila de handshake e de bytes buffered.
+
 ## Lifecycle
 
 O daemon registra um único wildcard listener e mantém seu unsubscribe. `stop()` remove esse listener e fecha clientes. A conexão frontend remove handlers do socket, cancela o timer de backoff e invalida callbacks antigos. Cada instância mantém no máximo um timer de reconexão.

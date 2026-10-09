@@ -7,12 +7,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolve } from "node:path";
 import { readFile } from "node:fs/promises";
+import type { FastifyInstance } from "fastify";
 import { SqliteAdapter } from "../adapters/sqlite.adapter.js";
 import { SqliteMissionStore } from "../mission/sqlite-mission-store.js";
 import { MissionEngine } from "../mission/mission-engine.js";
 import { PlanPolicyValidator } from "../mission/policy.js";
 import { FakeCapabilityResolver } from "../mission/testing.js";
 import { DaemonServer } from "./server.js";
+import type { DaemonProjection } from "./daemon-projection.js";
 import { RpcGateway, type DaemonRpcGatewayPort } from "./rpc-gateway.js";
 import { EventBus } from "./event-bus.js";
 import { LocalControlAuthorizer, LocalControlCredentialStore, getBrowserSessionCookieName } from "./local-control-auth.js";
@@ -22,15 +24,19 @@ import { writeLocalControlClientCredential } from "./local-control-auth.js";
 import { establishDaemonBrowserSession, setDaemonBearerToken } from "../../../web/src/lib/daemon-auth.js";
 
 interface RawFrame { opcode: number; payload: Buffer; }
+interface RawHandshakeResponse { status: number; headers: string; body: string; }
 
 class RawWebSocketProbe {
   private buffer = Buffer.alloc(0);
   private frames: RawFrame[] = [];
   private frameWaiters: Array<(frame: RawFrame) => void> = [];
-  private headerResolver!: (response: { status: number; headers: string }) => void;
+  private headerResolver!: (response: RawHandshakeResponse) => void;
   private headerRejecter!: (error: Error) => void;
   private headerTimer: ReturnType<typeof setTimeout>;
-  readonly response = new Promise<{ status: number; headers: string }>((resolve, reject) => {
+  private responseBody = Buffer.alloc(0);
+  private expectedResponseBodyLength = 0;
+  private isUpgradeResponse = false;
+  readonly response = new Promise<RawHandshakeResponse>((resolve, reject) => {
     this.headerResolver = resolve;
     this.headerRejecter = reject;
   });
@@ -79,6 +85,17 @@ class RawWebSocketProbe {
   close(): void { this.socket.destroy(); }
 
   private onData(chunk: Buffer): void {
+    if (this.headerResolved && !this.isUpgradeResponse) {
+      this.responseBody = Buffer.concat([this.responseBody, chunk]);
+      if (this.responseBody.length >= this.expectedResponseBodyLength) {
+        this.headerResolver({
+          status: this.responseStatus,
+          headers: this.headerText ?? "",
+          body: this.responseBody.subarray(0, this.expectedResponseBodyLength).toString("utf8"),
+        });
+      }
+      return;
+    }
     this.buffer = Buffer.concat([this.buffer, chunk]);
     const separator = this.buffer.indexOf("\r\n\r\n");
     if (separator >= 0 && !this.headerResolved) {
@@ -88,7 +105,22 @@ class RawWebSocketProbe {
       this.headerText = header;
       const status = Number(/^HTTP\/1\.1 (\d+)/.exec(header)?.[1] ?? 0);
       this.buffer = this.buffer.subarray(separator + 4);
-      this.headerResolver({ status, headers: header });
+      this.responseStatus = status;
+      this.isUpgradeResponse = status === 101;
+      if (this.isUpgradeResponse) {
+        this.headerResolver({ status, headers: header, body: "" });
+      } else {
+        this.expectedResponseBodyLength = Number(/^content-length:\s*(\d+)/im.exec(header)?.[1] ?? 0);
+        this.responseBody = Buffer.from(this.buffer);
+        this.buffer = Buffer.alloc(0);
+        if (this.responseBody.length >= this.expectedResponseBodyLength) {
+          this.headerResolver({
+            status,
+            headers: header,
+            body: this.responseBody.subarray(0, this.expectedResponseBodyLength).toString("utf8"),
+          });
+        }
+      }
     }
     if (!this.headerResolved || !/^HTTP\/1\.1 101 /.test(this.headerText ?? "")) return;
     this.readFrames();
@@ -96,6 +128,7 @@ class RawWebSocketProbe {
 
   private headerResolved = false;
   private headerText: string | null = null;
+  private responseStatus = 0;
 
   private readFrames(): void {
     while (this.buffer.length >= 2) {
@@ -128,6 +161,14 @@ async function unusedPort(): Promise<number> {
   if (!address || typeof address === "string") throw new Error("could not allocate loopback port");
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   return address.port;
+}
+
+async function waitForCondition(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for the expected local test state");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 describe("local-control authentication over real Fastify and SQLite", () => {
@@ -644,6 +685,408 @@ describe("local-control authentication over real Fastify and SQLite", () => {
       await timerServer.stop();
       setIntervalSpy.mockRestore();
       clearIntervalSpy.mockRestore();
+    }
+  });
+
+  it("bounds concurrent projection clients and releases capacity without affecting healthy streams or RPC", async () => {
+    const targetPort = await unusedPort();
+    const targetEventBus = new EventBus();
+    const delegate = new RpcGateway(daemonStorage, targetEventBus, missionStore);
+    let snapshotReads = 0;
+    let releaseSnapshots!: () => void;
+    const snapshotsReleased = new Promise<void>((resolve) => { releaseSnapshots = resolve; });
+    const gatedGateway: DaemonRpcGatewayPort = {
+      registerMethod: (name, handler) => delegate.registerMethod(name, handler),
+      handleRequest: (request) => delegate.handleRequest(request),
+      getProjectionSnapshot: async (cursor) => {
+        snapshotReads += 1;
+        await snapshotsReleased;
+        return delegate.getProjectionSnapshot(cursor);
+      },
+    };
+    const boundedServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1", maxProjectionClients: 2 },
+      targetEventBus,
+      missionStore,
+      gatedGateway,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    const setIntervalSpy = spyOn(globalThis, "setInterval");
+    const authIntervals = () => setIntervalSpy.mock.calls.filter((call) => call[1] === 500);
+    const firstToken = credentialStore.provision("capacity-first", ["mission.read"], Date.now() + 60_000).token;
+    const secondToken = credentialStore.provision("capacity-second", ["mission.read"], Date.now() + 60_000).token;
+    const thirdToken = credentialStore.provision("capacity-third", ["mission.read"], Date.now() + 60_000).token;
+    const fourthToken = credentialStore.provision("capacity-fourth", ["mission.read"], Date.now() + 60_000).token;
+    const rpcToken = credentialStore.provision("capacity-rpc", ["mission.read"], Date.now() + 60_000).token;
+    let first: RawWebSocketProbe | undefined;
+    let second: RawWebSocketProbe | undefined;
+    let overCapacity: RawWebSocketProbe | undefined;
+    let replacement: RawWebSocketProbe | undefined;
+    let afterDisconnect: RawWebSocketProbe | undefined;
+    try {
+      await boundedServer.start();
+      [first, second] = await Promise.all([
+        RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${firstToken}` }),
+        RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${secondToken}` }),
+      ]);
+      expect((await Promise.all([first.response, second.response])).map(({ status }) => status)).toEqual([101, 101]);
+      await waitForCondition(() => snapshotReads === 2);
+      expect(authIntervals()).toHaveLength(1);
+
+      const missionStateBeforeCapacityRejection = (await missionStore.getMission(missionId))?.state;
+      overCapacity = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${thirdToken}` });
+      const rejected = await overCapacity.response;
+      expect(rejected.status).toBe(503);
+      expect(JSON.parse(rejected.body)).toEqual({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: "SERVICE_UNAVAILABLE", message: "WebSocket client capacity is unavailable" },
+      });
+      expect(rejected.headers).not.toContain("Set-Cookie");
+      expect(snapshotReads).toBe(2);
+      expect(authIntervals()).toHaveLength(1);
+      expect(rejected.body).not.toContain(missionId);
+      expect(rejected.headers).not.toContain(missionId);
+      expect(rejected.headers).not.toContain(firstToken);
+      expect(rejected.body).not.toContain(firstToken);
+      expect((await missionStore.getMission(missionId))?.state).toBe(missionStateBeforeCapacityRejection);
+
+      const anonymous = await RawWebSocketProbe.connect(targetPort, {});
+      expect((await anonymous.response).status).toBe(401);
+      anonymous.close();
+      const wrongScope = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${controlToken}` });
+      expect((await wrongScope.response).status).toBe(403);
+      wrongScope.close();
+      const wrongOrigin = await RawWebSocketProbe.connect(targetPort, {
+        Authorization: `Bearer ${thirdToken}`,
+        Origin: "http://attacker.invalid",
+      });
+      expect((await wrongOrigin.response).status).toBe(403);
+      wrongOrigin.close();
+      expect(snapshotReads).toBe(2);
+      expect(authIntervals()).toHaveLength(1);
+
+      const rpcWhileFull = await fetch(`http://127.0.0.1:${targetPort}/rpc`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${rpcToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "system.version", method: "system.version", params: {} }),
+      });
+      expect(rpcWhileFull.status).toBe(200);
+
+      credentialStore.provision("capacity-first", ["mission.control"], Date.now() + 60_000);
+      expect((await first.nextFrame(2_000)).opcode).toBe(8);
+      replacement = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${thirdToken}` });
+      expect((await replacement.response).status).toBe(101);
+      await waitForCondition(() => snapshotReads === 3);
+      expect(authIntervals()).toHaveLength(1);
+
+      releaseSnapshots();
+      expect((await second.nextFrame()).payload.toString("utf8")).toContain(missionId);
+      expect((await replacement.nextFrame()).payload.toString("utf8")).toContain(missionId);
+      targetEventBus.emit("daemon", { type: "ready", port: targetPort });
+      expect((await second.nextFrame()).payload.toString("utf8")).toContain('"event":"daemon"');
+      expect((await replacement.nextFrame()).payload.toString("utf8")).toContain('"event":"daemon"');
+
+      replacement.close();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      afterDisconnect = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${fourthToken}` });
+      expect((await afterDisconnect.response).status).toBe(101);
+      expect((await afterDisconnect.nextFrame()).payload.toString("utf8")).toContain(missionId);
+      expect(snapshotReads).toBe(4);
+      expect(authIntervals()).toHaveLength(1);
+      targetEventBus.emit("daemon", { type: "ready", port: targetPort });
+      expect((await second.nextFrame()).payload.toString("utf8")).toContain('"event":"daemon"');
+      expect((await afterDisconnect.nextFrame()).payload.toString("utf8")).toContain('"event":"daemon"');
+    } finally {
+      releaseSnapshots();
+      first?.close();
+      second?.close();
+      overCapacity?.close();
+      replacement?.close();
+      afterDisconnect?.close();
+      await boundedServer.stop();
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("closes a failed snapshot peer without a response and terminates upgraded WebSockets on shutdown", async () => {
+    const targetPort = await unusedPort();
+    const targetEventBus = new EventBus();
+    const delegate = new RpcGateway(daemonStorage, targetEventBus, missionStore);
+    let snapshotReads = 0;
+    const failingOnceGateway: DaemonRpcGatewayPort = {
+      registerMethod: (name, handler) => delegate.registerMethod(name, handler),
+      handleRequest: (request) => delegate.handleRequest(request),
+      getProjectionSnapshot: async (cursor) => {
+        snapshotReads += 1;
+        if (snapshotReads === 1) throw new Error("private snapshot failure");
+        return delegate.getProjectionSnapshot(cursor);
+      },
+    };
+    const boundedServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1", maxProjectionClients: 1 },
+      targetEventBus,
+      missionStore,
+      failingOnceGateway,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    const projection = (boundedServer as unknown as { projection: DaemonProjection }).projection;
+    const firstToken = credentialStore.provision("snapshot-close", ["mission.read"], Date.now() + 60_000).token;
+    const secondToken = credentialStore.provision("snapshot-retry", ["mission.read"], Date.now() + 60_000).token;
+    let failed: RawWebSocketProbe | undefined;
+    let recovered: RawWebSocketProbe | undefined;
+    let shutdownClient: RawWebSocketProbe | undefined;
+    try {
+      await boundedServer.start();
+      failed = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${firstToken}` });
+      expect((await failed.response).status).toBe(101);
+      expect((await failed.nextFrame()).opcode).toBe(8);
+      expect(projection.connectedClientCount).toBe(0);
+      await waitForCondition(() => projection.admittedClientCount === 0);
+
+      recovered = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${secondToken}` });
+      expect((await recovered.response).status).toBe(101);
+      expect(JSON.parse((await recovered.nextFrame()).payload.toString("utf8")).event).toBe("snapshot");
+
+      const recoveredClosed = new Promise<void>((resolveClosed) => recovered!.socket.once("close", () => resolveClosed()));
+      recovered.close();
+      await recoveredClosed;
+      await waitForCondition(() => projection.admittedClientCount === 0);
+      shutdownClient = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${firstToken}` });
+      expect((await shutdownClient.response).status).toBe(101);
+      await shutdownClient.nextFrame();
+      const shutdownClosed = new Promise<void>((resolveClosed) => shutdownClient!.socket.once("close", () => resolveClosed()));
+      await boundedServer.stop();
+      await shutdownClosed;
+      expect(shutdownClient.socket.destroyed).toBe(true);
+      await waitForCondition(() => projection.admittedClientCount === 0);
+    } finally {
+      failed?.close();
+      recovered?.close();
+      shutdownClient?.close();
+      await boundedServer.stop();
+    }
+  });
+
+  it("accounts for a socket upgraded after revocation until its WebSocket close callback", async () => {
+    const targetPort = await unusedPort();
+    const targetEventBus = new EventBus();
+    const delegate = new RpcGateway(daemonStorage, targetEventBus, missionStore);
+    let snapshotReads = 0;
+    const trackedGateway: DaemonRpcGatewayPort = {
+      registerMethod: (name, handler) => delegate.registerMethod(name, handler),
+      handleRequest: (request) => delegate.handleRequest(request),
+      getProjectionSnapshot: async (cursor) => {
+        snapshotReads += 1;
+        return delegate.getProjectionSnapshot(cursor);
+      },
+    };
+    const targetServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1", maxProjectionClients: 1 },
+      targetEventBus,
+      missionStore,
+      trackedGateway,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    const projection = (targetServer as unknown as { projection: DaemonProjection }).projection;
+    const admittedCountsAtDisconnect: number[] = [];
+    const disconnectClient = projection.disconnectClient.bind(projection);
+    spyOn(projection, "disconnectClient").mockImplementation((client) => {
+      admittedCountsAtDisconnect.push(projection.admittedClientCount);
+      disconnectClient(client);
+    });
+    const retainClosingClient = spyOn(projection, "retainClosingClient");
+    const app = (targetServer as unknown as { app: FastifyInstance }).app;
+    let releasePreHandler!: () => void;
+    const preHandlerGate = new Promise<void>((resolveGate) => { releasePreHandler = resolveGate; });
+    let preHandlerStarted!: () => void;
+    const preHandlerObserved = new Promise<void>((resolveObserved) => { preHandlerStarted = resolveObserved; });
+    app.addHook("preHandler", async (request) => {
+      if (request.url !== "/ws") return;
+      preHandlerStarted();
+      await preHandlerGate;
+    });
+    const revokedCredential = credentialStore.provision("upgrade-revoked", ["mission.read"], Date.now() + 60_000);
+    const replacementToken = credentialStore.provision("upgrade-replacement", ["mission.read"], Date.now() + 60_000).token;
+    let rejected: RawWebSocketProbe | undefined;
+    let replacement: RawWebSocketProbe | undefined;
+    try {
+      await targetServer.start();
+      rejected = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${revokedCredential.token}` });
+      await preHandlerObserved;
+      expect(projection.admittedClientCount).toBe(1);
+
+      credentialStore.provision("upgrade-revoked", ["mission.control"], Date.now() + 60_000);
+      releasePreHandler();
+      expect((await rejected.response).status).toBe(101);
+      const close = await rejected.nextFrame();
+      expect(close.opcode).toBe(8);
+      expect(snapshotReads).toBe(0);
+      expect(rejected.socket.destroyed).toBe(false);
+      expect(projection.connectedClientCount).toBe(0);
+      expect(retainClosingClient).toHaveBeenCalledTimes(1);
+      await waitForCondition(() => admittedCountsAtDisconnect.length === 1);
+      expect(admittedCountsAtDisconnect).toEqual([1]);
+      expect(projection.admittedClientCount).toBe(0);
+
+      replacement = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${replacementToken}` });
+      expect((await replacement.response).status).toBe(101);
+      expect(snapshotReads).toBe(1);
+    } finally {
+      releasePreHandler();
+      rejected?.close();
+      replacement?.close();
+      await targetServer.stop();
+    }
+  });
+
+  it("keeps an asynchronously snapshotting revoked stream closing and cursor-ineligible", async () => {
+    const targetPort = await unusedPort();
+    const targetEventBus = new EventBus();
+    const delegate = new RpcGateway(daemonStorage, targetEventBus, missionStore);
+    let releaseSnapshot!: () => void;
+    const snapshotGate = new Promise<void>((resolveGate) => { releaseSnapshot = resolveGate; });
+    let snapshotStarted!: () => void;
+    const snapshotObserved = new Promise<void>((resolveObserved) => { snapshotStarted = resolveObserved; });
+    const gatedGateway: DaemonRpcGatewayPort = {
+      registerMethod: (name, handler) => delegate.registerMethod(name, handler),
+      handleRequest: (request) => delegate.handleRequest(request),
+      getProjectionSnapshot: async (cursor) => {
+        snapshotStarted();
+        await snapshotGate;
+        return delegate.getProjectionSnapshot(cursor);
+      },
+    };
+    const targetServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1", maxProjectionClients: 1 },
+      targetEventBus,
+      missionStore,
+      gatedGateway,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    const projection = (targetServer as unknown as { projection: DaemonProjection }).projection;
+    const disconnectCounts: number[] = [];
+    const disconnectClient = projection.disconnectClient.bind(projection);
+    spyOn(projection, "disconnectClient").mockImplementation((client) => {
+      disconnectCounts.push(projection.admittedClientCount);
+      disconnectClient(client);
+    });
+    const markClientClosing = projection.markClientClosing.bind(projection);
+    let broadcastWhileClosing: { before: number; after: number } | undefined;
+    let revokeIsInProgress = false;
+    spyOn(projection, "markClientClosing").mockImplementation((client) => {
+      markClientClosing(client);
+      if (revokeIsInProgress && !broadcastWhileClosing) {
+        const before = projection.currentSequence;
+        projection.broadcast("daemon", { type: "ready", port: targetPort });
+        broadcastWhileClosing = { before, after: projection.currentSequence };
+      }
+    });
+    const firstCredential = credentialStore.provision("async-snapshot-revoke", ["mission.read"], Date.now() + 60_000);
+    const replacementToken = credentialStore.provision("async-snapshot-replacement", ["mission.read"], Date.now() + 60_000).token;
+    let connectResult: boolean | undefined;
+    const connectClient = projection.connectClient.bind(projection);
+    spyOn(projection, "connectClient").mockImplementation(async (client, reservation) => {
+      const admitted = await connectClient(client, reservation);
+      connectResult = admitted;
+      return admitted;
+    });
+    let stream: RawWebSocketProbe | undefined;
+    let overCapacity: RawWebSocketProbe | undefined;
+    try {
+      await targetServer.start();
+      stream = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${firstCredential.token}` });
+      expect((await stream.response).status).toBe(101);
+      await snapshotObserved;
+      expect(projection.admittedClientCount).toBe(1);
+
+      credentialStore.provision("async-snapshot-revoke", ["mission.control"], Date.now() + 60_000);
+      revokeIsInProgress = true;
+      releaseSnapshot();
+      const close = await stream.nextFrame();
+      expect(close.opcode).toBe(8);
+      await waitForCondition(() => connectResult !== undefined);
+      expect(connectResult).toBe(false);
+      expect(broadcastWhileClosing).toEqual({ before: 1, after: 1 });
+      expect(disconnectCounts).toEqual([1]);
+      expect(projection.admittedClientCount).toBe(0);
+      expect(projection.connectedClientCount).toBe(0);
+
+      overCapacity = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${replacementToken}` });
+      expect((await overCapacity.response).status).toBe(101);
+      expect((await overCapacity.nextFrame()).payload.toString("utf8")).toContain('"event":"snapshot"');
+    } finally {
+      releaseSnapshot();
+      stream?.close();
+      overCapacity?.close();
+      await targetServer.stop();
+    }
+  });
+
+  it("releases a reservation when the HTTP transport aborts during an asynchronous pre-upgrade hook", async () => {
+    const targetPort = await unusedPort();
+    const targetEventBus = new EventBus();
+    const delegate = new RpcGateway(daemonStorage, targetEventBus, missionStore);
+    const targetServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1", maxProjectionClients: 1 },
+      targetEventBus,
+      missionStore,
+      delegate,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    const projection = (targetServer as unknown as { projection: DaemonProjection }).projection;
+    const app = (targetServer as unknown as { app: FastifyInstance }).app;
+    let releaseFirstHook!: () => void;
+    const firstHookGate = new Promise<void>((resolveGate) => { releaseFirstHook = resolveGate; });
+    let hookCalls = 0;
+    let firstHookStarted!: () => void;
+    const firstHookObserved = new Promise<void>((resolveObserved) => { firstHookStarted = resolveObserved; });
+    app.addHook("preHandler", async (request) => {
+      if (request.url !== "/ws") return;
+      hookCalls += 1;
+      if (hookCalls === 1) {
+        firstHookStarted();
+        await firstHookGate;
+      }
+    });
+    const firstToken = credentialStore.provision("upgrade-abort-first", ["mission.read"], Date.now() + 60_000).token;
+    const secondToken = credentialStore.provision("upgrade-abort-second", ["mission.read"], Date.now() + 60_000).token;
+    let aborted: RawWebSocketProbe | undefined;
+    let admitted: RawWebSocketProbe | undefined;
+    try {
+      await targetServer.start();
+      aborted = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${firstToken}` });
+      void aborted.response.catch(() => undefined);
+      await firstHookObserved;
+      expect(projection.admittedClientCount).toBe(1);
+      const abortedClosed = new Promise<void>((resolveClosed) => aborted!.socket.once("close", () => resolveClosed()));
+      aborted.close();
+      await abortedClosed;
+      await waitForCondition(() => projection.admittedClientCount === 0);
+
+      admitted = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${secondToken}` });
+      expect((await admitted.response).status).toBe(101);
+      expect((await admitted.nextFrame()).payload.toString("utf8")).toContain('"event":"snapshot"');
+    } finally {
+      releaseFirstHook();
+      aborted?.close();
+      admitted?.close();
+      await targetServer.stop();
     }
   });
 
