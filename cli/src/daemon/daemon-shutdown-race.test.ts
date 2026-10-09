@@ -10,6 +10,7 @@ import { permissiveLocalControlTestAuth } from './local-control-test-auth.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { request as httpRequest, type ClientRequest } from 'node:http';
 import { SqliteAdapter } from '../adapters/sqlite.adapter.js';
 import { SqliteMissionStore } from '../mission/sqlite-mission-store.js';
 
@@ -44,6 +45,23 @@ function fastifyApp(server: DaemonServer): FastifyInstance {
 
 function inFlightRpc(server: DaemonServer): number {
     return (server as unknown as { inFlightRpc: number }).inFlightRpc;
+}
+
+function postRpc(port: number, body: Record<string, unknown>): ClientRequest {
+    const payload = JSON.stringify(body);
+    const request = httpRequest({
+        host: '127.0.0.1',
+        port,
+        path: '/rpc',
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(payload),
+        },
+    });
+    request.on('error', () => {});
+    request.end(payload);
+    return request;
 }
 
 describe('RPC shutdown and pending Mission command', () => {
@@ -92,24 +110,17 @@ describe('RPC shutdown and pending Mission command', () => {
         });
         await server.start();
 
-        const controller = new AbortController();
-        const commandResponse = fetch(`http://127.0.0.1:${port}/rpc`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            signal: controller.signal,
-            body: JSON.stringify({
+        const commandRequest = postRpc(port, {
                 jsonrpc: '2.0', id: 'disconnected-command', method: 'local_control.command',
                 params: {
                     protocolVersion: 1, operation: 'mission.pause',
                     missionId: 'pending-command-mission', reason: 'operator pause', pausedBy: 'test',
                 },
-            }),
         });
         let shutdownPromise: Promise<void> | undefined;
         try {
             await commandStarted;
-            controller.abort();
-            await commandResponse.catch(() => undefined);
+            commandRequest.destroy();
             await clientClosed;
 
             shutdownPromise = lifecycle.requestShutdown('SIGTERM');
@@ -128,6 +139,7 @@ describe('RPC shutdown and pending Mission command', () => {
             finishCommand(pausedMission());
             if (shutdownPromise) await shutdownPromise;
             else await server.stop();
+            commandRequest.destroy();
             if (storageClosed.mock.calls.length === 0) await storage.close();
             if (missionStoreClosed.mock.calls.length === 0) await missionStore.close();
             await rm(dataDir, { recursive: true, force: true });
@@ -177,23 +189,16 @@ describe('RPC shutdown and pending Mission command', () => {
         });
         await server.start();
 
-        const controller = new AbortController();
-        const commandResponse = fetch(`http://127.0.0.1:${port}/rpc`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            signal: controller.signal,
-            body: JSON.stringify({
+        const commandRequest = postRpc(port, {
                 jsonrpc: '2.0', id: 'never-settling-command', method: 'local_control.command',
                 params: {
                     protocolVersion: 1, operation: 'mission.pause',
                     missionId: 'pending-command-mission', reason: 'operator pause', pausedBy: 'test',
                 },
-            }),
         });
         try {
             await commandStarted;
-            controller.abort();
-            await commandResponse.catch(() => undefined);
+            commandRequest.destroy();
             await clientClosed;
 
             await lifecycle.requestShutdown('SIGTERM');
@@ -209,7 +214,7 @@ describe('RPC shutdown and pending Mission command', () => {
             expect(diagnostics).toContainEqual({ stage: 'process', outcome: 'forced_termination' });
         } finally {
             finishCommand(pausedMission());
-            await commandResponse.catch(() => undefined);
+            commandRequest.destroy();
             await server.stop().catch(() => undefined);
         }
     });
@@ -252,24 +257,17 @@ describe('RPC shutdown and pending Mission command', () => {
         });
         await server.start();
 
-        const controller = new AbortController();
-        const commandResponse = fetch(`http://127.0.0.1:${port}/rpc`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            signal: controller.signal,
-            body: JSON.stringify({
+        const commandRequest = postRpc(port, {
                 jsonrpc: '2.0', id: 'rejected-disconnected-command', method: 'local_control.command',
                 params: {
                     protocolVersion: 1, operation: 'mission.pause',
                     missionId: 'pending-command-mission', reason: 'operator pause', pausedBy: 'test',
                 },
-            }),
         });
         let shutdownPromise: Promise<void> | undefined;
         try {
             await commandStarted;
-            controller.abort();
-            await commandResponse.catch(() => undefined);
+            commandRequest.destroy();
             await clientClosed;
 
             shutdownPromise = lifecycle.requestShutdown('SIGTERM');
@@ -287,7 +285,7 @@ describe('RPC shutdown and pending Mission command', () => {
             expect(JSON.stringify(diagnostics)).not.toContain('token');
         } finally {
             rejectCommand(new Error('PRIVATE handler detail and token'));
-            await commandResponse.catch(() => undefined);
+            commandRequest.destroy();
             if (shutdownPromise) await shutdownPromise;
             else await server.stop();
         }
