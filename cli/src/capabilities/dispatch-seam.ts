@@ -1387,7 +1387,8 @@ export class ConnectorDispatchSeam {
                 `invocation "${invocationId}" is terminal; completed effects are never re-dispatched`,
             );
         }
-        const mission = await this.engine.getMission(missionId);
+        const mission = await this.engine.getMissionSchedulingRecord(missionId);
+        if (!mission) throw new DispatchSeamError(`mission ${missionId} not found; dispatch fails closed`);
         if (mission.state !== MissionState.READY && mission.state !== MissionState.EXECUTING) {
             throw new DispatchSeamError(
                 `mission "${missionId}" is in state "${mission.state}"; persisted dispatch is paused or waiting and cannot cross the seam`,
@@ -1481,7 +1482,8 @@ export class ConnectorDispatchSeam {
      * no planner re-consultation).
      */
     private async currentRevisionFor(missionId: string, stepId: string) {
-        const mission = await this.engine.getMission(missionId);
+        const mission = await this.engine.getMissionSchedulingRecord(missionId);
+        if (!mission) throw new DispatchSeamError(`mission ${missionId} not found; dispatch fails closed`);
         if (!mission.currentPlanRevisionId) {
             throw new DispatchSeamError(
                 `mission ${missionId} has no accepted plan revision; dispatch fails closed`,

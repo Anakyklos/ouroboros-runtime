@@ -134,6 +134,7 @@ export class MissionSchedulerDriver {
 }
 
 function isSchedulingMutation(mutation: MissionMutation): boolean {
+    if (mutation.entity === 'mission_projection') return false;
     if (mutation.entity === 'mission') {
         return mutation.kind === 'created' || mutation.kind === 'state_changed';
     }

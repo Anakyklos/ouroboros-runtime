@@ -9,6 +9,8 @@ import type {
     CapabilityContract,
     CapabilityInvocation,
     CapabilityInvocationRef,
+    ApprovalRequirement,
+    AllowedCapabilityScope,
     CriterionVerification,
     Mission,
     MissionState,
@@ -60,6 +62,25 @@ export interface MissionStore {
     listMissions(filter?: { state?: MissionState }): Promise<Mission[]>;
     /** Read a deterministic, bounded Mission page for resident enumeration. */
     listMissionPage(options: MissionPageOptions): Promise<MissionPage>;
+    /** Read only scheduling fields for resident enumeration; never loads invocation refs. */
+    listMissionSchedulingPage(options: MissionPageOptions): Promise<MissionSchedulingPage>;
+    /** Read state/plan identity without hydrating the Mission invocation projection. */
+    getMissionSchedulingRecord(missionId: string): Promise<MissionSchedulingRecord | null>;
+    /** Mission authorization fields used by dispatch, without invocation refs. */
+    getMissionDispatchRecord(missionId: string): Promise<MissionDispatchRecord | null>;
+    /** Read durable decision facts for the supplied current plan steps. */
+    getInvocationSchedulingFacts(
+        missionId: string,
+        steps: readonly InvocationSchedulingStep[],
+    ): Promise<InvocationSchedulingFact[]>;
+    /** Return only the first same-step effect/legacy barrier needed for a conflict. */
+    findInvocationReplayBarrier(
+        missionId: string,
+        stepId: string,
+        effectFingerprint: string,
+    ): Promise<CapabilityInvocation | null>;
+    /** Increment recovery metadata using a narrow row update, without loading Invocation history. */
+    recordMissionRecovery(missionId: string, recoveredAt: string): Promise<void>;
     deleteMission(missionId: string): Promise<void>;
 
     // Plan revisions
@@ -127,6 +148,39 @@ export interface MissionPage {
     nextCursor: MissionPageCursor | null;
 }
 
+/** Minimal Mission row needed by resident scheduling and recovery scans. */
+export interface MissionSchedulingRecord {
+    missionId: string;
+    state: MissionState;
+    currentPlanRevisionId: string | null;
+}
+
+export interface MissionSchedulingPage {
+    missions: MissionSchedulingRecord[];
+    nextCursor: MissionPageCursor | null;
+}
+
+export interface MissionDispatchRecord extends MissionSchedulingRecord {
+    constraints: string[];
+    acceptanceCriteria: string[];
+    allowedCapabilityScope: AllowedCapabilityScope;
+    approvalRequirements: ApprovalRequirement[];
+}
+
+/** Durable facts for one current-plan step, computed across the full ledger by SQLite. */
+export interface InvocationSchedulingFact {
+    stepId: string;
+    effectFingerprint: string;
+    hasEffectClaim: boolean;
+    hasCompletedEffect: boolean;
+    hasLegacyReplayBarrier: boolean;
+}
+
+export interface InvocationSchedulingStep {
+    stepId: string;
+    effectFingerprint: string;
+}
+
 export interface MissionProjectionLimits {
     /** Retention budget for terminal/historical Mission rows. */
     maxHistoricalMissions: number;
@@ -147,6 +201,11 @@ export interface MissionProjectionRead {
 
 export type MissionMutation =
     | {
+        entity: "mission_projection";
+        kind: "updated";
+        projection: MissionMutationProjection;
+    }
+    | {
         entity: "mission";
         kind: "created" | "updated" | "state_changed";
         mission: Mission;
@@ -156,6 +215,19 @@ export type MissionMutation =
         kind: "created" | "updated";
         invocation: CapabilityInvocation;
     };
+
+/** Complete public Mission event fields without building a Mission/ref history. */
+export interface MissionMutationProjection {
+    missionId: string;
+    state: MissionState;
+    source: Mission["source"];
+    currentPlanRevisionId: string | null;
+    createdAt: string;
+    updatedAt: string;
+    recoveryCount: number;
+    invocationIds: string[];
+    pendingApprovalCount: number;
+}
 
 export type MissionMutationListener = (mutation: MissionMutation) => void;
 

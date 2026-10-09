@@ -8,12 +8,14 @@ import {
     EffectClass,
     InvocationStatus,
     MissionState,
+    TERMINAL_STATES,
     type CapabilityInvocation,
     type Mission,
     type PlanCandidate,
 } from "./contracts.js";
 import { MissionEngine } from "./mission-engine.js";
 import { MissionScheduler } from "./mission-scheduler.js";
+import type { MissionMutationProjection } from "./ports.js";
 import { PlanPolicyValidator } from "./policy.js";
 import { SqliteMissionStore } from "./sqlite-mission-store.js";
 import {
@@ -247,11 +249,11 @@ describe("MissionScheduler", () => {
         const store = new SqliteMissionStore(db.path);
         await store.initialize();
         const pageCalls: Array<{ limit: number; returned: number }> = [];
-        const listMissionPage = store.listMissionPage.bind(store);
+        const listMissionPage = store.listMissionSchedulingPage.bind(store);
         store.listMissions = async () => {
             throw new Error("scheduler used the unpaged Mission listing");
         };
-        store.listMissionPage = async (options) => {
+        store.listMissionSchedulingPage = async (options) => {
             const page = await listMissionPage(options);
             pageCalls.push({ limit: options.limit, returned: page.missions.length });
             return page;
@@ -295,8 +297,8 @@ describe("MissionScheduler", () => {
         const store = new SqliteMissionStore(db.path);
         await store.initialize();
         const pageCalls: number[] = [];
-        const listMissionPage = store.listMissionPage.bind(store);
-        store.listMissionPage = async (options) => {
+        const listMissionPage = store.listMissionSchedulingPage.bind(store);
+        store.listMissionSchedulingPage = async (options) => {
             const page = await listMissionPage(options);
             pageCalls.push(page.missions.length);
             return page;
@@ -327,6 +329,180 @@ describe("MissionScheduler", () => {
         await store.close();
     });
 
+    it("provides a resident scheduling page without materializing invocation history", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const mission = makeMission("resident-history-page", MissionState.PAUSED);
+        await store.createMission(mission);
+        for (let index = 0; index < 128; index++) {
+            await store.saveInvocation({
+                invocationId: `resident-history-${index}`,
+                missionId: mission.missionId,
+                stepId: `historical-step-${index}`,
+                capabilityId: "lifeos.query",
+                planRevisionId: `historical-revision-${index}`,
+                contractVersion: 1,
+                moduleOwner: "lifeos",
+                effectClass: EffectClass.READ,
+                status: index === 0
+                    ? InvocationStatus.COMPLETED
+                    : index === 1 || index === 2
+                        ? InvocationStatus.BLOCKED
+                        : InvocationStatus.COMPLETED,
+                requestId: `resident-request-${index}`,
+                effectFingerprint: index === 0
+                    ? "old-confirmed-effect"
+                    : index === 1
+                        ? "uncertain-effect"
+                        : index === 2
+                            ? "legacy:unknown-effect"
+                            : `resident-fingerprint-${index}`,
+                inputRefs: [],
+                idempotency: { mode: IdempotencyMode.IDEMPOTENT, key: `resident-key-${index}` },
+                retry: { maxAttempts: 1, attempt: 1, backoff: RetryBackoff.FIXED, backoffMs: 0, nextEligibleAt: null },
+                attempts: [],
+                delivery: { state: index === 1 ? "uncertain" : "acknowledged" },
+                cancellation: { support: CancellationSupport.UNSUPPORTED, requested: false, state: "not_requested" },
+                reconciliation: { support: ReconciliationSupport.UNSUPPORTED, state: "not_required" },
+                ownerVerificationState: "not_required",
+                resultRefs: [],
+                createdAt: BASE_TIME,
+                updatedAt: BASE_TIME,
+            });
+        }
+        const sibling = makeMission("z-resident-history-sibling", MissionState.COMPLETED);
+        await store.createMission(sibling);
+        await store.saveInvocation({
+            invocationId: "resident-sibling-duplicate-effect",
+            missionId: sibling.missionId,
+            stepId: "sibling-step",
+            capabilityId: "lifeos.query",
+            planRevisionId: "sibling-revision",
+            contractVersion: 1,
+            moduleOwner: "lifeos",
+            effectClass: EffectClass.READ,
+            status: InvocationStatus.COMPLETED,
+            requestId: "sibling-request",
+            effectFingerprint: "old-confirmed-effect",
+            inputRefs: [],
+            idempotency: { mode: IdempotencyMode.IDEMPOTENT, key: "sibling-key" },
+            retry: { maxAttempts: 1, attempt: 1, backoff: RetryBackoff.FIXED, backoffMs: 0, nextEligibleAt: null },
+            attempts: [],
+            delivery: { state: "acknowledged" },
+            cancellation: { support: CancellationSupport.UNSUPPORTED, requested: false, state: "not_requested" },
+            reconciliation: { support: ReconciliationSupport.UNSUPPORTED, state: "not_required" },
+            ownerVerificationState: "not_required",
+            resultRefs: [],
+            createdAt: BASE_TIME,
+            updatedAt: BASE_TIME,
+        });
+
+        let materializedInvocationRows = 0;
+        const instrumented = store as unknown as {
+            rowToInvocation: (row: unknown) => CapabilityInvocation;
+            listMissionSchedulingPage?: (options: { limit: number; excludeStates?: readonly MissionState[] }) => Promise<{
+                missions: Array<{ missionId: string; state: MissionState; currentPlanRevisionId: string | null }>;
+                nextCursor: unknown;
+            }>;
+        };
+        const rowToInvocation = instrumented.rowToInvocation.bind(store);
+        instrumented.rowToInvocation = (row) => {
+            materializedInvocationRows++;
+            return rowToInvocation(row);
+        };
+
+        const fullHistoryPage = await store.listMissionPage({ limit: 1 });
+        expect(fullHistoryPage.missions[0]?.invocationRefs).toHaveLength(128);
+        expect(materializedInvocationRows).toBe(0);
+        expect(await store.listInvocations(mission.missionId)).toHaveLength(128);
+        expect(materializedInvocationRows).toBe(128);
+
+        materializedInvocationRows = 0;
+        expect(instrumented.listMissionSchedulingPage).toBeFunction();
+        const residentPage = await instrumented.listMissionSchedulingPage!({
+            limit: 1,
+            excludeStates: [...TERMINAL_STATES],
+        });
+        expect(residentPage.missions).toEqual([{
+            missionId: mission.missionId,
+            state: MissionState.PAUSED,
+            currentPlanRevisionId: null,
+        }]);
+        expect(materializedInvocationRows).toBe(0);
+
+        const schedulingFacts = await store.getInvocationSchedulingFacts(mission.missionId, [
+            { stepId: "historical-step-0", effectFingerprint: "old-confirmed-effect" },
+            { stepId: "historical-step-1", effectFingerprint: "uncertain-effect" },
+            { stepId: "historical-step-2", effectFingerprint: "future-effect" },
+            { stepId: "unclaimed-step", effectFingerprint: "unclaimed-effect" },
+            { stepId: "sibling-step", effectFingerprint: "sibling-only-effect" },
+        ]);
+        expect(schedulingFacts).toEqual([
+            {
+                stepId: "historical-step-0",
+                effectFingerprint: "old-confirmed-effect",
+                hasEffectClaim: true,
+                hasCompletedEffect: true,
+                hasLegacyReplayBarrier: false,
+            },
+            {
+                stepId: "historical-step-1",
+                effectFingerprint: "uncertain-effect",
+                hasEffectClaim: true,
+                hasCompletedEffect: false,
+                hasLegacyReplayBarrier: false,
+            },
+            {
+                stepId: "historical-step-2",
+                effectFingerprint: "future-effect",
+                hasEffectClaim: false,
+                hasCompletedEffect: false,
+                hasLegacyReplayBarrier: true,
+            },
+            {
+                stepId: "unclaimed-step",
+                effectFingerprint: "unclaimed-effect",
+                hasEffectClaim: false,
+                hasCompletedEffect: false,
+                hasLegacyReplayBarrier: false,
+            },
+            {
+                stepId: "sibling-step",
+                effectFingerprint: "sibling-only-effect",
+                hasEffectClaim: false,
+                hasCompletedEffect: false,
+                hasLegacyReplayBarrier: false,
+            },
+        ]);
+        expect(materializedInvocationRows).toBe(0);
+
+        const engine = createEngine(store, new FakeIdGenerator("resident-history"));
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam: new ConnectorDispatchSeam(engine, createRegistry(), new FakeClock(BASE_TIME)),
+            missionPageSize: 1,
+        });
+        const recoveryEvents: MissionMutationProjection[] = [];
+        const unsubscribe = store.onMutation((mutation) => {
+            if (mutation.entity === "mission_projection") recoveryEvents.push(mutation.projection);
+        });
+        const recovery = await scheduler.recover();
+        expect(recovery.recoveredMissionIds).toEqual([mission.missionId]);
+        expect(materializedInvocationRows).toBe(0);
+        expect(recoveryEvents).toHaveLength(1);
+        expect(recoveryEvents[0]).toMatchObject({
+            missionId: mission.missionId,
+            state: MissionState.PAUSED,
+            recoveryCount: 1,
+            pendingApprovalCount: 0,
+        });
+        expect(recoveryEvents[0]?.invocationIds).toHaveLength(128);
+        expect((await store.getMission(mission.missionId))?.invocationRefs).toHaveLength(128);
+        unsubscribe();
+        await store.close();
+    });
+
     it("bounds waiting report IDs while a resident driver processes the full unavailable-capability backlog", async () => {
         const store = new SqliteMissionStore(":memory:");
         await store.initialize();
@@ -353,8 +529,8 @@ describe("MissionScheduler", () => {
         registry.setAvailability("lifeos.query", CapabilityAvailability.UNAVAILABLE, "LifeOS offline");
         const seam = new ConnectorDispatchSeam(engine, registry, new FakeClock(BASE_TIME));
         let missionPageReads = 0;
-        const listMissionPage = store.listMissionPage.bind(store);
-        store.listMissionPage = async (options) => {
+        const listMissionPage = store.listMissionSchedulingPage.bind(store);
+        store.listMissionSchedulingPage = async (options) => {
             missionPageReads++;
             return listMissionPage(options);
         };
@@ -417,8 +593,8 @@ describe("MissionScheduler", () => {
         const seam = new ConnectorDispatchSeam(engine, createRegistry(), new FakeClock(BASE_TIME));
         const scheduler = new MissionScheduler({ engine, store, seam, missionPageSize: 2 });
         let failSecondPage = true;
-        const listMissionPage = store.listMissionPage.bind(store);
-        store.listMissionPage = async (options) => {
+        const listMissionPage = store.listMissionSchedulingPage.bind(store);
+        store.listMissionSchedulingPage = async (options) => {
             if (failSecondPage && options.cursor) throw new Error("private SQLite details");
             return listMissionPage(options);
         };
@@ -451,11 +627,11 @@ describe("MissionScheduler", () => {
         await engine.acceptPlan(eligible.missionId, proposal.revision.revisionId);
 
         const pageFilters: Array<readonly MissionState[] | undefined> = [];
-        const listMissionPage = store.listMissionPage.bind(store);
+        const listMissionPage = store.listMissionSchedulingPage.bind(store);
         store.listMissions = async () => {
             throw new Error("scheduler used the unpaged Mission listing");
         };
-        store.listMissionPage = async (options) => {
+        store.listMissionSchedulingPage = async (options) => {
             pageFilters.push(options.states);
             return listMissionPage(options);
         };
@@ -508,8 +684,8 @@ describe("MissionScheduler", () => {
             },
         });
         let inserted = false;
-        const listMissionPage = store.listMissionPage.bind(store);
-        store.listMissionPage = async (options) => {
+        const listMissionPage = store.listMissionSchedulingPage.bind(store);
+        store.listMissionSchedulingPage = async (options) => {
             const page = await listMissionPage(options);
             if (!inserted && options.states && page.missions.length === 2) {
                 inserted = true;
@@ -1221,6 +1397,32 @@ describe("MissionScheduler", () => {
         const proposal = await engine.proposePlan(created.missionId, planFor(created));
         if (!proposal.ok) throw new Error("scheduler plan was rejected");
         await engine.acceptPlan(created.missionId, proposal.revision.revisionId);
+        for (let index = 0; index < 128; index++) {
+            await store.saveInvocation({
+                invocationId: `dispatch-history-${index}`,
+                missionId: created.missionId,
+                stepId: `historical-step-${index}`,
+                capabilityId: "lifeos.query",
+                planRevisionId: `historical-revision-${index}`,
+                contractVersion: 1,
+                moduleOwner: "lifeos",
+                effectClass: EffectClass.READ,
+                status: InvocationStatus.COMPLETED,
+                requestId: `dispatch-request-${index}`,
+                effectFingerprint: `historical-effect-${index}`,
+                inputRefs: [],
+                idempotency: { mode: IdempotencyMode.IDEMPOTENT, key: `dispatch-key-${index}` },
+                retry: { maxAttempts: 1, attempt: 1, backoff: RetryBackoff.FIXED, backoffMs: 0, nextEligibleAt: null },
+                attempts: [],
+                delivery: { state: "acknowledged" },
+                cancellation: { support: CancellationSupport.UNSUPPORTED, requested: false, state: "not_requested" },
+                reconciliation: { support: ReconciliationSupport.UNSUPPORTED, state: "not_required" },
+                ownerVerificationState: "not_required",
+                resultRefs: [],
+                createdAt: BASE_TIME,
+                updatedAt: BASE_TIME,
+            });
+        }
 
         const registry = createRegistry();
         let invokeCount = 0;
@@ -1246,13 +1448,30 @@ describe("MissionScheduler", () => {
             clock: new FakeClock(BASE_TIME),
         });
 
+        let materializedInvocationRows = 0;
+        const instrumented = store as unknown as {
+            rowToInvocation: (row: unknown) => CapabilityInvocation;
+        };
+        const rowToInvocation = instrumented.rowToInvocation.bind(store);
+        instrumented.rowToInvocation = (row) => {
+            materializedInvocationRows++;
+            return rowToInvocation(row);
+        };
+
+        const fullHistoryRead = store.listInvocations.bind(store);
+        store.listInvocations = async () => {
+            throw new Error("resident scheduling called the full-history API");
+        };
+
         const report = await scheduler.runOnce();
         expect(invokeCount).toBe(1);
         expect(report.dispatchedInvocationIds).toHaveLength(1);
         expect(report.idle).toBe(false);
+        expect(materializedInvocationRows).toBeLessThan(16);
+        store.listInvocations = fullHistoryRead;
         const invocations = await store.listInvocations(created.missionId);
-        expect(invocations).toHaveLength(1);
-        expect(invocations[0].status).toBe(InvocationStatus.COMPLETED);
+        expect(invocations).toHaveLength(129);
+        expect(invocations.at(-1)?.status).toBe(InvocationStatus.COMPLETED);
     });
 
     it("keeps an empty pass idle with zero report ID capture", async () => {
