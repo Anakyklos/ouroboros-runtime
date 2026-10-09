@@ -96,7 +96,7 @@ function safeGatewayResult(method: string, params: Record<string, unknown> | und
 
 class RpcDrainTimeoutError extends Error {
     constructor() {
-        super('Accepted RPC response drain timed out');
+        super('Accepted RPC operation drain timed out');
         this.name = 'RpcDrainTimeoutError';
     }
 }
@@ -114,6 +114,10 @@ export class DaemonServer {
     private acceptingRpc = true;
     private inFlightRpc = 0;
     private inFlightResponses = new Set<ServerResponse>();
+    private inFlightRpcOperations = new Set<{
+        handlerSettled: boolean;
+        responseSettled: boolean;
+    }>();
     private rpcDrainWaiters: Array<() => void> = [];
     private appClosed = false;
     private readonly authorization?: LocalControlAuthorizationPort;
@@ -503,7 +507,7 @@ export class DaemonServer {
                 return sendBoundaryError(reply, 401, 'UNAUTHORIZED', 'Authentication is required');
             }
 
-            this.beginRpcRequest(reply.raw);
+            const handlerSettled = this.beginRpcRequest(reply.raw);
             try {
                 const result = await this.rpcGateway.handleRequest({
                     jsonrpc: '2.0',
@@ -545,6 +549,8 @@ export class DaemonServer {
                     id: rpcRequest.id,
                     error: safeGatewayError(null),
                 };
+            } finally {
+                handlerSettled();
             }
         });
     }
@@ -652,26 +658,43 @@ export class DaemonServer {
         });
     }
 
-    private beginRpcRequest(response: ServerResponse): void {
+    private beginRpcRequest(response: ServerResponse): () => void {
         this.inFlightRpc += 1;
-        let finished = false;
-        const finishRpc = () => {
-            if (finished) return;
-            finished = true;
-            this.inFlightResponses.delete(response);
+        const operation = {
+            handlerSettled: false,
+            responseSettled: response.writableFinished || response.destroyed,
+        };
+        this.inFlightRpcOperations.add(operation);
+        const settleIfComplete = () => {
+            if (!operation.handlerSettled || !operation.responseSettled) return;
+            this.inFlightRpcOperations.delete(operation);
             this.inFlightRpc -= 1;
             if (this.inFlightRpc === 0) {
                 for (const resolve of this.rpcDrainWaiters.splice(0)) resolve();
             }
         };
 
-        if (response.writableFinished || response.destroyed) {
-            finishRpc();
-            return;
+        const finishResponse = () => {
+            if (operation.responseSettled) return;
+            operation.responseSettled = true;
+            this.inFlightResponses.delete(response);
+            response.off('finish', finishResponse);
+            response.off('close', finishResponse);
+            settleIfComplete();
+        };
+        if (!operation.responseSettled) {
+            this.inFlightResponses.add(response);
+            response.once('finish', finishResponse);
+            response.once('close', finishResponse);
         }
-        this.inFlightResponses.add(response);
-        response.once('finish', finishRpc);
-        response.once('close', finishRpc);
+
+        let handlerWasSettled = false;
+        return () => {
+            if (handlerWasSettled) return;
+            handlerWasSettled = true;
+            operation.handlerSettled = true;
+            settleIfComplete();
+        };
     }
 
     get running(): boolean {

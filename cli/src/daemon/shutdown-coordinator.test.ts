@@ -20,7 +20,7 @@ describe('DaemonShutdownCoordinator', () => {
         expect(order).toEqual(['server', 'storage', 'mission-store']);
     });
 
-    it('attempts both stores after a previous close fails and reports only sanitized stage facts', async () => {
+    it('leaves both stores open when RPC quiescence is not proved and reports only sanitized facts', async () => {
         const closeStorage = mock(async () => { throw new Error('PRIVATE PATH / secret-token'); });
         const closeMissionStore = mock(async () => {});
         const diagnostics: unknown[] = [];
@@ -34,19 +34,43 @@ describe('DaemonShutdownCoordinator', () => {
 
         await coordinator.requestShutdown('RPC');
 
+        expect(closeStorage).not.toHaveBeenCalled();
+        expect(closeMissionStore).not.toHaveBeenCalled();
+        expect(JSON.stringify(diagnostics)).not.toContain('PRIVATE');
+        expect(JSON.stringify(diagnostics)).not.toContain('secret-token');
+        expect(diagnostics).toContainEqual({ stage: 'storage', outcome: 'timed_out' });
+        expect(diagnostics).toContainEqual({ stage: 'mission_store', outcome: 'timed_out' });
+    });
+
+    it('continues independent store closure after a proven-safe close error without exposing details', async () => {
+        const closeStorage = mock(async () => { throw new Error('PRIVATE PATH / secret-token'); });
+        const closeMissionStore = mock(async () => {});
+        const diagnostics: unknown[] = [];
+        const coordinator = new DaemonShutdownCoordinator({
+            stopServer: async () => {},
+            closeStorage,
+            closeMissionStore,
+            onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+            forceTerminate: mock(() => {}),
+        });
+
+        await coordinator.requestShutdown('RPC');
+
         expect(closeStorage).toHaveBeenCalledTimes(1);
         expect(closeMissionStore).toHaveBeenCalledTimes(1);
+        expect(JSON.stringify(diagnostics)).toContain('storage');
         expect(JSON.stringify(diagnostics)).not.toContain('PRIVATE');
         expect(JSON.stringify(diagnostics)).not.toContain('secret-token');
     });
 
-    it('continues after a bounded close timeout and marks forced termination explicitly', async () => {
+    it('leaves stores open after a bounded server drain timeout and marks forced termination explicitly', async () => {
         const forceTerminate = mock(() => {});
         const setExitCode = mock((_code: number) => {});
+        const closeStorage = mock(async () => {});
         const closeMissionStore = mock(async () => {});
         const coordinator = new DaemonShutdownCoordinator({
             stopServer: () => new Promise<void>(() => {}),
-            closeStorage: async () => {},
+            closeStorage,
             closeMissionStore,
             forceTerminate,
             setExitCode,
@@ -56,7 +80,8 @@ describe('DaemonShutdownCoordinator', () => {
 
         await coordinator.requestShutdown('SIGTERM');
 
-        expect(closeMissionStore).toHaveBeenCalledTimes(1);
+        expect(closeStorage).not.toHaveBeenCalled();
+        expect(closeMissionStore).not.toHaveBeenCalled();
         expect(forceTerminate).toHaveBeenCalledTimes(1);
         expect(setExitCode).toHaveBeenCalledWith(1);
     });
