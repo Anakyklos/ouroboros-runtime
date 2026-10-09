@@ -38,6 +38,8 @@ import {
 import type {
     MissionMutation,
     MissionMutationListener,
+    MissionPage,
+    MissionPageOptions,
     MissionProjectionLimits,
     MissionProjectionRead,
     MissionStore,
@@ -123,6 +125,7 @@ function parseJson<T>(raw: string | null | undefined, fallback: T): T {
 }
 
 const LEGACY_EPOCH = "1970-01-01T00:00:00.000Z";
+const MAX_MISSION_PAGE_SIZE = 1024;
 
 // Due-work selection is deliberately allowlisted rather than expressed as
 // `owner_verification_state != 'rejected'`: NULL, legacy, and malformed states
@@ -293,6 +296,7 @@ export class SqliteMissionStore implements MissionStore {
 
             CREATE INDEX IF NOT EXISTS idx_plan_revisions_mission ON mission_plan_revisions(mission_id);
             CREATE INDEX IF NOT EXISTS idx_plan_revisions_number ON mission_plan_revisions(mission_id, revision_number);
+            CREATE INDEX IF NOT EXISTS idx_missions_enumeration ON missions(created_at DESC, mission_id ASC);
             CREATE INDEX IF NOT EXISTS idx_invocations_mission ON mission_invocations(mission_id);
         `);
         const missionColumns = this.db.query("PRAGMA table_info(missions)").all() as Array<{ name: string }>;
@@ -790,6 +794,62 @@ export class SqliteMissionStore implements MissionStore {
             else byMission.set(inv.mission_id, [inv]);
         }
         return rows.map((row) => this.rowToMission(row, byMission.get(row.mission_id) ?? []));
+    }
+
+    /** Read a stable Mission page and only the invocations owned by that page. */
+    async listMissionPage(options: MissionPageOptions): Promise<MissionPage> {
+        const { limit, cursor, states, excludeStates } = options;
+        this.ensureDb();
+        if (!Number.isSafeInteger(limit) || limit <= 0 || limit > MAX_MISSION_PAGE_SIZE) {
+            throw new Error(`Mission page limit must be between 1 and ${MAX_MISSION_PAGE_SIZE}`);
+        }
+        if (states?.length === 0) return { missions: [], nextCursor: null };
+
+        return this.withTransaction(async () => {
+            const predicates = ["1 = 1"];
+            const parameters: string[] = [];
+            if (states) {
+                predicates.push(`state IN (${states.map(() => "?").join(", ")})`);
+                parameters.push(...states);
+            }
+            if (excludeStates?.length) {
+                predicates.push(`state NOT IN (${excludeStates.map(() => "?").join(", ")})`);
+                parameters.push(...excludeStates);
+            }
+            if (cursor) {
+                predicates.push("(created_at < ? OR (created_at = ? AND mission_id > ?))");
+                parameters.push(cursor.createdAt, cursor.createdAt, cursor.missionId);
+            }
+            const sql = `SELECT * FROM missions
+                WHERE ${predicates.join(" AND ")}
+                ORDER BY created_at DESC, mission_id ASC
+                LIMIT ?`;
+            const rows = this.stmt(
+                `listMissionPage:${states?.length ?? 0}:${excludeStates?.length ?? 0}:${cursor ? 1 : 0}`,
+                sql,
+            ).all(...parameters, limit) as unknown as MissionRow[];
+            if (rows.length === 0) return { missions: [], nextCursor: null };
+
+            const invocationRows = this.stmt(
+                `listMissionPageInvocations:${rows.length}`,
+                `SELECT * FROM mission_invocations
+                 WHERE mission_id IN (${rows.map(() => "?").join(", ")})
+                 ORDER BY mission_id ASC, rowid ASC`,
+            ).all(...rows.map((row) => row.mission_id)) as unknown as InvocationRow[];
+            const invocationsByMission = new Map<string, InvocationRow[]>();
+            for (const invocation of invocationRows) {
+                const missionInvocations = invocationsByMission.get(invocation.mission_id);
+                if (missionInvocations) missionInvocations.push(invocation);
+                else invocationsByMission.set(invocation.mission_id, [invocation]);
+            }
+            const last = rows[rows.length - 1]!;
+            return {
+                missions: rows.map((row) => this.rowToMission(row, invocationsByMission.get(row.mission_id) ?? [])),
+                nextCursor: rows.length === limit
+                    ? { createdAt: last.created_at, missionId: last.mission_id }
+                    : null,
+            };
+        });
     }
 
     /**

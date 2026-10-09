@@ -27,6 +27,7 @@ import { CapabilityRegistry } from "../capabilities/registry.js";
 import { defineCapabilityDescriptor } from "../capabilities/fixtures.js";
 import { CapabilityResultStatus } from "../capabilities/connector.js";
 import { ConnectorDispatchSeam } from "../capabilities/dispatch-seam.js";
+import { MissionSchedulerDriver } from "../daemon/mission-scheduler-driver.js";
 import {
     CapabilityAvailability,
     CancellationSupport,
@@ -225,6 +226,180 @@ describe("MissionScheduler", () => {
         expect(recovered?.recoveryMetadata).toMatchObject({ recovered: true, recoveryCount: 1 });
         expect(recovered?.pauseMetadata).toMatchObject({ reason: "operator hold" });
         expect(report.reconciledInvocationIds).toEqual([]);
+    });
+
+    it("recovers every non-terminal Mission across multiple SQLite pages after reopen", async () => {
+        const db = tempDb();
+        cleanups.push(db.cleanup);
+        const firstStore = new SqliteMissionStore(db.path);
+        await firstStore.initialize();
+        const allIds: string[] = [];
+        for (let index = 0; index < 67; index++) {
+            const id = `recovery-page-${String(index).padStart(3, "0")}`;
+            allIds.push(id);
+            await firstStore.createMission(makeMission(
+                id,
+                index === 20 ? MissionState.CANCELLED : MissionState.PAUSED,
+            ));
+        }
+        await firstStore.close();
+
+        const store = new SqliteMissionStore(db.path);
+        await store.initialize();
+        const pageCalls: Array<{ limit: number; returned: number }> = [];
+        const listMissionPage = store.listMissionPage.bind(store);
+        store.listMissions = async () => {
+            throw new Error("scheduler used the unpaged Mission listing");
+        };
+        store.listMissionPage = async (options) => {
+            const page = await listMissionPage(options);
+            pageCalls.push({ limit: options.limit, returned: page.missions.length });
+            return page;
+        };
+        const engine = createEngine(store, new FakeIdGenerator("recovery-page"));
+        const seam = new ConnectorDispatchSeam(engine, createRegistry(), new FakeClock(BASE_TIME));
+        const scheduler = new MissionScheduler({ engine, store, seam, missionPageSize: 16 });
+
+        const report = await scheduler.recover();
+        const expectedIds = allIds.filter((id) => id !== "recovery-page-020");
+        expect(report.recoveredMissionIds).toEqual(expectedIds);
+        expect(pageCalls.length).toBeGreaterThan(3);
+        expect(pageCalls.every((call) => call.limit === 16 && call.returned <= 16)).toBe(true);
+        expect(await store.getMission("recovery-page-020")).toMatchObject({
+            state: MissionState.CANCELLED,
+            recoveryMetadata: { recovered: false, recoveryCount: 0 },
+        });
+        for (const id of expectedIds) {
+            expect((await store.getMission(id))?.recoveryMetadata.recovered).toBe(true);
+        }
+        expect(report.reconciledInvocationIds).toEqual([]);
+        await store.close();
+    });
+
+    it("fails recovery on a page read error and resumes the scan without dispatch", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        for (const id of ["failure-page-1", "failure-page-2", "failure-page-3"]) {
+            await store.createMission(makeMission(id, MissionState.PAUSED));
+        }
+        const engine = createEngine(store, new FakeIdGenerator("failure-page"));
+        const seam = new ConnectorDispatchSeam(engine, createRegistry(), new FakeClock(BASE_TIME));
+        const scheduler = new MissionScheduler({ engine, store, seam, missionPageSize: 2 });
+        let failSecondPage = true;
+        const listMissionPage = store.listMissionPage.bind(store);
+        store.listMissionPage = async (options) => {
+            if (failSecondPage && options.cursor) throw new Error("private SQLite details");
+            return listMissionPage(options);
+        };
+
+        await expect(scheduler.recover()).rejects.toThrow("private SQLite details");
+        expect((await store.getMission("failure-page-1"))?.recoveryMetadata.recovered).toBe(true);
+        expect((await store.getMission("failure-page-3"))?.recoveryMetadata.recovered).toBe(false);
+        failSecondPage = false;
+        const recovered = await scheduler.recover();
+        expect(recovered.recoveredMissionIds).toEqual([
+            "failure-page-1",
+            "failure-page-2",
+            "failure-page-3",
+        ]);
+        expect(await store.listInvocations("failure-page-1")).toEqual([]);
+        await store.close();
+    });
+
+    it("finds dispatchable work after full pages with no planned work", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        for (const id of ["a-no-plan-1", "b-no-plan-2", "c-no-plan-3"]) {
+            await store.createMission(makeMission(id, MissionState.READY));
+        }
+        const engine = createEngine(store, new FakeIdGenerator("page-dispatch"));
+        const eligible = makeMission("z-eligible", MissionState.CREATED);
+        await store.createMission(eligible);
+        const proposal = await engine.proposePlan(eligible.missionId, planFor(eligible));
+        if (!proposal.ok) throw new Error("scheduler page plan was rejected");
+        await engine.acceptPlan(eligible.missionId, proposal.revision.revisionId);
+
+        const pageFilters: Array<readonly MissionState[] | undefined> = [];
+        const listMissionPage = store.listMissionPage.bind(store);
+        store.listMissions = async () => {
+            throw new Error("scheduler used the unpaged Mission listing");
+        };
+        store.listMissionPage = async (options) => {
+            pageFilters.push(options.states);
+            return listMissionPage(options);
+        };
+
+        const registry = createRegistry();
+        const seam = new ConnectorDispatchSeam(engine, registry, new FakeClock(BASE_TIME));
+        seam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => registry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => ({
+                status: CapabilityResultStatus.COMPLETED,
+                requestId: request.requestId,
+                summary: "page-bound dispatch fixture",
+                evidence: [],
+            }),
+        });
+        const scheduler = new MissionScheduler({ engine, store, seam, missionPageSize: 2 });
+
+        const report = await scheduler.runOnce();
+        expect(report.dispatchedInvocationIds).toHaveLength(1);
+        expect(pageFilters.some((states) => states?.includes(MissionState.READY))).toBe(true);
+        expect((await store.listInvocations(eligible.missionId)).map((invocation) => invocation.invocationId))
+            .toEqual(report.dispatchedInvocationIds);
+        await store.close();
+    });
+
+    it("revisits work inserted behind the keyset cursor after a committed mutation", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        for (const id of ["a-existing-1", "b-existing-2", "c-existing-3"]) {
+            await store.createMission(makeMission(id, MissionState.READY));
+        }
+        const engine = createEngine(store, new FakeIdGenerator("concurrent-page"));
+        const registry = createRegistry();
+        const seam = new ConnectorDispatchSeam(engine, registry, new FakeClock(BASE_TIME));
+        let invokeCount = 0;
+        seam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => registry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                invokeCount++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "concurrent page fixture",
+                    evidence: [],
+                };
+            },
+        });
+        let inserted = false;
+        const listMissionPage = store.listMissionPage.bind(store);
+        store.listMissionPage = async (options) => {
+            const page = await listMissionPage(options);
+            if (!inserted && options.states && page.missions.length === 2) {
+                inserted = true;
+                const concurrent = makeMission("0-concurrent-eligible", MissionState.CREATED);
+                await store.createMission(concurrent);
+                const proposal = await engine.proposePlan(concurrent.missionId, planFor(concurrent));
+                if (!proposal.ok) throw new Error("concurrent page plan was rejected");
+                await engine.acceptPlan(concurrent.missionId, proposal.revision.revisionId);
+            }
+            return page;
+        };
+        const scheduler = new MissionScheduler({ engine, store, seam, missionPageSize: 2 });
+        const driver = new MissionSchedulerDriver({ scheduler, store });
+
+        await driver.start();
+        const invocations = await store.listInvocations("0-concurrent-eligible");
+        expect(inserted).toBe(true);
+        expect(invokeCount).toBe(1);
+        expect(invocations).toHaveLength(1);
+        await driver.stop();
+        await store.close();
     });
 
     it("reconstructs a legacy effect when one accepted revision proves its identity", async () => {

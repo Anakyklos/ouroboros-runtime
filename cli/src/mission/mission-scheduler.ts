@@ -6,7 +6,7 @@
  * next durable wakeup instead of owning a resident polling timer.
  */
 
-import type { ClockService, MissionStore } from "./ports.js";
+import type { ClockService, MissionPageCursor, MissionStore } from "./ports.js";
 import {
     MissionEngine,
 } from "./mission-engine.js";
@@ -31,6 +31,7 @@ export interface MissionSchedulerOptions {
     clock?: ClockService;
     maxInFlight?: number;
     recoveryBatchSize?: number;
+    missionPageSize?: number;
 }
 
 export interface MissionRecoveryReport {
@@ -52,6 +53,7 @@ export class MissionScheduler {
     private readonly clock: ClockService;
     private readonly maxInFlight: number;
     private readonly recoveryBatchSize: number;
+    private readonly missionPageSize: number;
     private recoveryComplete = false;
     private recoveryInProgress: Promise<MissionRecoveryReport> | null = null;
     private runInProgress: Promise<MissionSchedulerRunReport> | null = null;
@@ -71,6 +73,11 @@ export class MissionScheduler {
             && (options.recoveryBatchSize ?? 0) > 0
             ? options.recoveryBatchSize!
             : 64;
+        this.missionPageSize = Number.isSafeInteger(options.missionPageSize)
+            && (options.missionPageSize ?? 0) > 0
+            && options.missionPageSize! <= 1024
+            ? options.missionPageSize!
+            : 64;
     }
 
     /** Recover non-terminal Missions without resuming any effect. */
@@ -89,13 +96,20 @@ export class MissionScheduler {
     }
 
     private async recoverInternal(): Promise<MissionRecoveryReport> {
-        const missions = await this.store.listMissions();
         const recoveredMissionIds: string[] = [];
-        for (const mission of missions) {
-            if (TERMINAL_STATES.has(mission.state)) continue;
-            await this.engine.recoverMission(mission.missionId);
-            recoveredMissionIds.push(mission.missionId);
-        }
+        let cursor: MissionPageCursor | null = null;
+        do {
+            const page = await this.store.listMissionPage({
+                limit: this.missionPageSize,
+                cursor: cursor ?? undefined,
+                excludeStates: [...TERMINAL_STATES],
+            });
+            for (const mission of page.missions) {
+                await this.engine.recoverMission(mission.missionId);
+                recoveredMissionIds.push(mission.missionId);
+            }
+            cursor = page.nextCursor;
+        } while (cursor);
         this.recoveryComplete = true;
         return { recoveredMissionIds, reconciledInvocationIds: [] };
     }
@@ -240,106 +254,119 @@ export class MissionScheduler {
             }
         }
 
-        const missions = await this.store.listMissions();
-        for (const mission of missions) {
+        const schedulableStates = [
+            MissionState.READY,
+            MissionState.EXECUTING,
+            MissionState.WAITING_FOR_CAPABILITY,
+        ] as const;
+        let missionCursor: MissionPageCursor | null = null;
+        do {
             if (dispatchSlots <= 0) break;
-            if (TERMINAL_STATES.has(mission.state) || mission.state === MissionState.PAUSED) continue;
-            // Capability waits are retried only as a fresh authorization check
-            // in this pass. Approval/context/provider/budget waits are never
-            // auto-promoted by the scheduler.
-            const capabilityWaiting = mission.state === MissionState.WAITING_FOR_CAPABILITY;
-            if (!capabilityWaiting && mission.state !== MissionState.READY && mission.state !== MissionState.EXECUTING) continue;
-            if (!mission.currentPlanRevisionId) continue;
-            const revision = await this.engine.getPlanRevision(mission.currentPlanRevisionId);
-            if (!revision) continue;
-            const invocations = await this.store.listInvocations(mission.missionId);
-            const completedEffects = new Set(
-                invocations
-                    .filter((invocation) => invocation.status === InvocationStatus.COMPLETED)
-                    .map((invocation) => invocation.effectFingerprint),
-            );
-            const effectByStep = new Map(
-                revision.steps.map((step) => [
-                    step.stepId,
-                    computeEffectFingerprint({
-                        capabilityId: step.capabilityRequirement,
-                        effectClass: step.effectClass,
-                        inputRefs: step.inputRefs,
-                        outcome: step.desiredOutcome,
-                    }),
-                ]),
-            );
-            const isReadyStep = (step: typeof revision.steps[number]): boolean => {
-                const effectFingerprint = effectByStep.get(step.stepId)!;
-                if (invocations.some((invocation) =>
-                    invocation.effectFingerprint === effectFingerprint
-                    || (invocation.stepId === step.stepId && isLegacyReplayBarrier(invocation)))) return false;
-                if (step.dependencyIds.some((dependencyId) => {
-                    const dependencyEffect = effectByStep.get(dependencyId);
-                    return dependencyEffect === undefined || !completedEffects.has(dependencyEffect);
-                })) return false;
-                return true;
-            };
-            const readySteps = revision.steps.filter(isReadyStep);
-            const dispatchableSteps = readySteps.filter((step) =>
-                this.seam.canDispatchCapability(step.capabilityRequirement),
-            );
-            const hasUnavailableReadyStep = dispatchableSteps.length < readySteps.length;
-            if (capabilityWaiting) {
-                if (dispatchableSteps.length === 0) continue;
-                try {
-                    await this.engine.restoreWaitingToReady(mission.missionId);
-                } catch {
-                    continue;
-                }
-                const restored = await this.store.getMission(mission.missionId);
-                if (!restored || (
-                    restored.state !== MissionState.READY
-                    && restored.state !== MissionState.EXECUTING
-                )) continue;
-            }
-            if (!capabilityWaiting && readySteps.length > 0 && dispatchableSteps.length === 0) {
-                await this.engine.setWaiting(
-                    mission.missionId,
-                    MissionState.WAITING_FOR_CAPABILITY,
-                    'No ready capability currently has both a registered descriptor and connector',
-                );
-                waitingMissionIds.push(mission.missionId);
-                continue;
-            }
-            // Dispatch directly while scanning the durable plan. This avoids
-            // building an unbounded in-memory candidate queue; at most
-            // `maxInFlight` connector calls can be active in this pass.
-            let becameUnavailable = false;
-            for (const step of dispatchableSteps) {
+            const page = await this.store.listMissionPage({
+                limit: this.missionPageSize,
+                cursor: missionCursor ?? undefined,
+                states: schedulableStates,
+            });
+            for (const mission of page.missions) {
                 if (dispatchSlots <= 0) break;
-                try {
-                    const outcome = await this.seam.dispatchThroughSeam(mission.missionId, step.stepId);
-                    dispatchedInvocationIds.push(outcome.invocation.invocationId);
-                    dispatchSlots--;
-                } catch (error) {
-                    if (isCapabilityWaitError(error)) {
-                        becameUnavailable = true;
+                // Capability waits are retried only as a fresh authorization check
+                // in this pass. Approval/context/provider/budget waits are never
+                // auto-promoted by the scheduler.
+                const capabilityWaiting = mission.state === MissionState.WAITING_FOR_CAPABILITY;
+                if (!capabilityWaiting && mission.state !== MissionState.READY && mission.state !== MissionState.EXECUTING) continue;
+                if (!mission.currentPlanRevisionId) continue;
+                const revision = await this.engine.getPlanRevision(mission.currentPlanRevisionId);
+                if (!revision) continue;
+                const invocations = await this.store.listInvocations(mission.missionId);
+                const completedEffects = new Set(
+                    invocations
+                        .filter((invocation) => invocation.status === InvocationStatus.COMPLETED)
+                        .map((invocation) => invocation.effectFingerprint),
+                );
+                const effectByStep = new Map(
+                    revision.steps.map((step) => [
+                        step.stepId,
+                        computeEffectFingerprint({
+                            capabilityId: step.capabilityRequirement,
+                            effectClass: step.effectClass,
+                            inputRefs: step.inputRefs,
+                            outcome: step.desiredOutcome,
+                        }),
+                    ]),
+                );
+                const isReadyStep = (step: typeof revision.steps[number]): boolean => {
+                    const effectFingerprint = effectByStep.get(step.stepId)!;
+                    if (invocations.some((invocation) =>
+                        invocation.effectFingerprint === effectFingerprint
+                        || (invocation.stepId === step.stepId && isLegacyReplayBarrier(invocation)))) return false;
+                    if (step.dependencyIds.some((dependencyId) => {
+                        const dependencyEffect = effectByStep.get(dependencyId);
+                        return dependencyEffect === undefined || !completedEffects.has(dependencyEffect);
+                    })) return false;
+                    return true;
+                };
+                const readySteps = revision.steps.filter(isReadyStep);
+                const dispatchableSteps = readySteps.filter((step) =>
+                    this.seam.canDispatchCapability(step.capabilityRequirement),
+                );
+                const hasUnavailableReadyStep = dispatchableSteps.length < readySteps.length;
+                if (capabilityWaiting) {
+                    if (dispatchableSteps.length === 0) continue;
+                    try {
+                        await this.engine.restoreWaitingToReady(mission.missionId);
+                    } catch {
                         continue;
                     }
-                    await this.handleDispatchError(mission.missionId, error, waitingMissionIds);
-                    break;
+                    const restored = await this.store.getMission(mission.missionId);
+                    if (!restored || (
+                        restored.state !== MissionState.READY
+                        && restored.state !== MissionState.EXECUTING
+                    )) continue;
                 }
-            }
-            if (hasUnavailableReadyStep || becameUnavailable) {
-                const latest = await this.store.getMission(mission.missionId);
-                if (latest && canWaitForCapability(latest.state)) {
-                    if (latest.state !== MissionState.WAITING_FOR_CAPABILITY) {
-                        await this.engine.setWaiting(
-                            mission.missionId,
-                            MissionState.WAITING_FOR_CAPABILITY,
-                            'At least one ready capability is not currently dispatchable',
-                        );
-                    }
+                if (!capabilityWaiting && readySteps.length > 0 && dispatchableSteps.length === 0) {
+                    await this.engine.setWaiting(
+                        mission.missionId,
+                        MissionState.WAITING_FOR_CAPABILITY,
+                        'No ready capability currently has both a registered descriptor and connector',
+                    );
                     waitingMissionIds.push(mission.missionId);
+                    continue;
+                }
+                // Dispatch directly while scanning the durable plan. This avoids
+                // building an unbounded in-memory candidate queue; at most
+                // `maxInFlight` connector calls can be active in this pass.
+                let becameUnavailable = false;
+                for (const step of dispatchableSteps) {
+                    if (dispatchSlots <= 0) break;
+                    try {
+                        const outcome = await this.seam.dispatchThroughSeam(mission.missionId, step.stepId);
+                        dispatchedInvocationIds.push(outcome.invocation.invocationId);
+                        dispatchSlots--;
+                    } catch (error) {
+                        if (isCapabilityWaitError(error)) {
+                            becameUnavailable = true;
+                            continue;
+                        }
+                        await this.handleDispatchError(mission.missionId, error, waitingMissionIds);
+                        break;
+                    }
+                }
+                if (hasUnavailableReadyStep || becameUnavailable) {
+                    const latest = await this.store.getMission(mission.missionId);
+                    if (latest && canWaitForCapability(latest.state)) {
+                        if (latest.state !== MissionState.WAITING_FOR_CAPABILITY) {
+                            await this.engine.setWaiting(
+                                mission.missionId,
+                                MissionState.WAITING_FOR_CAPABILITY,
+                                'At least one ready capability is not currently dispatchable',
+                            );
+                        }
+                        waitingMissionIds.push(mission.missionId);
+                    }
                 }
             }
-        }
+            missionCursor = page.nextCursor;
+        } while (missionCursor && dispatchSlots > 0);
 
         // This is intentionally independent of the bounded recovery query.
         // Old unsupported rows cannot hide a later eligible wakeup, and the
