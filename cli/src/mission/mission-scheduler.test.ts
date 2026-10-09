@@ -276,6 +276,137 @@ describe("MissionScheduler", () => {
         await store.close();
     });
 
+    it("bounds retained recovery IDs without limiting the SQLite recovery scan", async () => {
+        const db = tempDb();
+        cleanups.push(db.cleanup);
+        const firstStore = new SqliteMissionStore(db.path);
+        await firstStore.initialize();
+        const allIds: string[] = [];
+        for (let index = 0; index < 67; index++) {
+            const id = `bounded-recovery-${String(index).padStart(3, "0")}`;
+            allIds.push(id);
+            await firstStore.createMission(makeMission(
+                id,
+                index === 20 ? MissionState.CANCELLED : MissionState.PAUSED,
+            ));
+        }
+        await firstStore.close();
+
+        const store = new SqliteMissionStore(db.path);
+        await store.initialize();
+        const pageCalls: number[] = [];
+        const listMissionPage = store.listMissionPage.bind(store);
+        store.listMissionPage = async (options) => {
+            const page = await listMissionPage(options);
+            pageCalls.push(page.missions.length);
+            return page;
+        };
+        const engine = createEngine(store, new FakeIdGenerator("bounded-recovery"));
+        const seam = new ConnectorDispatchSeam(engine, createRegistry(), new FakeClock(BASE_TIME));
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam,
+            missionPageSize: 16,
+            reportIdLimit: 5,
+        });
+
+        const report = await scheduler.recover();
+        const expectedIds = allIds.filter((id) => id !== "bounded-recovery-020");
+        expect(report.recoveredMissionIds).toHaveLength(5);
+        expect(report.recoveredMissionIds).toEqual(expectedIds.slice(0, 5));
+        expect(pageCalls.length).toBeGreaterThan(3);
+        expect(pageCalls.every((count) => count <= 16)).toBe(true);
+        for (const id of expectedIds) {
+            expect((await store.getMission(id))?.recoveryMetadata).toMatchObject({
+                recovered: true,
+                recoveryCount: 1,
+            });
+        }
+        expect((await store.getMission("bounded-recovery-020"))?.recoveryMetadata.recovered).toBe(false);
+        await store.close();
+    });
+
+    it("bounds waiting report IDs while a resident driver processes the full unavailable-capability backlog", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const engine = createEngine(store, new FakeIdGenerator("bounded-waiting"));
+        const missionIds: string[] = [];
+        for (let index = 0; index < 19; index++) {
+            const mission = await engine.createMission({
+                intent: {
+                    requestId: `bounded-waiting-request-${index}`,
+                    source: "cli",
+                    originalIntent: "Read the current LifeOS status",
+                    constraints: [],
+                    acceptanceCriteria: ["status read"],
+                },
+                allowedCapabilityScope: makeMission("unused").allowedCapabilityScope,
+            });
+            const proposal = await engine.proposePlan(mission.missionId, planFor(mission));
+            if (!proposal.ok) throw new Error("bounded waiting plan was rejected");
+            await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+            missionIds.push(mission.missionId);
+        }
+
+        const registry = createRegistry();
+        registry.setAvailability("lifeos.query", CapabilityAvailability.UNAVAILABLE, "LifeOS offline");
+        const seam = new ConnectorDispatchSeam(engine, registry, new FakeClock(BASE_TIME));
+        let missionPageReads = 0;
+        const listMissionPage = store.listMissionPage.bind(store);
+        store.listMissionPage = async (options) => {
+            missionPageReads++;
+            return listMissionPage(options);
+        };
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam,
+            missionPageSize: 4,
+            reportIdLimit: 3,
+        });
+        let passes = 0;
+        const reports: Array<Awaited<ReturnType<typeof scheduler.runOnce>>> = [];
+        const timers = new Map<number, () => void>();
+        let nextTimer = 0;
+        const driver = new MissionSchedulerDriver({
+            scheduler: {
+                runOnce: async () => {
+                    passes++;
+                    const report = await scheduler.runOnce();
+                    reports.push(report);
+                    return report;
+                },
+            },
+            store,
+            timer: {
+                now: () => new Date(BASE_TIME),
+                setTimeout: (callback) => {
+                    const id = ++nextTimer;
+                    timers.set(id, callback);
+                    return id as unknown as ReturnType<typeof setTimeout>;
+                },
+                clearTimeout: (handle) => {
+                    timers.delete(handle as unknown as number);
+                },
+            },
+        });
+
+        await driver.start();
+        expect(passes).toBe(2);
+        expect(timers.size).toBe(0);
+        expect(missionPageReads).toBeGreaterThan(3);
+        expect(reports[0]?.waitingMissionIds).toHaveLength(3);
+        expect(reports[0]?.recoveredMissionIds).toHaveLength(3);
+        expect((await store.listMissions()).filter((mission) => mission.state === MissionState.WAITING_FOR_CAPABILITY))
+            .toHaveLength(missionIds.length);
+        for (const id of missionIds) {
+            expect((await store.getMission(id))?.state).toBe(MissionState.WAITING_FOR_CAPABILITY);
+        }
+        await driver.stop();
+        await store.close();
+    });
+
     it("fails recovery on a page read error and resumes the scan without dispatch", async () => {
         const store = new SqliteMissionStore(":memory:");
         await store.initialize();
