@@ -804,9 +804,6 @@ export class SqliteMissionStore implements MissionStore {
             throw new Error(`Mission page limit must be between 1 and ${MAX_MISSION_PAGE_SIZE}`);
         }
         if (states?.length === 0) return { missions: [], nextCursor: null };
-        if (states && excludeStates && states.some((state) => excludeStates.includes(state))) {
-            return { missions: [], nextCursor: null };
-        }
 
         return this.withTransaction(async () => {
             const predicates = ["1 = 1"];

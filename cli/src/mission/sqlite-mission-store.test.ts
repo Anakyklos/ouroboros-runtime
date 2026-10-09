@@ -538,6 +538,83 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         await store.close();
     });
 
+    it("combines overlapping allow and deny state filters across deterministic pages", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const engine = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("page-filter"), store);
+        const readyIds: string[] = [];
+        const executingIds: string[] = [];
+        for (let index = 0; index < 5; index++) {
+            const ready = await engine.createMission({
+                intent: { ...makeIntent(), requestId: `filter-ready-${index}` },
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            await store.updateMission(ready.missionId, { state: MissionState.READY });
+            readyIds.push(ready.missionId);
+        }
+        for (let index = 0; index < 2; index++) {
+            const executing = await engine.createMission({
+                intent: { ...makeIntent(), requestId: `filter-executing-${index}` },
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            await store.updateMission(executing.missionId, { state: MissionState.EXECUTING });
+            executingIds.push(executing.missionId);
+        }
+        const cancelled = await engine.createMission({
+            intent: { ...makeIntent(), requestId: "filter-cancelled" },
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+        await store.updateMission(cancelled.missionId, { state: MissionState.CANCELLED });
+
+        const expectedReady = [...readyIds].sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+        const scan = async (options: {
+            states: readonly MissionState[];
+            excludeStates: readonly MissionState[];
+        }): Promise<{ ids: string[]; pages: string[][]; cursors: Array<{ createdAt: string; missionId: string }> }> => {
+            const ids: string[] = [];
+            const pages: string[][] = [];
+            const cursors: Array<{ createdAt: string; missionId: string }> = [];
+            let cursor: Awaited<ReturnType<typeof store.listMissionPage>>["nextCursor"];
+            do {
+                const page = await store.listMissionPage({ ...options, limit: 2, cursor: cursor ?? undefined });
+                pages.push(page.missions.map((mission) => mission.missionId));
+                ids.push(...page.missions.map((mission) => mission.missionId));
+                if (page.nextCursor) cursors.push(page.nextCursor);
+                expect(page.missions.length).toBeLessThanOrEqual(2);
+                cursor = page.nextCursor;
+            } while (cursor);
+            return { ids, pages, cursors };
+        };
+
+        const partial = await scan({
+            states: [MissionState.READY, MissionState.EXECUTING],
+            excludeStates: [MissionState.EXECUTING],
+        });
+        expect(partial.ids).toEqual(expectedReady);
+        expect(new Set(partial.ids).size).toBe(5);
+        expect(partial.pages.map((page) => page.length)).toEqual([2, 2, 1]);
+        expect(partial.cursors[0]).toEqual({ createdAt: BASE_TIME, missionId: expectedReady[1] });
+        expect(await scan({
+            states: [MissionState.READY, MissionState.EXECUTING],
+            excludeStates: [MissionState.EXECUTING],
+        })).toEqual(partial);
+
+        const fullOverlap = await store.listMissionPage({
+            limit: 2,
+            states: [MissionState.READY, MissionState.EXECUTING],
+            excludeStates: [MissionState.READY, MissionState.EXECUTING],
+        });
+        expect(fullOverlap).toEqual({ missions: [], nextCursor: null });
+
+        const disjoint = await scan({
+            states: [MissionState.READY],
+            excludeStates: [MissionState.CANCELLED],
+        });
+        expect(disjoint.ids).toEqual(expectedReady);
+        expect(disjoint.ids.some((id) => executingIds.includes(id) || id === cancelled.missionId)).toBe(false);
+        await store.close();
+    });
+
     it("creates the database file on disk (persistence evidence)", async () => {
         const dir = track(makeTempDir("mission-file-"));
         const dbPath = join(dir.path, "missions.db");
