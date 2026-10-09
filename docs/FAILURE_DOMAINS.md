@@ -80,11 +80,11 @@ The coordinator asks `DaemonServer` to close admission first. The server rejects
 new RPC work with HTTP 503, rejects new WebSocket subscriptions, and waits up to
 4 seconds for accepted RPC responses to finish. It then unsubscribes projection
 listeners, closes projection clients and transport connections, and closes
-Fastify. The coordinator attempts both SQLite store closes in order even if an
-earlier step fails. Each close is bounded to 5 seconds. Failed or timed-out
-steps report only their resource stage and outcome; after all close attempts,
-failure sets a nonzero exit status and is explicitly classified as forced
-termination. Mission state is not changed by daemon shutdown.
+Fastify. At the #117 implementation point, a failed server stop did not prevent
+store close attempts; #129 below corrects this after proving handler-level
+quiescence is required. Each coordinator step is bounded to 5 seconds. Failed
+or timed-out steps report only their resource stage and outcome. Mission state
+is not changed by daemon shutdown.
 
 **Evidence:** `rpc-gateway-lifecycle.test.ts` proves the RPC request reaches the
 injected owner without exiting the process. `shutdown-coordinator.test.ts`
@@ -101,11 +101,57 @@ The test reopens SQLite and confirms the completed effect's acknowledged
 delivery and attempt record are unchanged.
 
 **Limits at the #117 change:** an accepted RPC that does not settle within the
-4-second drain window has an unknown outcome; shutdown proceeds with cleanup
-attempts and reports the drain timeout. The daemon does not cancel or
-terminalize that Mission. The #120 update below adds bounded scheduler drain;
-it does not add a general process supervisor. No production connector is
-composed here.
+4-second drain window has an unknown outcome. #129 below changes cleanup so
+that this uncertainty leaves both SQLite stores open until forced process
+termination. The daemon does not cancel or terminalize that Mission. The #120
+update below adds bounded scheduler drain; it does not add a general process
+supervisor. No production connector is composed here.
+
+## Issue #129 RPC handler quiescence update
+
+**Implemented and verified:** `DaemonServer` tracks each accepted RPC until
+both its asynchronous handler has settled and its HTTP response has either
+finished or closed. A client disconnect marks only transport completion; it
+does not release the operation while a handler may still use SQLite. Graceful
+shutdown still waits for a healthy `system.shutdown` response before the
+response drain completes.
+
+If the RPC drain exceeds its 4-second bound, the server closes the transport
+and reports an uncertain drain. `DaemonShutdownCoordinator` treats an
+unsuccessful server stop as lack of quiescence proof and leaves **both** daemon
+and Mission SQLite stores open. It still stops the resident scheduler; an
+unproved scheduler drain independently keeps MissionStore open. Shutdown
+records sanitized stage/outcome diagnostics, sets a nonzero exit code, and
+requests forced process termination. Local-control auth resources can close
+after RPC admission is closed because authorization is completed before an
+operation is admitted. Shutdown does not cancel or terminalize the accepted
+Mission operation.
+
+**Evidence:** `daemon-shutdown-race.test.ts` uses a real Fastify listener and
+HTTP client abort with temporary SQLite databases. A held Mission command
+remains counted while its handler is pending and can still access both stores.
+After release, the test requires either one successful drain with each store
+closed exactly once, or a reported timeout with both stores left open and
+nonzero forced termination. Bun 1.3.9 exercises the conservative timeout path;
+Bun 1.4.2 observes transport closure during shutdown and exercises the graceful
+path. Companion cases cover handler rejection after disconnect and a
+never-settling handler; the latter proves bounded timeout, open stores,
+sanitized uncertainty and forced nonzero termination. Existing
+connected-response tests preserve `system.shutdown` delivery ordering.
+`headless-shutdown.e2e.test.ts` exercises the actual Bun daemon subprocess,
+SQLite restart/recovery, concurrent signals, and confirms an acknowledged
+invocation is not dispatched again.
+
+**Limits:** a handler that outlives the drain is not cancelled. Its outcome
+remains unknown, and a remote effect may still complete independently. The
+daemon preserves durable state by leaving both stores open until process
+termination; it does not claim distributed exactly-once delivery or permission
+to retry/replay. Bun 1.3.9's in-process HTTP compatibility layer does not
+surface the child client's close event before the drain deadline, so these tests
+prove safe retention on that path rather than graceful completion after the
+disconnect. The subprocess restart test verifies the current no-replay behavior
+for an already confirmed invocation; no production connector is composed here,
+and arbitrary external effects are not covered by that fixture.
 
 ## Issue #120 scheduler composition update
 
@@ -231,11 +277,13 @@ contract change, or scheduler parallelism was introduced.
 - **Evidence / gap:** `session-manager.test.ts` covers persisted brake state
   across manager re-instantiation and bounded settlement behavior. **P2:**
   persisted active session rows have no worker reconstruction owner in this
-  headless composition. **P1:** RPC `system.shutdown` bypasses the graceful
-  cleanup sequence and can leave an in-flight command's outcome unknown.
-  Relevant code: `session-manager.ts:71-121,362-470,947-1003`,
-  `execution-control.ts:493-520,1311-1400`, and
-  `rpc-gateway.ts:109-159`.
+  headless composition. **Corrected in #117/#129:** RPC `system.shutdown` uses
+  graceful cleanup, and a disconnected accepted handler remains in the drain
+  until it settles. If the bounded RPC drain expires, both stores remain open
+  through forced termination; the command outcome remains unknown. Relevant
+  code: `server.ts`, `shutdown-coordinator.ts`, `main.ts`,
+  `session-manager.ts:71-121,362-470,947-1003`, and
+  `execution-control.ts:493-520,1311-1400`.
 
 ### 2. Daemon/session SQLite and durable Mission SQLite
 
@@ -463,10 +511,10 @@ whose impact is narrower and does not itself prove an unsafe effect. Severity
 describes the observed gap, not an asserted incident.
 
 - **P0:** none identified by this code audit.
-- **P1:** an accepted RPC or scheduler pass that exceeds its bounded drain can
-  retain an unknown outcome; shutdown records the timeout and leaves
-  MissionStore open when the scheduler may still be using it. The former RPC
-  shutdown cleanup bypass was addressed in #117.
+- **P1 residual:** an accepted RPC or scheduler pass that exceeds its bounded
+  drain can retain an unknown outcome. On RPC uncertainty, both SQLite stores
+  remain open until forced process termination; on scheduler uncertainty,
+  MissionStore remains open. No retry/replay is authorized by this uncertainty.
 - **P2:** persisted active session rows have no worker reconstruction in the modern
   composition; scheduler recovery scans all Missions without a batch bound;
   provider snapshots are not automatically persisted/restored and configured

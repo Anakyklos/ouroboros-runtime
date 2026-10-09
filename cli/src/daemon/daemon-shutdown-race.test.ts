@@ -7,6 +7,12 @@ import { MissionState, type Mission } from '../mission/contracts.js';
 import type { StoragePort } from '../ports/storage.port.js';
 import type { FastifyInstance } from 'fastify';
 import { permissiveLocalControlTestAuth } from './local-control-test-auth.js';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { SqliteAdapter } from '../adapters/sqlite.adapter.js';
+import { SqliteMissionStore } from '../mission/sqlite-mission-store.js';
 
 function pausedMission(): Mission {
     return {
@@ -41,7 +47,281 @@ function inFlightRpc(server: DaemonServer): number {
     return (server as unknown as { inFlightRpc: number }).inFlightRpc;
 }
 
+function postRpc(port: number, body: Record<string, unknown>): ChildProcess {
+    const payload = JSON.stringify(body);
+    const client = spawn('node', ['-e', `
+        const net = require('node:net');
+        const [port, payload] = process.argv.slice(1);
+        const socket = net.createConnection({ host: '127.0.0.1', port: Number(port) }, () => {
+            const request = [
+                'POST /rpc HTTP/1.1', 'Host: 127.0.0.1', 'Content-Type: application/json',
+                'Connection: keep-alive', 'Content-Length: ' + Buffer.byteLength(payload), '', payload, '',
+            ].join('\\r\\n');
+            socket.write(request);
+        });
+        socket.on('error', () => {});
+        process.stdin.once('data', () => socket.resetAndDestroy());
+        socket.once('close', () => process.exit(0));
+    `, String(port), payload], { stdio: ['pipe', 'ignore', 'ignore'] });
+    client.on('error', () => {});
+    return client;
+}
+
+function disconnectRpcClient(client: ChildProcess): Promise<void> {
+    return new Promise((resolve) => {
+        client.once('exit', () => resolve());
+        client.stdin?.write('disconnect');
+    });
+}
+
+async function waitForBarrier(barrier: Promise<void>, label: string): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+        await Promise.race([
+            barrier,
+            new Promise<never>((_, reject) => {
+                timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), 1_000);
+            }),
+        ]);
+    } finally {
+        if (timeout) clearTimeout(timeout);
+    }
+}
+
 describe('RPC shutdown and pending Mission command', () => {
+    it('keeps stores open after a client disconnects while its accepted handler is still running', async () => {
+        let startCommand!: () => void;
+        let finishCommand!: (mission: Mission) => void;
+        const commandStarted = new Promise<void>((resolve) => { startCommand = resolve; });
+        const commandResult = new Promise<Mission>((resolve) => { finishCommand = resolve; });
+        const dataDir = await mkdtemp(join(tmpdir(), 'ouroboros-issue-129-disconnect-'));
+        const storage = new SqliteAdapter(join(dataDir, 'daemon.db'));
+        const missionStore = new SqliteMissionStore(join(dataDir, 'missions.db'));
+        await storage.initialize();
+        await missionStore.initialize();
+        const pauseMission = mock(async () => {
+            await missionStore.getMission('pending-command-mission');
+            startCommand();
+            const result = await commandResult;
+            await missionStore.getMission('pending-command-mission');
+            await storage.listSessions({ status: 'active' });
+            return result;
+        });
+        const port = await freePort();
+        const storageClosed = mock(async () => { await storage.close(); });
+        const missionStoreClosed = mock(async () => { await missionStore.close(); });
+        let lifecycle!: DaemonShutdownCoordinator;
+        const server = new DaemonServer(
+            storage,
+            { port, host: '127.0.0.1' },
+            new EventBus(),
+            missionStore,
+            undefined,
+            { pauseMission } as never,
+            undefined,
+            permissiveLocalControlTestAuth,
+        );
+        const diagnostics: unknown[] = [];
+        const forceTerminate = mock(() => {});
+        const setExitCode = mock((_code: number) => {});
+        lifecycle = new DaemonShutdownCoordinator({
+            stopServer: () => server.stop(),
+            closeStorage: storageClosed,
+            closeMissionStore: missionStoreClosed,
+            onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+            forceTerminate,
+            setExitCode,
+        });
+        await server.start();
+
+        const commandRequest = postRpc(port, {
+                jsonrpc: '2.0', id: 'disconnected-command', method: 'local_control.command',
+                params: {
+                    protocolVersion: 1, operation: 'mission.pause',
+                    missionId: 'pending-command-mission', reason: 'operator pause', pausedBy: 'test',
+                },
+        });
+        let shutdownPromise: Promise<void> | undefined;
+        try {
+            await waitForBarrier(commandStarted, 'Mission command handler start');
+            await disconnectRpcClient(commandRequest);
+            shutdownPromise = lifecycle.requestShutdown('SIGTERM');
+            await new Promise<void>((resolve) => setImmediate(resolve));
+
+            expect(pauseMission).toHaveBeenCalledTimes(1);
+            expect(inFlightRpc(server)).toBe(1);
+            expect(storageClosed).not.toHaveBeenCalled();
+            expect(missionStoreClosed).not.toHaveBeenCalled();
+
+            finishCommand(pausedMission());
+            await shutdownPromise;
+            if (diagnostics.length > 0) {
+                expect(storageClosed).not.toHaveBeenCalled();
+                expect(missionStoreClosed).not.toHaveBeenCalled();
+                expect(forceTerminate).toHaveBeenCalledTimes(1);
+                expect(setExitCode).toHaveBeenCalledWith(1);
+                expect(diagnostics).toContainEqual({ stage: 'server', outcome: 'timed_out' });
+                expect(diagnostics).toContainEqual({ stage: 'storage', outcome: 'timed_out' });
+                expect(diagnostics).toContainEqual({ stage: 'mission_store', outcome: 'timed_out' });
+            } else {
+                expect(inFlightRpc(server)).toBe(0);
+                expect(storageClosed).toHaveBeenCalledTimes(1);
+                expect(missionStoreClosed).toHaveBeenCalledTimes(1);
+                expect(forceTerminate).not.toHaveBeenCalled();
+                expect(setExitCode).not.toHaveBeenCalled();
+            }
+        } finally {
+            finishCommand(pausedMission());
+            if (shutdownPromise) await shutdownPromise;
+            else await server.stop();
+            commandRequest.kill('SIGKILL');
+            if (storageClosed.mock.calls.length === 0) await storage.close();
+            if (missionStoreClosed.mock.calls.length === 0) await missionStore.close();
+            await rm(dataDir, { recursive: true, force: true });
+        }
+    });
+
+    it('keeps stores open and forces a bounded shutdown when a disconnected handler never settles', async () => {
+        let startCommand!: () => void;
+        let finishCommand!: (mission: Mission) => void;
+        const commandStarted = new Promise<void>((resolve) => { startCommand = resolve; });
+        const commandResult = new Promise<Mission>((resolve) => { finishCommand = resolve; });
+        const pauseMission = mock(async () => {
+            startCommand();
+            return await commandResult;
+        });
+        const port = await freePort();
+        const eventBus = new EventBus();
+        const diagnostics: unknown[] = [];
+        const storageClosed = mock(async () => {});
+        const missionStoreClosed = mock(async () => {});
+        const forceTerminate = mock(() => {});
+        const setExitCode = mock((_code: number) => {});
+        const server = new DaemonServer(
+            {} as StoragePort,
+            { port, host: '127.0.0.1' },
+            eventBus,
+            undefined,
+            undefined,
+            { pauseMission } as never,
+            undefined,
+            permissiveLocalControlTestAuth,
+        );
+        const lifecycle = new DaemonShutdownCoordinator({
+            stopServer: () => server.stop(),
+            closeStorage: storageClosed,
+            closeMissionStore: missionStoreClosed,
+            onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+            forceTerminate,
+            setExitCode,
+            stepTimeoutMs: 5_000,
+            forceTerminationTimeoutMs: 6_000,
+        });
+        await server.start();
+
+        const commandRequest = postRpc(port, {
+                jsonrpc: '2.0', id: 'never-settling-command', method: 'local_control.command',
+                params: {
+                    protocolVersion: 1, operation: 'mission.pause',
+                    missionId: 'pending-command-mission', reason: 'operator pause', pausedBy: 'test',
+                },
+        });
+        try {
+            await waitForBarrier(commandStarted, 'Mission command handler start');
+            await disconnectRpcClient(commandRequest);
+
+            await lifecycle.requestShutdown('SIGTERM');
+
+            expect(inFlightRpc(server)).toBe(1);
+            expect(storageClosed).not.toHaveBeenCalled();
+            expect(missionStoreClosed).not.toHaveBeenCalled();
+            expect(forceTerminate).toHaveBeenCalledTimes(1);
+            expect(setExitCode).toHaveBeenCalledWith(1);
+            expect(diagnostics).toContainEqual({ stage: 'server', outcome: 'timed_out' });
+            expect(diagnostics).toContainEqual({ stage: 'storage', outcome: 'timed_out' });
+            expect(diagnostics).toContainEqual({ stage: 'mission_store', outcome: 'timed_out' });
+            expect(diagnostics).toContainEqual({ stage: 'process', outcome: 'forced_termination' });
+        } finally {
+            finishCommand(pausedMission());
+            commandRequest.kill('SIGKILL');
+            await server.stop().catch(() => undefined);
+        }
+    });
+
+    it('drains a handler rejection after client disconnect without exposing its error', async () => {
+        let startCommand!: () => void;
+        let rejectCommand!: (error: Error) => void;
+        const commandStarted = new Promise<void>((resolve) => { startCommand = resolve; });
+        const commandResult = new Promise<Mission>((_resolve, reject) => { rejectCommand = reject; });
+        const pauseMission = mock(async () => {
+            startCommand();
+            return await commandResult;
+        });
+        const port = await freePort();
+        const diagnostics: unknown[] = [];
+        const storageClosed = mock(async () => {});
+        const missionStoreClosed = mock(async () => {});
+        let lifecycle!: DaemonShutdownCoordinator;
+        const server = new DaemonServer(
+            {} as StoragePort,
+            { port, host: '127.0.0.1' },
+            new EventBus(),
+            undefined,
+            undefined,
+            { pauseMission } as never,
+            undefined,
+            permissiveLocalControlTestAuth,
+        );
+        lifecycle = new DaemonShutdownCoordinator({
+            stopServer: () => server.stop(),
+            closeStorage: storageClosed,
+            closeMissionStore: missionStoreClosed,
+            onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+            forceTerminate: mock(() => {}),
+        });
+        await server.start();
+
+        const commandRequest = postRpc(port, {
+                jsonrpc: '2.0', id: 'rejected-disconnected-command', method: 'local_control.command',
+                params: {
+                    protocolVersion: 1, operation: 'mission.pause',
+                    missionId: 'pending-command-mission', reason: 'operator pause', pausedBy: 'test',
+                },
+        });
+        let shutdownPromise: Promise<void> | undefined;
+        try {
+            await waitForBarrier(commandStarted, 'Mission command handler start');
+            await disconnectRpcClient(commandRequest);
+
+            shutdownPromise = lifecycle.requestShutdown('SIGTERM');
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            expect(inFlightRpc(server)).toBe(1);
+            expect(storageClosed).not.toHaveBeenCalled();
+
+            rejectCommand(new Error('PRIVATE handler detail and token'));
+            await shutdownPromise;
+
+            if (diagnostics.length > 0) {
+                expect(storageClosed).not.toHaveBeenCalled();
+                expect(missionStoreClosed).not.toHaveBeenCalled();
+                expect(diagnostics).toContainEqual({ stage: 'server', outcome: 'timed_out' });
+                expect(diagnostics).toContainEqual({ stage: 'storage', outcome: 'timed_out' });
+                expect(diagnostics).toContainEqual({ stage: 'mission_store', outcome: 'timed_out' });
+            } else {
+                expect(inFlightRpc(server)).toBe(0);
+                expect(storageClosed).toHaveBeenCalledTimes(1);
+                expect(missionStoreClosed).toHaveBeenCalledTimes(1);
+            }
+            expect(JSON.stringify(diagnostics)).not.toContain('PRIVATE');
+            expect(JSON.stringify(diagnostics)).not.toContain('token');
+        } finally {
+            rejectCommand(new Error('PRIVATE handler detail and token'));
+            commandRequest.kill('SIGKILL');
+            if (shutdownPromise) await shutdownPromise;
+            else await server.stop();
+        }
+    });
+
     it('keeps an accepted RPC counted until the Fastify response finishes', async () => {
         let reachedOnSend!: () => void;
         let releaseOnSend!: () => void;
@@ -274,7 +554,7 @@ describe('RPC shutdown and pending Mission command', () => {
         }).then((response) => response.arrayBuffer(), (error: unknown) => error);
         try {
             await onSendReached;
-            await expect(server.stop()).rejects.toThrow('Accepted RPC response drain timed out');
+            await expect(server.stop()).rejects.toThrow('Accepted RPC operation drain timed out');
             releaseOnSend();
             await responsePromise;
             const closeDeadline = Date.now() + 1_000;

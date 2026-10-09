@@ -61,7 +61,7 @@ export class DaemonShutdownCoordinator {
         const close = async (
             stage: 'server' | 'storage' | 'mission_store' | 'local_control_auth',
             action: () => Promise<void>,
-        ): Promise<void> => {
+        ): Promise<boolean> => {
             let timeout: ReturnType<typeof setTimeout> | undefined;
             try {
                 await Promise.race([
@@ -70,19 +70,21 @@ export class DaemonShutdownCoordinator {
                         timeout = setTimeout(() => reject(new ShutdownTimeoutError()), stepTimeoutMs);
                     }),
                 ]);
+                return true;
             } catch (error) {
                 failed = true;
                 this.report({
                     stage,
-                    outcome: error instanceof ShutdownTimeoutError ? 'timed_out' : 'failed',
+                    outcome: error instanceof ShutdownTimeoutError || isTimeoutFailure(error) ? 'timed_out' : 'failed',
                 });
+                return false;
             } finally {
                 if (timeout) clearTimeout(timeout);
             }
         };
 
         try {
-            await close('server', this.options.stopServer);
+            const serverStopped = await close('server', this.options.stopServer);
             let schedulerStopped = true;
             if (this.options.stopMissionScheduler) {
                 let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -104,12 +106,19 @@ export class DaemonShutdownCoordinator {
                     if (timeout) clearTimeout(timeout);
                 }
             }
-            await close('storage', this.options.closeStorage);
-            if (schedulerStopped) {
-                await close('mission_store', this.options.closeMissionStore);
+            if (serverStopped) {
+                await close('storage', this.options.closeStorage);
             } else {
-                // The scheduler may still be inside a store operation. Leave
-                // that connection open until forced process termination.
+                // A failed RPC drain leaves accepted handlers able to reach
+                // either database. Preserve both until forced termination.
+                failed = true;
+                this.report({ stage: 'storage', outcome: 'timed_out' });
+                this.report({ stage: 'mission_store', outcome: 'timed_out' });
+            }
+            if (serverStopped && schedulerStopped) {
+                await close('mission_store', this.options.closeMissionStore);
+            } else if (serverStopped && !schedulerStopped) {
+                // The scheduler may still be inside a MissionStore operation.
                 failed = true;
                 this.report({ stage: 'mission_store', outcome: 'timed_out' });
             }
@@ -145,3 +154,7 @@ export class DaemonShutdownCoordinator {
 }
 
 class ShutdownTimeoutError extends Error {}
+
+function isTimeoutFailure(error: unknown): boolean {
+    return error instanceof Error && error.name === 'RpcDrainTimeoutError';
+}
