@@ -7,7 +7,7 @@
 
 import Fastify, { FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import websocket from '@fastify/websocket';
-import type { ServerResponse } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { EventBus, globalEventBus } from './event-bus.js';
 import { RpcGateway, type DaemonRpcGatewayPort } from './rpc-gateway.js';
@@ -507,7 +507,7 @@ export class DaemonServer {
                 return sendBoundaryError(reply, 401, 'UNAUTHORIZED', 'Authentication is required');
             }
 
-            const handlerSettled = this.beginRpcRequest(reply.raw);
+            const handlerSettled = this.beginRpcRequest(reply.raw, request.raw, request.raw.socket);
             try {
                 const result = await this.rpcGateway.handleRequest({
                     jsonrpc: '2.0',
@@ -658,7 +658,7 @@ export class DaemonServer {
         });
     }
 
-    private beginRpcRequest(response: ServerResponse): () => void {
+    private beginRpcRequest(response: ServerResponse, request: IncomingMessage, transport: Socket): () => void {
         this.inFlightRpc += 1;
         const operation = {
             handlerSettled: false,
@@ -680,12 +680,18 @@ export class DaemonServer {
             this.inFlightResponses.delete(response);
             response.off('finish', finishResponse);
             response.off('close', finishResponse);
+            request.off('aborted', finishResponse);
+            transport.off('close', finishResponse);
+            transport.off('error', finishResponse);
             settleIfComplete();
         };
         if (!operation.responseSettled) {
             this.inFlightResponses.add(response);
             response.once('finish', finishResponse);
             response.once('close', finishResponse);
+            request.once('aborted', finishResponse);
+            transport.once('close', finishResponse);
+            transport.once('error', finishResponse);
         }
 
         let handlerWasSettled = false;

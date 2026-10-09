@@ -129,22 +129,29 @@ Mission operation.
 
 **Evidence:** `daemon-shutdown-race.test.ts` uses a real Fastify listener and
 HTTP client abort with temporary SQLite databases. A held Mission command
-remains counted after transport close; reads from both databases complete after
-release, and both database closes occur exactly once after handler settlement.
-Companion cases cover handler rejection after disconnect and a never-settling
-handler; the latter proves bounded timeout, open stores, sanitized uncertainty
-and forced nonzero termination. Existing connected-response tests preserve
-`system.shutdown` delivery ordering. `headless-shutdown.e2e.test.ts` exercises
-the actual Bun daemon subprocess, SQLite restart/recovery, concurrent signals,
-and confirms an acknowledged invocation is not dispatched again.
+remains counted while its handler is pending and can still access both stores.
+After release, the test requires either one successful drain with each store
+closed exactly once, or a reported timeout with both stores left open and
+nonzero forced termination. Bun 1.3.9 exercises the conservative timeout path;
+Bun 1.4.2 observes transport closure during shutdown and exercises the graceful
+path. Companion cases cover handler rejection after disconnect and a
+never-settling handler; the latter proves bounded timeout, open stores,
+sanitized uncertainty and forced nonzero termination. Existing
+connected-response tests preserve `system.shutdown` delivery ordering.
+`headless-shutdown.e2e.test.ts` exercises the actual Bun daemon subprocess,
+SQLite restart/recovery, concurrent signals, and confirms an acknowledged
+invocation is not dispatched again.
 
 **Limits:** a handler that outlives the drain is not cancelled. Its outcome
 remains unknown, and a remote effect may still complete independently. The
 daemon preserves durable state by leaving both stores open until process
 termination; it does not claim distributed exactly-once delivery or permission
-to retry/replay. The subprocess restart test verifies the current no-replay
-behavior for an already confirmed invocation; no production connector is
-composed here, and arbitrary external effects are not covered by that fixture.
+to retry/replay. Bun 1.3.9's in-process HTTP compatibility layer does not
+surface the child client's close event before the drain deadline, so these tests
+prove safe retention on that path rather than graceful completion after the
+disconnect. The subprocess restart test verifies the current no-replay behavior
+for an already confirmed invocation; no production connector is composed here,
+and arbitrary external effects are not covered by that fixture.
 
 ## Issue #120 scheduler composition update
 
