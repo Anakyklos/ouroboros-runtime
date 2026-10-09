@@ -7,12 +7,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolve } from "node:path";
 import { readFile } from "node:fs/promises";
+import type { FastifyInstance } from "fastify";
 import { SqliteAdapter } from "../adapters/sqlite.adapter.js";
 import { SqliteMissionStore } from "../mission/sqlite-mission-store.js";
 import { MissionEngine } from "../mission/mission-engine.js";
 import { PlanPolicyValidator } from "../mission/policy.js";
 import { FakeCapabilityResolver } from "../mission/testing.js";
 import { DaemonServer } from "./server.js";
+import type { DaemonProjection } from "./daemon-projection.js";
 import { RpcGateway, type DaemonRpcGatewayPort } from "./rpc-gateway.js";
 import { EventBus } from "./event-bus.js";
 import { LocalControlAuthorizer, LocalControlCredentialStore, getBrowserSessionCookieName } from "./local-control-auth.js";
@@ -807,6 +809,123 @@ describe("local-control authentication over real Fastify and SQLite", () => {
       afterDisconnect?.close();
       await boundedServer.stop();
       setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("closes a failed snapshot peer without a response and terminates upgraded WebSockets on shutdown", async () => {
+    const targetPort = await unusedPort();
+    const targetEventBus = new EventBus();
+    const delegate = new RpcGateway(daemonStorage, targetEventBus, missionStore);
+    let snapshotReads = 0;
+    const failingOnceGateway: DaemonRpcGatewayPort = {
+      registerMethod: (name, handler) => delegate.registerMethod(name, handler),
+      handleRequest: (request) => delegate.handleRequest(request),
+      getProjectionSnapshot: async (cursor) => {
+        snapshotReads += 1;
+        if (snapshotReads === 1) throw new Error("private snapshot failure");
+        return delegate.getProjectionSnapshot(cursor);
+      },
+    };
+    const boundedServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1", maxProjectionClients: 1 },
+      targetEventBus,
+      missionStore,
+      failingOnceGateway,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    const projection = (boundedServer as unknown as { projection: DaemonProjection }).projection;
+    const firstToken = credentialStore.provision("snapshot-close", ["mission.read"], Date.now() + 60_000).token;
+    const secondToken = credentialStore.provision("snapshot-retry", ["mission.read"], Date.now() + 60_000).token;
+    let failed: RawWebSocketProbe | undefined;
+    let recovered: RawWebSocketProbe | undefined;
+    let shutdownClient: RawWebSocketProbe | undefined;
+    try {
+      await boundedServer.start();
+      failed = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${firstToken}` });
+      expect((await failed.response).status).toBe(101);
+      expect((await failed.nextFrame()).opcode).toBe(8);
+      expect(projection.connectedClientCount).toBe(0);
+      await waitForCondition(() => projection.admittedClientCount === 0);
+
+      recovered = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${secondToken}` });
+      expect((await recovered.response).status).toBe(101);
+      expect(JSON.parse((await recovered.nextFrame()).payload.toString("utf8")).event).toBe("snapshot");
+
+      const recoveredClosed = new Promise<void>((resolveClosed) => recovered!.socket.once("close", () => resolveClosed()));
+      recovered.close();
+      await recoveredClosed;
+      await waitForCondition(() => projection.admittedClientCount === 0);
+      shutdownClient = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${firstToken}` });
+      expect((await shutdownClient.response).status).toBe(101);
+      await shutdownClient.nextFrame();
+      const shutdownClosed = new Promise<void>((resolveClosed) => shutdownClient!.socket.once("close", () => resolveClosed()));
+      await boundedServer.stop();
+      await shutdownClosed;
+      expect(shutdownClient.socket.destroyed).toBe(true);
+      await waitForCondition(() => projection.admittedClientCount === 0);
+    } finally {
+      failed?.close();
+      recovered?.close();
+      shutdownClient?.close();
+      await boundedServer.stop();
+    }
+  });
+
+  it("releases a reservation when the HTTP transport aborts during an asynchronous pre-upgrade hook", async () => {
+    const targetPort = await unusedPort();
+    const targetEventBus = new EventBus();
+    const delegate = new RpcGateway(daemonStorage, targetEventBus, missionStore);
+    const targetServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1", maxProjectionClients: 1 },
+      targetEventBus,
+      missionStore,
+      delegate,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    const projection = (targetServer as unknown as { projection: DaemonProjection }).projection;
+    const app = (targetServer as unknown as { app: FastifyInstance }).app;
+    let releaseFirstHook!: () => void;
+    const firstHookGate = new Promise<void>((resolveGate) => { releaseFirstHook = resolveGate; });
+    let hookCalls = 0;
+    let firstHookStarted!: () => void;
+    const firstHookObserved = new Promise<void>((resolveObserved) => { firstHookStarted = resolveObserved; });
+    app.addHook("preHandler", async (request) => {
+      if (request.url !== "/ws") return;
+      hookCalls += 1;
+      if (hookCalls === 1) {
+        firstHookStarted();
+        await firstHookGate;
+      }
+    });
+    const firstToken = credentialStore.provision("upgrade-abort-first", ["mission.read"], Date.now() + 60_000).token;
+    const secondToken = credentialStore.provision("upgrade-abort-second", ["mission.read"], Date.now() + 60_000).token;
+    let aborted: RawWebSocketProbe | undefined;
+    let admitted: RawWebSocketProbe | undefined;
+    try {
+      await targetServer.start();
+      aborted = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${firstToken}` });
+      void aborted.response.catch(() => undefined);
+      await firstHookObserved;
+      expect(projection.admittedClientCount).toBe(1);
+      const abortedClosed = new Promise<void>((resolveClosed) => aborted!.socket.once("close", () => resolveClosed()));
+      aborted.close();
+      await abortedClosed;
+      await waitForCondition(() => projection.admittedClientCount === 0);
+
+      admitted = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${secondToken}` });
+      expect((await admitted.response).status).toBe(101);
+      expect((await admitted.nextFrame()).payload.toString("utf8")).toContain('"event":"snapshot"');
+    } finally {
+      releaseFirstHook();
+      aborted?.close();
+      admitted?.close();
+      await targetServer.stop();
     }
   });
 

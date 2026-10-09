@@ -164,9 +164,12 @@ describe("DaemonProjection", () => {
       maxClients: 1,
     });
     const failed = new FakeClient();
-    await projection.connectClient(failed);
+    expect(await projection.connectClient(failed)).toBe(false);
     expect(failed.closeCalls).toBe(1);
     expect(projection.connectedClientCount).toBe(0);
+    expect(projection.admittedClientCount).toBe(1);
+    projection.disconnectClient(failed);
+    expect(projection.admittedClientCount).toBe(0);
 
     const reservation = projection.reserveClient();
     expect(reservation).not.toBeNull();
@@ -188,7 +191,16 @@ describe("DaemonProjection", () => {
     expect(projection.connectedClientCount).toBe(1);
   });
 
-  it("queues a bounded event during an asynchronous handshake and flushes after snapshot", async () => {
+  it("does not advance the event cursor when only unclaimed reservations exist", () => {
+    const projection = new DaemonProjection({ snapshot: createSnapshot, maxClients: 1 });
+    expect(projection.reserveClient()).not.toBeNull();
+
+    projection.broadcast("mission", missionEvent);
+
+    expect(projection.currentSequence).toBe(0);
+  });
+
+  it("queues an event for an actual asynchronous handshake while another slot is only reserved", async () => {
     let releaseSnapshot!: () => void;
     const snapshotReady = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
     const projection = new DaemonProjection({
@@ -197,17 +209,22 @@ describe("DaemonProjection", () => {
         return createSnapshot(cursor);
       },
       maxPendingEvents: 2,
+      maxClients: 2,
     });
+    const unusedReservation = projection.reserveClient();
+    expect(unusedReservation).not.toBeNull();
     const client = new FakeClient();
     const connecting = projection.connectClient(client);
 
     projection.broadcast("mission", missionEvent);
+    expect(projection.currentSequence).toBe(2);
     releaseSnapshot();
     await connecting;
 
     expect(client.messages).toHaveLength(2);
     expect(readEnvelope(client.messages, 0).event).toBe("snapshot");
     expect(readEnvelope(client.messages, 1).event).toBe("mission");
+    projection.releaseReservation(unusedReservation!);
   });
 
   it("closes a client when the authoritative snapshot cannot be read", async () => {
@@ -306,17 +323,20 @@ describe("DaemonProjection", () => {
     expect(diagnostics).toEqual(["invalid_payload"]);
   });
 
-  it("closes and removes every client during transport cleanup", async () => {
-    const projection = new DaemonProjection({ snapshot: createSnapshot });
+  it("retains admission capacity until a closing transport disconnects", async () => {
+    const projection = new DaemonProjection({ snapshot: createSnapshot, maxClients: 1 });
     const first = new FakeClient();
-    const second = new FakeClient();
     await projection.connectClient(first);
-    await projection.connectClient(second);
 
     projection.closeClients();
 
     expect(first.closeCalls).toBe(1);
-    expect(second.closeCalls).toBe(1);
+    expect(projection.admittedClientCount).toBe(1);
     expect(projection.connectedClientCount).toBe(0);
+    expect(projection.reserveClient()).toBeNull();
+
+    projection.disconnectClient(first);
+    expect(projection.admittedClientCount).toBe(0);
+    expect(projection.reserveClient()).not.toBeNull();
   });
 });

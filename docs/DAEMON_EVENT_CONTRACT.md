@@ -72,11 +72,15 @@ verificação de capacidade não substitui autenticação/autorização: cliente
 credencial, escopo ou Origin válidos continuam recebendo a rejeição própria da
 boundary mesmo quando cheia.
 
-O slot é liberado em disconnect, falha de snapshot/request, revogação, expiração
-e cleanup de shutdown/startup failure. A capacidade cheia não altera estado de
-Mission, não fecha streams saudáveis e não afeta RPC HTTP autorizado. O limite
-é de cardinalidade, não um orçamento global de bytes; permanecem os limites
-individuais de fila de handshake e de bytes buffered.
+O slot de um handshake HTTP é liberado quando o request falha, é abortado ou o
+daemon inicia cleanup. Depois do upgrade, o slot permanece contabilizado
+enquanto o socket estiver ativo ou fechando, inclusive após envio de close
+frame por revogação ou falha de snapshot. Só o evento real de `close` ou
+`error` do WebSocket libera essa vaga; shutdown força a terminação do transporte
+e deixa o mesmo callback concluir a liberação. A capacidade cheia não altera
+estado de Mission, não fecha streams saudáveis e não afeta RPC HTTP autorizado.
+O limite é de cardinalidade, não um orçamento global de bytes; permanecem os
+limites individuais de fila de handshake e de bytes buffered.
 
 ## Lifecycle
 

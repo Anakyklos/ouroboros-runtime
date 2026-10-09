@@ -366,9 +366,13 @@ not automatically retried until another relevant durable change or restart.
   by default (`maxProjectionClients` may configure a positive safe integer).
   The slot is reserved after authentication, scope and Origin checks, before
   WebSocket upgrade and snapshot I/O. At capacity the daemon returns HTTP 503
-  without a snapshot or connected-client/timer registration. Disconnect,
-  revocation, expiry, snapshot failure, request error and transport cleanup
-  release the slot. Exceeding a per-client bound, an invalid socket, snapshot
+  without a snapshot or connected-client/timer registration. A pre-upgrade
+  request error, abort or cleanup releases its reservation. After upgrade, the
+  slot remains counted while the socket is active or closing: sending a close
+  frame for revocation, expiry or snapshot failure does not release capacity;
+  only the socket's actual `close` or `error` event does. Shutdown terminates
+  upgraded sockets and relies on that same transport event for release.
+  Exceeding a per-client bound, an invalid socket, snapshot
   read failure, or send exception closes only that client. The default 64 is a
   bounded fan-out choice alongside the existing per-client limits, not a
   measured memory budget: at most 2,048 handshake event entries can be queued
