@@ -242,6 +242,29 @@ describe("DaemonProjection", () => {
     expect(diagnostics).toEqual(["invalid_payload"]);
   });
 
+  it("does not restore ready or advance the cursor after revocation closes during snapshot send", async () => {
+    let projection!: DaemonProjection;
+    const client = new FakeClient();
+    client.send = () => {
+      client.readyState = 2;
+      client.closeCalls += 1;
+      projection.markClientClosing(client);
+    };
+    projection = new DaemonProjection({ snapshot: createSnapshot, maxClients: 1 });
+
+    expect(await projection.connectClient(client)).toBe(false);
+    expect(projection.connectedClientCount).toBe(0);
+    expect(projection.admittedClientCount).toBe(1);
+    const cursorAfterSnapshotAttempt = projection.currentSequence;
+
+    projection.broadcast("mission", missionEvent);
+
+    expect(projection.currentSequence).toBe(cursorAfterSnapshotAttempt);
+    expect(projection.admittedClientCount).toBe(1);
+    projection.disconnectClient(client);
+    expect(projection.admittedClientCount).toBe(0);
+  });
+
   it("closes a handshake whose bounded pending buffer is exceeded", async () => {
     let releaseSnapshot!: () => void;
     const snapshotReady = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
@@ -338,5 +361,21 @@ describe("DaemonProjection", () => {
     projection.disconnectClient(first);
     expect(projection.admittedClientCount).toBe(0);
     expect(projection.reserveClient()).not.toBeNull();
+  });
+
+  it("retains a reserved slot when an upgraded socket is rejected after revocation", () => {
+    const projection = new DaemonProjection({ snapshot: createSnapshot, maxClients: 1 });
+    const reservation = projection.reserveClient();
+    const rejected = new FakeClient();
+
+    expect(reservation).not.toBeNull();
+    expect(projection.retainClosingClient(rejected, reservation!)).toBe(true);
+    projection.releaseReservation(reservation!);
+    expect(projection.admittedClientCount).toBe(1);
+    expect(projection.connectedClientCount).toBe(0);
+    expect(projection.reserveClient()).toBeNull();
+
+    projection.disconnectClient(rejected);
+    expect(projection.admittedClientCount).toBe(0);
   });
 });

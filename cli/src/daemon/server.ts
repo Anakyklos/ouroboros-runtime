@@ -369,9 +369,57 @@ export class DaemonServer {
             admission?.transport.off('close', admission.onAbort);
             admission?.transport.off('end', admission.onAbort);
             admission?.rawRequest.off('aborted', admission.onAbort);
+            const rejectUpgradedClient = (code: number, reason: string) => {
+                if (!admission) {
+                    try { socket.terminate(); } catch { /* no reservation remains to retain */ }
+                    return;
+                }
+                const rejectedClient: ProjectionClient = {
+                    get readyState() { return socket.readyState; },
+                    get bufferedAmount() { return socket.bufferedAmount; },
+                    send: () => false,
+                    close: () => socket.close(code, reason),
+                };
+                this.websocketPrincipals.set(rejectedClient, {
+                    socket,
+                    principal: admission.principal,
+                    closing: true,
+                });
+                if (!this.projection.retainClosingClient(rejectedClient, admission.reservation)) {
+                    let disconnected = false;
+                    const releaseReservation = () => {
+                        if (disconnected) return;
+                        disconnected = true;
+                        socket.off('close', releaseReservation);
+                        socket.off('error', releaseReservation);
+                        this.projection.releaseReservation(admission.reservation);
+                        this.websocketPrincipals.delete(rejectedClient);
+                        this.syncWebSocketAuthorizationTimer();
+                    };
+                    socket.once('close', releaseReservation);
+                    socket.once('error', releaseReservation);
+                    if (socket.readyState === 3) releaseReservation();
+                    else {
+                        try { socket.terminate(); } catch { /* transport callbacks own reservation release */ }
+                    }
+                    return;
+                }
+                let disconnected = false;
+                const disconnect = () => {
+                    if (disconnected) return;
+                    disconnected = true;
+                    socket.off('close', disconnect);
+                    socket.off('error', disconnect);
+                    this.projection.disconnectClient(rejectedClient);
+                    this.websocketPrincipals.delete(rejectedClient);
+                    this.syncWebSocketAuthorizationTimer();
+                };
+                socket.once('close', disconnect);
+                socket.once('error', disconnect);
+                try { socket.close(code, reason); } catch { socket.terminate(); }
+            };
             if (!this.acceptingRpc) {
-                if (admission) this.projection.releaseReservation(admission.reservation);
-                socket.close(1001, 'Daemon is shutting down');
+                rejectUpgradedClient(1001, 'Daemon is shutting down');
                 return;
             }
             let stillAuthorized = false;
@@ -381,8 +429,11 @@ export class DaemonServer {
                 this.eventBus.log('warn', 'WebSocket authorization check failed before projection admission', 'DaemonServer');
             }
             if (!admission || !stillAuthorized) {
-                if (admission) this.projection.releaseReservation(admission.reservation);
-                socket.close(1008, 'Not authorized');
+                rejectUpgradedClient(1008, 'Not authorized');
+                return;
+            }
+            if (socket.readyState !== 1) {
+                rejectUpgradedClient(1011, 'WebSocket transport is not open');
                 return;
             }
             const client = this.createAuthorizedProjectionClient(socket, admission.principal);
@@ -650,9 +701,10 @@ export class DaemonServer {
                 if (!this.authorization?.isClientStillAuthorized(principal, 'mission.read')) {
                     this.markWebSocketClientClosing(client);
                     socket.close(1008, 'Authorization expired');
-                    return;
+                    return false;
                 }
                 socket.send(message);
+                return true;
             },
             close: () => {
                 this.markWebSocketClientClosing(client);

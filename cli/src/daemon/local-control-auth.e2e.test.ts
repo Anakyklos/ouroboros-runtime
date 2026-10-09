@@ -874,6 +874,167 @@ describe("local-control authentication over real Fastify and SQLite", () => {
     }
   });
 
+  it("accounts for a socket upgraded after revocation until its WebSocket close callback", async () => {
+    const targetPort = await unusedPort();
+    const targetEventBus = new EventBus();
+    const delegate = new RpcGateway(daemonStorage, targetEventBus, missionStore);
+    let snapshotReads = 0;
+    const trackedGateway: DaemonRpcGatewayPort = {
+      registerMethod: (name, handler) => delegate.registerMethod(name, handler),
+      handleRequest: (request) => delegate.handleRequest(request),
+      getProjectionSnapshot: async (cursor) => {
+        snapshotReads += 1;
+        return delegate.getProjectionSnapshot(cursor);
+      },
+    };
+    const targetServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1", maxProjectionClients: 1 },
+      targetEventBus,
+      missionStore,
+      trackedGateway,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    const projection = (targetServer as unknown as { projection: DaemonProjection }).projection;
+    const admittedCountsAtDisconnect: number[] = [];
+    const disconnectClient = projection.disconnectClient.bind(projection);
+    spyOn(projection, "disconnectClient").mockImplementation((client) => {
+      admittedCountsAtDisconnect.push(projection.admittedClientCount);
+      disconnectClient(client);
+    });
+    const retainClosingClient = spyOn(projection, "retainClosingClient");
+    const app = (targetServer as unknown as { app: FastifyInstance }).app;
+    let releasePreHandler!: () => void;
+    const preHandlerGate = new Promise<void>((resolveGate) => { releasePreHandler = resolveGate; });
+    let preHandlerStarted!: () => void;
+    const preHandlerObserved = new Promise<void>((resolveObserved) => { preHandlerStarted = resolveObserved; });
+    app.addHook("preHandler", async (request) => {
+      if (request.url !== "/ws") return;
+      preHandlerStarted();
+      await preHandlerGate;
+    });
+    const revokedCredential = credentialStore.provision("upgrade-revoked", ["mission.read"], Date.now() + 60_000);
+    const replacementToken = credentialStore.provision("upgrade-replacement", ["mission.read"], Date.now() + 60_000).token;
+    let rejected: RawWebSocketProbe | undefined;
+    let replacement: RawWebSocketProbe | undefined;
+    try {
+      await targetServer.start();
+      rejected = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${revokedCredential.token}` });
+      await preHandlerObserved;
+      expect(projection.admittedClientCount).toBe(1);
+
+      credentialStore.provision("upgrade-revoked", ["mission.control"], Date.now() + 60_000);
+      releasePreHandler();
+      expect((await rejected.response).status).toBe(101);
+      const close = await rejected.nextFrame();
+      expect(close.opcode).toBe(8);
+      expect(snapshotReads).toBe(0);
+      expect(rejected.socket.destroyed).toBe(false);
+      expect(projection.connectedClientCount).toBe(0);
+      expect(retainClosingClient).toHaveBeenCalledTimes(1);
+      await waitForCondition(() => admittedCountsAtDisconnect.length === 1);
+      expect(admittedCountsAtDisconnect).toEqual([1]);
+      expect(projection.admittedClientCount).toBe(0);
+
+      replacement = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${replacementToken}` });
+      expect((await replacement.response).status).toBe(101);
+      expect(snapshotReads).toBe(1);
+    } finally {
+      releasePreHandler();
+      rejected?.close();
+      replacement?.close();
+      await targetServer.stop();
+    }
+  });
+
+  it("keeps an asynchronously snapshotting revoked stream closing and cursor-ineligible", async () => {
+    const targetPort = await unusedPort();
+    const targetEventBus = new EventBus();
+    const delegate = new RpcGateway(daemonStorage, targetEventBus, missionStore);
+    let releaseSnapshot!: () => void;
+    const snapshotGate = new Promise<void>((resolveGate) => { releaseSnapshot = resolveGate; });
+    let snapshotStarted!: () => void;
+    const snapshotObserved = new Promise<void>((resolveObserved) => { snapshotStarted = resolveObserved; });
+    const gatedGateway: DaemonRpcGatewayPort = {
+      registerMethod: (name, handler) => delegate.registerMethod(name, handler),
+      handleRequest: (request) => delegate.handleRequest(request),
+      getProjectionSnapshot: async (cursor) => {
+        snapshotStarted();
+        await snapshotGate;
+        return delegate.getProjectionSnapshot(cursor);
+      },
+    };
+    const targetServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1", maxProjectionClients: 1 },
+      targetEventBus,
+      missionStore,
+      gatedGateway,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    const projection = (targetServer as unknown as { projection: DaemonProjection }).projection;
+    const disconnectCounts: number[] = [];
+    const disconnectClient = projection.disconnectClient.bind(projection);
+    spyOn(projection, "disconnectClient").mockImplementation((client) => {
+      disconnectCounts.push(projection.admittedClientCount);
+      disconnectClient(client);
+    });
+    const markClientClosing = projection.markClientClosing.bind(projection);
+    let broadcastWhileClosing: { before: number; after: number } | undefined;
+    let revokeIsInProgress = false;
+    spyOn(projection, "markClientClosing").mockImplementation((client) => {
+      markClientClosing(client);
+      if (revokeIsInProgress && !broadcastWhileClosing) {
+        const before = projection.currentSequence;
+        projection.broadcast("daemon", { type: "ready", port: targetPort });
+        broadcastWhileClosing = { before, after: projection.currentSequence };
+      }
+    });
+    const firstCredential = credentialStore.provision("async-snapshot-revoke", ["mission.read"], Date.now() + 60_000);
+    const replacementToken = credentialStore.provision("async-snapshot-replacement", ["mission.read"], Date.now() + 60_000).token;
+    let connectResult: boolean | undefined;
+    const connectClient = projection.connectClient.bind(projection);
+    spyOn(projection, "connectClient").mockImplementation(async (client, reservation) => {
+      const admitted = await connectClient(client, reservation);
+      connectResult = admitted;
+      return admitted;
+    });
+    let stream: RawWebSocketProbe | undefined;
+    let overCapacity: RawWebSocketProbe | undefined;
+    try {
+      await targetServer.start();
+      stream = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${firstCredential.token}` });
+      expect((await stream.response).status).toBe(101);
+      await snapshotObserved;
+      expect(projection.admittedClientCount).toBe(1);
+
+      credentialStore.provision("async-snapshot-revoke", ["mission.control"], Date.now() + 60_000);
+      revokeIsInProgress = true;
+      releaseSnapshot();
+      const close = await stream.nextFrame();
+      expect(close.opcode).toBe(8);
+      await waitForCondition(() => connectResult !== undefined);
+      expect(connectResult).toBe(false);
+      expect(broadcastWhileClosing).toEqual({ before: 1, after: 1 });
+      expect(disconnectCounts).toEqual([1]);
+      expect(projection.admittedClientCount).toBe(0);
+      expect(projection.connectedClientCount).toBe(0);
+
+      overCapacity = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${replacementToken}` });
+      expect((await overCapacity.response).status).toBe(101);
+      expect((await overCapacity.nextFrame()).payload.toString("utf8")).toContain('"event":"snapshot"');
+    } finally {
+      releaseSnapshot();
+      stream?.close();
+      overCapacity?.close();
+      await targetServer.stop();
+    }
+  });
+
   it("releases a reservation when the HTTP transport aborts during an asynchronous pre-upgrade hook", async () => {
     const targetPort = await unusedPort();
     const targetEventBus = new EventBus();

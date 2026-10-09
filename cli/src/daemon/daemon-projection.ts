@@ -15,7 +15,7 @@ import {
 export interface ProjectionClient {
   readyState: number;
   bufferedAmount: number;
-  send(message: string): void;
+  send(message: string): void | boolean;
   close(): void;
 }
 
@@ -160,7 +160,8 @@ export class DaemonProjection {
       return false;
     }
     if (!this.sendToClient(client, snapshotEnvelope)) return false;
-
+    const snapshotRecipient = this.clients.get(client);
+    if (snapshotRecipient !== state || snapshotRecipient.phase !== "handshaking") return false;
     state.phase = "ready";
     const pending = state.pending.splice(0);
     for (const envelope of pending) {
@@ -182,6 +183,19 @@ export class DaemonProjection {
     if (!state) return;
     state.phase = "closing";
     state.pending.length = 0;
+  }
+
+  /** Transfer an upgraded but rejected socket reservation into closing state. */
+  retainClosingClient(client: ProjectionClient, reservation: ProjectionClientReservation): boolean {
+    if (client.readyState !== OPEN_READY_STATE || this.clients.has(client)) return false;
+    const state = this.clients.get(reservation);
+    if (!state || state.client !== null) return false;
+    this.clients.delete(reservation);
+    state.phase = "closing";
+    state.pending.length = 0;
+    state.client = client;
+    this.clients.set(client, state);
+    return true;
   }
 
   broadcast<E extends AllowedDaemonEvent>(
@@ -269,8 +283,13 @@ export class DaemonProjection {
     }
 
     try {
-      client.send(JSON.stringify(envelope));
-      return true;
+      const sent = client.send(JSON.stringify(envelope));
+      const state = this.clients.get(client);
+      if (sent === false) {
+        if (state && state.phase !== "closing") this.closeClient(client, "client_send_failed");
+        return false;
+      }
+      return Boolean(state && state.phase !== "closing");
     } catch {
       this.closeClient(client, "client_send_failed");
       return false;
