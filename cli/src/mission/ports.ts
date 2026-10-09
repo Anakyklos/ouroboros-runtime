@@ -58,6 +58,8 @@ export interface MissionStore {
         accounting: NonNullable<Mission["contextAccounting"]>,
     ): Promise<boolean>;
     listMissions(filter?: { state?: MissionState }): Promise<Mission[]>;
+    /** Read a deterministic, bounded Mission page for resident enumeration. */
+    listMissionPage(options: MissionPageOptions): Promise<MissionPage>;
     deleteMission(missionId: string): Promise<void>;
 
     // Plan revisions
@@ -101,6 +103,28 @@ export interface MissionStore {
         missionId: string,
         effectFingerprint: string,
     ): Promise<CapabilityInvocation | null>;
+}
+
+/** Stable keyset position for the Mission page order. */
+export interface MissionPageCursor {
+    createdAt: string;
+    missionId: string;
+}
+
+export interface MissionPageOptions {
+    /** Maximum number of Mission rows to materialize. */
+    limit: number;
+    cursor?: MissionPageCursor;
+    /** Optional allowlist used by scheduling to skip irrelevant states in SQL. */
+    states?: readonly MissionState[];
+    /** Optional denylist used by recovery to exclude terminal history in SQL. */
+    excludeStates?: readonly MissionState[];
+}
+
+export interface MissionPage {
+    missions: Mission[];
+    /** Last row when a full page was returned; null marks the end of this scan. */
+    nextCursor: MissionPageCursor | null;
 }
 
 export interface MissionProjectionLimits {

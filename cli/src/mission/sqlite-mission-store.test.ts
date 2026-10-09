@@ -491,6 +491,53 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         await store.close();
     });
 
+    it("enumerates more than three bounded pages in stable order without omissions", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const engine = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("page"), store);
+        const expectedIds: string[] = [];
+        for (let index = 0; index < 200; index++) {
+            const mission = await engine.createMission({
+                intent: { ...makeIntent(), requestId: `page-${index}` },
+                allowedCapabilityScope: DEFAULT_SCOPE,
+            });
+            expectedIds.push(mission.missionId);
+        }
+        const historical = await engine.createMission({
+            intent: { ...makeIntent(), requestId: "page-historical" },
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+        await engine.cancelMission(historical.missionId, "terminal page filter fixture");
+        await store.saveInvocation(makeFullInvocation(expectedIds[0]!, {
+            invocationId: "page-scoped-invocation",
+        }));
+
+        const observedIds: string[] = [];
+        const observedMissions: Mission[] = [];
+        const pageLengths: number[] = [];
+        let cursor: Awaited<ReturnType<typeof store.listMissionPage>>["nextCursor"];
+        do {
+            const page = await store.listMissionPage({
+                limit: 64,
+                cursor: cursor ?? undefined,
+                excludeStates: [MissionState.CANCELLED],
+            });
+            pageLengths.push(page.missions.length);
+            observedIds.push(...page.missions.map((mission) => mission.missionId));
+            observedMissions.push(...page.missions);
+            cursor = page.nextCursor;
+        } while (cursor);
+
+        const stableOrder = [...expectedIds].sort((left, right) => left.localeCompare(right));
+        expect(pageLengths).toEqual([64, 64, 64, 8]);
+        expect(observedIds).toEqual(stableOrder);
+        expect(new Set(observedIds).size).toBe(200);
+        expect(observedMissions.find((mission) => mission.missionId === expectedIds[0])?.invocationRefs)
+            .toMatchObject([{ invocationId: "page-scoped-invocation" }]);
+        expect(observedMissions.every((mission) => mission.missionId !== historical.missionId)).toBe(true);
+        await store.close();
+    });
+
     it("creates the database file on disk (persistence evidence)", async () => {
         const dir = track(makeTempDir("mission-file-"));
         const dbPath = join(dir.path, "missions.db");

@@ -138,15 +138,57 @@ available, and requests RPC shutdown before allowing the owner result to settle.
 subprocess and proves a paused non-terminal Mission is recovered on each
 restart while its confirmed Invocation remains intact.
 
-**Limits:** production still registers no capability connector. With the
-default empty registry, planned work with no connector is recorded as a
-capability wait; no external integration is implied by the test fixture. The
-existing `MissionScheduler.recover()` scan still visits all non-terminal
-Missions without a batch bound; bounded store-level pagination remains a
-follow-up. The scheduler has one local runtime owner but no cross-process
-lease, so overlapping independent daemon processes are not covered by an
-exactly-once guarantee. A pass error is logged as a redacted failure and is
-not automatically retried until another relevant durable change or restart.
+**Limits at the #120 composition point:** production still registers no
+capability connector. With the default empty registry, planned work with no
+connector is recorded as a capability wait; no external integration is
+implied by the test fixture. Mission enumeration was still an unbounded
+`listMissions()` read at that point; the M1 update below corrects the resident
+recovery and scheduling paths. The scheduler has one local runtime owner but
+no cross-process lease, so overlapping independent daemon processes are not
+covered by an exactly-once guarantee. A pass error is logged as a redacted
+failure and is not automatically retried until another relevant durable
+change or restart.
+
+## M1 bounded Mission enumeration update
+
+**Current behavior implemented on top of the #127 base (`1087d8a`):**
+`MissionStore.listMissionPage()` reads at most the requested Mission page,
+ordered by deterministic `created_at DESC, mission_id ASC` keyset position. The
+SQLite implementation loads invocation rows only for Mission IDs in that
+page, inside the same read transaction. The existing full-history
+`listMissions()` API remains available to other consumers.
+
+`MissionScheduler.recoverInternal()` walks every non-terminal Mission page
+before marking recovery complete. It calls `recoverMission()` for each
+durable ID; that method updates recovery metadata only and does not submit,
+retry, cancel, or reconcile an external effect. Scheduling pages only
+`READY`, `EXECUTING`, and `WAITING_FOR_CAPABILITY` Missions, while continuing
+past pages that contain no ready plan or dispatchable step. The default page
+size is 64 and may be configured up to 1024. Existing actionable/due
+invocation batch limits and dispatch-slot behavior are unchanged.
+
+The stable keyset does not hold a snapshot across the full scan. A committed
+Mission create/state mutation delivered through the resident store observer
+wakes the driver for another pass, so a mutation that sorts behind the active
+cursor is reconsidered without a periodic polling timer. This is same-store
+notification behavior; independent daemon processes remain outside the
+single-owner guarantee.
+
+**Evidence:** `sqlite-mission-store.test.ts` traverses 200 Missions in pages of
+64 with deterministic order, no duplicate/omitted IDs, a terminal row filtered
+out, and an invocation reference attached only to its Mission. The scheduler
+tests close/reopen a real SQLite store, recover more than three pages of
+non-terminal rows, continue after a read failure without dispatch, discover a
+planned Mission after pages with no planned work, and use the driver to
+revisit an eligible Mission inserted behind the keyset cursor. Existing
+restart tests continue to prove confirmed effects are not invoked again and
+uncertain handoffs remain blocked for reconciliation.
+
+**Limits:** page size bounds Mission rows loaded per enumeration query, not
+total scheduler memory. A Mission can have many invocation rows, and recovery
+reports retain all recovered IDs to preserve report semantics. No production
+impact benchmark is claimed. No extra timer, polling loop, public Mission v1
+contract change, or scheduler parallelism was introduced.
 
 ## Domain inventory
 
@@ -264,28 +306,32 @@ not automatically retried until another relevant durable change or restart.
   simultaneous notifications and serializes passes. A future timestamp creates
   one timer; a missing, invalid, or elapsed timestamp creates none. No periodic
   polling is used. The driver removes listeners and cancels timers on stop.
-- **If invoked directly:** recovery visits each non-terminal Mission and calls
-  `recoverMission()` without submitting an effect. A pass queries actionable
-  invocations with default batch size 64 and due invocations with the same
-  bound; default `maxInFlight` is 1 and the connector calls are awaited
-  sequentially, so this is a per-pass dispatch-slot bound, not concurrent
-  parallelism. The cross-process exactly-once guarantee is explicitly out of
-  scope. Recovery's `listMissions()` walk has no batch limit. Only
-  `waiting_for_capability` is conditionally reconsidered; approval, context,
-  provider, and budget waits are not automatically promoted.
+- **If invoked directly:** recovery visits every non-terminal Mission through
+  `listMissionPage()` and calls `recoverMission()` without submitting an
+  effect. Mission enumeration uses deterministic keyset pages (default 64);
+  invocation rows are loaded only for the Mission IDs in each page. A pass
+  queries actionable invocations with default batch size 64 and due invocations
+  with the same bound; default `maxInFlight` is 1 and connector calls are
+  awaited sequentially, so this is a per-pass dispatch-slot bound, not
+  concurrent parallelism. The cross-process exactly-once guarantee is
+  explicitly out of scope. Only `waiting_for_capability` is conditionally
+  reconsidered; approval, context, provider, and budget waits are not
+  automatically promoted.
 - **Effect/retry semantics:** it reconciles/cancels persisted actionable work
   first; retries only eligible, due, definitely-not-submitted work after the
   engine's explicit retry transition. Completed effect fingerprints and legacy
   replay barriers prevent a second logical effect. `nextWakeAt` comes from
   durable invocation retry timestamps.
-- **Evidence / gaps:** `mission-scheduler.test.ts`,
+- **Evidence / limits:** `mission-scheduler.test.ts`,
   `mission-scheduler-driver.test.ts`, `mission-scheduler-daemon.e2e.test.ts`,
   and `headless-shutdown.e2e.test.ts` cover one-shot scheduling, durable
   recovery, fixture dispatch, confirmed-effect idempotency, uncertain delivery,
   wake coalescing and process restart. **P2:** recovery's `listMissions()` scan
-  is unbounded although actionable/due invocation reads are bounded. Relevant
-  code: `mission-scheduler.ts:47-99,102-121,129-188,314-325`,
-  `mission-scheduler-driver.ts`, and `main.ts`.
+  was unbounded at the #120 audit point; the M1 update above bounds Mission
+  rows per enumeration query. Total scheduler memory is not claimed bounded:
+  report ID arrays and invocation fan-out for an individual Mission can still
+  grow with durable data. Relevant code: `mission-scheduler.ts`,
+  `sqlite-mission-store.ts`, `mission-scheduler-driver.ts`, and `main.ts`.
 
 ### 5. Capability Registry, connector dispatch, and invocation uncertainty
 
