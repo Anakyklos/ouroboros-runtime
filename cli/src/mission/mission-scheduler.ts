@@ -49,6 +49,7 @@ export interface MissionSchedulerRunReport extends MissionRecoveryReport {
     dispatchedInvocationIds: string[];
     waitingMissionIds: string[];
     nextWakeAt: string | null;
+    /** True only when this pass performed no successful dispatch, independent of ID capture. */
     idle: boolean;
 }
 
@@ -149,6 +150,7 @@ export class MissionScheduler {
         const dispatchedInvocationIds: string[] = [];
         const reconciledInvocationIds: string[] = [];
         const waitingMissionIds: string[] = [];
+        let didDispatch = false;
         const boundedWaitingMissionIds = this.reportIdLimit === undefined
             ? undefined
             : new Set<string>();
@@ -266,6 +268,7 @@ export class MissionScheduler {
             ) continue;
             try {
                 await this.seam.dispatchPersistedInvocation(prepared.invocationId);
+                didDispatch = true;
                 appendReportId(dispatchedInvocationIds, prepared.invocationId, this.reportIdLimit);
                 dispatchSlots--;
             } catch (error) {
@@ -363,6 +366,7 @@ export class MissionScheduler {
                     if (dispatchSlots <= 0) break;
                     try {
                         const outcome = await this.seam.dispatchThroughSeam(mission.missionId, step.stepId);
+                        didDispatch = true;
                         appendReportId(dispatchedInvocationIds, outcome.invocation.invocationId, this.reportIdLimit);
                         dispatchSlots--;
                     } catch (error) {
@@ -401,7 +405,7 @@ export class MissionScheduler {
             dispatchedInvocationIds,
             waitingMissionIds: [...new Set(waitingMissionIds)],
             nextWakeAt,
-            idle: dispatchedInvocationIds.length === 0,
+            idle: !didDispatch,
         };
     }
 

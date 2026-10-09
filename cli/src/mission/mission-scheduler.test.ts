@@ -1249,9 +1249,115 @@ describe("MissionScheduler", () => {
         const report = await scheduler.runOnce();
         expect(invokeCount).toBe(1);
         expect(report.dispatchedInvocationIds).toHaveLength(1);
+        expect(report.idle).toBe(false);
         const invocations = await store.listInvocations(created.missionId);
         expect(invocations).toHaveLength(1);
         expect(invocations[0].status).toBe(InvocationStatus.COMPLETED);
+    });
+
+    it("keeps an empty pass idle with zero report ID capture", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const engine = createEngine(store, new FakeIdGenerator("idle-empty"));
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam: new ConnectorDispatchSeam(engine, createRegistry(), new FakeClock(BASE_TIME)),
+            reportIdLimit: 0,
+        });
+
+        const report = await scheduler.runOnce();
+
+        expect(report.dispatchedInvocationIds).toEqual([]);
+        expect(report.idle).toBe(true);
+        await store.close();
+    });
+
+    it("reports a fresh successful dispatch as non-idle with zero ID capture and does not repeat it after restart", async () => {
+        const db = tempDb();
+        cleanups.push(db.cleanup);
+        const firstStore = new SqliteMissionStore(db.path);
+        await firstStore.initialize();
+        const firstEngine = createEngine(firstStore, new FakeIdGenerator("idle-fresh"));
+        const created = await firstEngine.createMission({
+            intent: {
+                requestId: "request-idle-fresh",
+                source: "cli",
+                originalIntent: "Read the current LifeOS status",
+                constraints: [],
+                acceptanceCriteria: ["status read"],
+            },
+            allowedCapabilityScope: makeMission("unused").allowedCapabilityScope,
+        });
+        const proposal = await firstEngine.proposePlan(created.missionId, planFor(created));
+        if (!proposal.ok) throw new Error("zero-capture fresh plan was rejected");
+        await firstEngine.acceptPlan(created.missionId, proposal.revision.revisionId);
+
+        let invokeCount = 0;
+        const firstRegistry = createRegistry();
+        const firstSeam = new ConnectorDispatchSeam(firstEngine, firstRegistry, new FakeClock(BASE_TIME));
+        firstSeam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => firstRegistry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                invokeCount++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "status read",
+                    evidence: [],
+                };
+            },
+        });
+        const firstScheduler = new MissionScheduler({
+            engine: firstEngine,
+            store: firstStore,
+            seam: firstSeam,
+            clock: new FakeClock(BASE_TIME),
+            reportIdLimit: 0,
+        });
+
+        const firstReport = await firstScheduler.runOnce();
+        expect(firstReport.dispatchedInvocationIds).toEqual([]);
+        expect(firstReport.idle).toBe(false);
+        expect(await firstStore.listInvocations(created.missionId)).toHaveLength(1);
+        expect((await firstStore.listInvocations(created.missionId))[0].status).toBe(InvocationStatus.COMPLETED);
+        await firstStore.close();
+
+        const restartedStore = new SqliteMissionStore(db.path);
+        await restartedStore.initialize();
+        const restartedEngine = createEngine(restartedStore, new FakeIdGenerator("idle-fresh-restart"));
+        const restartedRegistry = createRegistry();
+        const restartedSeam = new ConnectorDispatchSeam(restartedEngine, restartedRegistry, new FakeClock(BASE_TIME));
+        restartedSeam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => restartedRegistry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                invokeCount++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "status read after restart",
+                    evidence: [],
+                };
+            },
+        });
+        const restartedScheduler = new MissionScheduler({
+            engine: restartedEngine,
+            store: restartedStore,
+            seam: restartedSeam,
+            clock: new FakeClock(BASE_TIME),
+            reportIdLimit: 0,
+        });
+        const restartedReport = await restartedScheduler.runOnce();
+
+        expect(restartedReport.dispatchedInvocationIds).toEqual([]);
+        expect(restartedReport.idle).toBe(true);
+        expect(invokeCount).toBe(1);
+        expect(await restartedStore.listInvocations(created.missionId)).toHaveLength(1);
+        await restartedStore.close();
     });
 
     it("does not retry an attested owner rejection through the seam or scheduler", async () => {
@@ -1721,6 +1827,108 @@ describe("MissionScheduler", () => {
         expect(invokes).toBe(1);
         expect(await store.listInvocations(created.missionId)).toHaveLength(1);
         expect((await store.getInvocation(invocation.invocationId))?.status).toBe(InvocationStatus.COMPLETED);
+    });
+
+    it("reports persisted due dispatch as non-idle with zero ID capture and does not repeat it after restart", async () => {
+        const db = tempDb();
+        cleanups.push(db.cleanup);
+        const initialStore = new SqliteMissionStore(db.path);
+        await initialStore.initialize();
+        const initialEngine = createEngine(initialStore, new FakeIdGenerator("idle-due"));
+        const created = await initialEngine.createMission({
+            intent: {
+                requestId: "request-idle-due",
+                source: "cli",
+                originalIntent: "Read the current LifeOS status",
+                constraints: [],
+                acceptanceCriteria: ["status read"],
+            },
+            allowedCapabilityScope: makeMission("unused").allowedCapabilityScope,
+        });
+        const proposal = await initialEngine.proposePlan(created.missionId, planFor(created));
+        if (!proposal.ok) throw new Error("zero-capture due plan was rejected");
+        await initialEngine.acceptPlan(created.missionId, proposal.revision.revisionId);
+        const prepared = await initialEngine.dispatchStep(created.missionId, "read-status", {
+            descriptor: {
+                contractVersion: 1,
+                moduleOwner: "lifeos",
+                idempotency: { mode: IdempotencyMode.IDEMPOTENT, keyScope: "request" },
+                retry: { maxAttempts: 3, backoff: RetryBackoff.FIXED },
+                cancellationSupport: CancellationSupport.NONE,
+                reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
+            },
+        });
+        expect(prepared.delivery.state).toBe("not_submitted");
+        await initialStore.close();
+
+        let invokeCount = 0;
+        const firstStore = new SqliteMissionStore(db.path);
+        await firstStore.initialize();
+        const firstEngine = createEngine(firstStore, new FakeIdGenerator("idle-due-first-run"));
+        const firstRegistry = createRegistry();
+        const firstSeam = new ConnectorDispatchSeam(firstEngine, firstRegistry, new FakeClock(BASE_TIME));
+        firstSeam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => firstRegistry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                invokeCount++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "due read",
+                    evidence: [],
+                };
+            },
+        });
+        const firstScheduler = new MissionScheduler({
+            engine: firstEngine,
+            store: firstStore,
+            seam: firstSeam,
+            clock: new FakeClock(BASE_TIME),
+            reportIdLimit: 0,
+        });
+        const firstReport = await firstScheduler.runOnce();
+
+        expect(firstReport.dispatchedInvocationIds).toEqual([]);
+        expect(firstReport.idle).toBe(false);
+        expect((await firstStore.getInvocation(prepared.invocationId))?.status).toBe(InvocationStatus.COMPLETED);
+        expect(await firstStore.listInvocations(created.missionId)).toHaveLength(1);
+        await firstStore.close();
+
+        const restartedStore = new SqliteMissionStore(db.path);
+        await restartedStore.initialize();
+        const restartedEngine = createEngine(restartedStore, new FakeIdGenerator("idle-due-restart"));
+        const restartedRegistry = createRegistry();
+        const restartedSeam = new ConnectorDispatchSeam(restartedEngine, restartedRegistry, new FakeClock(BASE_TIME));
+        restartedSeam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => restartedRegistry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                invokeCount++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "due read after restart",
+                    evidence: [],
+                };
+            },
+        });
+        const restartedScheduler = new MissionScheduler({
+            engine: restartedEngine,
+            store: restartedStore,
+            seam: restartedSeam,
+            clock: new FakeClock(BASE_TIME),
+            reportIdLimit: 0,
+        });
+        const restartedReport = await restartedScheduler.runOnce();
+
+        expect(restartedReport.dispatchedInvocationIds).toEqual([]);
+        expect(restartedReport.idle).toBe(true);
+        expect(invokeCount).toBe(1);
+        expect(await restartedStore.listInvocations(created.missionId)).toHaveLength(1);
+        await restartedStore.close();
     });
 
     it("reconciles an uncertain invocation after restart without a second invoke", async () => {
