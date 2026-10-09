@@ -32,6 +32,12 @@ export interface MissionSchedulerOptions {
     maxInFlight?: number;
     recoveryBatchSize?: number;
     missionPageSize?: number;
+    /**
+     * Optional cap for each report ID list. Omit it to retain complete reports
+     * for direct callers. The resident daemon sets this to zero because its
+     * driver consumes only `nextWakeAt`.
+     */
+    reportIdLimit?: number;
 }
 
 export interface MissionRecoveryReport {
@@ -43,6 +49,7 @@ export interface MissionSchedulerRunReport extends MissionRecoveryReport {
     dispatchedInvocationIds: string[];
     waitingMissionIds: string[];
     nextWakeAt: string | null;
+    /** True only when this pass performed no successful dispatch, independent of ID capture. */
     idle: boolean;
 }
 
@@ -54,6 +61,7 @@ export class MissionScheduler {
     private readonly maxInFlight: number;
     private readonly recoveryBatchSize: number;
     private readonly missionPageSize: number;
+    private readonly reportIdLimit: number | undefined;
     private recoveryComplete = false;
     private recoveryInProgress: Promise<MissionRecoveryReport> | null = null;
     private runInProgress: Promise<MissionSchedulerRunReport> | null = null;
@@ -78,6 +86,11 @@ export class MissionScheduler {
             && options.missionPageSize! <= 1024
             ? options.missionPageSize!
             : 64;
+        if (options.reportIdLimit !== undefined
+            && (!Number.isSafeInteger(options.reportIdLimit) || options.reportIdLimit < 0)) {
+            throw new RangeError("reportIdLimit must be a non-negative safe integer");
+        }
+        this.reportIdLimit = options.reportIdLimit;
     }
 
     /** Recover non-terminal Missions without resuming any effect. */
@@ -106,7 +119,7 @@ export class MissionScheduler {
             });
             for (const mission of page.missions) {
                 await this.engine.recoverMission(mission.missionId);
-                recoveredMissionIds.push(mission.missionId);
+                appendReportId(recoveredMissionIds, mission.missionId, this.reportIdLimit);
             }
             cursor = page.nextCursor;
         } while (cursor);
@@ -137,6 +150,18 @@ export class MissionScheduler {
         const dispatchedInvocationIds: string[] = [];
         const reconciledInvocationIds: string[] = [];
         const waitingMissionIds: string[] = [];
+        let didDispatch = false;
+        const boundedWaitingMissionIds = this.reportIdLimit === undefined
+            ? undefined
+            : new Set<string>();
+        const recordWaitingMissionId = (missionId: string): void => {
+            if (boundedWaitingMissionIds) {
+                if (boundedWaitingMissionIds.has(missionId)
+                    || boundedWaitingMissionIds.size >= this.reportIdLimit!) return;
+                boundedWaitingMissionIds.add(missionId);
+            }
+            appendReportId(waitingMissionIds, missionId, this.reportIdLimit);
+        };
         let dispatchSlots = this.maxInFlight;
         const now = this.clock.isoNow();
 
@@ -160,7 +185,7 @@ export class MissionScheduler {
                     && current.reconciliation.state === "pending"
                 ) {
                     const reconciled = await this.seam.reconcileInvocation(current.invocationId);
-                    reconciledInvocationIds.push(current.invocationId);
+                    appendReportId(reconciledInvocationIds, current.invocationId, this.reportIdLimit);
                     if (
                         (reconciled.recordedStatus === InvocationStatus.COMPLETED
                             || reconciled.recordedStatus === InvocationStatus.FAILED)
@@ -194,7 +219,7 @@ export class MissionScheduler {
                                 MissionState.WAITING_FOR_CAPABILITY,
                                 error.message,
                             );
-                            waitingMissionIds.push(mission.missionId);
+                            recordWaitingMissionId(mission.missionId);
                         }
                     } catch {
                         // The invocation may have been finalized concurrently.
@@ -243,13 +268,14 @@ export class MissionScheduler {
             ) continue;
             try {
                 await this.seam.dispatchPersistedInvocation(prepared.invocationId);
-                dispatchedInvocationIds.push(prepared.invocationId);
+                didDispatch = true;
+                appendReportId(dispatchedInvocationIds, prepared.invocationId, this.reportIdLimit);
                 dispatchSlots--;
             } catch (error) {
                 await this.handleDispatchError(
                     prepared.missionId,
                     error,
-                    waitingMissionIds,
+                    recordWaitingMissionId,
                 );
             }
         }
@@ -329,7 +355,7 @@ export class MissionScheduler {
                         MissionState.WAITING_FOR_CAPABILITY,
                         'No ready capability currently has both a registered descriptor and connector',
                     );
-                    waitingMissionIds.push(mission.missionId);
+                    recordWaitingMissionId(mission.missionId);
                     continue;
                 }
                 // Dispatch directly while scanning the durable plan. This avoids
@@ -340,14 +366,15 @@ export class MissionScheduler {
                     if (dispatchSlots <= 0) break;
                     try {
                         const outcome = await this.seam.dispatchThroughSeam(mission.missionId, step.stepId);
-                        dispatchedInvocationIds.push(outcome.invocation.invocationId);
+                        didDispatch = true;
+                        appendReportId(dispatchedInvocationIds, outcome.invocation.invocationId, this.reportIdLimit);
                         dispatchSlots--;
                     } catch (error) {
                         if (isCapabilityWaitError(error)) {
                             becameUnavailable = true;
                             continue;
                         }
-                        await this.handleDispatchError(mission.missionId, error, waitingMissionIds);
+                        await this.handleDispatchError(mission.missionId, error, recordWaitingMissionId);
                         break;
                     }
                 }
@@ -361,7 +388,7 @@ export class MissionScheduler {
                                 'At least one ready capability is not currently dispatchable',
                             );
                         }
-                        waitingMissionIds.push(mission.missionId);
+                        recordWaitingMissionId(mission.missionId);
                     }
                 }
             }
@@ -378,7 +405,7 @@ export class MissionScheduler {
             dispatchedInvocationIds,
             waitingMissionIds: [...new Set(waitingMissionIds)],
             nextWakeAt,
-            idle: dispatchedInvocationIds.length === 0,
+            idle: !didDispatch,
         };
     }
 
@@ -391,7 +418,7 @@ export class MissionScheduler {
     private async handleDispatchError(
         missionId: string,
         error: unknown,
-        waitingMissionIds: string[],
+        recordWaitingMissionId: (missionId: string) => void,
     ): Promise<void> {
         if (isCapabilityWaitError(error)) {
             const mission = await this.engine.getMission(missionId);
@@ -403,7 +430,7 @@ export class MissionScheduler {
                         error instanceof Error ? error.message : String(error),
                     );
                 }
-                waitingMissionIds.push(missionId);
+                recordWaitingMissionId(missionId);
             }
             return;
         }
@@ -418,6 +445,11 @@ export class MissionScheduler {
             );
         }
     }
+}
+
+function appendReportId(ids: string[], id: string, limit: number | undefined): void {
+    if (limit !== undefined && ids.length >= limit) return;
+    ids.push(id);
 }
 
 function isCapabilityWaitError(error: unknown): error is

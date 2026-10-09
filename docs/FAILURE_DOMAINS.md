@@ -220,6 +220,14 @@ cursor is reconsidered without a periodic polling timer. This is same-store
 notification behavior; independent daemon processes remain outside the
 single-owner guarantee.
 
+`MissionSchedulerOptions.reportIdLimit` optionally caps each retained ID list
+in a report. When omitted, direct/manual scheduler callers continue to receive
+complete ID arrays. The resident daemon sets the limit to `0`: its driver uses
+only `nextWakeAt`, so recovery, reconciliation, dispatch, and waiting-state
+work continue across every page without retaining Mission or Invocation IDs in
+the report. The limit is applied while IDs are recorded; it does not limit
+durable work. Bounded `waitingMissionIds` retains only the first distinct IDs.
+
 **Evidence:** `sqlite-mission-store.test.ts` traverses 200 Missions in pages of
 64 with deterministic order, no duplicate/omitted IDs, a terminal row filtered
 out, and an invocation reference attached only to its Mission. The scheduler
@@ -231,10 +239,12 @@ restart tests continue to prove confirmed effects are not invoked again and
 uncertain handoffs remain blocked for reconciliation.
 
 **Limits:** page size bounds Mission rows loaded per enumeration query, not
-total scheduler memory. A Mission can have many invocation rows, and recovery
-reports retain all recovered IDs to preserve report semantics. No production
-impact benchmark is claimed. No extra timer, polling loop, public Mission v1
-contract change, or scheduler parallelism was introduced.
+total scheduler memory. A Mission can have many invocation rows, and direct
+callers that omit `reportIdLimit` retain complete report ID arrays, which can
+grow with the durable backlog. The resident daemon avoids that report
+accumulation because it consumes no ID lists. No production impact or RSS
+benchmark is claimed. No extra timer, polling loop, public Mission v1 contract
+change, retry behavior, or scheduler parallelism was introduced.
 
 ## Domain inventory
 
@@ -376,9 +386,11 @@ contract change, or scheduler parallelism was introduced.
   recovery, fixture dispatch, confirmed-effect idempotency, uncertain delivery,
   wake coalescing and process restart. **P2:** recovery's `listMissions()` scan
   was unbounded at the #120 audit point; the M1 update above bounds Mission
-  rows per enumeration query. Total scheduler memory is not claimed bounded:
-  report ID arrays and invocation fan-out for an individual Mission can still
-  grow with durable data. Relevant code: `mission-scheduler.ts`,
+  rows per enumeration query and the resident daemon now retains zero report
+  IDs. Direct reports remain complete by default. Total scheduler memory is
+  not claimed bounded: invocation fan-out for an individual Mission and full
+  report arrays for direct callers can still grow with durable data. Relevant
+  code: `mission-scheduler.ts`,
   `sqlite-mission-store.ts`, `mission-scheduler-driver.ts`, and `main.ts`.
 
 ### 5. Capability Registry, connector dispatch, and invocation uncertainty

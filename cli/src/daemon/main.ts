@@ -146,6 +146,9 @@ export async function startHeadlessDaemon(
             engine: missionEngine,
             store: missionStore,
             seam: dispatchSeam,
+            // The resident driver uses only `nextWakeAt`; retaining report ID
+            // histories would duplicate unbounded Mission-backlog data in RAM.
+            reportIdLimit: 0,
         });
         schedulerDriver = new MissionSchedulerDriver({
             scheduler: missionScheduler,

@@ -276,6 +276,137 @@ describe("MissionScheduler", () => {
         await store.close();
     });
 
+    it("bounds retained recovery IDs without limiting the SQLite recovery scan", async () => {
+        const db = tempDb();
+        cleanups.push(db.cleanup);
+        const firstStore = new SqliteMissionStore(db.path);
+        await firstStore.initialize();
+        const allIds: string[] = [];
+        for (let index = 0; index < 67; index++) {
+            const id = `bounded-recovery-${String(index).padStart(3, "0")}`;
+            allIds.push(id);
+            await firstStore.createMission(makeMission(
+                id,
+                index === 20 ? MissionState.CANCELLED : MissionState.PAUSED,
+            ));
+        }
+        await firstStore.close();
+
+        const store = new SqliteMissionStore(db.path);
+        await store.initialize();
+        const pageCalls: number[] = [];
+        const listMissionPage = store.listMissionPage.bind(store);
+        store.listMissionPage = async (options) => {
+            const page = await listMissionPage(options);
+            pageCalls.push(page.missions.length);
+            return page;
+        };
+        const engine = createEngine(store, new FakeIdGenerator("bounded-recovery"));
+        const seam = new ConnectorDispatchSeam(engine, createRegistry(), new FakeClock(BASE_TIME));
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam,
+            missionPageSize: 16,
+            reportIdLimit: 5,
+        });
+
+        const report = await scheduler.recover();
+        const expectedIds = allIds.filter((id) => id !== "bounded-recovery-020");
+        expect(report.recoveredMissionIds).toHaveLength(5);
+        expect(report.recoveredMissionIds).toEqual(expectedIds.slice(0, 5));
+        expect(pageCalls.length).toBeGreaterThan(3);
+        expect(pageCalls.every((count) => count <= 16)).toBe(true);
+        for (const id of expectedIds) {
+            expect((await store.getMission(id))?.recoveryMetadata).toMatchObject({
+                recovered: true,
+                recoveryCount: 1,
+            });
+        }
+        expect((await store.getMission("bounded-recovery-020"))?.recoveryMetadata.recovered).toBe(false);
+        await store.close();
+    });
+
+    it("bounds waiting report IDs while a resident driver processes the full unavailable-capability backlog", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const engine = createEngine(store, new FakeIdGenerator("bounded-waiting"));
+        const missionIds: string[] = [];
+        for (let index = 0; index < 19; index++) {
+            const mission = await engine.createMission({
+                intent: {
+                    requestId: `bounded-waiting-request-${index}`,
+                    source: "cli",
+                    originalIntent: "Read the current LifeOS status",
+                    constraints: [],
+                    acceptanceCriteria: ["status read"],
+                },
+                allowedCapabilityScope: makeMission("unused").allowedCapabilityScope,
+            });
+            const proposal = await engine.proposePlan(mission.missionId, planFor(mission));
+            if (!proposal.ok) throw new Error("bounded waiting plan was rejected");
+            await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+            missionIds.push(mission.missionId);
+        }
+
+        const registry = createRegistry();
+        registry.setAvailability("lifeos.query", CapabilityAvailability.UNAVAILABLE, "LifeOS offline");
+        const seam = new ConnectorDispatchSeam(engine, registry, new FakeClock(BASE_TIME));
+        let missionPageReads = 0;
+        const listMissionPage = store.listMissionPage.bind(store);
+        store.listMissionPage = async (options) => {
+            missionPageReads++;
+            return listMissionPage(options);
+        };
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam,
+            missionPageSize: 4,
+            reportIdLimit: 3,
+        });
+        let passes = 0;
+        const reports: Array<Awaited<ReturnType<typeof scheduler.runOnce>>> = [];
+        const timers = new Map<number, () => void>();
+        let nextTimer = 0;
+        const driver = new MissionSchedulerDriver({
+            scheduler: {
+                runOnce: async () => {
+                    passes++;
+                    const report = await scheduler.runOnce();
+                    reports.push(report);
+                    return report;
+                },
+            },
+            store,
+            timer: {
+                now: () => new Date(BASE_TIME),
+                setTimeout: (callback) => {
+                    const id = ++nextTimer;
+                    timers.set(id, callback);
+                    return id as unknown as ReturnType<typeof setTimeout>;
+                },
+                clearTimeout: (handle) => {
+                    timers.delete(handle as unknown as number);
+                },
+            },
+        });
+
+        await driver.start();
+        expect(passes).toBe(2);
+        expect(timers.size).toBe(0);
+        expect(missionPageReads).toBeGreaterThan(3);
+        expect(reports[0]?.waitingMissionIds).toHaveLength(3);
+        expect(reports[0]?.recoveredMissionIds).toHaveLength(3);
+        expect((await store.listMissions()).filter((mission) => mission.state === MissionState.WAITING_FOR_CAPABILITY))
+            .toHaveLength(missionIds.length);
+        for (const id of missionIds) {
+            expect((await store.getMission(id))?.state).toBe(MissionState.WAITING_FOR_CAPABILITY);
+        }
+        await driver.stop();
+        await store.close();
+    });
+
     it("fails recovery on a page read error and resumes the scan without dispatch", async () => {
         const store = new SqliteMissionStore(":memory:");
         await store.initialize();
@@ -1118,9 +1249,115 @@ describe("MissionScheduler", () => {
         const report = await scheduler.runOnce();
         expect(invokeCount).toBe(1);
         expect(report.dispatchedInvocationIds).toHaveLength(1);
+        expect(report.idle).toBe(false);
         const invocations = await store.listInvocations(created.missionId);
         expect(invocations).toHaveLength(1);
         expect(invocations[0].status).toBe(InvocationStatus.COMPLETED);
+    });
+
+    it("keeps an empty pass idle with zero report ID capture", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const engine = createEngine(store, new FakeIdGenerator("idle-empty"));
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam: new ConnectorDispatchSeam(engine, createRegistry(), new FakeClock(BASE_TIME)),
+            reportIdLimit: 0,
+        });
+
+        const report = await scheduler.runOnce();
+
+        expect(report.dispatchedInvocationIds).toEqual([]);
+        expect(report.idle).toBe(true);
+        await store.close();
+    });
+
+    it("reports a fresh successful dispatch as non-idle with zero ID capture and does not repeat it after restart", async () => {
+        const db = tempDb();
+        cleanups.push(db.cleanup);
+        const firstStore = new SqliteMissionStore(db.path);
+        await firstStore.initialize();
+        const firstEngine = createEngine(firstStore, new FakeIdGenerator("idle-fresh"));
+        const created = await firstEngine.createMission({
+            intent: {
+                requestId: "request-idle-fresh",
+                source: "cli",
+                originalIntent: "Read the current LifeOS status",
+                constraints: [],
+                acceptanceCriteria: ["status read"],
+            },
+            allowedCapabilityScope: makeMission("unused").allowedCapabilityScope,
+        });
+        const proposal = await firstEngine.proposePlan(created.missionId, planFor(created));
+        if (!proposal.ok) throw new Error("zero-capture fresh plan was rejected");
+        await firstEngine.acceptPlan(created.missionId, proposal.revision.revisionId);
+
+        let invokeCount = 0;
+        const firstRegistry = createRegistry();
+        const firstSeam = new ConnectorDispatchSeam(firstEngine, firstRegistry, new FakeClock(BASE_TIME));
+        firstSeam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => firstRegistry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                invokeCount++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "status read",
+                    evidence: [],
+                };
+            },
+        });
+        const firstScheduler = new MissionScheduler({
+            engine: firstEngine,
+            store: firstStore,
+            seam: firstSeam,
+            clock: new FakeClock(BASE_TIME),
+            reportIdLimit: 0,
+        });
+
+        const firstReport = await firstScheduler.runOnce();
+        expect(firstReport.dispatchedInvocationIds).toEqual([]);
+        expect(firstReport.idle).toBe(false);
+        expect(await firstStore.listInvocations(created.missionId)).toHaveLength(1);
+        expect((await firstStore.listInvocations(created.missionId))[0].status).toBe(InvocationStatus.COMPLETED);
+        await firstStore.close();
+
+        const restartedStore = new SqliteMissionStore(db.path);
+        await restartedStore.initialize();
+        const restartedEngine = createEngine(restartedStore, new FakeIdGenerator("idle-fresh-restart"));
+        const restartedRegistry = createRegistry();
+        const restartedSeam = new ConnectorDispatchSeam(restartedEngine, restartedRegistry, new FakeClock(BASE_TIME));
+        restartedSeam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => restartedRegistry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                invokeCount++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "status read after restart",
+                    evidence: [],
+                };
+            },
+        });
+        const restartedScheduler = new MissionScheduler({
+            engine: restartedEngine,
+            store: restartedStore,
+            seam: restartedSeam,
+            clock: new FakeClock(BASE_TIME),
+            reportIdLimit: 0,
+        });
+        const restartedReport = await restartedScheduler.runOnce();
+
+        expect(restartedReport.dispatchedInvocationIds).toEqual([]);
+        expect(restartedReport.idle).toBe(true);
+        expect(invokeCount).toBe(1);
+        expect(await restartedStore.listInvocations(created.missionId)).toHaveLength(1);
+        await restartedStore.close();
     });
 
     it("does not retry an attested owner rejection through the seam or scheduler", async () => {
@@ -1590,6 +1827,108 @@ describe("MissionScheduler", () => {
         expect(invokes).toBe(1);
         expect(await store.listInvocations(created.missionId)).toHaveLength(1);
         expect((await store.getInvocation(invocation.invocationId))?.status).toBe(InvocationStatus.COMPLETED);
+    });
+
+    it("reports persisted due dispatch as non-idle with zero ID capture and does not repeat it after restart", async () => {
+        const db = tempDb();
+        cleanups.push(db.cleanup);
+        const initialStore = new SqliteMissionStore(db.path);
+        await initialStore.initialize();
+        const initialEngine = createEngine(initialStore, new FakeIdGenerator("idle-due"));
+        const created = await initialEngine.createMission({
+            intent: {
+                requestId: "request-idle-due",
+                source: "cli",
+                originalIntent: "Read the current LifeOS status",
+                constraints: [],
+                acceptanceCriteria: ["status read"],
+            },
+            allowedCapabilityScope: makeMission("unused").allowedCapabilityScope,
+        });
+        const proposal = await initialEngine.proposePlan(created.missionId, planFor(created));
+        if (!proposal.ok) throw new Error("zero-capture due plan was rejected");
+        await initialEngine.acceptPlan(created.missionId, proposal.revision.revisionId);
+        const prepared = await initialEngine.dispatchStep(created.missionId, "read-status", {
+            descriptor: {
+                contractVersion: 1,
+                moduleOwner: "lifeos",
+                idempotency: { mode: IdempotencyMode.IDEMPOTENT, keyScope: "request" },
+                retry: { maxAttempts: 3, backoff: RetryBackoff.FIXED },
+                cancellationSupport: CancellationSupport.NONE,
+                reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
+            },
+        });
+        expect(prepared.delivery.state).toBe("not_submitted");
+        await initialStore.close();
+
+        let invokeCount = 0;
+        const firstStore = new SqliteMissionStore(db.path);
+        await firstStore.initialize();
+        const firstEngine = createEngine(firstStore, new FakeIdGenerator("idle-due-first-run"));
+        const firstRegistry = createRegistry();
+        const firstSeam = new ConnectorDispatchSeam(firstEngine, firstRegistry, new FakeClock(BASE_TIME));
+        firstSeam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => firstRegistry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                invokeCount++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "due read",
+                    evidence: [],
+                };
+            },
+        });
+        const firstScheduler = new MissionScheduler({
+            engine: firstEngine,
+            store: firstStore,
+            seam: firstSeam,
+            clock: new FakeClock(BASE_TIME),
+            reportIdLimit: 0,
+        });
+        const firstReport = await firstScheduler.runOnce();
+
+        expect(firstReport.dispatchedInvocationIds).toEqual([]);
+        expect(firstReport.idle).toBe(false);
+        expect((await firstStore.getInvocation(prepared.invocationId))?.status).toBe(InvocationStatus.COMPLETED);
+        expect(await firstStore.listInvocations(created.missionId)).toHaveLength(1);
+        await firstStore.close();
+
+        const restartedStore = new SqliteMissionStore(db.path);
+        await restartedStore.initialize();
+        const restartedEngine = createEngine(restartedStore, new FakeIdGenerator("idle-due-restart"));
+        const restartedRegistry = createRegistry();
+        const restartedSeam = new ConnectorDispatchSeam(restartedEngine, restartedRegistry, new FakeClock(BASE_TIME));
+        restartedSeam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => restartedRegistry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                invokeCount++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "due read after restart",
+                    evidence: [],
+                };
+            },
+        });
+        const restartedScheduler = new MissionScheduler({
+            engine: restartedEngine,
+            store: restartedStore,
+            seam: restartedSeam,
+            clock: new FakeClock(BASE_TIME),
+            reportIdLimit: 0,
+        });
+        const restartedReport = await restartedScheduler.runOnce();
+
+        expect(restartedReport.dispatchedInvocationIds).toEqual([]);
+        expect(restartedReport.idle).toBe(true);
+        expect(invokeCount).toBe(1);
+        expect(await restartedStore.listInvocations(created.missionId)).toHaveLength(1);
+        await restartedStore.close();
     });
 
     it("reconciles an uncertain invocation after restart without a second invoke", async () => {
