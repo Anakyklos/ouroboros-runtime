@@ -113,7 +113,7 @@ describe('RPC shutdown and pending Mission command', () => {
         let lifecycle!: DaemonShutdownCoordinator;
         const server = new DaemonServer(
             storage,
-            { port, host: '127.0.0.1' },
+            { port, host: '127.0.0.1', maxInFlightRpcOperations: 1 },
             new EventBus(),
             missionStore,
             undefined,
@@ -145,6 +145,17 @@ describe('RPC shutdown and pending Mission command', () => {
         try {
             await waitForBarrier(commandStarted, 'Mission command handler start');
             await disconnectRpcClient(commandRequest);
+            const overCapacity = await fetch(`http://127.0.0.1:${port}/rpc`, {
+                method: 'POST',
+                headers: { authorization: 'Bearer test', 'content-type': 'application/json' },
+                body: JSON.stringify({ jsonrpc: '2.0', id: 'while-disconnected-handler-runs', method: 'system.version', params: {} }),
+            });
+            expect(overCapacity.status).toBe(503);
+            expect(await overCapacity.json()).toEqual({
+                jsonrpc: '2.0',
+                id: null,
+                error: { code: 'SERVICE_UNAVAILABLE', message: 'RPC operation capacity is unavailable' },
+            });
             shutdownPromise = lifecycle.requestShutdown('SIGTERM');
             await new Promise<void>((resolve) => setImmediate(resolve));
 

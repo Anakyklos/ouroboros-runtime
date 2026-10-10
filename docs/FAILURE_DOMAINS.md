@@ -287,8 +287,15 @@ parallelism was introduced.
   default cleanup of up to 3 iterations of 5 seconds. Unsupported or detached
   work is reported partial, not confirmed cancelled. These controls exist in
   `SessionManager`, but the modern RPC methods are session list/get plus daemon
-  status/mode/brake; they do not create or resume a legacy agent task. There is
-  no global RPC queue/concurrency bound configured by `DaemonServer`.
+  status/mode/brake; they do not create or resume a legacy agent task.
+  `DaemonServer` admits at most 32 RPC operations by default; the
+  `maxInFlightRpcOperations` setting accepts only integers from 1 through 1024.
+  Authentication, request validation, scope authorization, and revocation are
+  checked before capacity. Excess authorized work receives a sanitized HTTP
+  503 without queuing or gateway dispatch. Each accepted slot remains owned
+  until both its handler and response/transport settle; disconnect alone does
+  not release it. The bound applies to administrative RPC methods as well and
+  is an operation-count limit, not a process-wide byte or RSS budget.
 - **Restart and legacy reachability:** the ops file restores mode/brake facts;
   in-memory leases and SessionManager task maps do not survive restart. The
   daemon logs active rows found in `daemon.db`, but the modern RPC surface only
@@ -307,6 +314,10 @@ parallelism was introduced.
   code: `server.ts`, `shutdown-coordinator.ts`, `main.ts`,
   `session-manager.ts:71-121,362-470,947-1003`, and
   `execution-control.ts:493-520,1311-1400`.
+  `rpc-admission.test.ts`, `rpc-admission.e2e.test.ts`, and
+  `daemon-shutdown-race.test.ts` cover saturation, re-admission, real loopback
+  authentication with temporary SQLite, disconnect retention, and shutdown
+  quiescence. No production connector is composed by these tests.
 
 ### 2. Daemon/session SQLite and durable Mission SQLite
 
