@@ -222,6 +222,13 @@ export class DaemonServer {
 
     private forwardDurableMutation(mutation: MissionMutation): void {
         try {
+            if (mutation.entity === 'mission_projection') {
+                this.eventBus.emit('mission', {
+                    ...mutation.projection,
+                    kind: mutation.kind,
+                });
+                return;
+            }
             if (mutation.entity === 'mission') {
                 this.eventBus.emit('mission', {
                     ...projectMission(mutation.mission),

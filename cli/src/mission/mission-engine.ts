@@ -40,7 +40,6 @@ import {
     WAITING_STATES,
     TERMINAL_STATES,
     assertValidInvocationIdentity,
-    isLegacyReplayBarrier,
     isInvocationTerminal,
     isInvocationUpdateAllowed,
     isSafeRetryEligible,
@@ -710,7 +709,7 @@ export class MissionEngine {
         stepId: string,
         options?: DispatchStepOptions,
     ): Promise<CapabilityInvocation> {
-        const mission = await this.requireMission(missionId);
+        const mission = await this.requireDispatchMission(missionId);
 
         // Gate 1: Mission state must be authorizable.
         if (mission.state !== MissionState.READY && mission.state !== MissionState.EXECUTING) {
@@ -775,22 +774,17 @@ export class MissionEngine {
         });
         // A step id may be reused by a later revision only when it describes a
         // distinct effect. Same-effect replay remains forbidden.
-        const existing = await this.store.listInvocations(missionId);
-        const prior = existing.find(
-            (inv) => inv.stepId === stepId && inv.effectFingerprint === effectFingerprint,
+        const replayBarrier = await this.store.findInvocationReplayBarrier(
+            missionId,
+            stepId,
+            effectFingerprint,
         );
-        if (prior) {
-            throw new InvocationConflictError(missionId, stepId, prior.invocationId, prior.status);
-        }
-        const legacyBarrier = existing.find(
-            (inv) => inv.stepId === stepId && isLegacyReplayBarrier(inv),
-        );
-        if (legacyBarrier) {
+        if (replayBarrier) {
             throw new InvocationConflictError(
                 missionId,
                 stepId,
-                legacyBarrier.invocationId,
-                legacyBarrier.status,
+                replayBarrier.invocationId,
+                replayBarrier.status,
             );
         }
         const priorEffect = await this.store.findInvocationByEffectFingerprint(missionId, effectFingerprint);
@@ -1852,6 +1846,16 @@ export class MissionEngine {
         return this.requireMission(missionId);
     }
 
+    /** Read resident dispatch fields without materializing Mission invocation refs. */
+    async getMissionDispatchRecord(missionId: string) {
+        return this.store.getMissionDispatchRecord(missionId);
+    }
+
+    /** Read resident state/plan identity without materializing Mission invocation refs. */
+    async getMissionSchedulingRecord(missionId: string) {
+        return this.store.getMissionSchedulingRecord(missionId);
+    }
+
     /** Read a single plan revision (read-only; dispatch seam input source). */
     async getPlanRevision(revisionId: string): Promise<PlanRevision | null> {
         return this.store.getPlanRevision(revisionId);
@@ -1900,6 +1904,11 @@ export class MissionEngine {
             updatedAt: recoveredAt,
         });
         return this.requireMission(missionId);
+    }
+
+    /** Record resident scheduler recovery without hydrating Invocation refs. */
+    async recordMissionRecovery(missionId: string): Promise<void> {
+        await this.store.recordMissionRecovery(missionId, this.clock.isoNow());
     }
 
     private async recordLateCancelledFacts(
@@ -1982,6 +1991,12 @@ export class MissionEngine {
         if (!mission) {
             throw new MissionNotFoundError(missionId);
         }
+        return mission;
+    }
+
+    private async requireDispatchMission(missionId: string) {
+        const mission = await this.store.getMissionDispatchRecord(missionId);
+        if (!mission) throw new MissionNotFoundError(missionId);
         return mission;
     }
 

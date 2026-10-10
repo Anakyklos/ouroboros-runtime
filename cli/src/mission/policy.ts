@@ -110,7 +110,10 @@ export class PlanPolicyValidator {
      * Pure function of (mission, candidate, capability catalog) — the same
      * input always yields the same decision.
      */
-    async validate(mission: Mission, candidate: PlanCandidate): Promise<PolicyDecision> {
+    async validate(
+        mission: Pick<Mission, "missionId" | "constraints" | "acceptanceCriteria" | "allowedCapabilityScope" | "approvalRequirements">,
+        candidate: PlanCandidate,
+    ): Promise<PolicyDecision> {
         const decision = new DecisionBuilder();
 
         if (candidate.missionId !== mission.missionId) {
@@ -169,7 +172,7 @@ export class PlanPolicyValidator {
     }
 
     private async validateStep(
-        mission: Mission,
+        mission: Pick<Mission, "missionId" | "constraints" | "acceptanceCriteria" | "allowedCapabilityScope" | "approvalRequirements">,
         step: PlanStep,
         decision: DecisionBuilder,
     ): Promise<void> {
@@ -271,7 +274,7 @@ export class PlanPolicyValidator {
     }
 
     private validateInputRefs(
-        mission: Mission,
+        mission: Pick<Mission, "missionId" | "constraints" | "acceptanceCriteria" | "allowedCapabilityScope" | "approvalRequirements">,
         step: PlanStep,
         contract: CapabilityContract,
         decision: DecisionBuilder,
@@ -319,7 +322,7 @@ export class PlanPolicyValidator {
     }
 
     private validateModuleOwnership(
-        mission: Mission,
+        mission: Pick<Mission, "missionId" | "constraints" | "acceptanceCriteria" | "allowedCapabilityScope" | "approvalRequirements">,
         step: PlanStep,
         contract: CapabilityContract,
         decision: DecisionBuilder,

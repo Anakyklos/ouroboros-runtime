@@ -15,7 +15,6 @@ import {
     TERMINAL_STATES,
     InvocationStatus,
     computeEffectFingerprint,
-    isLegacyReplayBarrier,
 } from "./contracts.js";
 import {
     CapabilityUnavailableError,
@@ -112,13 +111,13 @@ export class MissionScheduler {
         const recoveredMissionIds: string[] = [];
         let cursor: MissionPageCursor | null = null;
         do {
-            const page = await this.store.listMissionPage({
+            const page = await this.store.listMissionSchedulingPage({
                 limit: this.missionPageSize,
                 cursor: cursor ?? undefined,
                 excludeStates: [...TERMINAL_STATES],
             });
             for (const mission of page.missions) {
-                await this.engine.recoverMission(mission.missionId);
+                await this.engine.recordMissionRecovery(mission.missionId);
                 appendReportId(recoveredMissionIds, mission.missionId, this.reportIdLimit);
             }
             cursor = page.nextCursor;
@@ -190,8 +189,8 @@ export class MissionScheduler {
                         (reconciled.recordedStatus === InvocationStatus.COMPLETED
                             || reconciled.recordedStatus === InvocationStatus.FAILED)
                     ) {
-                        const mission = await this.engine.getMission(current.missionId);
-                        if (mission.state === MissionState.WAITING_FOR_CAPABILITY) {
+                        const mission = await this.store.getMissionSchedulingRecord(current.missionId);
+                        if (mission?.state === MissionState.WAITING_FOR_CAPABILITY) {
                             await this.engine.restoreWaitingToReady(current.missionId);
                         }
                     }
@@ -205,15 +204,17 @@ export class MissionScheduler {
                     || error instanceof UnknownCapabilityError
                 ) {
                     try {
-                        const mission = await this.engine.getMission(current.missionId);
+                        const mission = await this.store.getMissionSchedulingRecord(current.missionId);
                         // An unavailable connector may explain READY/EXECUTING
                         // work, or an existing capability wait, but it must not
                         // overwrite an approval/context/provider/budget wait
                         // that requires its own explicit owner action.
-                        const canEnterCapabilityWait = mission.state === MissionState.READY
+                        const canEnterCapabilityWait = mission !== null && (
+                            mission.state === MissionState.READY
                             || mission.state === MissionState.EXECUTING
-                            || mission.state === MissionState.WAITING_FOR_CAPABILITY;
-                        if (canEnterCapabilityWait) {
+                            || mission.state === MissionState.WAITING_FOR_CAPABILITY
+                        );
+                        if (canEnterCapabilityWait && mission) {
                             await this.engine.setWaiting(
                                 mission.missionId,
                                 MissionState.WAITING_FOR_CAPABILITY,
@@ -234,13 +235,13 @@ export class MissionScheduler {
         const dueInvocations = await this.store.listDueInvocations(now, this.recoveryBatchSize);
         for (const candidate of dueInvocations) {
             if (dispatchSlots <= 0) break;
-            let mission = await this.store.getMission(candidate.missionId);
+            let mission = await this.store.getMissionSchedulingRecord(candidate.missionId);
             if (!mission || TERMINAL_STATES.has(mission.state) || mission.state === MissionState.PAUSED) continue;
             if (mission.state === MissionState.WAITING_FOR_CAPABILITY) {
                 if (!this.seam.canDispatchCapability(candidate.capabilityId)) continue;
                 try {
                     await this.engine.restoreWaitingToReady(mission.missionId);
-                    mission = await this.store.getMission(candidate.missionId);
+                    mission = await this.store.getMissionSchedulingRecord(candidate.missionId);
                 } catch {
                     continue;
                 }
@@ -288,7 +289,7 @@ export class MissionScheduler {
         let missionCursor: MissionPageCursor | null = null;
         do {
             if (dispatchSlots <= 0) break;
-            const page = await this.store.listMissionPage({
+            const page = await this.store.listMissionSchedulingPage({
                 limit: this.missionPageSize,
                 cursor: missionCursor ?? undefined,
                 states: schedulableStates,
@@ -303,12 +304,6 @@ export class MissionScheduler {
                 if (!mission.currentPlanRevisionId) continue;
                 const revision = await this.engine.getPlanRevision(mission.currentPlanRevisionId);
                 if (!revision) continue;
-                const invocations = await this.store.listInvocations(mission.missionId);
-                const completedEffects = new Set(
-                    invocations
-                        .filter((invocation) => invocation.status === InvocationStatus.COMPLETED)
-                        .map((invocation) => invocation.effectFingerprint),
-                );
                 const effectByStep = new Map(
                     revision.steps.map((step) => [
                         step.stepId,
@@ -320,11 +315,23 @@ export class MissionScheduler {
                         }),
                     ]),
                 );
+                const schedulingFacts = await this.store.getInvocationSchedulingFacts(
+                    mission.missionId,
+                    revision.steps.map((step) => ({
+                        stepId: step.stepId,
+                        effectFingerprint: effectByStep.get(step.stepId)!,
+                    })),
+                );
+                const factsByStep = new Map(schedulingFacts.map((fact) => [fact.stepId, fact]));
+                const completedEffects = new Set(
+                    schedulingFacts
+                        .filter((fact) => fact.hasCompletedEffect)
+                        .map((fact) => fact.effectFingerprint),
+                );
                 const isReadyStep = (step: typeof revision.steps[number]): boolean => {
                     const effectFingerprint = effectByStep.get(step.stepId)!;
-                    if (invocations.some((invocation) =>
-                        invocation.effectFingerprint === effectFingerprint
-                        || (invocation.stepId === step.stepId && isLegacyReplayBarrier(invocation)))) return false;
+                    const fact = factsByStep.get(step.stepId)!;
+                    if (fact.hasEffectClaim || fact.hasLegacyReplayBarrier) return false;
                     if (step.dependencyIds.some((dependencyId) => {
                         const dependencyEffect = effectByStep.get(dependencyId);
                         return dependencyEffect === undefined || !completedEffects.has(dependencyEffect);
@@ -343,7 +350,7 @@ export class MissionScheduler {
                     } catch {
                         continue;
                     }
-                    const restored = await this.store.getMission(mission.missionId);
+                    const restored = await this.store.getMissionSchedulingRecord(mission.missionId);
                     if (!restored || (
                         restored.state !== MissionState.READY
                         && restored.state !== MissionState.EXECUTING
@@ -379,7 +386,7 @@ export class MissionScheduler {
                     }
                 }
                 if (hasUnavailableReadyStep || becameUnavailable) {
-                    const latest = await this.store.getMission(mission.missionId);
+                    const latest = await this.store.getMissionSchedulingRecord(mission.missionId);
                     if (latest && canWaitForCapability(latest.state)) {
                         if (latest.state !== MissionState.WAITING_FOR_CAPABILITY) {
                             await this.engine.setWaiting(
@@ -421,8 +428,8 @@ export class MissionScheduler {
         recordWaitingMissionId: (missionId: string) => void,
     ): Promise<void> {
         if (isCapabilityWaitError(error)) {
-            const mission = await this.engine.getMission(missionId);
-            if (canWaitForCapability(mission.state)) {
+            const mission = await this.store.getMissionSchedulingRecord(missionId);
+            if (mission && canWaitForCapability(mission.state)) {
                 if (mission.state !== MissionState.WAITING_FOR_CAPABILITY) {
                     await this.engine.setWaiting(
                         missionId,
@@ -437,8 +444,8 @@ export class MissionScheduler {
         // A post-handoff seam exception is already durable on its invocation.
         // Blocking only the affected Mission keeps recovery/reconciliation
         // local and prevents one connector from stopping unrelated work.
-        const mission = await this.engine.getMission(missionId);
-        if (!TERMINAL_STATES.has(mission.state) && mission.state !== MissionState.PAUSED) {
+        const mission = await this.store.getMissionSchedulingRecord(missionId);
+        if (mission && !TERMINAL_STATES.has(mission.state) && mission.state !== MissionState.PAUSED) {
             await this.engine.blockMission(
                 missionId,
                 error instanceof Error ? error.message : String(error),

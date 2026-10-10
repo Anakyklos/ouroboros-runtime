@@ -198,20 +198,30 @@ change or restart.
 ## M1 bounded Mission enumeration update
 
 **Current behavior implemented on top of the #127 base (`1087d8a`):**
-`MissionStore.listMissionPage()` reads at most the requested Mission page,
-ordered by deterministic `created_at DESC, mission_id ASC` keyset position. The
-SQLite implementation loads invocation rows only for Mission IDs in that
-page, inside the same read transaction. The existing full-history
-`listMissions()` API remains available to other consumers.
+`MissionStore.listMissionSchedulingPage()` reads only Mission ID, state, plan
+revision ID and cursor fields, ordered by deterministic
+`created_at DESC, mission_id ASC` keyset position. It does not query
+`mission_invocations`. The resident recovery and scheduling scans use this
+page and `getMissionSchedulingRecord()`; recovery increments metadata with a
+narrow row update. Scheduling decisions use SQLite `EXISTS` checks over the
+entire authoritative Invocation ledger for each current-plan effect and step:
+completed effects, any effect claim and legacy replay barriers are reduced to
+one boolean fact per plan step. They are never inferred from a limited history
+page. `MissionEngine.dispatchStep()` repeats targeted barrier/existence checks
+and retains its atomic effect claim before persisting a new invocation.
 
-`MissionScheduler.recoverInternal()` walks every non-terminal Mission page
-before marking recovery complete. It calls `recoverMission()` for each
-durable ID; that method updates recovery metadata only and does not submit,
-retry, cancel, or reconcile an external effect. Scheduling pages only
-`READY`, `EXECUTING`, and `WAITING_FOR_CAPABILITY` Missions, while continuing
-past pages that contain no ready plan or dispatchable step. The default page
-size is 64 and may be configured up to 1024. Existing actionable/due
-invocation batch limits and dispatch-slot behavior are unchanged.
+`listMissionPage()`, `getMission()` and `listMissions()` keep their complete
+`Mission.invocationRefs` projection, but now select only those ref columns;
+they do not hydrate complete `CapabilityInvocation` rows. `listInvocations()`
+and single-invocation recovery APIs still return complete durable records.
+`MissionScheduler.recoverInternal()` walks every non-terminal scheduling page
+before marking recovery complete. It changes recovery metadata only and does
+not submit, retry, cancel or reconcile an external effect. Scheduling pages
+only `READY`, `EXECUTING` and `WAITING_FOR_CAPABILITY` Missions, while
+continuing past pages that contain no ready plan or dispatchable step. The
+default page size is 64 and may be configured up to 1024. Existing
+actionable/due invocation batch limits and dispatch-slot behavior are
+unchanged.
 
 The stable keyset does not hold a snapshot across the full scan. A committed
 Mission create/state mutation delivered through the resident store observer
@@ -238,13 +248,16 @@ revisit an eligible Mission inserted behind the keyset cursor. Existing
 restart tests continue to prove confirmed effects are not invoked again and
 uncertain handoffs remain blocked for reconciliation.
 
-**Limits:** page size bounds Mission rows loaded per enumeration query, not
-total scheduler memory. A Mission can have many invocation rows, and direct
-callers that omit `reportIdLimit` retain complete report ID arrays, which can
-grow with the durable backlog. The resident daemon avoids that report
-accumulation because it consumes no ID lists. No production impact or RSS
-benchmark is claimed. No extra timer, polling loop, public Mission v1 contract
-change, retry behavior, or scheduler parallelism was introduced.
+**Limits:** the scheduler decision query scans the full SQLite ledger for
+requested current-plan keys; its returned facts scale with plan steps, not the
+number of historical Invocation rows. Complete Mission reads still materialize
+the required `invocationRefs` array, and explicit `listInvocations()` callers
+still materialize complete history. This is not a global scheduler-memory or
+RSS guarantee. Direct callers that omit `reportIdLimit` still retain complete
+report ID arrays, while the resident daemon consumes no ID lists. No
+production impact or RSS benchmark is claimed. No extra timer, polling loop,
+public Mission v1/Capability contract change, retry behavior, or scheduler
+parallelism was introduced.
 
 ## Domain inventory
 
@@ -365,10 +378,10 @@ change, retry behavior, or scheduler parallelism was introduced.
   one timer; a missing, invalid, or elapsed timestamp creates none. No periodic
   polling is used. The driver removes listeners and cancels timers on stop.
 - **If invoked directly:** recovery visits every non-terminal Mission through
-  `listMissionPage()` and calls `recoverMission()` without submitting an
-  effect. Mission enumeration uses deterministic keyset pages (default 64);
-  invocation rows are loaded only for the Mission IDs in each page. A pass
-  queries actionable invocations with default batch size 64 and due invocations
+  `listMissionSchedulingPage()` and records recovery metadata with a narrow
+  SQLite update, without submitting an effect. Mission enumeration uses
+  deterministic keyset pages (default 64) and does not load Invocation refs.
+  A pass queries actionable invocations with default batch size 64 and due invocations
   with the same bound; default `maxInFlight` is 1 and connector calls are
   awaited sequentially, so this is a per-pass dispatch-slot bound, not
   concurrent parallelism. The cross-process exactly-once guarantee is
@@ -387,9 +400,12 @@ change, retry behavior, or scheduler parallelism was introduced.
   wake coalescing and process restart. **P2:** recovery's `listMissions()` scan
   was unbounded at the #120 audit point; the M1 update above bounds Mission
   rows per enumeration query and the resident daemon now retains zero report
-  IDs. Direct reports remain complete by default. Total scheduler memory is
-  not claimed bounded: invocation fan-out for an individual Mission and full
-  report arrays for direct callers can still grow with durable data. Relevant
+  IDs. Direct reports remain complete by default. Scheduling facts are
+  evaluated against the entire SQLite history and returned only for current
+  plan steps, preserving old completion, uncertain-delivery and legacy
+  barriers without hydrating unrelated Invocation entities. Full `Mission`
+  reads retain their complete reference lists, so total scheduler memory is
+  not claimed bounded. Relevant
   code: `mission-scheduler.ts`,
   `sqlite-mission-store.ts`, `mission-scheduler-driver.ts`, and `main.ts`.
 

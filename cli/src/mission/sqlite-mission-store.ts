@@ -38,6 +38,12 @@ import {
 import type {
     MissionMutation,
     MissionMutationListener,
+    MissionMutationProjection,
+    MissionSchedulingPage,
+    MissionSchedulingRecord,
+    InvocationSchedulingFact,
+    InvocationSchedulingStep,
+    MissionDispatchRecord,
     MissionPage,
     MissionPageOptions,
     MissionProjectionLimits,
@@ -112,6 +118,19 @@ interface InvocationRow {
     error: string | null;
     created_at: string | null;
     updated_at: string | null;
+}
+
+interface InvocationRefRow {
+    invocation_id: string;
+    mission_id: string;
+    step_id: string;
+    capability_id: string;
+    status: string;
+    dispatched_at: string | null;
+    completed_at: string | null;
+    result_refs: string;
+    owner_verification: string | null;
+    error: string | null;
 }
 
 /** Safe JSON parse that never throws. */
@@ -721,8 +740,7 @@ export class SqliteMissionStore implements MissionStore {
             "SELECT * FROM missions WHERE mission_id = ?",
         ).get(missionId) as MissionRow | null;
         if (!row) return null;
-        const invocations = this.listInvocationRows(missionId);
-        return this.rowToMission(row, invocations);
+        return this.rowToMissionFromRefs(row, this.listInvocationRefRows(missionId));
     }
 
     async updateMission(missionId: string, updates: Partial<Mission>): Promise<void> {
@@ -781,19 +799,22 @@ export class SqliteMissionStore implements MissionStore {
                 "SELECT * FROM missions ORDER BY created_at DESC",
             ).all() as unknown as MissionRow[];
         }
-        // Batch-load all invocations to avoid N+1.
+        // Batch-load only the complete Mission reference projection, not full
+        // Invocation payloads (attempts, inputs, retry and reconciliation data).
         if (rows.length === 0) return [];
         const allInvocations = this.stmt(
-            "listAllInvocations",
-            "SELECT * FROM mission_invocations ORDER BY mission_id, rowid ASC",
-        ).all() as unknown as InvocationRow[];
-        const byMission = new Map<string, InvocationRow[]>();
+            "listAllInvocationRefs",
+            `SELECT invocation_id, mission_id, step_id, capability_id, status,
+                    dispatched_at, completed_at, result_refs, owner_verification, error
+             FROM mission_invocations ORDER BY mission_id, rowid ASC`,
+        ).all() as unknown as InvocationRefRow[];
+        const byMission = new Map<string, InvocationRefRow[]>();
         for (const inv of allInvocations) {
             const list = byMission.get(inv.mission_id);
             if (list) list.push(inv);
             else byMission.set(inv.mission_id, [inv]);
         }
-        return rows.map((row) => this.rowToMission(row, byMission.get(row.mission_id) ?? []));
+        return rows.map((row) => this.rowToMissionFromRefs(row, byMission.get(row.mission_id) ?? []));
     }
 
     /** Read a stable Mission page and only the invocations owned by that page. */
@@ -832,11 +853,13 @@ export class SqliteMissionStore implements MissionStore {
 
             const invocationRows = this.stmt(
                 `listMissionPageInvocations:${rows.length}`,
-                `SELECT * FROM mission_invocations
+                `SELECT invocation_id, mission_id, step_id, capability_id, status,
+                        dispatched_at, completed_at, result_refs, owner_verification, error
+                 FROM mission_invocations
                  WHERE mission_id IN (${rows.map(() => "?").join(", ")})
                  ORDER BY mission_id ASC, rowid ASC`,
-            ).all(...rows.map((row) => row.mission_id)) as unknown as InvocationRow[];
-            const invocationsByMission = new Map<string, InvocationRow[]>();
+            ).all(...rows.map((row) => row.mission_id)) as unknown as InvocationRefRow[];
+            const invocationsByMission = new Map<string, InvocationRefRow[]>();
             for (const invocation of invocationRows) {
                 const missionInvocations = invocationsByMission.get(invocation.mission_id);
                 if (missionInvocations) missionInvocations.push(invocation);
@@ -844,11 +867,224 @@ export class SqliteMissionStore implements MissionStore {
             }
             const last = rows[rows.length - 1]!;
             return {
-                missions: rows.map((row) => this.rowToMission(row, invocationsByMission.get(row.mission_id) ?? [])),
+                missions: rows.map((row) => this.rowToMissionFromRefs(row, invocationsByMission.get(row.mission_id) ?? [])),
                 nextCursor: rows.length === limit
                     ? { createdAt: last.created_at, missionId: last.mission_id }
                     : null,
             };
+        });
+    }
+
+    /** Read the resident scheduler's stable Mission page without invocation refs. */
+    async listMissionSchedulingPage(options: MissionPageOptions): Promise<MissionSchedulingPage> {
+        const { limit, cursor, states, excludeStates } = options;
+        this.ensureDb();
+        if (!Number.isSafeInteger(limit) || limit <= 0 || limit > MAX_MISSION_PAGE_SIZE) {
+            throw new Error(`Mission page limit must be between 1 and ${MAX_MISSION_PAGE_SIZE}`);
+        }
+        if (states?.length === 0) return { missions: [], nextCursor: null };
+
+        const predicates = ["1 = 1"];
+        const parameters: string[] = [];
+        if (states) {
+            predicates.push(`state IN (${states.map(() => "?").join(", ")})`);
+            parameters.push(...states);
+        }
+        if (excludeStates?.length) {
+            predicates.push(`state NOT IN (${excludeStates.map(() => "?").join(", ")})`);
+            parameters.push(...excludeStates);
+        }
+        if (cursor) {
+            predicates.push("(created_at < ? OR (created_at = ? AND mission_id > ?))");
+            parameters.push(cursor.createdAt, cursor.createdAt, cursor.missionId);
+        }
+        const rows = this.stmt(
+            `listMissionSchedulingPage:${states?.length ?? 0}:${excludeStates?.length ?? 0}:${cursor ? 1 : 0}`,
+            `SELECT mission_id, state, current_plan_revision_id, created_at
+             FROM missions
+             WHERE ${predicates.join(" AND ")}
+             ORDER BY created_at DESC, mission_id ASC
+             LIMIT ?`,
+        ).all(...parameters, limit) as unknown as Array<{
+            mission_id: string;
+            state: string;
+            current_plan_revision_id: string | null;
+            created_at: string;
+        }>;
+        const last = rows[rows.length - 1];
+        return {
+            missions: rows.map((row) => ({
+                missionId: row.mission_id,
+                state: row.state as MissionState,
+                currentPlanRevisionId: row.current_plan_revision_id,
+            })),
+            nextCursor: rows.length === limit && last
+                ? { createdAt: last.created_at, missionId: last.mission_id }
+                : null,
+        };
+    }
+
+    /** Read state/plan identity without hydrating the Mission invocation projection. */
+    async getMissionSchedulingRecord(missionId: string): Promise<MissionSchedulingRecord | null> {
+        const row = this.stmt(
+            "getMissionSchedulingRecord",
+            "SELECT mission_id, state, current_plan_revision_id FROM missions WHERE mission_id = ?",
+        ).get(missionId) as {
+            mission_id: string;
+            state: string;
+            current_plan_revision_id: string | null;
+        } | null;
+        return row ? {
+            missionId: row.mission_id,
+            state: row.state as MissionState,
+            currentPlanRevisionId: row.current_plan_revision_id,
+        } : null;
+    }
+
+    /** Read dispatch authorization fields without materializing invocation refs. */
+    async getMissionDispatchRecord(missionId: string): Promise<MissionDispatchRecord | null> {
+        const row = this.stmt(
+            "getMissionDispatchRecord",
+            `SELECT mission_id, state, current_plan_revision_id, constraints,
+                    acceptance_criteria, allowed_capability_scope, approval_requirements
+             FROM missions WHERE mission_id = ?`,
+        ).get(missionId) as {
+            mission_id: string;
+            state: string;
+            current_plan_revision_id: string | null;
+            constraints: string;
+            acceptance_criteria: string;
+            allowed_capability_scope: string;
+            approval_requirements: string;
+        } | null;
+        return row ? {
+            missionId: row.mission_id,
+            state: row.state as MissionState,
+            currentPlanRevisionId: row.current_plan_revision_id,
+            constraints: parseJson(row.constraints, []),
+            acceptanceCriteria: parseJson(row.acceptance_criteria, []),
+            allowedCapabilityScope: parseJson(row.allowed_capability_scope, {
+                capabilityIds: [],
+                allowedEffectClasses: [],
+                allowedRefPrefixes: [],
+            }),
+            approvalRequirements: parseJson(row.approval_requirements, []),
+        } : null;
+    }
+
+    /** Compute current-plan scheduling facts with whole-ledger SQLite existence checks. */
+    async getInvocationSchedulingFacts(
+        missionId: string,
+        steps: readonly InvocationSchedulingStep[],
+    ): Promise<InvocationSchedulingFact[]> {
+        this.ensureDb();
+        const effectClaim = this.stmt(
+            "hasMissionEffectClaim",
+            "SELECT EXISTS(SELECT 1 FROM mission_invocations WHERE mission_id = ? AND effect_fingerprint = ?) AS found",
+        );
+        const completedEffect = this.stmt(
+            "hasCompletedMissionEffect",
+            "SELECT EXISTS(SELECT 1 FROM mission_invocations WHERE mission_id = ? AND effect_fingerprint = ? AND status = ?) AS found",
+        );
+        const legacyBarrier = this.stmt(
+            "hasLegacyMissionStepBarrier",
+            "SELECT EXISTS(SELECT 1 FROM mission_invocations WHERE mission_id = ? AND step_id = ? AND substr(effect_fingerprint, 1, 7) = 'legacy:') AS found",
+        );
+        return steps.map((step) => ({
+            stepId: step.stepId,
+            effectFingerprint: step.effectFingerprint,
+            hasEffectClaim: Boolean((effectClaim.get(missionId, step.effectFingerprint) as { found: number }).found),
+            hasCompletedEffect: Boolean((completedEffect.get(
+                missionId,
+                step.effectFingerprint,
+                "completed",
+            ) as { found: number }).found),
+            hasLegacyReplayBarrier: Boolean((legacyBarrier.get(missionId, step.stepId) as { found: number }).found),
+        }));
+    }
+
+    /** Read a single conflict row without hydrating unrelated Mission history. */
+    async findInvocationReplayBarrier(
+        missionId: string,
+        stepId: string,
+        effectFingerprint: string,
+    ): Promise<CapabilityInvocation | null> {
+        const row = this.stmt(
+            "findInvocationReplayBarrier",
+            `SELECT * FROM mission_invocations
+             WHERE mission_id = ? AND step_id = ?
+               AND (effect_fingerprint = ? OR substr(effect_fingerprint, 1, 7) = 'legacy:')
+             ORDER BY CASE WHEN effect_fingerprint = ? THEN 0 ELSE 1 END, rowid ASC LIMIT 1`,
+        ).get(missionId, stepId, effectFingerprint, effectFingerprint) as InvocationRow | null;
+        return row ? this.rowToInvocation(row) : null;
+    }
+
+    /** Increment recovery metadata from the Mission row without loading Invocation history. */
+    async recordMissionRecovery(missionId: string, recoveredAt: string): Promise<void> {
+        await this.withTransaction(async (): Promise<void> => {
+            const row = this.stmt(
+                "getMissionRecoveryState",
+                "SELECT state, recovery_metadata FROM missions WHERE mission_id = ?",
+            ).get(missionId) as { state: string; recovery_metadata: string } | null;
+            if (!row || [MissionState.COMPLETED, MissionState.CANCELLED, MissionState.FAILED_TERMINAL].includes(row.state as MissionState)) {
+                return;
+            }
+            const metadata = parseJson<Mission["recoveryMetadata"]>(row.recovery_metadata, {
+                recovered: false,
+                recoveryCount: 0,
+            });
+            const updated = this.stmt(
+                "recordMissionRecovery",
+                "UPDATE missions SET recovery_metadata = ?, updated_at = ? WHERE mission_id = ? AND state = ?",
+            ).run(JSON.stringify({
+                ...metadata,
+                recovered: true,
+                recoveryCount: metadata.recoveryCount + 1,
+                lastRecoveredAt: recoveredAt,
+            }), recoveredAt, missionId, row.state);
+            if (updated.changes !== 1) return;
+            const projection = this.stmt(
+                "getMissionRecoveryProjection",
+                `SELECT m.mission_id, m.state, m.source, m.current_plan_revision_id,
+                        m.created_at, m.updated_at, m.recovery_metadata, m.approval_requirements,
+                        (SELECT json_group_array(i.invocation_id)
+                         FROM mission_invocations AS i WHERE i.mission_id = m.mission_id) AS invocation_ids
+                 FROM missions AS m WHERE m.mission_id = ?`,
+            ).get(missionId) as {
+                mission_id: string;
+                state: string;
+                source: string;
+                current_plan_revision_id: string | null;
+                created_at: string;
+                updated_at: string;
+                recovery_metadata: string;
+                approval_requirements: string;
+                invocation_ids: string;
+            } | null;
+            if (!projection) return;
+            const approvalRequirements = parseJson<Mission["approvalRequirements"]>(
+                projection.approval_requirements,
+                [],
+            );
+            const currentRecovery = parseJson<Mission["recoveryMetadata"]>(
+                projection.recovery_metadata,
+                { recovered: false, recoveryCount: 0 },
+            );
+            this.publishMutation({
+                entity: "mission_projection",
+                kind: "updated",
+                projection: {
+                    missionId: projection.mission_id,
+                    state: projection.state as MissionState,
+                    source: projection.source as Mission["source"],
+                    currentPlanRevisionId: projection.current_plan_revision_id,
+                    createdAt: projection.created_at,
+                    updatedAt: projection.updated_at,
+                    recoveryCount: currentRecovery.recoveryCount,
+                    invocationIds: parseJson(projection.invocation_ids, []),
+                    pendingApprovalCount: approvalRequirements.filter((requirement) => !requirement.granted).length,
+                },
+            });
         });
     }
 
@@ -1163,6 +1399,16 @@ export class SqliteMissionStore implements MissionStore {
         ).all(missionId) as unknown as InvocationRow[];
     }
 
+    /** Sync helper used by complete Mission reads; selects only public refs. */
+    private listInvocationRefRows(missionId: string): InvocationRefRow[] {
+        return this.stmt(
+            "listInvocationRefs",
+            `SELECT invocation_id, mission_id, step_id, capability_id, status,
+                    dispatched_at, completed_at, result_refs, owner_verification, error
+             FROM mission_invocations WHERE mission_id = ? ORDER BY rowid ASC`,
+        ).all(missionId) as unknown as InvocationRefRow[];
+    }
+
     async listInvocations(missionId: string): Promise<CapabilityInvocation[]> {
         return this.listInvocationRows(missionId).map((row) => this.rowToInvocation(row));
     }
@@ -1410,6 +1656,23 @@ export class SqliteMissionStore implements MissionStore {
                 return accounting as unknown as MissionContextAccounting;
             })(),
         };
+    }
+
+    private rowToMissionFromRefs(row: MissionRow, refs: InvocationRefRow[]): Mission {
+        const mission = this.rowToMission(row);
+        mission.invocationRefs = refs.map((ref) => ({
+            invocationId: ref.invocation_id,
+            missionId: ref.mission_id,
+            stepId: ref.step_id,
+            capabilityId: ref.capability_id,
+            status: ref.status as CapabilityInvocation["status"],
+            dispatchedAt: ref.dispatched_at ?? undefined,
+            completedAt: ref.completed_at ?? undefined,
+            resultRefs: parseJson(ref.result_refs, []),
+            ownerVerification: parseJson(ref.owner_verification, undefined),
+            error: ref.error ?? undefined,
+        }));
+        return mission;
     }
 
     private rowToRevision(row: PlanRevisionRow): PlanRevision {
