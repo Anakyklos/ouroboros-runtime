@@ -229,7 +229,7 @@ describe("administrative CLI over authenticated daemon HTTP and temporary SQLite
       expect(restartedCapabilities.code).toBe(0);
       expect(JSON.parse(restartedCapabilities.stdout)).toEqual(JSON.parse(fixtureCapabilities.stdout));
 
-      const registryReads = spyOn(fixtureRegistry!, "listDescriptors");
+      const registryReads = spyOn(fixtureRegistry!, "listDescriptorPage");
       const registryReadsBeforeRejectedClients = registryReads.mock.calls.length;
       for (const credentialFile of [absentFile, invalidFile, deniedFile, revokedFile]) {
         const rejected = await run(credentialFile, ["invocations"]);
