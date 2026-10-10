@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { DaemonProjection, DEFAULT_MAX_PROJECTION_CLIENTS, type ProjectionClient } from "./daemon-projection.js";
 import type {
   DaemonMissionEventData,
@@ -225,6 +225,126 @@ describe("DaemonProjection", () => {
     expect(readEnvelope(client.messages, 0).event).toBe("snapshot");
     expect(readEnvelope(client.messages, 1).event).toBe("mission");
     projection.releaseReservation(unusedReservation!);
+  });
+
+  it("bounds a never-settling snapshot handshake without affecting a healthy sibling", async () => {
+    let snapshotCalls = 0;
+    const projection = new DaemonProjection({
+      snapshot: (cursor) => {
+        snapshotCalls += 1;
+        return snapshotCalls === 1
+          ? new Promise<DaemonSnapshot>(() => {})
+          : createSnapshot(cursor);
+      },
+      maxClients: 2,
+      snapshotHandshakeTimeoutMs: 25,
+    });
+    const stalled = new FakeClient();
+    const healthy = new FakeClient();
+    const connectingStalled = projection.connectClient(stalled);
+    await projection.connectClient(healthy);
+
+    const outcome = await Promise.race([
+      connectingStalled.then((connected) => ({ connected })),
+      new Promise<{ timedOut: true }>((resolve) => setTimeout(() => resolve({ timedOut: true }), 100)),
+    ]);
+
+    expect(outcome).toEqual({ connected: false });
+    expect(stalled.closeCalls).toBe(1);
+    expect(projection.connectedClientCount).toBe(1);
+    expect(projection.admittedClientCount).toBe(2);
+    expect(projection.reserveClient()).toBeNull();
+    projection.broadcast("mission", missionEvent);
+    expect(healthy.messages).toHaveLength(2);
+    expect(readEnvelope(healthy.messages, 0).event).toBe("snapshot");
+    expect(readEnvelope(healthy.messages, 1).event).toBe("mission");
+    expect(stalled.messages).toHaveLength(0);
+
+    projection.disconnectClient(stalled);
+    projection.disconnectClient(stalled);
+    projection.disconnectClient(healthy);
+    expect(projection.admittedClientCount).toBe(0);
+  });
+
+  it("keeps late snapshot work within the admission bound and ignores late fulfillment or rejection", async () => {
+    let settleFirst!: (snapshot: DaemonSnapshot) => void;
+    let rejectSecond!: (error: Error) => void;
+    let snapshotCalls = 0;
+    const projection = new DaemonProjection({
+      snapshot: () => {
+        snapshotCalls += 1;
+        if (snapshotCalls === 1) return new Promise<DaemonSnapshot>((resolve) => { settleFirst = resolve; });
+        return new Promise<DaemonSnapshot>((_resolve, reject) => { rejectSecond = reject; });
+      },
+      maxClients: 1,
+      snapshotHandshakeTimeoutMs: 10,
+    });
+    const first = new FakeClient();
+    expect(await projection.connectClient(first)).toBe(false);
+    expect(first.closeCalls).toBe(1);
+    expect(projection.admittedClientCount).toBe(1);
+    projection.disconnectClient(first);
+    expect(projection.admittedClientCount).toBe(0);
+    expect(projection.reserveClient()).toBeNull();
+
+    settleFirst(createSnapshot(1));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(first.messages).toHaveLength(0);
+    const reservation = projection.reserveClient();
+    expect(reservation).not.toBeNull();
+    projection.releaseReservation(reservation!);
+
+    const second = new FakeClient();
+    expect(await projection.connectClient(second)).toBe(false);
+    expect(second.closeCalls).toBe(1);
+    projection.disconnectClient(second);
+    expect(projection.reserveClient()).toBeNull();
+    rejectSecond(new Error("late private snapshot failure"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(second.messages).toHaveLength(0);
+    const recovered = projection.reserveClient();
+    expect(recovered).not.toBeNull();
+    projection.releaseReservation(recovered!);
+  });
+
+  it("cancels the handshake wait on shutdown while retaining unsettled snapshot admission", async () => {
+    const setTimeoutSpy = spyOn(globalThis, "setTimeout");
+    const clearTimeoutSpy = spyOn(globalThis, "clearTimeout");
+    let resolveSnapshot!: (snapshot: DaemonSnapshot) => void;
+    const projection = new DaemonProjection({
+      snapshot: () => new Promise<DaemonSnapshot>((resolve) => { resolveSnapshot = resolve; }),
+      maxClients: 1,
+      snapshotHandshakeTimeoutMs: 5_000,
+    });
+    const client = new FakeClient();
+    try {
+      const connecting = projection.connectClient(client);
+      const timeoutIndex = setTimeoutSpy.mock.calls.findIndex((call) => call[1] === 5_000);
+      expect(timeoutIndex).toBeGreaterThanOrEqual(0);
+      const timeoutResult = setTimeoutSpy.mock.results[timeoutIndex];
+      expect(timeoutResult?.type).toBe("return");
+      const timeoutHandle = timeoutResult?.type === "return" ? timeoutResult.value : undefined;
+      projection.closeClients();
+
+      expect(await connecting).toBe(false);
+      expect(clearTimeoutSpy.mock.calls.some(([handle]) => handle === timeoutHandle)).toBe(true);
+      expect(client.closeCalls).toBe(1);
+      expect(projection.connectedClientCount).toBe(0);
+      expect(projection.admittedClientCount).toBe(1);
+      projection.disconnectClient(client);
+      expect(projection.admittedClientCount).toBe(0);
+      expect(projection.reserveClient()).toBeNull();
+
+      resolveSnapshot(createSnapshot(1));
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(client.messages).toHaveLength(0);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+    }
   });
 
   it("closes a client when the authoritative snapshot cannot be read", async () => {

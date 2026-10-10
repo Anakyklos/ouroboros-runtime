@@ -535,7 +535,19 @@ external outcome or replay authority from a pass error.
   slot remains counted while the socket is active or closing: sending a close
   frame for revocation, expiry or snapshot failure does not release capacity;
   only the socket's actual `close` or `error` event does. Shutdown terminates
-  upgraded sockets and relies on that same transport event for release.
+  upgraded sockets and relies on that same transport event for release. A
+  snapshot handshake has a finite 5-second default deadline
+  (snapshotHandshakeTimeoutMs can configure a positive finite delay); its
+  one-shot timer is cleared on snapshot settlement, client disconnect, or
+  shutdown. Timeout closes only the affected projection client and leaves the
+  snapshot Promise observed, so a late fulfillment/rejection cannot send a
+  snapshot or create an unhandled rejection.
+  DaemonProjection separately caps unsettled underlying snapshot operations
+  at maxProjectionClients. Closing the WebSocket does not claim to cancel an
+  uncooperative snapshot operation: it continues to consume one of those
+  bounded work admissions until it settles. Once that bound is full, new
+  clients are rejected before upgrade; a process restart drops the volatile
+  operations and a reconnect reads the authoritative current snapshot.
   Exceeding a per-client bound, an invalid socket, snapshot
   read failure, or send exception closes only that client. The default 64 is a
   bounded fan-out choice alongside the existing per-client limits, not a
@@ -553,10 +565,17 @@ external outcome or replay authority from a pass error.
   backpressure/failure. `local-control-auth.e2e.test.ts` exercises concurrent
   handshakes through real Fastify/WebSocket with temporary SQLite, capacity
   rejection without snapshot, continued healthy event delivery and RPC,
-  revocation/disconnect release, and shared auth-timer ownership.
+  revocation/disconnect release, and shared auth-timer ownership. New evidence
+  adds a never-settling snapshot timeout, pending-handshake shutdown, restart
+  reconnect from the durable SQLite snapshot, and unchanged Mission and
+  Invocation rows. The delayed-transport-close accounting invariant remains
+  asserted by the projection lifecycle tests; the real WebSocket test observes
+  its actual transport close.
   `DAEMON_EVENT_CONTRACT.md` documents reconnect from snapshot. **P2:** this is
-  a cardinality bound, not a process-wide byte budget; transient event history
-  is still not persisted or replayed. Relevant code:
+  cardinality bounds, not a process-wide byte budget; an uncooperative
+  snapshot that never settles can permanently consume one bounded snapshot-work
+  admission until daemon restart, and transient event history is still not
+  persisted or replayed. Relevant code:
   `event-bus.ts:127-150`, `daemon-projection.ts`, `server.ts`.
 
 ## Persistence ownership summary

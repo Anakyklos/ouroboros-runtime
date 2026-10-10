@@ -11,7 +11,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { EventBus, globalEventBus } from './event-bus.js';
 import { RpcGateway, type DaemonRpcGatewayPort } from './rpc-gateway.js';
-import { DaemonProjection, type ProjectionClient, type ProjectionClientReservation } from './daemon-projection.js';
+import {
+    DaemonProjection,
+    DEFAULT_SNAPSHOT_HANDSHAKE_TIMEOUT_MS,
+    type ProjectionClient,
+    type ProjectionClientReservation,
+} from './daemon-projection.js';
 import { projectInvocation, projectMission } from './durable-projection.js';
 import {
     isAllowedDaemonEvent,
@@ -38,12 +43,14 @@ export interface DaemonConfig {
     port: number;
     host: string;
     maxProjectionClients?: number;
+    snapshotHandshakeTimeoutMs?: number;
     maxInFlightRpcOperations?: number;
 }
 
 const DEFAULT_CONFIG: DaemonConfig = {
     port: 7777,
     host: '127.0.0.1',
+    snapshotHandshakeTimeoutMs: DEFAULT_SNAPSHOT_HANDSHAKE_TIMEOUT_MS,
     maxInFlightRpcOperations: 32,
 };
 
@@ -170,6 +177,7 @@ export class DaemonServer {
         );
         this.projection = new DaemonProjection({
             maxClients: this.config.maxProjectionClients,
+            snapshotHandshakeTimeoutMs: this.config.snapshotHandshakeTimeoutMs,
             snapshot: async (cursor) => ({
                 ...await this.rpcGateway.getProjectionSnapshot(),
                 cursor,
