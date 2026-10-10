@@ -2792,7 +2792,43 @@ describe("MissionScheduler", () => {
         expect(outcomes).toEqual(["Read the old status", "Read the new status"]);
         expect(await store.listInvocations(created.missionId)).toHaveLength(2);
 
+        const completedDependency = (await store.listInvocations(created.missionId)).find(
+            (invocation) => invocation.planRevisionId === proposedRevision.revision.revisionId
+                && invocation.stepId === "prepare",
+        );
+        if (!completedDependency) throw new Error("revised dependency completion was not persisted");
+        for (let index = 0; index < 128; index++) {
+            await store.saveInvocation({
+                ...completedDependency,
+                invocationId: `far-dependency-history-${index}`,
+                stepId: `historical-step-${index}`,
+                planRevisionId: `historical-revision-${index}`,
+                requestId: `far-dependency-request-${index}`,
+                effectFingerprint: `far-dependency-effect-${index}`,
+                idempotency: {
+                    ...completedDependency.idempotency,
+                    key: `far-dependency-key-${index}`,
+                },
+            });
+        }
+
+        let materializedInvocationRows = 0;
+        const instrumented = store as unknown as {
+            rowToInvocation: (row: unknown) => CapabilityInvocation;
+        };
+        const rowToInvocation = instrumented.rowToInvocation.bind(store);
+        instrumented.rowToInvocation = (row) => {
+            materializedInvocationRows++;
+            return rowToInvocation(row);
+        };
+        const fullHistoryRead = store.listInvocations.bind(store);
+        store.listInvocations = async () => {
+            throw new Error("resident dependency scheduling called the full-history API");
+        };
         await scheduler.runOnce();
+        store.listInvocations = fullHistoryRead;
         expect(outcomes).toEqual(["Read the old status", "Read the new status", "Consume the old status"]);
+        expect(materializedInvocationRows).toBeLessThan(16);
+        expect(await store.listInvocations(created.missionId)).toHaveLength(131);
     });
 });
