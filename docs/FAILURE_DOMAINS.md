@@ -585,24 +585,30 @@ describes the observed gap, not an asserted incident.
   transport settlement, an accepted command's outcome remains unknown and both
   SQLite stores stay open until forced process termination. An unproved
   scheduler drain likewise keeps MissionStore open. The real Fastify/SQLite
-  shutdown race tests cover this conservative path. No retry/replay is
-  authorized by the uncertainty.
-- **P2:** (a) a failed scheduler pass gets no autonomous retry/wakeup until a
-  relevant durable mutation or restart; #131 remains blocked because a generic
-  rejection cannot prove safe re-entry, as concluded by #132; (b) persisted
-  active session rows have no worker reconstruction in the modern composition;
-  (c) complete Mission references and explicit full-history APIs still
+  shutdown race tests cover this conservative path. Also P1 is the resident
+  scheduler's missing autonomous wake after a failed pass: issue #131 is
+  explicitly priority P1, and its deterministic timer/SQLite reproduction
+  confirms eligible work can remain without another pass until a relevant
+  mutation or restart. This is a durable-resumption/liveness gap; it does not
+  prove loss or duplication of an external effect. #131 remains OPEN/BLOCKED
+  because the generic pass failure cannot establish safe re-entry; #132
+  concluded negatively and closed `not_planned`. No automatic retry/replay is
+  authorized by that failure.
+- **P2:** (a) persisted active session rows have no worker reconstruction in
+  the modern composition; (b) complete Mission references and explicit
+  full-history APIs still
   materialize history, so total scheduler memory/RSS is not bounded, although
-  resident scan pages and report-ID retention are bounded; (d) provider
+  resident scan pages and report-ID retention are bounded; (c) provider
   snapshots are not automatically persisted/restored and configured provider
-  waiters have no count bound; (e) WebSocket admission is a 64-slot
+  waiters have no count bound; (d) WebSocket admission is a 64-slot
   cardinality limit, not a global bytes/RSS budget or durable event history;
-  and (f) the connector seam defines no generic invoke timeout.
+  and (e) the connector seam defines no generic invoke timeout.
 
 Each P2 item is a code-level limitation or bounded test finding, not a claim
-that an incident occurred. In particular, the failed-pass recovery gap is
-reproduced as a missing autonomous wake; it does not establish data loss,
-effect duplication, or safe generic retry.
+that an incident occurred. P1/P2 describe the demonstrated operational gap
+and bounded limitations; they do not assert that data loss or effect
+duplication occurred. The #132 safety decision continues to prohibit inferring
+retry authority from a generic failed pass.
 
 These severities classify the observed control-plane gap, not a claim that a
 particular external effect occurred. An absent caller/wiring is directly

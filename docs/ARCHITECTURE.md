@@ -342,7 +342,10 @@ O trabalho de produto ainda em direção inclui:
 - **M1 — Local Control Plane: fase atual**. #70 e #59 são os principais
   epics; child work está decomposto e rastreado em #94–#105. Consulte o GitHub
   para os estados vivos `ready`, `blocked` e `closed`; M1 não está completo e
-  este documento não seleciona a próxima child nem presume conclusão de #97/#98.
+  este documento não seleciona a próxima child. As issues #97 e #98 estão
+  concluídas e integradas à `main` pelas PRs [#107](https://github.com/Anakyklos/ouroboros-runtime/pull/107)
+  e [#108](https://github.com/Anakyklos/ouroboros-runtime/pull/108),
+  respectivamente.
 - **Evidência M1 posterior à decomposição:** PRs #127, #128, #134, #136 e
   #138 foram integradas à `main`, adicionando limites e accounting de slots
   WebSocket, paginação SQLite e fatos de decisão do scheduler, retenção
