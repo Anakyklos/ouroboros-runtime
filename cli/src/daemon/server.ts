@@ -37,15 +37,18 @@ export interface DaemonConfig {
     port: number;
     host: string;
     maxProjectionClients?: number;
+    maxInFlightRpcOperations?: number;
 }
 
 const DEFAULT_CONFIG: DaemonConfig = {
     port: 7777,
     host: '127.0.0.1',
+    maxInFlightRpcOperations: 32,
 };
 
 const RPC_DRAIN_TIMEOUT_MS = 4_000;
 const WEBSOCKET_CLOSE_TIMEOUT_MS = 30_000;
+const MAX_CONFIGURED_RPC_OPERATIONS = 1_024;
 const RPC_FAILURE_MESSAGE = 'The RPC request could not be completed';
 
 function safeGatewayError(error: unknown): { code: number; message: string } {
@@ -146,6 +149,13 @@ export class DaemonServer {
         authorization?: LocalControlAuthorizationPort,
     ) {
         this.config = { ...DEFAULT_CONFIG, ...config };
+        if (
+            !Number.isSafeInteger(this.config.maxInFlightRpcOperations) ||
+            this.config.maxInFlightRpcOperations! < 1 ||
+            this.config.maxInFlightRpcOperations! > MAX_CONFIGURED_RPC_OPERATIONS
+        ) {
+            throw new RangeError('maxInFlightRpcOperations must be an integer between 1 and 1024');
+        }
         this.authorization = authorization;
         this.eventBus = eventBus;
         this.rpcGateway = rpcGateway ?? new RpcGateway(
@@ -512,6 +522,10 @@ export class DaemonServer {
             }
             if (!this.authorization?.isClientStillAuthorized(principal, requiredScope)) {
                 return sendBoundaryError(reply, 401, 'UNAUTHORIZED', 'Authentication is required');
+            }
+
+            if (this.inFlightRpc >= this.config.maxInFlightRpcOperations!) {
+                return sendBoundaryError(reply, 503, 'SERVICE_UNAVAILABLE', 'RPC operation capacity is unavailable');
             }
 
             const handlerSettled = this.beginRpcRequest(reply.raw, request.raw, request.raw.socket);
