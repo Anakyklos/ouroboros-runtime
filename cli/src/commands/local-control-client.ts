@@ -2,6 +2,7 @@ import {
   LOCAL_CONTROL_MAX_MISSIONS,
   LOCAL_CONTROL_MAX_REGISTRY_ITEMS,
   LOCAL_CONTROL_PROTOCOL_VERSION,
+  sanitizeLocalControlReadResponse,
   type LocalControlReadFailureCode,
   type LocalControlReadRequest,
   type LocalControlReadResponse,
@@ -281,6 +282,10 @@ function isLocalControlResponse(value: unknown, operation: LocalControlReadReque
       return hasExactKeys(value, ["ok", "protocolVersion", "operation", "data"]) &&
         hasExactKeys(value.data, ["available", "item"]) && typeof value.data.available === "boolean" &&
         (value.data.item === null || isMission(value.data.item)) && (value.data.available || value.data.item === null);
+    case "invocation.list":
+    case "invocation.show":
+    case "diagnostics.list":
+      return sanitizeLocalControlReadResponse(value, operation) !== null;
     case "capability_registry.list":
       return hasExactKeys(value, ["ok", "protocolVersion", "operation", "data"]) &&
         hasExactKeys(value.data, ["available", "items", "truncated"]) &&
@@ -308,7 +313,10 @@ export class LocalControlReadClient {
   read(request: Omit<Extract<LocalControlReadRequest, { operation: "status" }>, "protocolVersion">): Promise<Extract<LocalControlReadResponse, { operation: "status" }>>;
   read(request: Omit<Extract<LocalControlReadRequest, { operation: "mission.list" }>, "protocolVersion">): Promise<Extract<LocalControlReadResponse, { operation: "mission.list" }>>;
   read(request: Omit<Extract<LocalControlReadRequest, { operation: "mission.show" }>, "protocolVersion">): Promise<Extract<LocalControlReadResponse, { operation: "mission.show" }>>;
+  read(request: Omit<Extract<LocalControlReadRequest, { operation: "invocation.list" }>, "protocolVersion">): Promise<Extract<LocalControlReadResponse, { operation: "invocation.list" }>>;
+  read(request: Omit<Extract<LocalControlReadRequest, { operation: "invocation.show" }>, "protocolVersion">): Promise<Extract<LocalControlReadResponse, { operation: "invocation.show" }>>;
   read(request: Omit<Extract<LocalControlReadRequest, { operation: "capability_registry.list" }>, "protocolVersion">): Promise<Extract<LocalControlReadResponse, { operation: "capability_registry.list" }>>;
+  read(request: Omit<Extract<LocalControlReadRequest, { operation: "diagnostics.list" }>, "protocolVersion">): Promise<Extract<LocalControlReadResponse, { operation: "diagnostics.list" }>>;
   async read(request: ClientRequest): Promise<LocalControlReadResponse> {
     if (!this.negotiated) {
       const negotiation = await this.transport.request({
@@ -316,11 +324,12 @@ export class LocalControlReadClient {
         supportedVersions: [LOCAL_CONTROL_PROTOCOL_VERSION],
       });
       if (isRecord(negotiation) && negotiation.ok === false) {
-        if (!hasExactKeys(negotiation, ["ok", "code", "message"]) || !isFailureCode(negotiation.code) || typeof negotiation.message !== "string") {
+        const sanitizedFailure = sanitizeLocalControlReadResponse(negotiation, "protocol.negotiate");
+        if (!sanitizedFailure || sanitizedFailure.ok) {
           throw new LocalControlPayloadError();
         }
-        if (negotiation.code === "PROTOCOL_VERSION_UNSUPPORTED") throw new ProtocolVersionMismatchError();
-        throw new LocalControlFailureError(negotiation.code, negotiation.message);
+        if (sanitizedFailure.code === "PROTOCOL_VERSION_UNSUPPORTED") throw new ProtocolVersionMismatchError();
+        throw new LocalControlFailureError(sanitizedFailure.code, sanitizedFailure.message);
       }
       if (!isLocalControlResponse(negotiation, "protocol.negotiate")) {
         if (isRecord(negotiation) && negotiation.ok === true &&
@@ -339,13 +348,21 @@ export class LocalControlReadClient {
 
     const operation = request.operation;
     const params = { ...request, protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION } as LocalControlReadRequest;
-    const response = await this.transport.request(params);
-    if (isRecord(response) && response.ok === true && typeof response.protocolVersion === "number" &&
-      response.protocolVersion !== LOCAL_CONTROL_PROTOCOL_VERSION) throw new ProtocolVersionMismatchError();
+    const rawResponse = await this.transport.request(params);
+    if (isRecord(rawResponse) && rawResponse.ok === true && typeof rawResponse.protocolVersion === "number" &&
+      rawResponse.protocolVersion !== LOCAL_CONTROL_PROTOCOL_VERSION) throw new ProtocolVersionMismatchError();
+    const response = (isRecord(rawResponse) && rawResponse.ok === false) || operation === "invocation.list" || operation === "invocation.show" || operation === "diagnostics.list"
+      ? sanitizeLocalControlReadResponse(rawResponse, operation)
+      : rawResponse;
     if (!isLocalControlResponse(response, operation)) throw new LocalControlPayloadError();
     if (!response.ok) {
       if (response.code === "PROTOCOL_VERSION_UNSUPPORTED") throw new ProtocolVersionMismatchError();
       throw new LocalControlFailureError(response.code, response.message);
+    }
+    if (request.operation === "invocation.show" && response.operation === "invocation.show" &&
+        response.data.available && response.data.item !== null &&
+        response.data.item.invocationId !== request.invocationId) {
+      throw new LocalControlPayloadError();
     }
     return response;
   }
