@@ -11,6 +11,7 @@ import { SqliteMissionStore } from '../mission/sqlite-mission-store.js';
 import { MissionEngine } from '../mission/mission-engine.js';
 import { PlanPolicyValidator } from '../mission/policy.js';
 import { CapabilityRegistry } from '../capabilities/registry.js';
+import type { CapabilityRegistryApi } from '../capabilities/registry.js';
 import { ConnectorDispatchSeam } from '../capabilities/dispatch-seam.js';
 import type { StoragePort } from '../ports/storage.port.js';
 import type { MissionStore } from '../mission/ports.js';
@@ -57,6 +58,7 @@ export interface HeadlessDaemonDependencies {
         missionEngine: MissionEngine,
         requestShutdown: () => void,
         authorization: LocalControlAuthorizationPort,
+        capabilityRegistry: Pick<CapabilityRegistryApi, 'listDescriptors'>,
     ) => HeadlessServer;
     /** Test-only fixture seam; production composition leaves the registry empty. */
     configureCapabilitiesForTests?: (
@@ -161,7 +163,7 @@ export async function startHeadlessDaemon(
             console.log(`Found ${activeSessions.length} active daemon session(s).`);
         }
 
-        server = (dependencies.createServer ?? ((sessionStorage, durableMissions, engine, onShutdown, authorization) =>
+        server = (dependencies.createServer ?? ((sessionStorage, durableMissions, engine, onShutdown, authorization, registry) =>
             new DaemonServer(
                 sessionStorage,
                 { port, host: '127.0.0.1' },
@@ -171,8 +173,16 @@ export async function startHeadlessDaemon(
                 engine,
                 onShutdown,
                 authorization,
+                registry,
             )
-        ))(storage, missionStore, missionEngine, () => { void requestShutdown('RPC'); }, localControlAuthorization);
+        ))(
+            storage,
+            missionStore,
+            missionEngine,
+            () => { void requestShutdown('RPC'); },
+            localControlAuthorization,
+            capabilityRegistry,
+        );
 
         const onSignal = (signal: 'SIGINT' | 'SIGTERM') => {
             console.log(`Daemon shutdown requested by ${signal}.`);

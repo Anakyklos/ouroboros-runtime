@@ -52,3 +52,14 @@ For browser access, add the exact frontend origin to `OUROBOROS_ALLOWED_ORIGINS`
 ```
 
 `session.get` uses the same item shape under `session`. The default gateway and the authenticated HTTP boundary both rebuild these responses from the allowlist, including when an alternate gateway is injected. Invalid session results and gateway errors use the bounded generic RPC error response.
+
+## Capability registry read projection
+
+`capability_registry.list` requires `mission.read` and reads the same
+`CapabilityRegistry` instance composed by the headless daemon for Mission
+policy and connector dispatch. An empty registry is available and returns
+`items: []`; `available: false` means a gateway was composed without a registry.
+The V1 projection returns at most 100 descriptors, sets `truncated` when more
+are registered, and includes only the public descriptor allowlist. Discovery
+does not authorize or invoke a capability. Registry errors are returned as a
+bounded generic RPC failure.

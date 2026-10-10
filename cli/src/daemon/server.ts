@@ -22,6 +22,7 @@ import {
 import type { StoragePort } from '../ports/storage.port.js';
 import type { MissionMutation, MissionStore } from '../mission/ports.js';
 import type { MissionCommandAuthority } from './local-control-command.js';
+import type { CapabilityRegistryApi } from '../capabilities/registry.js';
 import {
     getBrowserSessionCookieName,
     requiredLocalControlScope,
@@ -147,6 +148,7 @@ export class DaemonServer {
         missionCommandAuthority?: MissionCommandAuthority,
         onShutdownRequested?: () => void,
         authorization?: LocalControlAuthorizationPort,
+        capabilityRegistry?: Pick<CapabilityRegistryApi, 'listDescriptors'>,
     ) {
         this.config = { ...DEFAULT_CONFIG, ...config };
         if (
@@ -162,7 +164,7 @@ export class DaemonServer {
             storage,
             eventBus,
             missionStore,
-            undefined,
+            capabilityRegistry,
             missionCommandAuthority,
             onShutdownRequested,
         );

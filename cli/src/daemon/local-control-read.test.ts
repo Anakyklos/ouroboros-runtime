@@ -330,6 +330,14 @@ describe("LocalControlReadService", () => {
     expect(result).toMatchObject({ ok: true, operation: "capability_registry.list", data: { available: false } });
   });
 
+  it("bounds registry read errors without exposing internal details", async () => {
+    const result = await service({
+      capabilityRegistry: { listDescriptors: () => { throw new Error("PRIVATE_REGISTRY_STORAGE_DETAIL"); } },
+    }).read({ operation: "capability_registry.list", protocolVersion: 1 });
+    expect(result).toEqual({ ok: false, code: "READ_FAILED", message: "The requested facts could not be read" });
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_REGISTRY_STORAGE_DETAIL");
+  });
+
   it("reports Mission reads unavailable when no authoritative store is composed", async () => {
     const current = service({ missionStore: undefined });
     await expect(current.read({ operation: "mission.list", protocolVersion: 1 })).resolves.toMatchObject({
