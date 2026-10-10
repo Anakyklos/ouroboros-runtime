@@ -29,7 +29,7 @@ export interface LocalControlReadServiceDependencies {
   getStatus(): DaemonStatusProjection;
   getRuntimeIdentity(): LocalControlRuntimeIdentity;
   missionStore?: MissionStore;
-  capabilityRegistry?: Pick<CapabilityRegistryApi, "listDescriptors">;
+  capabilityRegistry?: Pick<CapabilityRegistryApi, "listDescriptors" | "listDescriptorPage">;
   readDiagnostics?(limit: number): readonly unknown[];
 }
 
@@ -249,8 +249,19 @@ export class LocalControlReadService {
           if (!this.dependencies.capabilityRegistry) {
             return { ok: true, protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, operation: "capability_registry.list", data: { available: false, items: [], truncated: false } };
           }
-          const descriptors = this.dependencies.capabilityRegistry.listDescriptors();
-          const items = descriptors.slice(0, limit).map((descriptor) => ({
+          const registry = this.dependencies.capabilityRegistry;
+          const page = registry.listDescriptorPage?.(limit);
+          let descriptors;
+          let truncated: boolean;
+          if (page) {
+            descriptors = page.descriptors;
+            truncated = page.truncated;
+          } else {
+            const completeDescriptors = registry.listDescriptors();
+            descriptors = completeDescriptors.slice(0, limit);
+            truncated = completeDescriptors.length > descriptors.length;
+          }
+          const items = descriptors.map((descriptor) => ({
             capabilityId: descriptor.capabilityId,
             moduleOwner: descriptor.moduleOwner,
             contractVersion: descriptor.contractVersion,
@@ -265,7 +276,11 @@ export class LocalControlReadService {
             ok: true,
             protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
             operation: "capability_registry.list",
-            data: { available: true, items, truncated: descriptors.length > items.length },
+            data: {
+              available: true,
+              items,
+              truncated,
+            },
           };
         }
         case "diagnostics.list": {
