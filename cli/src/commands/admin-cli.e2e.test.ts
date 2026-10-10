@@ -1,4 +1,5 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import { Database } from "bun:sqlite";
 import { createServer as createNetServer } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,6 +9,9 @@ import { LocalControlReadClient, LoopbackJsonRpcTransport } from "./local-contro
 import { SqliteMissionStore } from "../mission/sqlite-mission-store.js";
 import { EffectClass, InvocationStatus, MissionState, type CapabilityInvocation, type Mission } from "../mission/contracts.js";
 import { CancellationSupport, IdempotencyMode, ReconciliationSupport, RetryBackoff } from "../capabilities/contracts.js";
+import { EffectClass as CapabilityEffectClass } from "../capabilities/contracts.js";
+import { defineCapabilityDescriptor } from "../capabilities/fixtures.js";
+import { CapabilityRegistry } from "../capabilities/registry.js";
 import { startHeadlessDaemon } from "../daemon/main.js";
 import { LocalControlCredentialStore, writeLocalControlClientCredential } from "../daemon/local-control-auth.js";
 
@@ -95,6 +99,7 @@ describe("administrative CLI over authenticated daemon HTTP and temporary SQLite
     const invalidFile = join(credentialDir, "invalid.json");
     const deniedFile = join(credentialDir, "without-read.json");
     const absentFile = join(credentialDir, "absent.json");
+    const revokedFile = join(credentialDir, "revoked.json");
     let stop: (() => Promise<void>) | undefined;
 
     try {
@@ -107,10 +112,13 @@ describe("administrative CLI over authenticated daemon HTTP and temporary SQLite
       const authStore = new LocalControlCredentialStore(join(dataDir, "local-control-auth.db"));
       const valid = authStore.provision("cli-e2e-reader", ["mission.read"], Date.now() + 60 * 60_000);
       const denied = authStore.provision("cli-e2e-no-read", ["daemon.admin"], Date.now() + 60 * 60_000);
+      const revoked = authStore.provision("cli-e2e-revoked", ["mission.read"], Date.now() + 60 * 60_000);
+      authStore.revoke(revoked.clientId);
       authStore.close();
       writeLocalControlClientCredential(validFile, { schemaVersion: 1, clientId: valid.clientId, token: valid.token });
       writeLocalControlClientCredential(invalidFile, { schemaVersion: 1, clientId: valid.clientId, token: "oc1.invalid.invalidtokenvalue" });
       writeLocalControlClientCredential(deniedFile, { schemaVersion: 1, clientId: denied.clientId, token: denied.token });
+      writeLocalControlClientCredential(revokedFile, { schemaVersion: 1, clientId: revoked.clientId, token: revoked.token });
 
       stop = await startHeadlessDaemon({ dataDir, port, forceTerminate: () => {}, setExitCode: () => {}, onDiagnostic: () => {} });
 
@@ -147,12 +155,94 @@ describe("administrative CLI over authenticated daemon HTTP and temporary SQLite
       expect(diagnostics.code).toBe(1);
       expect(JSON.parse(diagnostics.stdout)).toEqual({ available: false, items: [], completeness: { included: 0, omitted: 0, truncated: false } });
 
-      for (const credentialFile of [absentFile, invalidFile, deniedFile]) {
+      const capabilities = await run(validFile, ["capabilities"]);
+      expect(capabilities.code).toBe(0);
+      expect(capabilities.stderr).toBe("");
+      expect(JSON.parse(capabilities.stdout)).toEqual({ available: true, items: [], truncated: false });
+
+      await stop();
+      stop = undefined;
+      let fixtureRegistry: CapabilityRegistry | undefined;
+      const configureFixtureRegistry = (registry: CapabilityRegistry) => {
+        fixtureRegistry = registry;
+        for (let index = 0; index < 101; index += 1) {
+          registry.register(defineCapabilityDescriptor({
+            capabilityId: `fixture.read-only-${String(index).padStart(3, "0")}`,
+            moduleOwner: "fixture-owner",
+            purpose: "Read one public fixture fact",
+            effectClass: CapabilityEffectClass.READ,
+            requiresOwnerVerification: true,
+            credentialRequirement: { kind: "reference", credentialRef: "PRIVATE_FIXTURE_CREDENTIAL" },
+          }));
+        }
+      };
+      stop = await startHeadlessDaemon({
+        dataDir,
+        port,
+        configureCapabilitiesForTests: configureFixtureRegistry,
+        forceTerminate: () => {},
+        setExitCode: () => {},
+        onDiagnostic: () => {},
+      });
+
+      const fixtureCapabilities = await run(validFile, ["capabilities"]);
+      expect(fixtureCapabilities.code).toBe(0);
+      const fixtureProjection = JSON.parse(fixtureCapabilities.stdout) as { available: boolean; items: unknown[]; truncated: boolean };
+      expect(fixtureProjection.available).toBe(true);
+      expect(fixtureProjection.items[0]).toEqual({
+        capabilityId: "fixture.read-only-000",
+        moduleOwner: "fixture-owner",
+        contractVersion: 1,
+        purpose: "Read one public fixture fact",
+        effectClass: "read",
+        requiresApproval: false,
+        requiresOwnerVerification: true,
+        ownsStorage: false,
+        availability: "available",
+      });
+      expect(fixtureProjection.items).toHaveLength(100);
+      expect(fixtureProjection.truncated).toBe(true);
+      expect(fixtureCapabilities.stdout).not.toContain("PRIVATE_FIXTURE_CREDENTIAL");
+
+      const boundedCapabilities = await run(validFile, ["capabilities"]);
+      expect(boundedCapabilities.code).toBe(0);
+      const boundedProjection = JSON.parse(boundedCapabilities.stdout) as { items: unknown[]; truncated: boolean };
+      expect(boundedProjection.items).toHaveLength(100);
+      expect(boundedProjection.truncated).toBe(true);
+      expect(fixtureRegistry?.listDescriptors()).toHaveLength(101);
+
+      await stop();
+      stop = undefined;
+      const invocationDb = new Database(join(dataDir, "missions.db"), { readonly: true });
+      expect(invocationDb.query("SELECT COUNT(*) AS count FROM mission_invocations").get()).toEqual({ count: 1 });
+      invocationDb.close();
+
+      stop = await startHeadlessDaemon({
+        dataDir,
+        port,
+        configureCapabilitiesForTests: configureFixtureRegistry,
+        forceTerminate: () => {},
+        setExitCode: () => {},
+        onDiagnostic: () => {},
+      });
+      const restartedCapabilities = await run(validFile, ["capabilities"]);
+      expect(restartedCapabilities.code).toBe(0);
+      expect(JSON.parse(restartedCapabilities.stdout)).toEqual(JSON.parse(fixtureCapabilities.stdout));
+
+      const registryReads = spyOn(fixtureRegistry!, "listDescriptors");
+      const registryReadsBeforeRejectedClients = registryReads.mock.calls.length;
+      for (const credentialFile of [absentFile, invalidFile, deniedFile, revokedFile]) {
         const rejected = await run(credentialFile, ["invocations"]);
         expect(rejected.code).toBe(1);
         expect(rejected.stdout).toBe("");
         expect(rejected.stderr).not.toMatch(/token|oc1\.|PRIVATE/);
+
+        const rejectedCapabilities = await run(credentialFile, ["capabilities"]);
+        expect(rejectedCapabilities.code).toBe(1);
+        expect(rejectedCapabilities.stdout).toBe("");
+        expect(rejectedCapabilities.stderr).not.toMatch(/token|oc1\.|PRIVATE/);
       }
+      expect(registryReads).toHaveBeenCalledTimes(registryReadsBeforeRejectedClients);
     } finally {
       await stop?.();
       await rm(dataDir, { recursive: true, force: true });
