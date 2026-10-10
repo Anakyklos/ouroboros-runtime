@@ -212,12 +212,14 @@ Baseline: [`docs/BASELINE.md`](docs/BASELINE.md) | CI:
   event bus, SQLite storage, daemon controls, web frontend (Vite/React),
   baseline CI e contracts de eventos/provider; Mission e invocations duráveis,
   policy determinística, Capability Registry/dispatch, Context Compiler e
-  Context Packs bounded/progressivos (#50/#62/#63/#64/#78).
+  Context Packs bounded/progressivos (#50/#62/#63/#64/#78). O entrypoint
+  headless também compõe Mission Engine/Capability Registry, RPC autenticado em
+  loopback e a CLI factual de operação; ver [guia de deployment](docs/DEPLOYMENT.md).
 - **Direction** — a arquitetura-alvo continua maior que o runtime atual.
-  M1 (#70/#59) compõe o daemon headless e completa a boundary local e a CLI
-  factual. #69 fechou a decisão que proíbe self-modification; o ciclo
+  M1 (#70/#59) continua com critérios de local control a completar; a
+  composição headless e a CLI factual já têm implementação atual, mas isso não
+  conclui as epics. #69 fechou a decisão que proíbe self-modification; o ciclo
   governado entre módulos continua direção, não comportamento implementado.
-  Não declarar completo o composition root local-control.
 - **Legacy** — subsistemas que não definem mais a direção: SelfModifyingEngine
   (retirado em #95),
   Python sandbox, Council/personas, ArchitectClient, waves, Ralph,
@@ -269,9 +271,10 @@ bun run check:tests    # testes obrigatórios
 >   `ADAPT` na matriz — pode ser adaptado ou substituído por IPC local
 >   posteriormente, sem alterar a decisão `KEEP` do core.
 >
-> **Entrypoint atual ≠ arquitetura-alvo.** O daemon atual é comportamento
-> comprovado (`Current`); `ouroborosd` headless com Mission Engine, Capability
-> Registry e IPC local é a direção (`Direction`, #70) — não está implementado.
+> **Entrypoint atual ≠ arquitetura-alvo.** O daemon headless e a CLI factual
+> são `Current`; o binário-alvo `ouroborosd`, IPC local de produção e a
+> conclusão da boundary M1 continuam `Direction`/gated (#70). Isso não declara
+> a epic #70 concluída.
 
 ---
 

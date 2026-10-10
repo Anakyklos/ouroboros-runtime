@@ -259,7 +259,9 @@ O que o repositório implementa e testa atualmente:
   `local_control.read` e projeções duráveis de Mission/Invocation sem construir
   o `GatewayOrchestrator`. A superfície direta `agent.*`/`daemon.delegate`
   permanece disponível somente ao compor explicitamente o gateway legacy;
-  esse adapter continua legado e não é parte do caminho default.
+  esse adapter continua legado e não é parte do caminho default. O entrypoint
+  atual exige credencial local ativa, aplica autenticação e scopes por operação,
+  e é iniciado pela CLI factual; seu bind é loopback.
 - **SessionManager** com lifecycle de sessões
 - **EventBus** para comunicação cross-module
 - **GatewayOrchestrator** integrando bridges (Antigravity, Gemini, Jules,
@@ -296,8 +298,10 @@ têm implementação comprovada em `main`; não são apenas componentes futuros.
 
 O trabalho de produto ainda em direção inclui:
 
-- **Composition root headless/local control plane** (#70, M1), com boundary
-  local versionada, daemon como autoridade e CLI factual de admin/recovery;
+- **Critérios restantes do local control plane** (#70, M1). A composição
+  headless, RPC autenticado em loopback e CLI factual já são Current; a epic
+  continua aberta para completar e validar a boundary local/versionada e os
+  demais critérios M1. Isso não declara #70 concluída;
 - **Mission Control desktop** como interface principal, ainda gated por M1 e
   tracked em #68/M2;
 - **Planning agentic** advisory; **policy determinística** autoritativa;

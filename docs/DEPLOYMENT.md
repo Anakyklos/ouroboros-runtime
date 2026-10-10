@@ -1,240 +1,185 @@
-# 🐍 Ouroboros Mission Control - Deployment Guide
+# Daemon headless local — operação e limites
 
-## Overview
+Este guia descreve o entrypoint implementado no repositório. Ele não declara
+concluída a epic M1 (#70) nem apresenta a interface desktop como disponível.
 
-The Ouroboros Web UI consists of two main components:
-1. **Web UI** (React 19 + Vite) - The Mission Control dashboard
-2. **Daemon** (Fastify) - The backend with WebSocket, SSE, and PTY support
+## Estado das opções
 
-## Local validation (before deploy)
+| Estado | O que significa neste guia |
+|---|---|
+| **Current** | Comportamento presente no código e coberto pelos contracts/testes atuais. |
+| **Direction** | Arquitetura desejada, ainda sem equivalência operacional comprovada. |
+| **Legacy** | Scripts, rotas ou componentes antigos que não pertencem ao caminho atual. |
+| **Hypothesis / não suportado** | Opção sem avaliação ou evidência de deployment suficiente. |
 
-Repository baseline (issue #35) — see [`docs/BASELINE.md`](BASELINE.md):
+O daemon atual é um processo Bun em primeiro plano, com HTTP/WebSocket
+autenticado em loopback. Não há deployment de produção validado para acesso
+remoto, Nginx público, Docker oficial, unidade systemd de sistema ou frontend
+Mission Control servido pelo daemon.
+
+## Requisitos e instalação
+
+- Bun **1.3.9 ou superior** (CI fixa 1.3.9).
+- Instale as dependências usando os lockfiles versionados:
 
 ```bash
-# Bun 1.3.9+; frozen lockfiles for root and web/
-bun run check
-```
-
-This compiles the runtime/CLI **and** the web app, and runs mandatory unit tests. It does **not** replace smoke-testing the live daemon or browser UI.
-
-## Deployment Options
-
-### Option 1: Development Mode (Separate Processes)
-
-Best for development and debugging.
-
-```bash
-# Terminal 1: Start the daemon
-bun run daemon
-
-# Terminal 2: Start the web UI dev server
+bun install --frozen-lockfile
 cd web
-bun run dev
-
-# Access at http://localhost:3000
-# Daemon API at http://localhost:7777
+bun install --frozen-lockfile
+cd ..
 ```
 
-### Option 2: Production Mode (Integrated)
+`bun run check` é o gate de integridade do repositório: instalação congelada,
+compilação runtime/CLI, build web e testes obrigatórios. Ele não instala nem
+configura um serviço de sistema.
 
-Best for production deployment.
+## Entry points e configuração atual
+
+Os comandos existentes relevantes no `package.json` raiz são:
+
+| Comando | Uso comprovado |
+|---|---|
+| `bun run daemon` | Inicia `cli/src/daemon/main.ts` em primeiro plano. |
+| `bun run start:headless` | Alias de `bun run daemon`. |
+| `bun run ouroboros <comando>` | CLI factual de operação/administração. |
+| `bun run check` | Gate completo de integridade; não é comando de deployment. |
+
+O processo usa `127.0.0.1` como bind fixo e `7777` como porta padrão. Os
+valores operacionais lidos pelo entrypoint atual são:
+
+| Variável | Processo | Sem valor definido |
+|---|---|---|
+| `OUROBOROS_DATA_DIR` | daemon e CLI de provisioning | `.ouroboros` no diretório atual |
+| `OUROBOROS_PORT` | daemon | `7777` |
+| `OUROBOROS_ALLOWED_ORIGINS` | daemon, acesso de browser | lista vazia; configure origins exatas separadas por vírgula quando necessárias |
+| `XDG_CONFIG_HOME` | CLI, arquivo de credencial | `~/.config` |
+| `OUROBOROS_CLIENT_CREDENTIAL_FILE` | CLI, arquivo de credencial | `$XDG_CONFIG_HOME/ouroboros/local-control/<client-id>.json` |
+
+`OUROBOROS_ALLOWED_ORIGINS` restringe o Origin de browser; não autentica
+clientes, não altera o bind loopback e não habilita acesso remoto. O daemon
+recusa iniciar se não houver uma credencial local ativa.
+
+## Provisionar credenciais locais
+
+Faça o bootstrap com o daemon parado. Use o mesmo `OUROBOROS_DATA_DIR` no
+provisioning e no daemon. Por exemplo, em um shell dedicado:
 
 ```bash
-# Build the web UI
-bun run web:build
-
-# Start the enhanced daemon with static file serving
-bun run daemon:enhanced
-
-# Access at http://localhost:7777
+export OUROBOROS_DATA_DIR="$HOME/.local/share/ouroboros"
+export XDG_CONFIG_HOME="$HOME/.config"
+bun run ouroboros auth provision operator-cli mission.read
 ```
 
-### Option 3: Docker Deployment
+O comando gera uma credencial aleatória e grava o arquivo com permissão `0600`;
+mostra caminho, scopes e validade, sem imprimir o bearer. Proteja o diretório de
+configuração e seus backups. Não coloque o valor bearer em argumentos, scripts,
+logs ou no repositório. Uma API key de modelo não é credencial administrativa.
 
-```dockerfile
-# Dockerfile
-FROM oven/bun:1 as builder
+Conceda somente os scopes necessários:
 
-WORKDIR /app
-COPY package.json bun.lock ./
-COPY web/package.json ./web/
-RUN bun install
+| Scope | Permissão |
+|---|---|
+| `mission.read` | Ler status e projeções autorizadas de Mission, Invocation, sessão e capabilities. |
+| `mission.control` | Pausar, retomar e cancelar Missions. |
+| `daemon.admin` | Operações administrativas do daemon, como modo, emergency brake e shutdown, quando invocadas por uma operação RPC autorizada. |
 
-COPY . .
-RUN bun run web:build
+A CLI factual usa `mission.read` para leituras, `mission.control` para comandos
+de Mission. `daemon.admin` autoriza operações RPC administrativas de daemon,
+mas não há comandos CLI atuais para esses controles. Um scope não torna uma
+operação indisponível em comando CLI automaticamente disponível; consulte a
+interface CLI real antes de automatizar. Provisioning, rotação e revogação
+são feitos por `bun run ouroboros auth provision`, `bun run ouroboros auth
+rotate` e `bun run ouroboros auth revoke`, respectivamente. A referência
+normativa de autenticação por operação é
+[`LOCAL_CONTROL_AUTH.md`](LOCAL_CONTROL_AUTH.md).
 
-FROM oven/bun:1
+O diretório de dados é privado (modo `0700`); o banco registra hashes,
+scopes, validade e revogação, não o bearer em texto claro. As permissões de
+arquivo protegem contra outros usuários locais, mas **mesmo UID não é uma
+fronteira de isolamento**.
 
-WORKDIR /app
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/cli/src/daemon ./daemon
+## Iniciar e consultar
 
-EXPOSE 7777
-
-CMD ["bun", "run", "daemon:enhanced"]
-```
-
-## Configuration
-
-### Environment Variables
-
-Create a `.env` file in the project root:
-
-```env
-# Daemon Configuration
-DAEMON_PORT=7777
-DAEMON_HOST=0.0.0.0
-API_KEY=your-api-key-here
-
-# Web UI Configuration (development only)
-VITE_DAEMON_URL=ws://localhost:7777
-
-# CORS Origins (comma-separated)
-CORS_ORIGINS=http://localhost:3000,http://localhost:5173
-```
-
-### Daemon Configuration
-
-The enhanced daemon supports the following options:
-
-```typescript
-const server = new EnhancedDaemonServer(storage, {
-  port: 7777,
-  host: '0.0.0.0',
-  corsOrigin: ['http://localhost:3000'],
-  staticDir: './web/dist',  // Enable static file serving
-  enableWebUI: true,
-});
-```
-
-## API Endpoints
-
-### HTTP Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/api/status` | GET | Daemon status |
-| `/api/rpc` | POST | JSON-RPC 2.0 |
-
-### WebSocket Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `/ws` | EventBus streaming |
-| `/pty/:sessionId` | Terminal PTY |
-
-### SSE Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `/api/stream/:sessionId` | Agent response streaming |
-
-## Security Considerations
-
-1. **API Key**: Set a strong `API_KEY` environment variable
-2. **CORS**: Restrict `CORS_ORIGINS` to your domain(s)
-3. **Host**: Use `127.0.0.1` for local-only access, `0.0.0.0` for network access
-4. **Firewall**: Only expose port 7777 if needed
-
-## Reverse Proxy (Nginx)
-
-```nginx
-server {
-    listen 80;
-    server_name ouroboros.local;
-
-    location / {
-        proxy_pass http://localhost:7777;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-    }
-}
-```
-
-## SSL/TLS (Let's Encrypt)
+Com dependências instaladas e credencial ativa:
 
 ```bash
-# Install certbot
-sudo apt install certbot python3-certbot-nginx
-
-# Obtain certificate
-sudo certbot --nginx -d ouroboros.yourdomain.com
+export OUROBOROS_DATA_DIR="$HOME/.local/share/ouroboros"
+export XDG_CONFIG_HOME="$HOME/.config"
+bun run daemon
 ```
 
-## Monitoring
-
-### Health Check
+O processo fica no primeiro plano; encerre-o com `Ctrl+C`. Para uma verificação
+mínima de vida do processo, sem estado administrativo:
 
 ```bash
-curl http://localhost:7777/health
+curl --fail --silent http://127.0.0.1:7777/health
 ```
 
-### Logs
+Para status autenticado e comandos factuais da CLI, em outro shell com as
+mesmas variáveis de dados/configuração:
 
 ```bash
-# View daemon logs
-journalctl -u ouroboros -f
-
-# View web UI logs (if using PM2)
-pm2 logs ouroboros-web
+export OUROBOROS_DATA_DIR="$HOME/.local/share/ouroboros"
+export XDG_CONFIG_HOME="$HOME/.config"
+bun run ouroboros status
+bun run ouroboros missions
+bun run ouroboros capabilities
 ```
 
-## Troubleshooting
+`/health` é um endpoint mínimo de saúde e não substitui a leitura autenticada.
+`status`, `missions` e `capabilities` exigem credencial com `mission.read`.
+Use `bun run ouroboros --help` para a CLI presente nesta revisão; não presuma
+subcomandos de administração que não apareçam na ajuda.
 
-### WebSocket Connection Failed
+## Superfície de rede e rotas
 
-1. Check daemon is running: `curl http://localhost:7777/health`
-2. Verify CORS origins match your web UI URL
-3. Check firewall rules
+O bind atual é somente loopback (`127.0.0.1`; a configuração do servidor também
+aceita `::1`). O entrypoint não expõe uma variável para bind público e o
+servidor rejeita hosts não-loopback. Não encaminhe a porta para a rede, não a
+publique por Nginx/reverse proxy e não use `DAEMON_HOST=0.0.0.0` como caminho
+operacional.
 
-### Build Errors
+| Rota atual | Acesso e finalidade |
+|---|---|
+| `GET /` | Metadados mínimos do serviço e da superfície. |
+| `GET /health` | Health mínimo; não retorna estado de Mission. |
+| `POST /rpc` | JSON-RPC autenticado; valida bearer, scope e revogação antes do dispatch. |
+| `GET /ws` | Projeção autenticada, requer `mission.read`; browser usa sessão/cookie de curta duração. |
+| `POST /auth/browser-session` | Troca de sessão para browser, quando configurada; exige Origin permitido e credencial válida. |
 
-```bash
-# Clean and rebuild
-rm -rf web/dist
-rm -rf web/node_modules
-bun install
-bun run web:build
-```
+O Origin do browser precisa corresponder exatamente a um item em
+`OUROBOROS_ALLOWED_ORIGINS`. Origin é uma proteção de origem de browser, não
+autenticação. A autenticação continua sendo por credencial e scope em cada
+operação protegida. As rotas antigas `/api/status`, `/api/rpc`, `/pty/*` e
+`/api/stream/*` não fazem parte da superfície deste servidor.
 
-### Port Already in Use
+## Limites operacionais conhecidos
 
-```bash
-# Find process using port 7777
-lsof -i :7777
+- O RPC admite até 32 operações autenticadas simultâneas por padrão; o servidor
+  permite configuração de 1 a 1024 ao ser composto diretamente. O entrypoint
+  atual não expõe essa opção por variável de ambiente.
+- A projeção WebSocket limita clientes simultâneos a 64 por padrão; esse limite
+  também é configurado na composição do servidor, não pelo entrypoint atual.
+- Esses limites são contagens de concorrência/clientes, não limites globais de
+  bytes, memória ou CPU.
+- A allowlist de Origin só afeta o fluxo de browser. Não amplia bind,
+  autenticação ou trust boundary.
+- Lifecycle supervisionado, restart automático e deployment como serviço não
+  foram validados neste repositório.
 
-# Kill process
-kill -9 <PID>
-```
+## Opções sem suporte de deployment
 
-## Systemd Service
+- `daemon:enhanced`, `web:build`, `DAEMON_HOST`, `DAEMON_PORT`, `API_KEY` e
+  `CORS_ORIGINS` não são comandos/variáveis do entrypoint raiz atual.
+- Dockerfile, serviço systemd global, configuração Nginx pública, TLS público,
+  exposição remota e serving de frontend pelo daemon não têm artefatos ou
+  validação de deployment neste repositório.
+- `bun run --cwd web dev` e o build do pacote `web` são ferramentas de
+  desenvolvimento/validação da UI; não comprovam um deployment integrado ou
+  suportado do Mission Control.
+- Mission Control desktop e IPC local de produção são Direction/gated (M2/#68
+  para a experiência); Unix socket e lifecycle de serviço continuam
+  dependentes de avaliação. Não os trate como Current.
 
-Create `/etc/systemd/system/ouroboros.service`:
-
-```ini
-[Unit]
-Description=Ouroboros Daemon
-After=network.target
-
-[Service]
-Type=simple
-User=ouroboros
-WorkingDirectory=/opt/ouroboros
-ExecStart=/usr/local/bin/bun run daemon:enhanced
-Restart=always
-Environment=DAEMON_PORT=7777
-Environment=API_KEY=your-api-key
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
-
-```bash
-sudo systemctl enable ouroboros
-sudo systemctl start ouroboros
-```
+As rotas legadas `/api/*`, PTY e SSE citadas em guias antigos não são endpoints
+operacionais do entrypoint headless atual.
