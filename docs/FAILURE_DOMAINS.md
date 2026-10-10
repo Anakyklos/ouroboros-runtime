@@ -5,17 +5,13 @@
 
 ## Evidence boundary
 
-Audit performed 2026-10-07 against the fetched `origin/main` at
-`575deba140aae152e4cbbc5f9899b6e715a17360`. The preflight `git fetch origin`
-succeeded (`0bbfb4c..575deba main -> origin/main`) before this isolated worktree
-was created. A second fetch from inside the Codex sandbox could not update the
-shared `FETCH_HEAD` and could not resolve `github.com`; that sandbox limitation
-does not change the verified preflight base SHA. The live #101 and #59 issue
-bodies were fetched via `gh issue view` before dispatch: #101 had no comments,
-and #59 had a maintainer follow-up on supervision boundaries. Current claims
-below are grounded in code/tests; Direction is limited to the approved #59
-semantics and the repository architecture statement in
-[ARCHITECTURE.md](ARCHITECTURE.md).
+The original #101 inventory was audited on 2026-10-07 against
+`575deba140aae152e4cbbc5f9899b6e715a17360`. This reconciliation was checked
+against `main` at `deb69f25c0530e681ba6a31ec9060bc1406b36d3` on 2026-10-10,
+including merged M1 work in PRs #127, #128, #134, #136 and #138 and the live
+#59, #70, #131 and #132 issue records. Current claims below follow code, tests
+and observed behavior; Direction remains limited to approved #59 semantics and
+the repository architecture statement in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Current and Direction
 
@@ -197,7 +193,7 @@ change or restart.
 
 ## M1 bounded Mission enumeration update
 
-**Current behavior implemented on top of the #127 base (`1087d8a`):**
+**Current behavior on reconciled `main` (`deb69f25`):**
 `MissionStore.listMissionSchedulingPage()` reads only Mission ID, state, plan
 revision ID and cursor fields, ordered by deterministic
 `created_at DESC, mission_id ASC` keyset position. It does not query
@@ -259,6 +255,12 @@ production impact or RSS benchmark is claimed. No extra timer, polling loop,
 public Mission v1/Capability contract change, retry behavior, or scheduler
 parallelism was introduced.
 
+**Evidence references:** this behavior was delivered in merged PRs
+[#128](https://github.com/Anakyklos/ouroboros-runtime/pull/128),
+[#134](https://github.com/Anakyklos/ouroboros-runtime/pull/134), and
+[#136](https://github.com/Anakyklos/ouroboros-runtime/pull/136). Their code and
+tests are present in the audited `main` SHA above.
+
 ## Domain inventory
 
 ### 1. Process, transport, RPC, and daemon/session control
@@ -317,7 +319,9 @@ parallelism was introduced.
   `rpc-admission.test.ts`, `rpc-admission.e2e.test.ts`, and
   `daemon-shutdown-race.test.ts` cover saturation, re-admission, real loopback
   authentication with temporary SQLite, disconnect retention, and shutdown
-  quiescence. No production connector is composed by these tests.
+  quiescence. Merged PR [#138](https://github.com/Anakyklos/ouroboros-runtime/pull/138)
+  carries this admission bound. No production connector is composed by these
+  tests.
 
 ### 2. Daemon/session SQLite and durable Mission SQLite
 
@@ -419,6 +423,33 @@ parallelism was introduced.
   not claimed bounded. Relevant
   code: `mission-scheduler.ts`,
   `sqlite-mission-store.ts`, `mission-scheduler-driver.ts`, and `main.ts`.
+
+### Failed scheduler pass and recovery boundary (#131/#132)
+
+`MissionSchedulerDriver` runs at startup, after relevant committed Mission or
+Invocation mutations, and at one future `nextWakeAt`. If `runOnce()` rejects,
+the driver emits a sanitized failure fact and does not schedule an automatic
+retry. A later relevant mutation or daemon restart can trigger another pass.
+This is a liveness limitation; it is not evidence that a durable effect was
+lost or duplicated.
+
+Issue [#131](https://github.com/Anakyklos/ouroboros-runtime/issues/131)
+remains **OPEN/BLOCKED**: a pass can already have changed durable Mission
+metadata/state or crossed connector cancel, reconcile, or invoke handoff before
+a later error. The generic rejection therefore does not prove that replay is
+safe. Issue [#132](https://github.com/Anakyklos/ouroboros-runtime/issues/132)
+closed `not_planned` with the negative finding that current scheduler/store/
+seam contracts have no trustworthy production producer of a pass-level
+`safe_to_retry` fact. No retry timer, fake-safe classification, or public
+contract redesign was approved. Do not retry `runOnce()` automatically and do
+not interpret a thrown pass as proof that no effect was submitted.
+
+The scheduler retries an Invocation only through its explicit engine
+transition and only when durable delivery facts say it is eligible and
+definitely not submitted. For possibly submitted effects, the module-owner
+connector remains authoritative through its declared reconciliation contract;
+otherwise the Invocation remains blocked/uncertain. The daemon does not infer
+external outcome or replay authority from a pass error.
 
 ### 5. Capability Registry, connector dispatch, and invocation uncertainty
 
@@ -550,16 +581,28 @@ whose impact is narrower and does not itself prove an unsafe effect. Severity
 describes the observed gap, not an asserted incident.
 
 - **P0:** none identified by this code audit.
-- **P1 residual:** an accepted RPC or scheduler pass that exceeds its bounded
-  drain can retain an unknown outcome. On RPC uncertainty, both SQLite stores
-  remain open until forced process termination; on scheduler uncertainty,
-  MissionStore remains open. No retry/replay is authorized by this uncertainty.
-- **P2:** persisted active session rows have no worker reconstruction in the modern
-  composition; scheduler recovery scans all Missions without a batch bound;
-  provider snapshots are not automatically persisted/restored and configured
-  provider waiters have no count bound; projection bounds each client but not
-  total clients or event history; no connector invoke timeout is defined at
-  the seam.
+- **P1 residual:** when bounded shutdown cannot prove RPC handler and
+  transport settlement, an accepted command's outcome remains unknown and both
+  SQLite stores stay open until forced process termination. An unproved
+  scheduler drain likewise keeps MissionStore open. The real Fastify/SQLite
+  shutdown race tests cover this conservative path. No retry/replay is
+  authorized by the uncertainty.
+- **P2:** (a) a failed scheduler pass gets no autonomous retry/wakeup until a
+  relevant durable mutation or restart; #131 remains blocked because a generic
+  rejection cannot prove safe re-entry, as concluded by #132; (b) persisted
+  active session rows have no worker reconstruction in the modern composition;
+  (c) complete Mission references and explicit full-history APIs still
+  materialize history, so total scheduler memory/RSS is not bounded, although
+  resident scan pages and report-ID retention are bounded; (d) provider
+  snapshots are not automatically persisted/restored and configured provider
+  waiters have no count bound; (e) WebSocket admission is a 64-slot
+  cardinality limit, not a global bytes/RSS budget or durable event history;
+  and (f) the connector seam defines no generic invoke timeout.
+
+Each P2 item is a code-level limitation or bounded test finding, not a claim
+that an incident occurred. In particular, the failed-pass recovery gap is
+reproduced as a missing autonomous wake; it does not establish data loss,
+effect duplication, or safe generic retry.
 
 These severities classify the observed control-plane gap, not a claim that a
 particular external effect occurred. An absent caller/wiring is directly
@@ -599,3 +642,11 @@ general process/worker supervisor from this candidate.
   `cli/src/daemon/daemon-projection.ts`,
   `cli/src/daemon/durable-projection.ts`,
   `cli/src/daemon/daemon-projection.test.ts`, `docs/DAEMON_EVENT_CONTRACT.md`.
+- RPC admission: `cli/src/daemon/rpc-admission.test.ts`,
+  `cli/src/daemon/rpc-admission.e2e.test.ts`,
+  `cli/src/daemon/daemon-shutdown-race.test.ts`.
+- Failed-pass boundary: `cli/src/daemon/mission-scheduler-driver.ts`,
+  `cli/src/daemon/mission-scheduler-driver.test.ts`,
+  `cli/src/mission/mission-scheduler.ts`,
+  `cli/src/mission/sqlite-mission-store.ts`, and
+  `cli/src/capabilities/dispatch-seam.ts`.

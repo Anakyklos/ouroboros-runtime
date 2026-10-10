@@ -22,6 +22,14 @@ OUROBOROS_DATA_DIR=.ouroboros bun run ouroboros auth revoke operator-cli
 
 The registry stores a SHA-256 hash of each secret, grants, expiry, and revocation state in `local-control-auth.db` under the private data directory. The bearer secret is generated with a cryptographic random source and is never printed by the provisioning command. Protect backups and access to the same operating-system user accordingly.
 
+Authenticated RPC admission is bounded to 32 simultaneous operations by
+default (the daemon setting accepts 1–1024). When capacity is full, a request
+that has already passed authentication and scope/revocation checks receives a
+generic HTTP 503 `SERVICE_UNAVAILABLE`; it is rejected before gateway dispatch
+and is not queued. A client that receives this response can submit the
+operation again after capacity becomes available. A disconnected request does
+not itself release an admitted slot while its handler is still running.
+
 For browser access, add the exact frontend origin to `OUROBOROS_ALLOWED_ORIGINS`, for example `http://localhost:5173`. The frontend keeps the bearer only in page memory, exchanges it for a five-minute HttpOnly stream cookie, and must reauthenticate after reload. The cookie is bound to its issuing Origin. Do not put bearer values in URLs, command arguments, logs, or screenshots.
 
 ## Read-only session RPC projection
