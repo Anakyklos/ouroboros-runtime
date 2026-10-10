@@ -58,7 +58,22 @@ Cada cliente é avaliado isoladamente. Exceção em `send`, estado de socket inv
 
 Todo `POST /rpc` exige bearer credential e o escopo server-side correspondente à operação. O mapa de operações é fechado; métodos desconhecidos ou parâmetros sem classificação são negados antes do gateway. `GET /health` permanece público e contém somente estado mínimo do processo. Requests com `Origin` só são aceitos quando a origem exata está configurada em `OUROBOROS_ALLOWED_ORIGINS`; preflight aceita apenas `POST`, `Authorization` e `Content-Type`.
 
-O handshake de `GET /ws` autentica e exige `mission.read` antes da conexão e do snapshot. O browser troca seu bearer em memória por um cookie HttpOnly, SameSite=Strict, vinculado à Origin e válido por cinco minutos. O servidor revalida credenciais e escopo de streams ativos a cada 500 ms, fechando conexões após expiração, rotação ou revogação. Provisionamento, rotação e revogação offline estão descritos em [LOCAL_CONTROL_AUTH.md](LOCAL_CONTROL_AUTH.md). O daemon não inicia sem ao menos uma credencial ativa.
+### Admissão RPC
+
+Depois da autenticação, validação JSON-RPC, autorização de escopo e
+revalidação de revogação, o daemon admite no máximo 32 operações RPC
+simultâneas por padrão. `maxInFlightRpcOperations` aceita inteiros de 1 a
+1024. Uma operação autorizada que excede a capacidade recebe HTTP 503 com a
+resposta genérica `SERVICE_UNAVAILABLE`; não há fila nem chamada ao gateway.
+O limite conta operações, não bytes ou RSS.
+
+Uma operação admitida mantém seu slot até o handler terminar **e** a resposta
+ou transporte terminar. A desconexão do cliente, sozinha, não libera o slot,
+pois o handler pode continuar usando SQLite. Esse accounting preserva o drain
+de shutdown da #129. Ver `rpc-admission.test.ts`,
+`rpc-admission.e2e.test.ts` e `daemon-shutdown-race.test.ts`.
+
+O handshake de `GET /ws` autentica e exige `mission.read` antes da conexão e do snapshot. O browser troca seu bearer em memória por um cookie HttpOnly, SameSite=Strict, vinculado à Origin e válido por cinco minutos. Um timer compartilhado revalida credenciais e escopo a cada 500 ms somente enquanto há streams elegíveis ativos; ele é removido após o último stream fechar ou entrar em fechamento. Expiração, rotação ou revogação fecha o stream afetado. Provisionamento, rotação e revogação offline estão descritos em [LOCAL_CONTROL_AUTH.md](LOCAL_CONTROL_AUTH.md). O daemon não inicia sem ao menos uma credencial ativa.
 
 ### Admissão agregada
 
