@@ -359,6 +359,11 @@ export class LocalControlReadClient {
       if (response.code === "PROTOCOL_VERSION_UNSUPPORTED") throw new ProtocolVersionMismatchError();
       throw new LocalControlFailureError(response.code, response.message);
     }
+    if (request.operation === "invocation.show" && response.operation === "invocation.show" &&
+        response.data.available && response.data.item !== null &&
+        response.data.item.invocationId !== request.invocationId) {
+      throw new LocalControlPayloadError();
+    }
     return response;
   }
 }

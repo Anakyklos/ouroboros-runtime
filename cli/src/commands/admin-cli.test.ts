@@ -407,6 +407,18 @@ describe("factual admin CLI", () => {
     expect(JSON.parse(unavailable.stdout[0])).toEqual({ result: "projection unavailable", invocationId: "invocation-1" });
   });
 
+  it("rejects a structurally valid invocation.show projection for a different requested ID", async () => {
+    const otherInvocation = { ...invocation, invocationId: "inv-B" };
+    const cli = harness(new ScriptedTransport({
+      "invocation.show": success("invocation.show", { available: true, item: otherInvocation }),
+    }));
+
+    expect(await cli.run(["invocation", "show", "inv-A"])).toBe(1);
+    expect(cli.stdout).toEqual([]);
+    expect(cli.stderr.join("")).toContain("malformed local-control response");
+    expect(`${cli.stdout.join("")}${cli.stderr.join("")}`).not.toContain("inv-B");
+  });
+
   it("accepts only bounded public diagnostics and retains completeness", async () => {
     const cli = harness(new ScriptedTransport({ "diagnostics.list": success("diagnostics.list", diagnostics) }));
 
