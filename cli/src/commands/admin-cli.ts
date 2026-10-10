@@ -34,6 +34,9 @@ function usage(): string {
     "  ouroboros status",
     "  ouroboros missions",
     "  ouroboros mission show <id>",
+    "  ouroboros invocations",
+    "  ouroboros invocation show <invocation-id>",
+    "  ouroboros diagnostics",
     "  ouroboros mission pause <id> [reason]",
     "  ouroboros mission resume <id>",
     "  ouroboros mission cancel <id> [reason]",
@@ -122,6 +125,43 @@ export async function runAdminCli(args: readonly string[], dependencies: AdminCl
           return 1;
         }
         writeJson(stdout, response.data);
+        return 0;
+      }
+      case "invocations": {
+        if (args.length !== 1) break;
+        const response = await client.read({ operation: "invocation.list" });
+        writeJson(stdout, response.data);
+        if (!response.data.available) {
+          stderr("invocation projection unavailable\n");
+          return 1;
+        }
+        return 0;
+      }
+      case "invocation": {
+        if (args[1] !== "show" || args.length !== 3 || !args[2]) break;
+        const invocationId = args[2];
+        const response = await client.read({ operation: "invocation.show", invocationId });
+        if (!response.data.available) {
+          writeJson(stdout, { result: "projection unavailable", invocationId });
+          stderr(`invocation projection unavailable: ${invocationId}\n`);
+          return 1;
+        }
+        if (response.data.item === null) {
+          writeJson(stdout, { result: "not found", invocationId });
+          stderr(`invocation not found: ${invocationId}\n`);
+          return 1;
+        }
+        writeJson(stdout, { result: "found", invocation: response.data.item });
+        return 0;
+      }
+      case "diagnostics": {
+        if (args.length !== 1) break;
+        const response = await client.read({ operation: "diagnostics.list" });
+        writeJson(stdout, response.data);
+        if (!response.data.available) {
+          stderr("diagnostics projection unavailable\n");
+          return 1;
+        }
         return 0;
       }
       case "mission": {

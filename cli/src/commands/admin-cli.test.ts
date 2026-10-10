@@ -37,6 +37,27 @@ const mission = {
   pendingApprovalCount: 0,
 };
 
+const invocation = {
+  invocationId: "invocation-1",
+  missionId: "mission-1",
+  stepId: "step-1",
+  capabilityId: "runstead.code-review",
+  moduleOwner: "runstead",
+  planRevisionId: "revision-1",
+  status: "completed",
+  deliveryState: "acknowledged",
+  ownerVerificationState: "verified",
+  createdAt: "2026-10-06T00:00:00.000Z",
+  updatedAt: "2026-10-06T00:00:00.000Z",
+  completedAt: "2026-10-06T00:00:00.000Z",
+};
+
+const diagnostics = {
+  available: true,
+  items: [{ code: "PROJECTION_TRUNCATED", severity: "warning", timestamp: "2026-10-06T00:00:00.000Z" }],
+  completeness: { included: 1, omitted: 2, truncated: true },
+};
+
 const status = {
   processStatus: "alive",
   mode: "running",
@@ -129,6 +150,16 @@ function commandSuccess(operation: "mission.pause" | "mission.resume" | "mission
 }
 
 describe("factual admin CLI", () => {
+  it("documents the invocation and diagnostics read commands in help", async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    expect(await runAdminCli(["--help"], { stdout: (text) => stdout.push(text), stderr: (text) => stderr.push(text) })).toBe(0);
+    expect(stdout.join("")).toContain("ouroboros invocations");
+    expect(stdout.join("")).toContain("ouroboros invocation show <invocation-id>");
+    expect(stdout.join("")).toContain("ouroboros diagnostics");
+    expect(stderr).toEqual([]);
+  });
+
   it("provisions an explicitly scoped credential into a private file without printing its bearer value", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "ouroboros-cli-auth-"));
     const credentialFile = join(dataDir, "operator.json");
@@ -312,6 +343,129 @@ describe("factual admin CLI", () => {
 
     expect(await cli.run(["missions"])).toBe(0);
     expect(JSON.parse(cli.stdout[0]).completeness).toEqual(completeness);
+  });
+
+  it("lists public invocation projections and retains completeness facts", async () => {
+    const completeness = { liveIncluded: 1, liveOmitted: 0, historicalIncluded: 0, historicalOmitted: 2, truncated: true };
+    const transport = new ScriptedTransport({
+      "invocation.list": success("invocation.list", { available: true, items: [invocation], completeness }),
+    });
+    const cli = harness(transport);
+
+    expect(await cli.run(["invocations"])).toBe(0);
+    expect(transport.calls.map((call) => call.operation)).toEqual(["protocol.negotiate", "invocation.list"]);
+    expect(JSON.parse(cli.stdout[0])).toEqual({ available: true, items: [invocation], completeness });
+  });
+
+  it("rejects malformed invocation projections and inconsistent completeness", async () => {
+    for (const data of [
+      { available: true, items: [{ ...invocation, secret: "PRIVATE_INVOCATION_FIELD" }] },
+      { available: true, items: [invocation], completeness: { liveIncluded: 0, liveOmitted: 0, historicalIncluded: 0, historicalOmitted: 0, truncated: false } },
+    ]) {
+      const cli = harness(new ScriptedTransport({ "invocation.list": success("invocation.list", data) }));
+      expect(await cli.run(["invocations"])).toBe(1);
+      expect(cli.stderr.join("")).toContain("malformed local-control response");
+      expect(`${cli.stdout.join("")}${cli.stderr.join("")}`).not.toContain("PRIVATE_INVOCATION_FIELD");
+    }
+  });
+
+  it("rejects invocation and diagnostic collections beyond their V1 bounds", async () => {
+    const tooManyInvocations = harness(new ScriptedTransport({
+      "invocation.list": success("invocation.list", { available: true, items: Array.from({ length: 501 }, () => invocation) }),
+    }));
+    const tooManyDiagnostics = harness(new ScriptedTransport({
+      "diagnostics.list": success("diagnostics.list", {
+        available: true,
+        items: Array.from({ length: 21 }, () => diagnostics.items[0]),
+        completeness: { included: 21, omitted: 0, truncated: false },
+      }),
+    }));
+
+    expect(await tooManyInvocations.run(["invocations"])).toBe(1);
+    expect(tooManyInvocations.stderr.join("")).toContain("malformed local-control response");
+    expect(await tooManyDiagnostics.run(["diagnostics"])).toBe(1);
+    expect(tooManyDiagnostics.stderr.join("")).toContain("malformed local-control response");
+  });
+
+  it("reports an unavailable invocation collection as an operational failure", async () => {
+    const cli = harness(new ScriptedTransport({ "invocation.list": success("invocation.list", { available: false, items: [] }) }));
+    expect(await cli.run(["invocations"])).toBe(1);
+    expect(JSON.parse(cli.stdout[0])).toEqual({ available: false, items: [] });
+    expect(cli.stderr.join("")).toContain("invocation projection unavailable");
+  });
+
+  it("shows found, missing and unavailable invocations distinctly", async () => {
+    const found = harness(new ScriptedTransport({ "invocation.show": success("invocation.show", { available: true, item: invocation }) }));
+    const missing = harness(new ScriptedTransport({ "invocation.show": success("invocation.show", { available: true, item: null }) }));
+    const unavailable = harness(new ScriptedTransport({ "invocation.show": success("invocation.show", { available: false, item: null }) }));
+
+    expect(await found.run(["invocation", "show", "invocation-1"])).toBe(0);
+    expect(JSON.parse(found.stdout[0])).toEqual({ result: "found", invocation });
+    expect(await missing.run(["invocation", "show", "missing"])).toBe(1);
+    expect(JSON.parse(missing.stdout[0])).toEqual({ result: "not found", invocationId: "missing" });
+    expect(await unavailable.run(["invocation", "show", "invocation-1"])).toBe(1);
+    expect(JSON.parse(unavailable.stdout[0])).toEqual({ result: "projection unavailable", invocationId: "invocation-1" });
+  });
+
+  it("accepts only bounded public diagnostics and retains completeness", async () => {
+    const cli = harness(new ScriptedTransport({ "diagnostics.list": success("diagnostics.list", diagnostics) }));
+
+    expect(await cli.run(["diagnostics"])).toBe(0);
+    expect(JSON.parse(cli.stdout[0])).toEqual(diagnostics);
+
+    for (const item of [
+      { code: "PRIVATE_DIAGNOSTIC", severity: "warning" },
+      { code: "STORAGE_UNAVAILABLE", severity: "error", rawMessage: "PRIVATE_RAW_ERROR" },
+    ]) {
+      const unsafe = harness(new ScriptedTransport({ "diagnostics.list": success("diagnostics.list", {
+        ...diagnostics,
+        items: [item],
+        completeness: { included: 1, omitted: 0, truncated: false },
+      }) }));
+      expect(await unsafe.run(["diagnostics"])).toBe(1);
+      expect(`${unsafe.stdout.join("")}${unsafe.stderr.join("")}`).not.toMatch(/PRIVATE_DIAGNOSTIC|PRIVATE_RAW_ERROR/);
+    }
+  });
+
+  it("rejects invalid invocation and diagnostics arguments before transport access", async () => {
+    for (const args of [["invocations", "extra"], ["invocation", "show"], ["invocation", "show", "id", "extra"], ["diagnostics", "extra"]]) {
+      const transport = new ScriptedTransport({});
+      const cli = harness(transport);
+      expect(await cli.run(args)).toBe(2);
+      expect(transport.calls).toEqual([]);
+    }
+  });
+
+  it("does not expose malformed responses, secrets or raw daemon errors for new reads", async () => {
+    const badResponses: Array<{ operation: "invocation.list" | "invocation.show" | "diagnostics.list"; args: string[]; response: unknown }> = [
+      { operation: "invocation.list", args: ["invocations"], response: { ...success("invocation.list", { available: true, items: [invocation] }), privateWrapper: "PRIVATE_WRAPPER" } },
+      { operation: "invocation.show", args: ["invocation", "show", "invocation-1"], response: success("invocation.list", { available: true, item: invocation }) },
+      { operation: "diagnostics.list", args: ["diagnostics"], response: success("diagnostics.list", { ...diagnostics, rawMessage: "PRIVATE_RAW_ERROR" }) },
+    ];
+    for (const testCase of badResponses) {
+      const cli = harness(new ScriptedTransport({ [testCase.operation]: testCase.response }));
+      expect(await cli.run(testCase.args)).toBe(1);
+      expect(`${cli.stdout.join("")}${cli.stderr.join("")}`).not.toMatch(/PRIVATE_WRAPPER|PRIVATE_RAW_ERROR/);
+    }
+
+    const failureCli = harness(new ScriptedTransport({ "invocation.list": { ok: false, code: "READ_FAILED", message: "PRIVATE prompt api_key=secret" } }));
+    expect(await failureCli.run(["invocations"])).toBe(1);
+    expect(`${failureCli.stdout.join("")}${failureCli.stderr.join("")}`).not.toMatch(/PRIVATE prompt|api_key=secret/);
+
+    const negotiationCli = harness({ request: async () => ({ ok: false, code: "READ_FAILED", message: "PRIVATE negotiation api_key=secret" }) });
+    expect(await negotiationCli.run(["invocations"])).toBe(1);
+    expect(`${negotiationCli.stdout.join("")}${negotiationCli.stderr.join("")}`).not.toMatch(/PRIVATE negotiation|api_key=secret/);
+  });
+
+  it("keeps protocol negotiation and rejects incompatible versions for invocation reads", async () => {
+    const transport: LocalControlReadTransport = {
+      request: async (request) => request.operation === "protocol.negotiate"
+        ? { ok: true, protocolVersion: 2, operation: "protocol.negotiate", selectedVersion: 2, supportedVersions: [2] }
+        : success("invocation.list", { available: true, items: [invocation] }),
+    };
+    const cli = harness(transport);
+    expect(await cli.run(["invocations"])).toBe(1);
+    expect(cli.stderr.join("")).toContain("protocol is incompatible");
   });
 
   it("shows a found mission using only projected fields", async () => {

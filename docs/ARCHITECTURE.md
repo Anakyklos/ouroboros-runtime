@@ -164,7 +164,9 @@ future missions benefit from evidence
    Não é chatbot, não replica Katherine.
 3. **CLI pequena permanece para admin/recovery.** `ouroboros status`,
    `ouroboros missions`, `ouroboros mission show/pause/resume/cancel`,
-   `ouroboros capabilities`. Fala com o mesmo daemon/contracts.
+   `ouroboros invocations`, `ouroboros invocation show`,
+   `ouroboros diagnostics` e `ouroboros capabilities`. Fala com o mesmo
+   daemon/contracts.
 4. **Katherine é interface humana opcional.** Presença conversacional.
    Ouroboros Mission Control é operacional. Não duplicar personalidade/chat.
 5. **Electron não é default arquitetural.** Web stack histórico não obriga

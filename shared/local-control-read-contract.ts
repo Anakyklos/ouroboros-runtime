@@ -261,6 +261,11 @@ export function sanitizeLocalControlReadResponse(value: unknown, expectedOperati
       if (data.completeness !== undefined && !isDaemonProjectionCompletenessEntry(data.completeness)) return null;
       const max = expectedOperation === "mission.list" ? LOCAL_CONTROL_MAX_MISSIONS : LOCAL_CONTROL_MAX_INVOCATIONS;
       if (data.items.length > max) return null;
+      if (expectedOperation === "invocation.list" && data.completeness !== undefined) {
+        const completeness = data.completeness as DaemonProjectionCompletenessEntry;
+        if (completeness.liveIncluded + completeness.historicalIncluded !== data.items.length ||
+            completeness.liveIncluded + completeness.historicalIncluded > LOCAL_CONTROL_MAX_INVOCATIONS) return null;
+      }
       return { ok: true, protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, operation: expectedOperation, data: {
         available: data.available, items: data.items,
         ...(data.completeness === undefined ? {} : { completeness: data.completeness }),
@@ -281,7 +286,11 @@ export function sanitizeLocalControlReadResponse(value: unknown, expectedOperati
     case "diagnostics.list":
       if (!isRecord(data) || !hasExactKeys(data, ["available", "items", "completeness"]) || typeof data.available !== "boolean" || !Array.isArray(data.items) ||
           data.items.length > LOCAL_CONTROL_MAX_DIAGNOSTICS || !isRecord(data.completeness) || !hasExactKeys(data.completeness, ["included", "omitted", "truncated"]) ||
-          !Number.isSafeInteger(data.completeness.included) || !Number.isSafeInteger(data.completeness.omitted) || typeof data.completeness.truncated !== "boolean") return null;
+          !Number.isSafeInteger(data.completeness.included) || (data.completeness.included as number) < 0 ||
+          !Number.isSafeInteger(data.completeness.omitted) || (data.completeness.omitted as number) < 0 ||
+          data.completeness.included !== data.items.length || typeof data.completeness.truncated !== "boolean" ||
+          data.completeness.truncated !== ((data.completeness.omitted as number) > 0) ||
+          (!data.available && (data.items.length !== 0 || data.completeness.omitted !== 0))) return null;
       if (!data.items.every((item) => isRecord(item) && hasExactKeys(item, ["code", "severity"], ["timestamp"]) &&
           ["MISSION_PROJECTION_UNAVAILABLE", "INVOCATION_PROJECTION_UNAVAILABLE", "CAPABILITY_REGISTRY_UNAVAILABLE", "STORAGE_UNAVAILABLE", "PROJECTION_TRUNCATED"].includes(item.code as string) &&
           ["info", "warning", "error"].includes(item.severity as string) &&
