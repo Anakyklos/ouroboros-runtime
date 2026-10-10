@@ -1021,19 +1021,19 @@ export class SqliteMissionStore implements MissionStore {
 
     /** Increment recovery metadata from the Mission row without loading Invocation history. */
     async recordMissionRecovery(missionId: string, recoveredAt: string): Promise<void> {
-        const updatedProjection = await this.withTransaction(async (): Promise<MissionMutationProjection | null> => {
+        await this.withTransaction(async (): Promise<void> => {
             const row = this.stmt(
                 "getMissionRecoveryState",
                 "SELECT state, recovery_metadata FROM missions WHERE mission_id = ?",
             ).get(missionId) as { state: string; recovery_metadata: string } | null;
             if (!row || [MissionState.COMPLETED, MissionState.CANCELLED, MissionState.FAILED_TERMINAL].includes(row.state as MissionState)) {
-                return null;
+                return;
             }
             const metadata = parseJson<Mission["recoveryMetadata"]>(row.recovery_metadata, {
                 recovered: false,
                 recoveryCount: 0,
             });
-            this.stmt(
+            const updated = this.stmt(
                 "recordMissionRecovery",
                 "UPDATE missions SET recovery_metadata = ?, updated_at = ? WHERE mission_id = ? AND state = ?",
             ).run(JSON.stringify({
@@ -1042,6 +1042,7 @@ export class SqliteMissionStore implements MissionStore {
                 recoveryCount: metadata.recoveryCount + 1,
                 lastRecoveredAt: recoveredAt,
             }), recoveredAt, missionId, row.state);
+            if (updated.changes !== 1) return;
             const projection = this.stmt(
                 "getMissionRecoveryProjection",
                 `SELECT m.mission_id, m.state, m.source, m.current_plan_revision_id,
@@ -1060,7 +1061,7 @@ export class SqliteMissionStore implements MissionStore {
                 approval_requirements: string;
                 invocation_ids: string;
             } | null;
-            if (!projection) return null;
+            if (!projection) return;
             const approvalRequirements = parseJson<Mission["approvalRequirements"]>(
                 projection.approval_requirements,
                 [],
@@ -1069,21 +1070,22 @@ export class SqliteMissionStore implements MissionStore {
                 projection.recovery_metadata,
                 { recovered: false, recoveryCount: 0 },
             );
-            return {
-                missionId: projection.mission_id,
-                state: projection.state as MissionState,
-                source: projection.source as Mission["source"],
-                currentPlanRevisionId: projection.current_plan_revision_id,
-                createdAt: projection.created_at,
-                updatedAt: projection.updated_at,
-                recoveryCount: currentRecovery.recoveryCount,
-                invocationIds: parseJson(projection.invocation_ids, []),
-                pendingApprovalCount: approvalRequirements.filter((requirement) => !requirement.granted).length,
-            };
+            this.publishMutation({
+                entity: "mission_projection",
+                kind: "updated",
+                projection: {
+                    missionId: projection.mission_id,
+                    state: projection.state as MissionState,
+                    source: projection.source as Mission["source"],
+                    currentPlanRevisionId: projection.current_plan_revision_id,
+                    createdAt: projection.created_at,
+                    updatedAt: projection.updated_at,
+                    recoveryCount: currentRecovery.recoveryCount,
+                    invocationIds: parseJson(projection.invocation_ids, []),
+                    pendingApprovalCount: approvalRequirements.filter((requirement) => !requirement.granted).length,
+                },
+            });
         });
-        if (updatedProjection) {
-            this.publishMutation({ entity: "mission_projection", kind: "updated", projection: updatedProjection });
-        }
     }
 
     /**

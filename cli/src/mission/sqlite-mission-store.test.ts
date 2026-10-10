@@ -38,6 +38,8 @@ import {
 import { SqliteMissionStore } from "./sqlite-mission-store.js";
 import { MissionEngine } from "./mission-engine.js";
 import { PlanPolicyValidator } from "./policy.js";
+import type { MissionMutation } from "./ports.js";
+import { projectMission } from "../daemon/durable-projection.js";
 import {
     FakeCapabilityResolver,
     FakeClock,
@@ -260,6 +262,136 @@ describe("SqliteMissionStore (durability + recovery)", () => {
         expect(revisions[0].status).toBe("accepted");
 
         await store2.close();
+    });
+
+    it("publishes recovery projection before a queued Mission update and ends at durable public state", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const engine = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("recovery-order"), store);
+        const created = await engine.createMission({ intent: makeIntent(), allowedCapabilityScope: DEFAULT_SCOPE });
+        const readyMission = { ...created, state: MissionState.READY };
+        await store.createMission(readyMission);
+
+        const publicMissionEvents: Array<ReturnType<typeof projectMission>> = [];
+        const unsubscribe = store.onMutation((mutation) => {
+            if (mutation.entity === "mission_projection") {
+                publicMissionEvents.push(mutation.projection);
+            } else if (mutation.entity === "mission") {
+                publicMissionEvents.push(projectMission(mutation.mission));
+            }
+        });
+
+        const recoveredAt = "2026-10-10T10:00:01.000Z";
+        const pausedAt = "2026-10-10T10:00:02.000Z";
+        const recovery = store.recordMissionRecovery(created.missionId, recoveredAt);
+        const update = store.withTransaction(async () => {
+            await store.createMission({ ...readyMission, state: MissionState.PAUSED, updatedAt: pausedAt });
+        });
+        await Promise.all([recovery, update]);
+
+        const durable = await store.getMission(created.missionId);
+        expect(publicMissionEvents.map(({ state }) => state)).toEqual([
+            MissionState.READY,
+            MissionState.PAUSED,
+        ]);
+        expect(publicMissionEvents.at(-1)).toEqual(projectMission(durable!));
+        expect(durable).toMatchObject({
+            state: MissionState.PAUSED,
+            updatedAt: pausedAt,
+            recoveryMetadata: { recovered: false, recoveryCount: 0 },
+        });
+        expect(publicMissionEvents[0]).toMatchObject({
+            state: MissionState.READY,
+            updatedAt: recoveredAt,
+            recoveryCount: 1,
+        });
+        expect(publicMissionEvents[0]).toEqual({
+            missionId: created.missionId,
+            state: MissionState.READY,
+            source: readyMission.source,
+            currentPlanRevisionId: readyMission.currentPlanRevisionId,
+            createdAt: readyMission.createdAt,
+            updatedAt: recoveredAt,
+            recoveryCount: 1,
+            invocationIds: [],
+            pendingApprovalCount: 0,
+        });
+        expect(await store.listInvocations(created.missionId)).toHaveLength(0);
+
+        unsubscribe();
+        await store.close();
+    });
+
+    it("discards queued recovery projection if its transaction rolls back", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const engine = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("recovery-rollback"), store);
+        const created = await engine.createMission({ intent: makeIntent(), allowedCapabilityScope: DEFAULT_SCOPE });
+        const readyMission = { ...created, state: MissionState.READY };
+        await store.createMission(readyMission);
+        const projections: unknown[] = [];
+        const unsubscribe = store.onMutation((mutation) => {
+            if (mutation.entity === "mission_projection") projections.push(mutation.projection);
+        });
+
+        const internals = store as unknown as {
+            publishMutation: (mutation: MissionMutation) => void;
+        };
+        const publishMutation = internals.publishMutation.bind(store);
+        internals.publishMutation = (mutation) => {
+            publishMutation(mutation);
+            if (mutation.entity === "mission_projection") throw new Error("injected failure after enqueue");
+        };
+        try {
+            await expect(
+                store.recordMissionRecovery(created.missionId, "2026-10-10T10:01:00.000Z"),
+            ).rejects.toThrow("injected failure after enqueue");
+        } finally {
+            internals.publishMutation = publishMutation;
+        }
+
+        expect(projections).toEqual([]);
+        expect(await store.getMission(created.missionId)).toMatchObject({
+            state: MissionState.READY,
+            recoveryMetadata: { recovered: false, recoveryCount: 0 },
+            updatedAt: readyMission.updatedAt,
+        });
+        expect(await store.listInvocations(created.missionId)).toHaveLength(0);
+        unsubscribe();
+        await store.close();
+    });
+
+    it("does not publish recovery projection when a state-guarded update affects no rows", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const engine = buildEngine(new FakeClock(BASE_TIME), new FakeIdGenerator("recovery-no-update"), store);
+        const created = await engine.createMission({ intent: makeIntent(), allowedCapabilityScope: DEFAULT_SCOPE });
+        const readyMission = { ...created, state: MissionState.READY };
+        await store.createMission(readyMission);
+        const projections: unknown[] = [];
+        const unsubscribe = store.onMutation((mutation) => {
+            if (mutation.entity === "mission_projection") projections.push(mutation.projection);
+        });
+
+        const { db } = store as unknown as { db: Database | null };
+        db!.exec(`
+            CREATE TRIGGER ignore_mission_recovery
+            BEFORE UPDATE OF recovery_metadata ON missions
+            WHEN OLD.mission_id = '${created.missionId}'
+            BEGIN
+                SELECT RAISE(IGNORE);
+            END;
+        `);
+        await store.recordMissionRecovery(created.missionId, "2026-10-10T10:02:00.000Z");
+
+        expect(projections).toEqual([]);
+        expect(await store.getMission(created.missionId)).toMatchObject({
+            state: MissionState.READY,
+            recoveryMetadata: { recovered: false, recoveryCount: 0 },
+            updatedAt: readyMission.updatedAt,
+        });
+        unsubscribe();
+        await store.close();
     });
 
     it("does not lose or duplicate completed invocation refs across recovery", async () => {

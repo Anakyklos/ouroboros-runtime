@@ -82,6 +82,29 @@ describe('MissionSchedulerDriver', () => {
         await driver.stop();
     });
 
+    it('does not wake the scheduler for a mission projection recovery event', async () => {
+        const timer = new FakeTimer();
+        const store = new FakeStore();
+        const runOnce = mock()
+            .mockResolvedValueOnce(report('2026-10-08T12:00:05.000Z'))
+            .mockResolvedValueOnce(report());
+        const driver = new MissionSchedulerDriver({ scheduler: { runOnce }, store, timer });
+
+        await driver.start();
+        expect(runOnce).toHaveBeenCalledTimes(1);
+        expect(timer.pendingTimers).toBe(1);
+        store.publish({ entity: 'mission_projection', kind: 'updated', projection: {} as never });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(runOnce).toHaveBeenCalledTimes(1);
+        expect(timer.pendingTimers).toBe(1);
+
+        await timer.advance(5_000);
+        expect(runOnce).toHaveBeenCalledTimes(2);
+        expect(timer.pendingTimers).toBe(0);
+        await driver.stop();
+    });
+
     it('coalesces concurrent durable changes and never overlaps passes', async () => {
         const timer = new FakeTimer();
         const store = new FakeStore();
