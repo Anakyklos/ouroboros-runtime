@@ -33,6 +33,7 @@ export interface DaemonProjectionOptions {
   maxBufferedAmount?: number;
   maxPendingEvents?: number;
   maxClients?: number;
+  snapshotHandshakeTimeoutMs?: number;
   onDiagnostic?: (diagnostic: ProtocolDiagnostic) => void;
 }
 
@@ -42,12 +43,19 @@ interface ClientState {
   phase: ClientPhase;
   pending: DaemonEventEnvelope[];
   client: ProjectionClient | null;
+  cancelSnapshotWait: (() => void) | null;
 }
+
+type SnapshotOutcome =
+  | { kind: "snapshot"; value: DaemonSnapshot }
+  | { kind: "failed" | "timed_out" | "cancelled" };
 
 const OPEN_READY_STATE = 1;
 const DEFAULT_MAX_BUFFERED_AMOUNT = 1024 * 1024;
 const DEFAULT_MAX_PENDING_EVENTS = 32;
 export const DEFAULT_MAX_PROJECTION_CLIENTS = 64;
+export const DEFAULT_SNAPSHOT_HANDSHAKE_TIMEOUT_MS = 5_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export class DaemonProjection {
   private readonly clients = new Map<object, ClientState>();
@@ -57,7 +65,9 @@ export class DaemonProjection {
   private readonly maxBufferedAmount: number;
   private readonly maxPendingEvents: number;
   private readonly maxClients: number;
+  private readonly snapshotHandshakeTimeoutMs: number;
   private readonly onDiagnostic?: (diagnostic: ProtocolDiagnostic) => void;
+  private inFlightSnapshots = 0;
   private sequence = 0;
 
   constructor(options: DaemonProjectionOptions) {
@@ -76,6 +86,11 @@ export class DaemonProjection {
       (options.maxClients ?? 0) > 0
       ? options.maxClients!
       : DEFAULT_MAX_PROJECTION_CLIENTS;
+    this.snapshotHandshakeTimeoutMs = Number.isSafeInteger(options.snapshotHandshakeTimeoutMs) &&
+      (options.snapshotHandshakeTimeoutMs ?? 0) > 0 &&
+      options.snapshotHandshakeTimeoutMs! <= MAX_TIMER_DELAY_MS
+      ? options.snapshotHandshakeTimeoutMs!
+      : DEFAULT_SNAPSHOT_HANDSHAKE_TIMEOUT_MS;
     this.onDiagnostic = options.onDiagnostic;
   }
 
@@ -97,9 +112,9 @@ export class DaemonProjection {
 
   /** Reserve aggregate capacity before upgrading a socket or reading its snapshot. */
   reserveClient(): ProjectionClientReservation | null {
-    if (this.clients.size >= this.maxClients) return null;
+    if (this.clients.size >= this.maxClients || this.inFlightSnapshots >= this.maxClients) return null;
     const reservation = Object.freeze({}) as ProjectionClientReservation;
-    this.clients.set(reservation, { phase: "handshaking", pending: [], client: null });
+    this.clients.set(reservation, { phase: "handshaking", pending: [], client: null, cancelSnapshotWait: null });
     return reservation;
   }
 
@@ -139,13 +154,16 @@ export class DaemonProjection {
     }
     const snapshotSequence = this.ensureSequence();
 
-    let snapshot: DaemonSnapshot;
-    try {
-      snapshot = await this.snapshot(snapshotSequence);
-    } catch {
-      this.closeClient(client, "invalid_payload");
+    if (this.inFlightSnapshots >= this.maxClients) {
+      this.closeClient(client);
       return false;
     }
+    const outcome = await this.readSnapshotWithDeadline(state, snapshotSequence);
+    if (outcome.kind !== "snapshot") {
+      this.closeClient(client, outcome.kind === "failed" ? "invalid_payload" : undefined);
+      return false;
+    }
+    const snapshot = outcome.value;
 
     if (this.clients.get(client) !== state || state.phase === "closing") return false;
 
@@ -174,6 +192,7 @@ export class DaemonProjection {
   }
 
   disconnectClient(client: ProjectionClient): void {
+    this.clients.get(client)?.cancelSnapshotWait?.();
     this.clients.delete(client);
   }
 
@@ -183,6 +202,7 @@ export class DaemonProjection {
     if (!state) return;
     state.phase = "closing";
     state.pending.length = 0;
+    state.cancelSnapshotWait?.();
   }
 
   /** Transfer an upgraded but rejected socket reservation into closing state. */
@@ -255,6 +275,44 @@ export class DaemonProjection {
   private ensureSequence(): number {
     this.sequence = Math.max(1, this.sequence);
     return this.sequence;
+  }
+
+  private readSnapshotWithDeadline(state: ClientState, cursor: number): Promise<SnapshotOutcome> {
+    this.inFlightSnapshots += 1;
+    return new Promise<SnapshotOutcome>((resolve) => {
+      let settled = false;
+      const settle = (outcome: SnapshotOutcome) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        state.cancelSnapshotWait = null;
+        resolve(outcome);
+      };
+      const timeout = setTimeout(
+        () => settle({ kind: "timed_out" }),
+        this.snapshotHandshakeTimeoutMs,
+      );
+      state.cancelSnapshotWait = () => settle({ kind: "cancelled" });
+
+      let operation: Promise<DaemonSnapshot>;
+      try {
+        operation = Promise.resolve(this.snapshot(cursor));
+      } catch {
+        this.inFlightSnapshots -= 1;
+        settle({ kind: "failed" });
+        return;
+      }
+      void operation.then(
+        (snapshot) => {
+          this.inFlightSnapshots -= 1;
+          settle({ kind: "snapshot", value: snapshot });
+        },
+        () => {
+          this.inFlightSnapshots -= 1;
+          settle({ kind: "failed" });
+        },
+      );
+    });
   }
 
   private createEnvelope<E extends AllowedDaemonEvent>(

@@ -97,6 +97,16 @@ estado de Mission, não fecha streams saudáveis e não afeta RPC HTTP autorizad
 O limite é de cardinalidade, não um orçamento global de bytes; permanecem os
 limites individuais de fila de handshake e de bytes buffered.
 
+O handshake do snapshot tem prazo padrão de 5 segundos, configurável por
+snapshotHandshakeTimeoutMs. Timeout, desconexão e shutdown encerram a espera
+do cliente e limpam seu timer. Um timeout fecha somente o cliente afetado e não
+autoriza cancelar uma Promise de snapshot não cooperativa. O daemon observa o
+resultado tardio para evitar rejeição não tratada e impede qualquer envio após
+timeout/fechamento. O número de operações subjacentes ainda não liquidadas é
+limitado separadamente por maxProjectionClients; enquanto esse limite estiver
+ocupado, novas tentativas recebem HTTP 503 antes do upgrade. Uma operação que
+nunca liquida pode manter essa admissão ocupada até o daemon reiniciar.
+
 ## Lifecycle
 
 O daemon registra um único wildcard listener e mantém seu unsubscribe. `stop()` remove esse listener e fecha clientes. A conexão frontend remove handlers do socket, cancela o timer de backoff e invalida callbacks antigos. Cada instância mantém no máximo um timer de reconexão.

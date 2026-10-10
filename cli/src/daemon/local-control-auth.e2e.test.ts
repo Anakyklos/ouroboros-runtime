@@ -714,8 +714,10 @@ describe("local-control authentication over real Fastify and SQLite", () => {
       undefined,
       authorizer,
     );
+    const projection = (boundedServer as unknown as { projection: DaemonProjection }).projection;
     const setIntervalSpy = spyOn(globalThis, "setInterval");
     const authIntervals = () => setIntervalSpy.mock.calls.filter((call) => call[1] === 500);
+    const pendingSnapshotCount = () => (projection as unknown as { inFlightSnapshots: number }).inFlightSnapshots;
     const firstToken = credentialStore.provision("capacity-first", ["mission.read"], Date.now() + 60_000).token;
     const secondToken = credentialStore.provision("capacity-second", ["mission.read"], Date.now() + 60_000).token;
     const thirdToken = credentialStore.provision("capacity-third", ["mission.read"], Date.now() + 60_000).token;
@@ -778,6 +780,8 @@ describe("local-control authentication over real Fastify and SQLite", () => {
 
       credentialStore.provision("capacity-first", ["mission.control"], Date.now() + 60_000);
       expect((await first.nextFrame(2_000)).opcode).toBe(8);
+      releaseSnapshots();
+      await waitForCondition(() => pendingSnapshotCount() === 0);
       replacement = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${thirdToken}` });
       expect((await replacement.response).status).toBe(101);
       await waitForCondition(() => snapshotReads === 3);
@@ -871,6 +875,157 @@ describe("local-control authentication over real Fastify and SQLite", () => {
       recovered?.close();
       shutdownClient?.close();
       await boundedServer.stop();
+    }
+  });
+
+  it("times out a stalled real snapshot, recovers capacity after transport close, and preserves healthy SQLite projection", async () => {
+    const targetPort = await unusedPort();
+    const targetEventBus = new EventBus();
+    const delegate = new RpcGateway(daemonStorage, targetEventBus, missionStore);
+    let snapshotReads = 0;
+    let announceStalledSnapshot!: () => void;
+    const stalledSnapshotStarted = new Promise<void>((resolveStarted) => { announceStalledSnapshot = resolveStarted; });
+    let releaseStalledSnapshot!: (snapshot: Awaited<ReturnType<DaemonRpcGatewayPort["getProjectionSnapshot"]>>) => void;
+    const timeoutGateway: DaemonRpcGatewayPort = {
+      registerMethod: (name, handler) => delegate.registerMethod(name, handler),
+      handleRequest: (request) => delegate.handleRequest(request),
+      getProjectionSnapshot: (cursor) => {
+        snapshotReads += 1;
+        if (snapshotReads === 1) {
+          announceStalledSnapshot();
+          return new Promise((resolveSnapshot) => { releaseStalledSnapshot = resolveSnapshot; });
+        }
+        return delegate.getProjectionSnapshot(cursor);
+      },
+    };
+    const boundedServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1", maxProjectionClients: 2, snapshotHandshakeTimeoutMs: 40 },
+      targetEventBus,
+      missionStore,
+      timeoutGateway,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    const projection = (boundedServer as unknown as { projection: DaemonProjection }).projection;
+    const stalledToken = credentialStore.provision("snapshot-timeout-stalled", ["mission.read"], Date.now() + 60_000).token;
+    const healthyToken = credentialStore.provision("snapshot-timeout-healthy", ["mission.read"], Date.now() + 60_000).token;
+    const replacementToken = credentialStore.provision("snapshot-timeout-replacement", ["mission.read"], Date.now() + 60_000).token;
+    const missionsBefore = await missionStore.listMissions();
+    const invocationsBefore = await missionStore.listInvocations(missionId);
+    let stalled: RawWebSocketProbe | undefined;
+    let healthy: RawWebSocketProbe | undefined;
+    let replacement: RawWebSocketProbe | undefined;
+    try {
+      await boundedServer.start();
+      stalled = await RawWebSocketProbe.connect(targetPort, { Authorization: "Bearer " + stalledToken });
+      expect((await stalled.response).status).toBe(101);
+      await stalledSnapshotStarted;
+      healthy = await RawWebSocketProbe.connect(targetPort, { Authorization: "Bearer " + healthyToken });
+      expect((await healthy.response).status).toBe(101);
+      expect(JSON.parse((await healthy.nextFrame()).payload.toString("utf8")).data.missions.map((mission: { missionId: string }) => mission.missionId)).toContain(missionId);
+
+      expect((await stalled.nextFrame(1_000)).opcode).toBe(8);
+      expect(projection.connectedClientCount).toBe(1);
+      expect(projection.admittedClientCount).toBe(1);
+      expect(snapshotReads).toBe(2);
+
+      if (!stalled.socket.destroyed) {
+        const stalledTransportClosed = new Promise<void>((resolveClosed) => stalled!.socket.once("close", () => resolveClosed()));
+        stalled.close();
+        await stalledTransportClosed;
+      }
+      await waitForCondition(() => projection.admittedClientCount === 1);
+
+      replacement = await RawWebSocketProbe.connect(targetPort, { Authorization: "Bearer " + replacementToken });
+      expect((await replacement.response).status).toBe(101);
+      expect(JSON.parse((await replacement.nextFrame()).payload.toString("utf8")).event).toBe("snapshot");
+      targetEventBus.emit("daemon", { type: "ready", port: targetPort });
+      expect((await healthy.nextFrame()).payload.toString("utf8")).toContain('"event":"daemon"');
+      expect((await replacement.nextFrame()).payload.toString("utf8")).toContain('"event":"daemon"');
+
+      releaseStalledSnapshot(await delegate.getProjectionSnapshot(1));
+      await new Promise((resolveMicrotask) => setTimeout(resolveMicrotask, 0));
+      expect(await missionStore.listMissions()).toEqual(missionsBefore);
+      expect(await missionStore.listInvocations(missionId)).toEqual(invocationsBefore);
+    } finally {
+      if (releaseStalledSnapshot) {
+        releaseStalledSnapshot(await delegate.getProjectionSnapshot(1));
+      }
+      stalled?.close();
+      healthy?.close();
+      replacement?.close();
+      await boundedServer.stop();
+    }
+  });
+
+  it("cancels a pending handshake on shutdown and reconnects after restart from the authoritative SQLite snapshot", async () => {
+    const targetPort = await unusedPort();
+    const targetEventBus = new EventBus();
+    const delegate = new RpcGateway(daemonStorage, targetEventBus, missionStore);
+    let releaseSnapshot!: (snapshot: Awaited<ReturnType<DaemonRpcGatewayPort["getProjectionSnapshot"]>>) => void;
+    let snapshotStarted!: () => void;
+    const snapshotObserved = new Promise<void>((resolveObserved) => { snapshotStarted = resolveObserved; });
+    const pendingGateway: DaemonRpcGatewayPort = {
+      registerMethod: (name, handler) => delegate.registerMethod(name, handler),
+      handleRequest: (request) => delegate.handleRequest(request),
+      getProjectionSnapshot: () => {
+        snapshotStarted();
+        return new Promise((resolveSnapshot) => { releaseSnapshot = resolveSnapshot; });
+      },
+    };
+    const pendingServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1", maxProjectionClients: 1, snapshotHandshakeTimeoutMs: 5_000 },
+      targetEventBus,
+      missionStore,
+      pendingGateway,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    const projection = (pendingServer as unknown as { projection: DaemonProjection }).projection;
+    const token = credentialStore.provision("snapshot-shutdown-reconnect", ["mission.read"], Date.now() + 60_000).token;
+    let pending: RawWebSocketProbe | undefined;
+    let restarted: RawWebSocketProbe | undefined;
+    let restartedServer: DaemonServer | undefined;
+    try {
+      await pendingServer.start();
+      pending = await RawWebSocketProbe.connect(targetPort, { Authorization: "Bearer " + token });
+      expect((await pending.response).status).toBe(101);
+      await snapshotObserved;
+      expect(projection.admittedClientCount).toBe(1);
+
+      const pendingTransportClosed = new Promise<void>((resolveClosed) => pending!.socket.once("close", () => resolveClosed()));
+      await pendingServer.stop();
+      await pendingTransportClosed;
+      await waitForCondition(() => projection.admittedClientCount === 0);
+      expect(projection.connectedClientCount).toBe(0);
+
+      releaseSnapshot(await delegate.getProjectionSnapshot(1));
+      restartedServer = new DaemonServer(
+        daemonStorage,
+        { port: targetPort, host: "127.0.0.1" },
+        new EventBus(),
+        missionStore,
+        delegate,
+        undefined,
+        undefined,
+        authorizer,
+      );
+      await restartedServer.start();
+      restarted = await RawWebSocketProbe.connect(targetPort, { Authorization: "Bearer " + token });
+      expect((await restarted.response).status).toBe(101);
+      const snapshot = JSON.parse((await restarted.nextFrame()).payload.toString("utf8"));
+      expect(snapshot.event).toBe("snapshot");
+      expect(snapshot.data.missions.map((mission: { missionId: string }) => mission.missionId)).toContain(missionId);
+    } finally {
+      if (releaseSnapshot) releaseSnapshot(await delegate.getProjectionSnapshot(1));
+      pending?.close();
+      restarted?.close();
+      await restartedServer?.stop();
+      await pendingServer.stop();
     }
   });
 
