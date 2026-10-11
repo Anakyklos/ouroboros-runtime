@@ -328,6 +328,51 @@ describe("LocalControlReadService", () => {
     expect(JSON.stringify(result)).not.toContain("credential");
   });
 
+  it("enforces the requested limit when an alternate registry returns an oversized page", async () => {
+    const descriptors = ["capability.first", "capability.second"].map((capabilityId) => ({
+      capabilityId,
+      moduleOwner: "owner",
+      contractVersion: 1,
+      purpose: "Read public facts",
+      effectClass: "read_only",
+      requiresApproval: false,
+      requiresOwnerVerification: false,
+      ownsStorage: false,
+      availability: "available",
+    }));
+    const alternateRegistry = {
+      listDescriptors: () => descriptors,
+      listDescriptorPage: () => ({ descriptors, truncated: false }),
+    };
+
+    const result = await service({ capabilityRegistry: alternateRegistry as never }).read({
+      operation: "capability_registry.list",
+      protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+      limit: 1,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+      operation: "capability_registry.list",
+      data: {
+        available: true,
+        items: [{
+          capabilityId: "capability.first",
+          moduleOwner: "owner",
+          contractVersion: 1,
+          purpose: "Read public facts",
+          effectClass: "read_only",
+          requiresApproval: false,
+          requiresOwnerVerification: false,
+          ownsStorage: false,
+          availability: "available",
+        }],
+        truncated: true,
+      },
+    });
+  });
+
   it("clones only the bounded registry projection for a catalogue larger than the public limit", async () => {
     const registry = new CapabilityRegistry();
     for (let index = 149; index >= 0; index -= 1) {

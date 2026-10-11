@@ -254,8 +254,8 @@ export class LocalControlReadService {
           let descriptors;
           let truncated: boolean;
           if (page) {
-            descriptors = page.descriptors;
-            truncated = page.truncated;
+            descriptors = page.descriptors.slice(0, limit);
+            truncated = page.truncated || page.descriptors.length > descriptors.length;
           } else {
             const completeDescriptors = registry.listDescriptors();
             descriptors = completeDescriptors.slice(0, limit);
