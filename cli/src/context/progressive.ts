@@ -253,9 +253,10 @@ export class ProgressiveContextPackRuntime {
         const latestMission = missionAfterRead;
         assertMissionNonTerminal(latestMission);
         const invocation = latestMission.invocationRefs.find((entry) => entry.stepId === request.stepId);
-        const invocationIds = invocation
-            ? [...new Set([...state.invocationIds, invocation.invocationId])]
-            : state.invocationIds;
+        const invocationIds = [...new Set([
+            ...state.invocationIds,
+            ...(invocation ? [invocation.invocationId] : []),
+        ])];
         let attempts = 0;
         for (const invocationId of invocationIds) {
             const trackedInvocation = await this.options.store.getInvocation(invocationId);

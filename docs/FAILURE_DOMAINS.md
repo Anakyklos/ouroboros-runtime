@@ -259,7 +259,9 @@ Progressive Context Pack attempt accounting reads distinct tracked Invocation
 ids sequentially through `getInvocation()` and ignores missing or cross-Mission
 records. This avoids hydrating unrelated history for that accounting path, but
 still hydrates selected full Invocation entities and scales with the number of
-associated ids; it is not a global memory/RSS bound and has no CPU/RSS benchmark.
+associated ids; the context reader's separate completed-read discovery still
+uses `engine.listInvocations()`. This is not a global memory/RSS bound and has
+no CPU/RSS benchmark.
 
 **Evidence references:** this behavior was delivered in merged PRs
 [#128](https://github.com/Anakyklos/ouroboros-runtime/pull/128),

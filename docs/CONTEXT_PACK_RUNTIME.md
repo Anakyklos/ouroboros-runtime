@@ -109,8 +109,10 @@ remains excluded with explicit budget metadata.
 
 The targeted accounting read still hydrates each selected full Invocation and
 is sequential, so its work scales with the number of distinct associated ids;
-it does not bound all Mission reads or total process memory. No RSS or CPU
-benchmark is claimed.
+it does not bound all Mission reads or total process memory. Separately, the
+context reader still uses `engine.listInvocations()` to discover completed
+reads; this accounting change does not optimize that reader path. No RSS or
+CPU benchmark is claimed.
 
 ## Current limits
 
