@@ -253,13 +253,17 @@ export class ProgressiveContextPackRuntime {
         const latestMission = missionAfterRead;
         assertMissionNonTerminal(latestMission);
         const invocation = latestMission.invocationRefs.find((entry) => entry.stepId === request.stepId);
-        const invocationIds = invocation
-            ? [...new Set([...state.invocationIds, invocation.invocationId])]
-            : state.invocationIds;
-        const fullInvocations = await this.options.store.listInvocations(pack.missionId);
-        const attempts = fullInvocations
-            .filter((entry) => invocationIds.includes(entry.invocationId))
-            .reduce((count, entry) => count + entry.attempts.length, 0);
+        const invocationIds = [...new Set([
+            ...state.invocationIds,
+            ...(invocation ? [invocation.invocationId] : []),
+        ])];
+        let attempts = 0;
+        for (const invocationId of invocationIds) {
+            const trackedInvocation = await this.options.store.getInvocation(invocationId);
+            if (trackedInvocation?.missionId === pack.missionId) {
+                attempts += trackedInvocation.attempts.length;
+            }
+        }
         const unresolved = combined.unresolved.length;
         const omissions = combined.budgetReport.excluded.length;
         const accounting: MissionContextAccounting = {

@@ -90,7 +90,12 @@ using the existing Mission SQLite store:
   successful expansions. It is an identity list, not a connector/provider
   call count;
 - `attempts` is the count of durable attempt records on those associated
-  Invocations. No provider/model-call count is available here;
+  Invocations. Expansion reads each distinct tracked id sequentially through
+  `MissionStore.getInvocation()`, counts only records belonging to this
+  Mission, and ignores missing ids. Duplicate ids contribute once and an
+  Invocation with no attempt records contributes zero. Unrelated Mission
+  history is not hydrated for this accounting. No provider/model-call count is
+  available here;
 - request/expansion/attempt accounting survives runtime recompilation from
   the stored Mission snapshot; initial/aggregate sizes describe the latest
   recomposed working set;
@@ -101,6 +106,13 @@ The package's `maxTotalChars` and item/token limits include the mandatory
 projection through the progressive wrapper. The #64 package retains its own
 budget report for compiled context items. Optional context that does not fit
 remains excluded with explicit budget metadata.
+
+The targeted accounting read still hydrates each selected full Invocation and
+is sequential, so its work scales with the number of distinct associated ids;
+it does not bound all Mission reads or total process memory. Separately, the
+context reader still uses `engine.listInvocations()` to discover completed
+reads; this accounting change does not optimize that reader path. No RSS or
+CPU benchmark is claimed.
 
 ## Current limits
 

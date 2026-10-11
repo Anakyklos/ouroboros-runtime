@@ -19,7 +19,72 @@ import { ContextCompilerError, EpistemicClass, SourceStatus } from "./contracts.
 import { ProgressiveContextPackRuntime } from "./progressive.js";
 import { SqliteMissionStore } from "../mission/sqlite-mission-store.js";
 import { makeContextMission } from "./fixtures.js";
-import { MissionState } from "../mission/contracts.js";
+import {
+    EffectClass,
+    InvocationStatus,
+    MissionState,
+    type CapabilityInvocation,
+    type MissionContextAccounting,
+} from "../mission/contracts.js";
+import {
+    CapabilityAvailability,
+    CancellationSupport,
+    IdempotencyMode,
+    ReconciliationSupport,
+    RetryBackoff,
+} from "../capabilities/contracts.js";
+
+function makeAccountingInvocation(
+    missionId: string,
+    invocationId: string,
+    stepId: string,
+    attemptCount: number,
+): CapabilityInvocation {
+    const now = "2026-08-30T12:00:00.000Z";
+    return {
+        invocationId,
+        missionId,
+        stepId,
+        capabilityId: "context:lifeos",
+        planRevisionId: "historical-context-plan",
+        contractVersion: 1,
+        moduleOwner: "lifeos",
+        effectClass: EffectClass.READ,
+        status: InvocationStatus.PENDING,
+        requestId: `request-${invocationId}`,
+        effectFingerprint: `fingerprint-${invocationId}`,
+        inputRefs: ["refs/lifeos/journal/week"],
+        idempotency: { mode: IdempotencyMode.IDEMPOTENT, key: invocationId },
+        retry: {
+            maxAttempts: Math.max(1, attemptCount),
+            attempt: attemptCount,
+            backoff: RetryBackoff.NONE,
+            backoffMs: 0,
+            nextEligibleAt: null,
+        },
+        attempts: Array.from({ length: attemptCount }, (_, index) => ({
+            attempt: index + 1,
+            correlationId: `correlation-${invocationId}-${index + 1}`,
+            state: "acknowledged" as const,
+            startedAt: now,
+            finishedAt: now,
+        })),
+        delivery: { state: "acknowledged", acknowledgedAt: now },
+        cancellation: {
+            support: CancellationSupport.UNSUPPORTED,
+            requested: false,
+            state: "not_requested",
+        },
+        reconciliation: {
+            support: ReconciliationSupport.NONE,
+            state: "not_required",
+        },
+        ownerVerificationState: "pending",
+        createdAt: now,
+        updatedAt: now,
+        resultRefs: [],
+    };
+}
 
 describe("ProgressiveContextPackRuntime", () => {
     it("builds a small initial pack without consulting an external owner", async () => {
@@ -71,6 +136,286 @@ describe("ProgressiveContextPackRuntime", () => {
         expect(Object.hasOwn(pack.package.request, "ownerHint")).toBe(false);
         expect(pack.budget.observed.totalChars).toBeLessThanOrEqual(pack.budget.limits.maxTotalChars);
         await harness.close();
+    });
+
+    it("counts tracked Invocation attempts without hydrating unrelated history for accounting", async () => {
+        const descriptor = makeContextDescriptor("lifeos");
+        const directory = mkdtempSync(join(tmpdir(), "ouroboros-context-attempt-accounting-"));
+        const dbPath = join(directory, "missions.sqlite");
+        let currentHarness = await createSeamHarness({
+            descriptors: [descriptor],
+            store: new SqliteMissionStore(dbPath),
+        });
+        try {
+            const harness = currentHarness;
+            const { mission, stepId } = await harness.acceptContextPlan(descriptor, "refs/lifeos/journal/week");
+            const priorAccounting: MissionContextAccounting = {
+                contractVersion: 1,
+                missionId: mission.missionId,
+                initial: { bytes: 20, chars: 20, items: 1 },
+                aggregate: { bytes: 20, chars: 20, items: 1 },
+                contextRequests: 2,
+                expansions: 2,
+                omissions: 0,
+                unresolvedSources: 0,
+                invocationIds: ["tracked-a", "tracked-a", "missing-invocation", "tracked-b", "zero-attempts"],
+                requestIds: [],
+                tokenUsage: { value: 5, provenance: "estimated", method: "chars_div_4" },
+                attempts: 99,
+                outcome: { state: mission.state, verified: false, ownerBlocked: false, verifiedCriteria: 0 },
+                updatedAt: "2026-08-30T12:00:00.000Z",
+            };
+            await harness.updateMission(mission.missionId, { contextAccounting: priorAccounting });
+            await harness.store.saveInvocation(makeAccountingInvocation(mission.missionId, "tracked-a", "old-read-a", 2));
+            await harness.store.saveInvocation(makeAccountingInvocation(mission.missionId, "tracked-b", "old-read-b", 3));
+            await harness.store.saveInvocation(makeAccountingInvocation(mission.missionId, "zero-attempts", "old-read-zero", 0));
+            for (let index = 0; index < 128; index++) {
+                await harness.store.saveInvocation(makeAccountingInvocation(
+                    mission.missionId,
+                    `unrelated-${index}`,
+                    `unrelated-step-${index}`,
+                    5,
+                ));
+            }
+
+            let invokes = 0;
+            harness.seam.registerConnector(descriptor.capabilityId, {
+                ...makeContextConnector(descriptor, { rows: journalRows() }),
+                invoke: async (request) => {
+                    invokes++;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId: request.requestId,
+                        summary: "context fetched",
+                        contextRows: journalRows(),
+                        evidence: [],
+                    };
+                },
+                reconcile: async (requestId) => ({
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId,
+                    summary: "context read reconciled",
+                    contextRows: journalRows(),
+                    evidence: [],
+                }),
+            });
+
+            let fullHistoryReads = 0;
+            let fullHistoryEntitiesMaterialized = 0;
+            const targetedReadIds: string[] = [];
+            const tracedStore = new Proxy(harness.store, {
+                get(target, property) {
+                    if (property === "listInvocations") {
+                        return async (missionId: string) => {
+                            fullHistoryReads++;
+                            const invocations = await target.listInvocations(missionId);
+                            fullHistoryEntitiesMaterialized += invocations.length;
+                            return invocations;
+                        };
+                    }
+                    if (property === "getInvocation") {
+                        return async (invocationId: string) => {
+                            targetedReadIds.push(invocationId);
+                            return target.getInvocation(invocationId);
+                        };
+                    }
+                    const value = Reflect.get(target, property, target) as unknown;
+                    return typeof value === "function" ? value.bind(target) : value;
+                },
+            });
+            const runtime = new ProgressiveContextPackRuntime({
+                store: tracedStore,
+                reader: new SeamBoundContextReader(harness.engine, harness.seam, harness.registry),
+                compiler: new ContextCompiler({ clock: fixedClock() }),
+                clock: fixedClock(),
+            });
+            const initial = await runtime.compileInitial(mission.missionId, makeContextRequest({ missionId: mission.missionId }));
+            const request = makeContextRequest({ missionId: mission.missionId, ownerHint: "lifeos", stepId });
+            const expanded = await runtime.expand(initial, { correlationId: "tracked-accounting", request });
+
+            expect(expanded.accounting.invocationIds).toHaveLength(5);
+            expect(expanded.accounting.attempts).toBe(6);
+            expect(invokes).toBe(1);
+            expect(fullHistoryEntitiesMaterialized).toBe(0);
+            expect(fullHistoryReads).toBe(0);
+            expect(targetedReadIds).toEqual(expect.arrayContaining([
+                "tracked-a",
+                "tracked-b",
+                "zero-attempts",
+                "missing-invocation",
+                ...expanded.accounting.invocationIds.filter((id) => !priorAccounting.invocationIds.includes(id)),
+            ]));
+            expect(targetedReadIds).toHaveLength(5);
+            expect(targetedReadIds.some((id) => id.startsWith("unrelated-"))).toBe(false);
+
+            const repeated = await runtime.expand(expanded, { correlationId: "tracked-accounting", request });
+            expect(repeated.accounting.attempts).toBe(6);
+            expect(repeated.accounting.invocationIds).toHaveLength(5);
+            expect(invokes).toBe(1);
+            expect(fullHistoryReads).toBe(0);
+            expect(fullHistoryEntitiesMaterialized).toBe(0);
+
+            await harness.close();
+            currentHarness = await createSeamHarness({
+                descriptors: [descriptor],
+                store: new SqliteMissionStore(dbPath),
+            });
+            let restartInvokes = 0;
+            currentHarness.seam.registerConnector(descriptor.capabilityId, {
+                ...makeContextConnector(descriptor, { rows: journalRows() }),
+                invoke: async (request) => {
+                    restartInvokes++;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId: request.requestId,
+                        summary: "context fetched",
+                        contextRows: journalRows(),
+                        evidence: [],
+                    };
+                },
+                reconcile: async (requestId) => {
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId,
+                        summary: "context read reconciled",
+                        contextRows: journalRows(),
+                        evidence: [],
+                    };
+                },
+            });
+            const restartedStore = new Proxy(currentHarness.store, {
+                get(target, property) {
+                    if (property === "listInvocations") {
+                        return async (missionId: string) => {
+                            fullHistoryReads++;
+                            const invocations = await target.listInvocations(missionId);
+                            fullHistoryEntitiesMaterialized += invocations.length;
+                            return invocations;
+                        };
+                    }
+                    if (property === "getInvocation") {
+                        return async (invocationId: string) => {
+                            targetedReadIds.push(invocationId);
+                            return target.getInvocation(invocationId);
+                        };
+                    }
+                    const value = Reflect.get(target, property, target) as unknown;
+                    return typeof value === "function" ? value.bind(target) : value;
+                },
+            });
+            const restartedRuntime = new ProgressiveContextPackRuntime({
+                store: restartedStore,
+                reader: new SeamBoundContextReader(currentHarness.engine, currentHarness.seam, currentHarness.registry),
+                compiler: new ContextCompiler({ clock: fixedClock() }),
+                clock: fixedClock(),
+            });
+            const resumed = await restartedRuntime.compileInitial(mission.missionId, makeContextRequest({ missionId: mission.missionId }));
+            expect(resumed.accounting.attempts).toBe(6);
+            expect(resumed.accounting.invocationIds).toHaveLength(5);
+            const resumedExpansion = await restartedRuntime.expand(resumed, {
+                correlationId: "tracked-accounting",
+                request,
+            });
+            expect(resumedExpansion.accounting.attempts).toBe(6);
+            expect(resumedExpansion.accounting.invocationIds).toHaveLength(5);
+            expect(restartInvokes).toBe(0);
+            expect(fullHistoryReads).toBe(0);
+            expect(fullHistoryEntitiesMaterialized).toBe(0);
+        } finally {
+            await currentHarness.close();
+            rmSync(directory, { recursive: true, force: true });
+        }
+    });
+
+    it("deduplicates persisted accounting IDs when SQLite expansion is refused before dispatch", async () => {
+        const descriptor = makeContextDescriptor("lifeos");
+        const directory = mkdtempSync(join(tmpdir(), "ouroboros-context-refused-accounting-"));
+        const dbPath = join(directory, "missions.sqlite");
+        let harness = await createSeamHarness({
+            descriptors: [descriptor],
+            store: new SqliteMissionStore(dbPath),
+        });
+        try {
+            const { mission, stepId } = await harness.acceptContextPlan(descriptor, "refs/lifeos/journal/week");
+            await harness.store.saveInvocation(makeAccountingInvocation(mission.missionId, "tracked-a", "old-read-a", 2));
+            await harness.store.saveInvocation(makeAccountingInvocation(mission.missionId, "tracked-b", "old-read-b", 3));
+            const foreignMissionId = "mission-context-accounting-foreign";
+            await harness.store.createMission(makeContextMission({ missionId: foreignMissionId }));
+            await harness.store.saveInvocation(makeAccountingInvocation(foreignMissionId, "foreign-invocation", "foreign-read", 4));
+            const priorAccounting: MissionContextAccounting = {
+                contractVersion: 1,
+                missionId: mission.missionId,
+                initial: { bytes: 20, chars: 20, items: 1 },
+                aggregate: { bytes: 20, chars: 20, items: 1 },
+                contextRequests: 1,
+                expansions: 1,
+                omissions: 0,
+                unresolvedSources: 0,
+                invocationIds: ["tracked-a", "tracked-a", "foreign-invocation", "tracked-b", "tracked-b"],
+                requestIds: [],
+                tokenUsage: { value: 5, provenance: "estimated", method: "chars_div_4" },
+                attempts: 5,
+                outcome: { state: mission.state, verified: false, ownerBlocked: false, verifiedCriteria: 0 },
+                updatedAt: "2026-08-30T12:00:00.000Z",
+            };
+            await harness.updateMission(mission.missionId, { contextAccounting: priorAccounting });
+            await harness.close();
+
+            harness = await createSeamHarness({
+                descriptors: [descriptor],
+                store: new SqliteMissionStore(dbPath),
+            });
+            let invokeCalls = 0;
+            harness.seam.registerConnector(descriptor.capabilityId, {
+                ...makeContextConnector(descriptor, { rows: journalRows() }),
+                invoke: async (request) => {
+                    invokeCalls++;
+                    return {
+                        status: CapabilityResultStatus.COMPLETED,
+                        requestId: request.requestId,
+                        summary: "context fetched",
+                        contextRows: journalRows(),
+                        evidence: [],
+                    };
+                },
+            });
+            harness.registry.setAvailability(descriptor.capabilityId, CapabilityAvailability.UNAVAILABLE);
+
+            const targetedReadIds: string[] = [];
+            const tracedStore = new Proxy(harness.store, {
+                get(target, property) {
+                    if (property === "getInvocation") {
+                        return async (invocationId: string) => {
+                            targetedReadIds.push(invocationId);
+                            return target.getInvocation(invocationId);
+                        };
+                    }
+                    const value = Reflect.get(target, property, target) as unknown;
+                    return typeof value === "function" ? value.bind(target) : value;
+                },
+            });
+            const runtime = new ProgressiveContextPackRuntime({
+                store: tracedStore,
+                reader: new SeamBoundContextReader(harness.engine, harness.seam, harness.registry),
+                compiler: new ContextCompiler({ clock: fixedClock() }),
+                clock: fixedClock(),
+            });
+            const initial = await runtime.compileInitial(mission.missionId, makeContextRequest({ missionId: mission.missionId }));
+            const expanded = await runtime.expand(initial, {
+                correlationId: "unavailable-accounting",
+                request: makeContextRequest({ missionId: mission.missionId, ownerHint: "lifeos", stepId }),
+            });
+
+            expect(expanded.package.unresolved.map((source) => source.status)).toContain(SourceStatus.UNAVAILABLE);
+            expect(expanded.accounting.attempts).toBe(5);
+            expect(expanded.accounting.invocationIds).toEqual(["tracked-a", "foreign-invocation", "tracked-b"]);
+            expect(targetedReadIds).toEqual(["tracked-a", "foreign-invocation", "tracked-b"]);
+            expect(invokeCalls).toBe(0);
+            expect(await harness.store.listInvocations(mission.missionId)).toHaveLength(2);
+        } finally {
+            await harness.close();
+            rmSync(directory, { recursive: true, force: true });
+        }
     });
 
     it("performs one explicit bounded expansion and rejects a scope escalation before dispatch", async () => {

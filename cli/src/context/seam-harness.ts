@@ -63,8 +63,9 @@ export interface SeamHarness {
  */
 export async function createSeamHarness(options: {
     descriptors: CapabilityDescriptor[];
+    store?: MissionStore;
 }): Promise<SeamHarness> {
-    const store = new SqliteMissionStore(":memory:");
+    const store = options.store ?? new SqliteMissionStore(":memory:");
     const resolver = new FakeCapabilityResolver();
     resolver.registerMany(makeDefaultCapabilityCatalog());
     for (const descriptor of options.descriptors) {
