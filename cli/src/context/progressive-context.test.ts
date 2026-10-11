@@ -244,6 +244,8 @@ describe("ProgressiveContextPackRuntime", () => {
                 "missing-invocation",
                 ...expanded.accounting.invocationIds.filter((id) => !priorAccounting.invocationIds.includes(id)),
             ]));
+            expect(targetedReadIds).toHaveLength(5);
+            expect(targetedReadIds.some((id) => id.startsWith("unrelated-"))).toBe(false);
 
             const repeated = await runtime.expand(expanded, { correlationId: "tracked-accounting", request });
             expect(repeated.accounting.attempts).toBe(6);
