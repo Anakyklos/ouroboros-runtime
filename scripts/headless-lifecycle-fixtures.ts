@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   EffectClass,
   MissionState,
@@ -8,6 +8,7 @@ import {
   type PlanRevision,
 } from "../cli/src/mission/contracts.js";
 import { SqliteMissionStore } from "../cli/src/mission/sqlite-mission-store.js";
+import { LocalControlCredentialStore } from "../cli/src/daemon/local-control-auth.js";
 
 function makeMission(id: string, state: MissionState): Mission {
   const intent = `Synthetic lifecycle fixture ${id}`;
@@ -72,6 +73,7 @@ async function main(): Promise<void> {
         ["fixture-ready", MissionState.READY] as const,
       ];
 
+  const credentialStore = new LocalControlCredentialStore(join(dirname(dbPath), "local-control-auth.db"));
   try {
     for (const [id, state] of fixtureStates) {
       const mission = makeMission(id, state);
@@ -97,13 +99,20 @@ async function main(): Promise<void> {
       await store.createMission(mission);
       await store.savePlanRevision(revision);
     }
+    const credential = credentialStore.provision(
+      "lifecycle-baseline-reader",
+      ["mission.read"],
+      Date.now() + 15 * 60_000,
+    );
     console.log(JSON.stringify({
       database: dbPath,
       fixtureMode,
       missionIds: fixtureStates.map(([id]) => id),
       states: fixtureStates.map(([, state]) => state),
+      localControlToken: credential.token,
     }));
   } finally {
+    credentialStore.close();
     await store.close();
   }
 }

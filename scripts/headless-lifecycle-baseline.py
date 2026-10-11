@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import atexit
 import argparse
+from http.cookies import SimpleCookie
 import json
 import os
 import platform
@@ -30,6 +31,7 @@ HZ = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
 ACTIVE_DAEMONS: set[subprocess.Popen[bytes]] = set()
 DAEMON_LOGS: dict[subprocess.Popen[bytes], Path] = {}
 STARTUP_FAILURE: dict[str, Any] | None = None
+BROWSER_SESSION_COOKIE = "ouroboros_control_session"
 
 
 def cleanup_daemons() -> None:
@@ -51,7 +53,10 @@ def run(command: list[str], *, cwd: Path | None = None, timeout: float = 60) -> 
 
 
 def fixture(db_path: Path, mode: str) -> dict[str, Any]:
-    result = run(["bun", "run", str(FIXTURES), str(db_path), mode], cwd=ROOT)
+    try:
+        result = run(["bun", "run", str(FIXTURES), str(db_path), mode], cwd=ROOT)
+    except subprocess.CalledProcessError:
+        raise RuntimeError(f"fixture setup failed for mode {mode}") from None
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
@@ -122,14 +127,18 @@ def wait_health(port: int, proc: subprocess.Popen[bytes], timeout: float = 30) -
     raise TimeoutError("daemon health endpoint did not become ready within 30 seconds")
 
 
-def start_daemon(cwd: Path, port: int) -> tuple[subprocess.Popen[bytes], float]:
+def start_daemon(cwd: Path, port: int, origin: str) -> tuple[subprocess.Popen[bytes], float]:
     global STARTUP_FAILURE
     STARTUP_FAILURE = None
     log_path = cwd / "daemon-measurement.log"
     with log_path.open("wb") as log_file:
         proc = subprocess.Popen(
             ["bun", "run", str(DAEMON)], cwd=cwd,
-            env={**os.environ, "OUROBOROS_PORT": str(port)},
+            env={
+                **os.environ,
+                "OUROBOROS_PORT": str(port),
+                "OUROBOROS_ALLOWED_ORIGINS": origin,
+            },
             stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True,
         )
     ACTIVE_DAEMONS.add(proc)
@@ -166,10 +175,10 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def rpc_projection(port: int) -> tuple[float, dict[str, Any]]:
+def rpc_projection(port: int, token: str) -> tuple[float, dict[str, Any]]:
     start = time.monotonic()
-    result = rpc_read(port, "mission.list")
-    invocation_result = rpc_read(port, "invocation.list")
+    result = rpc_read(port, "mission.list", token)
+    invocation_result = rpc_read(port, "invocation.list", token)
     duration = time.monotonic() - start
     data = result["data"]
     invocations = invocation_result["data"]
@@ -184,23 +193,78 @@ def rpc_projection(port: int) -> tuple[float, dict[str, Any]]:
     }
 
 
-def rpc_read(port: int, operation: str) -> dict[str, Any]:
+def wait_for_mission_state(
+    port: int,
+    token: str,
+    mission_id: str,
+    expected_state: str,
+    timeout: float = 10,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = rpc_read(port, "mission.list", token)
+        data = result.get("data") if isinstance(result, dict) else None
+        items = data.get("items") if isinstance(data, dict) else None
+        state = next((item.get("state") for item in items or [] if item.get("missionId") == mission_id), None)
+        if state == expected_state:
+            return
+        time.sleep(0.025)
+    raise AssertionError("Synthetic Mission did not reach its expected persisted wait state")
+
+
+def rpc_read(port: int, operation: str, token: str) -> dict[str, Any]:
     payload = json.dumps({
         "jsonrpc": "2.0", "id": operation, "method": "local_control.read",
         "params": {"operation": operation, "protocolVersion": 1, "limit": 100},
     }).encode()
     request = urllib.request.Request(
         f"http://127.0.0.1:{port}/rpc", data=payload,
-        headers={"Content-Type": "application/json"}, method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        }, method="POST",
     )
-    with urllib.request.urlopen(request, timeout=5) as response:
-        result = json.loads(response.read())
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            result = json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        status = error.code
+        error.close()
+        raise RuntimeError(f"local_control.read({operation}) returned HTTP {status}") from None
     if "error" in result or not isinstance(result.get("result"), dict):
         raise RuntimeError(f"local_control.read({operation}) RPC failed")
     return result["result"]
 
 
-def idle_websocket(port: int) -> dict[str, Any]:
+def browser_session_cookie(port: int, token: str, origin: str) -> str:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/auth/browser-session",
+        headers={"Authorization": f"Bearer {token}", "Origin": origin},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            if response.status != 204:
+                raise RuntimeError(f"Browser session exchange returned HTTP {response.status}")
+            set_cookie = response.headers.get("Set-Cookie", "")
+    except urllib.error.HTTPError as error:
+        status = error.code
+        error.close()
+        raise RuntimeError(f"Browser session exchange returned HTTP {status}") from None
+
+    cookies = SimpleCookie()
+    try:
+        cookies.load(set_cookie)
+    except Exception:
+        raise RuntimeError("Browser session response contained an invalid cookie") from None
+    session = cookies.get(BROWSER_SESSION_COOKIE)
+    if session is None or not session.value:
+        raise RuntimeError("Browser session response did not contain its session cookie")
+    return f"{BROWSER_SESSION_COOKIE}={session.value}"
+
+
+def idle_websocket(port: int, token: str, origin: str) -> dict[str, Any]:
+    cookie = browser_session_cookie(port, token, origin)
     key = secrets.token_bytes(16)
     encoded_key = __import__("base64").b64encode(key).decode("ascii")
     sock = socket.create_connection(("127.0.0.1", port), timeout=5)
@@ -209,24 +273,34 @@ def idle_websocket(port: int) -> dict[str, Any]:
         "GET /ws HTTP/1.1\r\n"
         f"Host: 127.0.0.1:{port}\r\n"
         "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-        f"Sec-WebSocket-Key: {encoded_key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        f"Sec-WebSocket-Key: {encoded_key}\r\n"
+        f"Sec-WebSocket-Version: 13\r\n"
+        f"Origin: {origin}\r\n"
+        f"Cookie: {cookie}\r\n\r\n"
     )
     start = time.monotonic()
-    sock.sendall(request.encode("ascii"))
-    received = b""
-    while b"\r\n\r\n" not in received:
-        chunk = sock.recv(4096)
-        if not chunk:
-            raise ConnectionError("daemon closed WebSocket before completing handshake")
-        received += chunk
-    handshake_seconds = time.monotonic() - start
-    separator = received.index(b"\r\n\r\n")
-    header_bytes = received[:separator + 4]
-    headers = header_bytes.decode("latin1")
-    if "101 Switching Protocols" not in headers:
-        raise RuntimeError(f"WebSocket upgrade failed: {headers.splitlines()[0]}")
+    try:
+        sock.sendall(request.encode("ascii"))
+        received = b""
+        while b"\r\n\r\n" not in received:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("daemon closed WebSocket before completing handshake")
+            received += chunk
+        handshake_seconds = time.monotonic() - start
+        separator = received.index(b"\r\n\r\n")
+        header_bytes = received[:separator + 4]
+        headers = header_bytes.decode("latin1")
+        status_line = headers.splitlines()[0] if headers.splitlines() else ""
+        status = status_line.split(" ", 2)
+        if len(status) < 2 or status[0] != "HTTP/1.1" or status[1] != "101":
+            raise RuntimeError("WebSocket upgrade was not accepted with HTTP 101")
+    except BaseException:
+        sock.close()
+        raise
     return {
         "socket": sock,
+        "status_code": int(status[1]),
         "handshake_seconds": handshake_seconds,
         "response_header_bytes": len(header_bytes),
         "request_bytes": len(request.encode("ascii")),
@@ -448,8 +522,15 @@ def measure(repetitions: int, idle_seconds: float, transport_seconds: float) -> 
             recovery_db = recovery_dir / ".ouroboros/missions.db"
             idle_fixture = fixture(idle_db, "idle")
             recovery_fixture = fixture(recovery_db, "recovery")
+            idle_token = idle_fixture.pop("localControlToken")
+            recovery_token = recovery_fixture.pop("localControlToken")
+            idle_fixture.pop("database", None)
             recovery_fixture.pop("database", None)
             idle_expected = {"fixture-waiting": "waiting_for_provider"}
+            recovery_before_start = {
+                "fixture-ready": "ready",
+                "fixture-waiting": "waiting_for_provider",
+            }
             recovery_expected = {"fixture-ready": "ready", "fixture-waiting": "waiting_for_provider"}
             validate_fixture_snapshot(f"rep-{index + 1}:idle-before-start", {
                 "missionIds": idle_fixture["missionIds"],
@@ -458,11 +539,12 @@ def measure(repetitions: int, idle_seconds: float, transport_seconds: float) -> 
             validate_fixture_snapshot(f"rep-{index + 1}:recovery-before-start", {
                 "missionIds": recovery_fixture["missionIds"],
                 "states": dict(zip(recovery_fixture["missionIds"], recovery_fixture["states"], strict=True)),
-            }, recovery_expected)
+            }, recovery_before_start)
 
             idle_port = free_port()
-            idle_proc, idle_cold_start = start_daemon(idle_dir, idle_port)
-            idle_before_seconds, idle_before = rpc_projection(idle_port)
+            idle_origin = f"http://127.0.0.1:{idle_port}"
+            idle_proc, idle_cold_start = start_daemon(idle_dir, idle_port, idle_origin)
+            idle_before_seconds, idle_before = rpc_projection(idle_port, idle_token)
             validate_projection(f"rep-{index + 1}:idle-before-interval", idle_before, idle_expected)
             before = sample_process(idle_proc.pid)
             interval_start = time.monotonic()
@@ -473,13 +555,13 @@ def measure(repetitions: int, idle_seconds: float, transport_seconds: float) -> 
             after = sample_process(idle_proc.pid)
             idle_metrics = delta(before, after, interval)
             idle_metrics["perf_sched_wakeup"] = perf_result
-            idle_after_seconds, idle_after = rpc_projection(idle_port)
+            idle_after_seconds, idle_after = rpc_projection(idle_port, idle_token)
             validate_projection(f"rep-{index + 1}:idle-after-interval", idle_after, idle_expected)
             if idle_after["states"] != idle_before["states"] or idle_after["invocation_ids"] != idle_before["invocation_ids"]:
                 raise AssertionError("idle interval changed Mission state or created effects")
 
             transport_before = sample_process(idle_proc.pid)
-            transport = idle_websocket(idle_port)
+            transport = idle_websocket(idle_port, idle_token, idle_origin)
             transport_connected = sample_process(idle_proc.pid)
             transport_start = time.monotonic()
             time.sleep(transport_seconds)
@@ -496,6 +578,7 @@ def measure(repetitions: int, idle_seconds: float, transport_seconds: float) -> 
                     break
             transport_after = sample_process(idle_proc.pid)
             transport_metrics = delta(transport_before, transport_after, transport_interval)
+            transport_metrics["status_code"] = transport["status_code"]
             transport_metrics["handshake_seconds"] = round(transport["handshake_seconds"], 6)
             transport_metrics["response_header_bytes"] = transport["response_header_bytes"]
             transport_metrics["request_bytes"] = transport["request_bytes"]
@@ -510,29 +593,35 @@ def measure(repetitions: int, idle_seconds: float, transport_seconds: float) -> 
             validate_fixture_snapshot(f"rep-{index + 1}:idle-after-sigterm", idle_after_term, idle_expected)
 
             port = free_port()
-            cold_proc, cold_start = start_daemon(recovery_dir, port)
-            cold_projection_ms, cold_projection = rpc_projection(port)
+            recovery_origin = f"http://127.0.0.1:{port}"
+            cold_proc, cold_start = start_daemon(recovery_dir, port, recovery_origin)
+            wait_for_mission_state(port, recovery_token, "fixture-ready", "waiting_for_capability")
+            recovery_expected = {
+                "fixture-ready": "waiting_for_capability",
+                "fixture-waiting": "waiting_for_provider",
+            }
+            cold_projection_ms, cold_projection = rpc_projection(port, recovery_token)
             validate_projection(f"rep-{index + 1}:after-cold-start", cold_projection, recovery_expected)
             graceful_shutdown = stop_daemon(cold_proc, "SIGTERM")
             after_sigterm = fixture(recovery_db, "inspect")
             validate_fixture_snapshot(f"rep-{index + 1}:after-sigterm", after_sigterm, recovery_expected)
 
-            warm_proc, warm_start = start_daemon(recovery_dir, port)
-            warm_projection_ms, warm_projection = rpc_projection(port)
+            warm_proc, warm_start = start_daemon(recovery_dir, port, recovery_origin)
+            warm_projection_ms, warm_projection = rpc_projection(port, recovery_token)
             validate_projection(f"rep-{index + 1}:after-warm-start", warm_projection, recovery_expected)
             crash_shutdown = stop_daemon(warm_proc, "SIGKILL")
             after_sigkill = fixture(recovery_db, "inspect")
             validate_fixture_snapshot(f"rep-{index + 1}:after-sigkill", after_sigkill, recovery_expected)
 
-            restart_proc, restart_start = start_daemon(recovery_dir, port)
+            restart_proc, restart_start = start_daemon(recovery_dir, port, recovery_origin)
             projection_start = time.monotonic()
-            recovered_projection_ms, recovered_projection = rpc_projection(port)
+            recovered_projection_ms, recovered_projection = rpc_projection(port, recovery_token)
             projection_seconds = time.monotonic() - projection_start
             validate_projection(f"rep-{index + 1}:after-crash-restart", recovered_projection, recovery_expected)
             persistence = fixture(recovery_db, "inspect")
             validate_fixture_snapshot(f"rep-{index + 1}:reopened-after-crash", persistence, recovery_expected)
             time.sleep(min(1.0, idle_seconds))
-            post_restart_projection_ms, post_restart_projection = rpc_projection(port)
+            post_restart_projection_ms, post_restart_projection = rpc_projection(port, recovery_token)
             validate_projection(f"rep-{index + 1}:after-restart-idle", post_restart_projection, recovery_expected)
             if post_restart_projection["states"] != recovered_projection["states"]:
                 raise AssertionError("controlled post-restart idle interval changed Mission states")
@@ -627,7 +716,7 @@ def main() -> int:
                 "Warm means a graceful daemon restart on the same isolated fixture database.",
                 "Wakeups use perf scheduler tracepoints when permissions allow; per-process context-switch deltas are also recorded and are not equivalent to wakeups.",
                 "Idle scenario contains only a waiting_for_provider Mission; recovery scenario includes a READY accepted-plan Mission and is measured separately.",
-                "READY durability and projection persistence are observed; no claim of automatic Mission scheduling or resumption is made.",
+                "The synthetic READY Mission becomes waiting_for_capability with the empty production registry; restart checks cover durable state/projection only, not capability execution or effect dispatch.",
                 "RSS and CPU are sampled for the daemon process tree using /proc; measurements describe this host/container environment only.",
                 "No providers, models, external services, load generator, or production Mission content are used.",
             ],
@@ -641,7 +730,7 @@ def main() -> int:
             "failure": STARTUP_FAILURE or {
                 "error_code": "HARNESS_VALIDATION_FAILED",
                 "error_type": type(error).__name__,
-                "diagnostic": str(error)[:500],
+                "diagnostic": "measurement validation failed; sensitive process details were omitted",
             },
         }
         exit_code = 2
