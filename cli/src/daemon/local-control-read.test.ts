@@ -1,5 +1,8 @@
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it, mock, spyOn } from "bun:test";
 import { LocalControlReadService } from "./local-control-read.js";
+import { CapabilityRegistry } from "../capabilities/registry.js";
+import { EffectClass } from "../capabilities/contracts.js";
+import { defineCapabilityDescriptor } from "../capabilities/fixtures.js";
 import {
   LOCAL_CONTROL_PROTOCOL_VERSION,
   LOCAL_CONTROL_READ_OPERATIONS,
@@ -323,6 +326,122 @@ describe("LocalControlReadService", () => {
     });
     expect(JSON.stringify(result)).not.toContain("PRIVATE");
     expect(JSON.stringify(result)).not.toContain("credential");
+  });
+
+  it("enforces the requested limit when an alternate registry returns an oversized page", async () => {
+    const descriptors = ["capability.first", "capability.second"].map((capabilityId) => ({
+      capabilityId,
+      moduleOwner: "owner",
+      contractVersion: 1,
+      purpose: "Read public facts",
+      effectClass: "read_only",
+      requiresApproval: false,
+      requiresOwnerVerification: false,
+      ownsStorage: false,
+      availability: "available",
+    }));
+    const alternateRegistry = {
+      listDescriptors: () => descriptors,
+      listDescriptorPage: () => ({ descriptors, truncated: false }),
+    };
+
+    const result = await service({ capabilityRegistry: alternateRegistry as never }).read({
+      operation: "capability_registry.list",
+      protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+      limit: 1,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+      operation: "capability_registry.list",
+      data: {
+        available: true,
+        items: [{
+          capabilityId: "capability.first",
+          moduleOwner: "owner",
+          contractVersion: 1,
+          purpose: "Read public facts",
+          effectClass: "read_only",
+          requiresApproval: false,
+          requiresOwnerVerification: false,
+          ownsStorage: false,
+          availability: "available",
+        }],
+        truncated: true,
+      },
+    });
+  });
+
+  it("clones only the bounded registry projection for a catalogue larger than the public limit", async () => {
+    const registry = new CapabilityRegistry();
+    for (let index = 149; index >= 0; index -= 1) {
+      registry.register(defineCapabilityDescriptor({
+        capabilityId: `fixture.capability-${String(index).padStart(3, "0")}`,
+        moduleOwner: "fixture-owner",
+        purpose: "Read one public fixture fact",
+        effectClass: EffectClass.READ,
+      }));
+    }
+
+    const cloneDescriptor = spyOn(
+      registry as unknown as { cloneDescriptor: (descriptor: unknown) => unknown },
+      "cloneDescriptor",
+    );
+    const result = await service({ capabilityRegistry: registry }).read({
+      operation: "capability_registry.list",
+      protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      operation: "capability_registry.list",
+      data: {
+        available: true,
+        items: Array.from({ length: 100 }, (_, index) => ({
+          capabilityId: `fixture.capability-${String(index).padStart(3, "0")}`,
+        })),
+        truncated: true,
+      },
+    });
+    expect(cloneDescriptor).toHaveBeenCalledTimes(100);
+  });
+
+  it("preserves registry projection counts, ordering, and truncation at public and requested limits", async () => {
+    for (const scenario of [
+      { count: 0, limit: undefined, included: 0, truncated: false },
+      { count: 4, limit: undefined, included: 4, truncated: false },
+      { count: 100, limit: undefined, included: 100, truncated: false },
+      { count: 103, limit: undefined, included: 100, truncated: true },
+      { count: 103, limit: 3, included: 3, truncated: true },
+    ]) {
+      const registry = new CapabilityRegistry();
+      for (let index = scenario.count - 1; index >= 0; index -= 1) {
+        registry.register(defineCapabilityDescriptor({
+          capabilityId: `fixture.boundary-${String(index).padStart(3, "0")}`,
+          moduleOwner: "fixture-owner",
+          purpose: "Read one public fixture fact",
+          effectClass: EffectClass.READ,
+        }));
+      }
+      const cloneDescriptor = spyOn(
+        registry as unknown as { cloneDescriptor: (descriptor: unknown) => unknown },
+        "cloneDescriptor",
+      );
+      const result = await service({ capabilityRegistry: registry }).read({
+        operation: "capability_registry.list",
+        protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+        ...(scenario.limit === undefined ? {} : { limit: scenario.limit }),
+      });
+      if (!result.ok || result.operation !== "capability_registry.list") throw new Error("Expected registry projection");
+
+      expect(result.data.items).toHaveLength(scenario.included);
+      expect(result.data.items.map((item) => item.capabilityId)).toEqual(
+        Array.from({ length: scenario.included }, (_, index) => `fixture.boundary-${String(index).padStart(3, "0")}`),
+      );
+      expect(result.data.truncated).toBe(scenario.truncated);
+      expect(cloneDescriptor).toHaveBeenCalledTimes(scenario.included);
+    }
   });
 
   it("says when the authoritative registry is not present", async () => {

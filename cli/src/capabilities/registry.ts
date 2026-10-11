@@ -145,7 +145,14 @@ export interface CapabilityRegistryApi {
     replace(descriptor: CapabilityDescriptor): void;
     requireDescriptor(capabilityId: string): CapabilityDescriptor;
     listDescriptors(): CapabilityDescriptor[];
+    listDescriptorPage?(limit: number): CapabilityDescriptorPage;
     setAvailability(capabilityId: string, availability: CapabilityDescriptor["availability"], detail?: string): void;
+}
+
+/** Bounded, defensively copied descriptor discovery page. */
+export interface CapabilityDescriptorPage {
+    descriptors: CapabilityDescriptor[];
+    truncated: boolean;
 }
 
 /**
@@ -262,6 +269,21 @@ export class CapabilityRegistry implements CapabilityResolver, CapabilityRegistr
         return [...this.descriptors.values()]
             .map((d) => this.cloneDescriptor(d))
             .sort((a, b) => a.capabilityId.localeCompare(b.capabilityId));
+    }
+
+    /**
+     * List only the first `limit` descriptors in deterministic capability ID
+     * order. Sorting IDs avoids cloning full descriptors that cannot appear in
+     * the returned page; `truncated` is based on the authoritative registry size.
+     */
+    listDescriptorPage(limit: number): CapabilityDescriptorPage {
+        if (!Number.isSafeInteger(limit) || limit < 1) {
+            throw new RangeError("Descriptor page limit must be a positive safe integer");
+        }
+        const ids = [...this.descriptors.keys()].sort((a, b) => a.localeCompare(b));
+        const truncated = ids.length > limit;
+        const descriptors = ids.slice(0, limit).map((id) => this.cloneDescriptor(this.descriptors.get(id)!));
+        return { descriptors, truncated };
     }
 
     /**

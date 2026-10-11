@@ -333,7 +333,14 @@ describe("CapabilityRegistry", () => {
     test("availability changes never alter the authorization-relevant identity", () => {
         const registry = new CapabilityRegistry();
         registry.register(readDescriptor());
+        registry.register(defineCapabilityDescriptor({
+            capabilityId: "cadinho.inspect_artifact",
+            moduleOwner: "cadinho",
+            purpose: "Inspect one artifact",
+            effectClass: EffectClass.READ,
+        }));
         const before = registry.requireDescriptor("lifeos.query_commitments");
+        const orderBefore = registry.listDescriptorPage(2).descriptors.map((descriptor) => descriptor.capabilityId);
         registry.setAvailability(
             "lifeos.query_commitments",
             CapabilityAvailability.BUSY,
@@ -347,6 +354,7 @@ describe("CapabilityRegistry", () => {
         expect(after.allowedInputRefPrefixes).toEqual(before.allowedInputRefPrefixes);
         expect(after.requiresApproval).toBe(before.requiresApproval);
         expect(after.ownsStorage).toBe(before.ownsStorage);
+        expect(registry.listDescriptorPage(2).descriptors.map((descriptor) => descriptor.capabilityId)).toEqual(orderBefore);
     });
 
     test("descriptor with raw secret anywhere fails registration (fail closed)", () => {
@@ -762,6 +770,9 @@ describe("Validation hardening (adversarial audit II — nested strings)", () =>
         const fromList = registry.listDescriptors()[0];
         fromList.allowedInputRefPrefixes.push("refs/evil/");
         fromList.retry.maxAttempts = 99999;
+        const fromPage = registry.listDescriptorPage(1).descriptors[0]!;
+        fromPage.allowedInputRefPrefixes.push("refs/page-evil/");
+        fromPage.retry.maxAttempts = 88888;
         const fromRequire = registry.requireDescriptor("lifeos.query_commitments");
         fromRequire.allowedInputRefPrefixes.length = 0;
         const fromResolvePromise = registry.resolve("lifeos.query_commitments");
@@ -769,6 +780,7 @@ describe("Validation hardening (adversarial audit II — nested strings)", () =>
         const stored = registry.requireDescriptor("lifeos.query_commitments");
         expect(stored.allowedInputRefPrefixes).toEqual(["refs/lifeos/"]);
         expect(stored.retry.maxAttempts).not.toBe(99999);
+        expect(stored.retry.maxAttempts).not.toBe(88888);
         // The resolver projection consumed by policy is unaffected too.
         return fromResolvePromise.then((contract) => {
             expect(contract!.allowedInputRefPrefixes).toEqual(["refs/lifeos/"]);
