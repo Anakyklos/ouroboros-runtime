@@ -56,6 +56,7 @@ const DEFAULT_CONFIG: DaemonConfig = {
 
 const RPC_DRAIN_TIMEOUT_MS = 4_000;
 const WEBSOCKET_CLOSE_TIMEOUT_MS = 30_000;
+const MAX_WEBSOCKET_MESSAGE_BYTES = 1024 * 1024;
 const MAX_CONFIGURED_RPC_OPERATIONS = 1_024;
 const RPC_FAILURE_MESSAGE = 'The RPC request could not be completed';
 
@@ -198,7 +199,7 @@ export class DaemonServer {
     async initialize(): Promise<void> {
         if (this.initialized) return;
         
-        await this.app.register(websocket, { options: { closeTimeout: WEBSOCKET_CLOSE_TIMEOUT_MS } });
+        await this.app.register(websocket, { options: { closeTimeout: WEBSOCKET_CLOSE_TIMEOUT_MS, maxPayload: MAX_WEBSOCKET_MESSAGE_BYTES } });
         this.setupRoutes();
         this.setupEventForwarding();
         this.initialized = true;
@@ -470,6 +471,17 @@ export class DaemonServer {
             const client = this.createAuthorizedProjectionClient(socket, admission.principal);
             const snapshot = this.projection.connectClient(client, admission.reservation);
             this.websocketPrincipals.set(client, { socket, principal: admission.principal, closing: false });
+            // ponytail: Bun delivers assembled messages; a pre-allocation cap requires native server configuration.
+            socket.on('message', (message: string | Buffer | ArrayBuffer | Buffer[]) => {
+                const messageBytes = typeof message === 'string'
+                    ? Buffer.byteLength(message)
+                    : Array.isArray(message)
+                        ? message.reduce((total, chunk) => total + chunk.byteLength, 0)
+                        : message.byteLength;
+                if (messageBytes <= MAX_WEBSOCKET_MESSAGE_BYTES) return;
+                this.markWebSocketClientClosing(client);
+                try { socket.close(1009, 'Message too large'); } catch { socket.terminate(); }
+            });
             this.syncWebSocketAuthorizationTimer();
             void snapshot.then((admitted) => {
                 if (admitted) return;
