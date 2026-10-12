@@ -88,19 +88,54 @@ class ExitStatusTests(unittest.TestCase):
 
 
 class AuthenticatedHarnessTests(unittest.TestCase):
+    def test_fixture_refuses_to_seed_without_private_token_pipe(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ouroboros-baseline-no-pipe-test-") as directory:
+            database = Path(directory) / ".ouroboros" / "missions.db"
+            result = baseline.run(
+                ["bun", "run", str(baseline.FIXTURES), str(database), "idle"],
+                cwd=baseline.ROOT,
+                env=baseline.controlled_child_env(Path(directory), database.parent),
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            baseline.assert_no_credential_material(result.stdout)
+            baseline.assert_no_credential_material(result.stderr)
+            self.assertFalse(database.parent.exists())
+
     def test_fixture_provisions_a_private_read_only_client_in_the_daemon_data_dir(self) -> None:
         with tempfile.TemporaryDirectory(prefix="ouroboros-baseline-auth-test-") as directory:
             database = Path(directory) / ".ouroboros" / "missions.db"
-            fixture = baseline.fixture(database, "idle")
+            fixture, token, stdout = baseline.fixture(database, "idle")
 
-            token = fixture.pop("localControlToken")
+            self.assertIsNotNone(token)
             self.assertTrue(token.startswith("oc1."))
             auth_database = database.parent / "local-control-auth.db"
             self.assertTrue(auth_database.is_file())
             self.assertEqual(database.parent.stat().st_mode & 0o777, 0o700)
             self.assertEqual(auth_database.stat().st_mode & 0o777, 0o600)
             self.assertNotIn(token, json.dumps(fixture))
+            self.assertNotIn(token, stdout)
+            self.assertNotIn("localControlToken", fixture)
+            self.assertNotIn("ouroboros_control_session=", stdout)
+            baseline.assert_no_credential_material(stdout, (token,))
             self.assertEqual(fixture["missionIds"], ["fixture-waiting"])
+
+            inspected, inspect_token, inspect_stdout = baseline.fixture(database, "inspect")
+            self.assertIsNone(inspect_token)
+            baseline.assert_no_credential_material(inspect_stdout)
+            self.assertEqual(inspected["missionIds"], ["fixture-waiting"])
+
+    def test_persistable_output_rejects_bearer_and_browser_cookie_material(self) -> None:
+        token = "oc1.synthetic.bearer"
+        cookie = "ouroboros_control_session=synthetic-cookie"
+        baseline.assert_no_credential_material({"mission_count": 1}, (token, cookie))
+        with self.assertRaises(AssertionError):
+            baseline.assert_no_credential_material({"diagnostic": token}, (token,))
+        with self.assertRaises(AssertionError):
+            baseline.assert_no_credential_material({"diagnostic": cookie}, (cookie,))
+        with self.assertRaises(AssertionError):
+            baseline.assert_no_credential_material({"authorization": f"Bearer {token}"})
 
     def test_rpc_read_sends_the_bearer_only_in_the_authorization_header(self) -> None:
         token = "oc1.temporary.credential"
@@ -253,21 +288,29 @@ class HeadlessAuthenticationIntegrationTests(unittest.TestCase):
     def test_real_daemon_accepts_the_fixture_token_and_browser_session(self) -> None:
         with tempfile.TemporaryDirectory(prefix="ouroboros-baseline-daemon-test-") as directory:
             database = Path(directory) / ".ouroboros" / "missions.db"
-            fixture = baseline.fixture(database, "idle")
-            token = fixture.pop("localControlToken")
+            fixture, token, fixture_stdout = baseline.fixture(database, "idle")
+            self.assertIsNotNone(token)
+            self.assertNotIn(token, fixture_stdout)
             auth_database = database.parent / "local-control-auth.db"
             auth_module = (baseline.ROOT / "cli/src/daemon/local-control-auth.ts").as_posix()
             provision_control = f'''
+import {{ writeSync }} from "node:fs";
 import {{ LocalControlCredentialStore }} from "{auth_module}";
 const store = new LocalControlCredentialStore("{auth_database.as_posix()}");
 try {{
   const credential = store.provision("lifecycle-control-probe", ["mission.control"], Date.now() + 60_000);
-  console.log(credential.token);
+  writeSync(Number(process.env.OUROBOROS_PRIVATE_TOKEN_FD), credential.token, undefined, "utf8");
 }} finally {{
   store.close();
 }}
 '''
-            control_token = baseline.run(["bun", "-e", provision_control], cwd=baseline.ROOT).stdout.strip().splitlines()[-1]
+            control_result, control_token = baseline.run_with_private_token(
+                ["bun", "-e", provision_control], cwd=baseline.ROOT,
+                env=baseline.controlled_child_env(Path(directory), database.parent),
+            )
+            self.assertEqual(control_result.returncode, 0)
+            self.assertIsNotNone(control_token)
+            baseline.assert_no_credential_material(control_result.stdout, (control_token,))
             port = baseline.free_port()
             origin = f"http://127.0.0.1:{port}"
             process, _startup_seconds = baseline.start_daemon(Path(directory), port, origin)
@@ -298,9 +341,88 @@ try {{
                     socket.close()
                 baseline.stop_daemon(process, "SIGTERM")
 
-            persisted = baseline.fixture(database, "inspect")
+            persisted, inspect_token, inspect_stdout = baseline.fixture(database, "inspect")
+            self.assertIsNone(inspect_token)
+            baseline.assert_no_credential_material(inspect_stdout)
             self.assertEqual(persisted["missionIds"], ["fixture-waiting"])
             self.assertEqual(persisted["states"], {"fixture-waiting": "waiting_for_provider"})
+
+    def test_inherited_data_dir_cannot_redirect_daemon_away_from_fixture(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ouroboros-baseline-isolation-test-") as directory:
+            root = Path(directory)
+            fixture_root = root / "measured-instance"
+            alternate_root = root / "operator-synthetic-data"
+            fixture_db = fixture_root / ".ouroboros" / "missions.db"
+            alternate_db = alternate_root / ".ouroboros" / "missions.db"
+            fixture_data, fixture_token, _fixture_stdout = baseline.fixture(fixture_db, "idle")
+            alternate_data, alternate_token, _alternate_stdout = baseline.fixture(alternate_db, "recovery")
+            self.assertIsNotNone(fixture_token)
+            self.assertIsNotNone(alternate_token)
+            self.assertEqual(fixture_data["missionIds"], ["fixture-waiting"])
+            self.assertEqual(set(alternate_data["missionIds"]), {"fixture-ready", "fixture-waiting"})
+            sentinel = alternate_root / "operator-sentinel.txt"
+            sentinel.write_text("synthetic operator data; must remain untouched\n")
+            alternate_before = {
+                path.relative_to(alternate_root).as_posix(): path.read_bytes()
+                for path in alternate_root.rglob("*") if path.is_file()
+            }
+
+            port = baseline.free_port()
+            origin = f"http://127.0.0.1:{port}"
+            daemon = None
+            with patch.dict("os.environ", {
+                "OUROBOROS_DATA_DIR": str(alternate_root / ".ouroboros"),
+                "OUROBOROS_OPS_PATH": str(alternate_root / "operator-ops.json"),
+                "OUROBOROS_PORT": "1",
+                "OUROBOROS_ALLOWED_ORIGINS": "http://attacker.invalid",
+                "HOME": str(alternate_root),
+                "XDG_CONFIG_HOME": str(alternate_root / "config"),
+                "TMPDIR": str(alternate_root / "tmp"),
+                "BUN_OPTIONS": "--preload=/synthetic/operator-preload.js",
+                "NODE_OPTIONS": "--require=/synthetic/operator-preload.cjs",
+                "LD_PRELOAD": "/synthetic/operator-library.so",
+                "DWAVE_API_KEY": "synthetic-operator-key",
+                "ZAI_API_KEY": "synthetic-operator-key",
+            }):
+                daemon, _startup_seconds = baseline.start_daemon(fixture_root, port, origin)
+                try:
+                    _duration, projection = baseline.rpc_projection(port, fixture_token)
+                    baseline.validate_projection(
+                        "inherited-data-dir-isolation", projection,
+                        {"fixture-waiting": "waiting_for_provider"},
+                    )
+                    cookie = baseline.browser_session_cookie(port, fixture_token, origin)
+                    self.assertEqual(self.websocket_status(port, origin, cookie), 101)
+                    self.assertEqual(self.websocket_status(port, "http://attacker.invalid", cookie), 403)
+                finally:
+                    baseline.stop_daemon(daemon, "SIGTERM")
+
+            alternate_after = {
+                path.relative_to(alternate_root).as_posix(): path.read_bytes()
+                for path in alternate_root.rglob("*") if path.is_file()
+            }
+            self.assertEqual(alternate_after, alternate_before)
+            self.assertTrue(sentinel.is_file())
+            self.assertFalse((alternate_root / "operator-ops.json").exists())
+            self.assertFalse((alternate_root / ".ouroboros" / "daemon-ops.json").exists())
+
+            daemon_env = baseline.controlled_child_env(
+                fixture_root,
+                fixture_root / ".ouroboros",
+                port=port,
+                origin=origin,
+            )
+            self.assertEqual(daemon_env["OUROBOROS_DATA_DIR"], str((fixture_root / ".ouroboros").resolve()))
+            self.assertEqual(daemon_env["OUROBOROS_OPS_PATH"], str((fixture_root / ".ouroboros" / "daemon-ops.json").resolve()))
+            self.assertEqual(daemon_env["HOME"], str(fixture_root.resolve()))
+            for key in (
+                "OUROBOROS_PRIVATE_TOKEN_FD", "BUN_OPTIONS", "NODE_OPTIONS", "LD_PRELOAD",
+                "DWAVE_API_KEY", "ZAI_API_KEY", "SSL_CERT_FILE",
+            ):
+                self.assertNotIn(key, daemon_env)
+            self.assertEqual(daemon_env["OUROBOROS_PORT"], str(port))
+            self.assertEqual(daemon_env["OUROBOROS_ALLOWED_ORIGINS"], origin)
+            self.assertNotIn("OUROBOROS_PRIVATE_TOKEN_FD", daemon_env)
 
 
 if __name__ == "__main__":

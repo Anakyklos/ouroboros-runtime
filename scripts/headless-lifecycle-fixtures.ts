@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { writeSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -46,6 +47,11 @@ async function main(): Promise<void> {
   const [dbArgument, fixtureMode = "recovery"] = process.argv.slice(2);
   if (!dbArgument || !["idle", "recovery", "inspect"].includes(fixtureMode)) {
     throw new Error("Usage: bun run scripts/headless-lifecycle-fixtures.ts <db-path> <idle|recovery|inspect>");
+  }
+
+  const privateTokenFd = Number(process.env.OUROBOROS_PRIVATE_TOKEN_FD);
+  if (fixtureMode !== "inspect" && (!Number.isSafeInteger(privateTokenFd) || privateTokenFd < 3)) {
+    throw new Error("A private credential pipe is required to seed lifecycle fixtures");
   }
 
   const dbPath = resolve(dbArgument);
@@ -104,12 +110,12 @@ async function main(): Promise<void> {
       ["mission.read"],
       Date.now() + 15 * 60_000,
     );
+    writeSync(privateTokenFd, credential.token, undefined, "utf8");
     console.log(JSON.stringify({
       database: dbPath,
       fixtureMode,
       missionIds: fixtureStates.map(([id]) => id),
       states: fixtureStates.map(([, state]) => state),
-      localControlToken: credential.token,
     }));
   } finally {
     credentialStore.close();

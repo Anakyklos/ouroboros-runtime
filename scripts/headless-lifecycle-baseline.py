@@ -9,6 +9,7 @@ from http.cookies import SimpleCookie
 import json
 import os
 import platform
+import re
 import secrets
 import signal
 import shutil
@@ -27,11 +28,13 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "scripts/headless-lifecycle-fixtures.ts"
 DAEMON = ROOT / "cli/src/daemon/main.ts"
+BUN_EXECUTABLE = shutil.which("bun") or "bun"
 HZ = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
 ACTIVE_DAEMONS: set[subprocess.Popen[bytes]] = set()
 DAEMON_LOGS: dict[subprocess.Popen[bytes], Path] = {}
 STARTUP_FAILURE: dict[str, Any] | None = None
 BROWSER_SESSION_COOKIE = "ouroboros_control_session"
+PRIVATE_TOKEN_FD_ENV = "OUROBOROS_PRIVATE_TOKEN_FD"
 
 
 def cleanup_daemons() -> None:
@@ -48,16 +51,127 @@ def cleanup_daemons() -> None:
 atexit.register(cleanup_daemons)
 
 
-def run(command: list[str], *, cwd: Path | None = None, timeout: float = 60) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=True)
+def controlled_child_env(
+    root: Path,
+    data_dir: Path,
+    *,
+    port: int | None = None,
+    origin: str | None = None,
+) -> dict[str, str]:
+    """Give harness children private paths and only the environment they need."""
+    root = root.resolve()
+    data_dir = data_dir.resolve()
+    bun_dir = str(Path(BUN_EXECUTABLE).resolve().parent) if os.path.isabs(BUN_EXECUTABLE) else ""
+    env = {"PATH": os.pathsep.join(part for part in (bun_dir, os.defpath) if part)}
+    env.update({
+        "HOME": str(root),
+        "TMPDIR": str(root),
+        "TMP": str(root),
+        "TEMP": str(root),
+        "XDG_CONFIG_HOME": str(root / ".config"),
+        "XDG_CACHE_HOME": str(root / ".cache"),
+        "XDG_DATA_HOME": str(root / ".local" / "share"),
+        "OUROBOROS_DATA_DIR": str(data_dir),
+        "OUROBOROS_OPS_PATH": str(data_dir / "daemon-ops.json"),
+    })
+    if port is not None:
+        env["OUROBOROS_PORT"] = str(port)
+    if origin is not None:
+        env["OUROBOROS_ALLOWED_ORIGINS"] = origin
+    return env
 
 
-def fixture(db_path: Path, mode: str) -> dict[str, Any]:
+def run(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout: float = 60,
+    env: dict[str, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    executable = BUN_EXECUTABLE if command and command[0] == "bun" else command[0]
+    return subprocess.run(
+        [executable, *command[1:]], cwd=cwd, capture_output=True, text=True,
+        timeout=timeout, check=check, env=env, pass_fds=pass_fds,
+    )
+
+
+def run_with_private_token(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: float = 60,
+) -> tuple[subprocess.CompletedProcess[str], str | None]:
+    read_fd, write_fd = os.pipe()
+    child_env = dict(env)
+    child_env[PRIVATE_TOKEN_FD_ENV] = str(write_fd)
+    process: subprocess.Popen[str] | None = None
     try:
-        result = run(["bun", "run", str(FIXTURES), str(db_path), mode], cwd=ROOT)
-    except subprocess.CalledProcessError:
-        raise RuntimeError(f"fixture setup failed for mode {mode}") from None
-    return json.loads(result.stdout.strip().splitlines()[-1])
+        executable = BUN_EXECUTABLE if command and command[0] == "bun" else command[0]
+        process = subprocess.Popen(
+            [executable, *command[1:]], cwd=cwd, env=child_env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            pass_fds=(write_fd,),
+        )
+        os.close(write_fd)
+        write_fd = -1
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            raise RuntimeError("private-token subprocess timed out") from None
+        private_output = os.read(read_fd, 4096).decode("utf-8").strip()
+    except OSError:
+        raise RuntimeError("private-token subprocess could not be started") from None
+    finally:
+        if write_fd >= 0:
+            os.close(write_fd)
+        os.close(read_fd)
+    token = private_output or None
+    if token and (token in stdout or token in stderr):
+        raise RuntimeError("credential was exposed outside its private pipe")
+    if "ouroboros_control_session=" in stdout or "ouroboros_control_session=" in stderr:
+        raise RuntimeError("browser session cookie was exposed by a subprocess")
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr), token
+
+
+def assert_no_credential_material(value: Any, credentials: tuple[str, ...] = ()) -> None:
+    serialized = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+    if any(secret and secret in serialized for secret in credentials):
+        raise AssertionError("persistable output contained a temporary credential")
+    if (
+        "ouroboros_control_session=" in serialized
+        or re.search(r"\bBearer\s+\S+", serialized, re.IGNORECASE)
+        or re.search(r"oc1\.[A-Za-z0-9._~-]+", serialized)
+        or '"localControlToken"' in serialized
+    ):
+        raise AssertionError("persistable output contained credential material")
+
+
+def fixture(db_path: Path, mode: str) -> tuple[dict[str, Any], str | None, str]:
+    data_dir = db_path.resolve().parent
+    root = data_dir.parent
+    result, token = run_with_private_token(
+        ["bun", "run", str(FIXTURES), str(db_path), mode],
+        cwd=ROOT,
+        env=controlled_child_env(root, data_dir),
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"fixture setup failed for mode {mode}")
+    try:
+        output = json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        raise RuntimeError(f"fixture output was invalid for mode {mode}") from None
+    assert_no_credential_material(result.stdout, (token or "",))
+    assert_no_credential_material(result.stderr, (token or "",))
+    if mode == "inspect" and token is not None:
+        raise RuntimeError("inspect fixture unexpectedly emitted a credential")
+    if mode != "inspect" and token is None:
+        raise RuntimeError("fixture did not provide its credential through the private pipe")
+    return output, token, result.stdout
 
 
 def proc_tree(root_pid: int) -> list[int]:
@@ -133,12 +247,13 @@ def start_daemon(cwd: Path, port: int, origin: str) -> tuple[subprocess.Popen[by
     log_path = cwd / "daemon-measurement.log"
     with log_path.open("wb") as log_file:
         proc = subprocess.Popen(
-            ["bun", "run", str(DAEMON)], cwd=cwd,
-            env={
-                **os.environ,
-                "OUROBOROS_PORT": str(port),
-                "OUROBOROS_ALLOWED_ORIGINS": origin,
-            },
+            [BUN_EXECUTABLE, "run", str(DAEMON)], cwd=cwd,
+            env=controlled_child_env(
+                cwd,
+                cwd / ".ouroboros",
+                port=port,
+                origin=origin,
+            ),
             stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True,
         )
     ACTIVE_DAEMONS.add(proc)
@@ -520,10 +635,9 @@ def measure(repetitions: int, idle_seconds: float, transport_seconds: float) -> 
             (recovery_dir / ".ouroboros").mkdir(parents=True)
             idle_db = idle_dir / ".ouroboros/missions.db"
             recovery_db = recovery_dir / ".ouroboros/missions.db"
-            idle_fixture = fixture(idle_db, "idle")
-            recovery_fixture = fixture(recovery_db, "recovery")
-            idle_token = idle_fixture.pop("localControlToken")
-            recovery_token = recovery_fixture.pop("localControlToken")
+            idle_fixture, idle_token, _idle_fixture_stdout = fixture(idle_db, "idle")
+            recovery_fixture, recovery_token, _recovery_fixture_stdout = fixture(recovery_db, "recovery")
+            assert idle_token is not None and recovery_token is not None
             idle_fixture.pop("database", None)
             recovery_fixture.pop("database", None)
             idle_expected = {"fixture-waiting": "waiting_for_provider"}
@@ -589,7 +703,8 @@ def measure(repetitions: int, idle_seconds: float, transport_seconds: float) -> 
             transport_metrics["threads_delta_at_connect"] = transport_connected["threads"] - transport_before["threads"]
             transport["socket"].close()
             idle_shutdown = stop_daemon(idle_proc, "SIGTERM")
-            idle_after_term = fixture(idle_db, "inspect")
+            idle_after_term, inspect_token, _idle_inspect_stdout = fixture(idle_db, "inspect")
+            assert inspect_token is None
             validate_fixture_snapshot(f"rep-{index + 1}:idle-after-sigterm", idle_after_term, idle_expected)
 
             port = free_port()
@@ -603,14 +718,16 @@ def measure(repetitions: int, idle_seconds: float, transport_seconds: float) -> 
             cold_projection_ms, cold_projection = rpc_projection(port, recovery_token)
             validate_projection(f"rep-{index + 1}:after-cold-start", cold_projection, recovery_expected)
             graceful_shutdown = stop_daemon(cold_proc, "SIGTERM")
-            after_sigterm = fixture(recovery_db, "inspect")
+            after_sigterm, inspect_token, _sigterm_inspect_stdout = fixture(recovery_db, "inspect")
+            assert inspect_token is None
             validate_fixture_snapshot(f"rep-{index + 1}:after-sigterm", after_sigterm, recovery_expected)
 
             warm_proc, warm_start = start_daemon(recovery_dir, port, recovery_origin)
             warm_projection_ms, warm_projection = rpc_projection(port, recovery_token)
             validate_projection(f"rep-{index + 1}:after-warm-start", warm_projection, recovery_expected)
             crash_shutdown = stop_daemon(warm_proc, "SIGKILL")
-            after_sigkill = fixture(recovery_db, "inspect")
+            after_sigkill, inspect_token, _sigkill_inspect_stdout = fixture(recovery_db, "inspect")
+            assert inspect_token is None
             validate_fixture_snapshot(f"rep-{index + 1}:after-sigkill", after_sigkill, recovery_expected)
 
             restart_proc, restart_start = start_daemon(recovery_dir, port, recovery_origin)
@@ -618,7 +735,8 @@ def measure(repetitions: int, idle_seconds: float, transport_seconds: float) -> 
             recovered_projection_ms, recovered_projection = rpc_projection(port, recovery_token)
             projection_seconds = time.monotonic() - projection_start
             validate_projection(f"rep-{index + 1}:after-crash-restart", recovered_projection, recovery_expected)
-            persistence = fixture(recovery_db, "inspect")
+            persistence, inspect_token, _crash_inspect_stdout = fixture(recovery_db, "inspect")
+            assert inspect_token is None
             validate_fixture_snapshot(f"rep-{index + 1}:reopened-after-crash", persistence, recovery_expected)
             time.sleep(min(1.0, idle_seconds))
             post_restart_projection_ms, post_restart_projection = rpc_projection(port, recovery_token)
@@ -626,7 +744,8 @@ def measure(repetitions: int, idle_seconds: float, transport_seconds: float) -> 
             if post_restart_projection["states"] != recovered_projection["states"]:
                 raise AssertionError("controlled post-restart idle interval changed Mission states")
             restart_graceful_shutdown = stop_daemon(restart_proc, "SIGTERM")
-            after_restart_sigterm = fixture(recovery_db, "inspect")
+            after_restart_sigterm, inspect_token, _restart_inspect_stdout = fixture(recovery_db, "inspect")
+            assert inspect_token is None
             validate_fixture_snapshot(f"rep-{index + 1}:after-restart-sigterm", after_restart_sigterm, recovery_expected)
 
             raw.append({
@@ -735,6 +854,7 @@ def main() -> int:
         }
         exit_code = 2
     encoded = json.dumps(result, indent=2, sort_keys=True) + "\n"
+    assert_no_credential_material(encoded)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(encoded)
