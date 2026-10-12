@@ -48,7 +48,7 @@ O cliente aceita um evento normal somente quando `sequence === cursor + 1`. O me
 
 ## Disconnect e reconnect
 
-O WebSocket é observacional. Fechar, perder ou reconectar o cliente não chama operações de Mission, Invocation ou connector. A conexão não persiste fila de comandos e não reenvia `agent.input`, controles, invocações ou efeitos. Após reconectar, o cliente recebe snapshot atual e continua a observação.
+O WebSocket é observacional. Fechar, perder ou reconectar o cliente não chama operações de Mission, Invocation ou connector. A conexão não persiste fila de comandos e não reenvia `agent.input`, controles, invocações ou efeitos. O daemon fecha com código 1009 qualquer mensagem de entrada acima de 1 MiB, incluindo mensagens fragmentadas agregadas; mensagens de entrada não alteram a projeção. Após reconectar, o cliente recebe snapshot atual e continua a observação.
 
 ## Backpressure e isolamento
 

@@ -41,7 +41,11 @@ class RawWebSocketProbe {
     this.headerRejecter = reject;
   });
 
+  readonly closed: Promise<void>;
   constructor(readonly socket: Socket, private readonly description = "WebSocket") {
+    const closed = Promise.withResolvers<void>();
+    this.closed = closed.promise;
+    socket.once("close", closed.resolve);
     this.headerTimer = setTimeout(() => {
       this.close();
       this.headerRejecter(new Error(`${this.description} handshake timed out`));
@@ -81,6 +85,26 @@ class RawWebSocketProbe {
       this.frameWaiters.push(onFrame);
     });
   }
+  sendFrame(opcode: number, payload: Buffer, fin = true): void {
+    const mask = randomBytes(4);
+    const lengthBytes = payload.length < 126 ? 0 : payload.length <= 0xffff ? 2 : 8;
+    const header = Buffer.alloc(2 + lengthBytes);
+    header[0] = (fin ? 0x80 : 0) | opcode;
+    if (lengthBytes === 0) header[1] = 0x80 | payload.length;
+    else if (lengthBytes === 2) {
+      header[1] = 0x80 | 126;
+      header.writeUInt16BE(payload.length, 2);
+    } else {
+      header[1] = 0x80 | 127;
+      header.writeBigUInt64BE(BigInt(payload.length), 2);
+    }
+    const masked = Buffer.allocUnsafe(payload.length);
+    for (let index = 0; index < payload.length; index += 1) masked[index] = payload[index]! ^ mask[index & 3]!;
+    this.socket.write(Buffer.concat([header, mask, masked]));
+  }
+
+  close(): void { this.socket.destroy(); }
+
 
   close(): void { this.socket.destroy(); }
 
@@ -813,6 +837,87 @@ describe("local-control authentication over real Fastify and SQLite", () => {
       afterDisconnect?.close();
       await boundedServer.stop();
       setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("accepts exactly 1 MiB and closes oversized single and fragmented messages with capacity release", async () => {
+    const targetPort = await unusedPort();
+    const targetEventBus = new EventBus();
+    const boundedServer = new DaemonServer(
+      daemonStorage,
+      { port: targetPort, host: "127.0.0.1", maxProjectionClients: 1 },
+      targetEventBus,
+      missionStore,
+      undefined,
+      undefined,
+      undefined,
+      authorizer,
+    );
+    const projection = (boundedServer as unknown as { projection: DaemonProjection }).projection;
+    const token = credentialStore.provision("payload-limit", ["mission.read"], Date.now() + 60_000).token;
+    const limit = 1_048_576;
+    const connect = async () => {
+      const client = await RawWebSocketProbe.connect(targetPort, { Authorization: `Bearer ${token}` });
+      expect((await client.response).status).toBe(101);
+      expect(JSON.parse((await client.nextFrame()).payload.toString("utf8")).event).toBe("snapshot");
+      return client;
+    };
+    let client: RawWebSocketProbe | undefined;
+    let singleRejected = false;
+    let fragmentedRejected = false;
+    let singleOutcome: number[] = [];
+    let fragmentedOutcome: number[] = [];
+    let replacement: RawWebSocketProbe | undefined;
+    try {
+      await boundedServer.start();
+      client = await connect();
+      client.sendFrame(1, Buffer.alloc(limit, 0x61));
+      client.sendFrame(9, Buffer.from("boundary"));
+      expect((await client.nextFrame()).opcode).toBe(10);
+      client.close();
+      await client.closed;
+      await waitForCondition(() => projection.admittedClientCount === 0);
+      client = undefined;
+
+      client = await connect();
+      client.sendFrame(1, Buffer.alloc(limit + 1, 0x61));
+      client.sendFrame(9, Buffer.from("single"));
+      const singleClose = await client.nextFrame();
+      singleOutcome = [singleClose.opcode, singleClose.opcode === 8 ? singleClose.payload.readUInt16BE(0) : 0];
+      singleRejected = singleClose.opcode === 8 && singleOutcome[1] === 1009;
+      if (!singleRejected) client.close();
+      await client.closed;
+      client = undefined;
+      await waitForCondition(() => projection.admittedClientCount === 0);
+
+      replacement = await connect();
+      targetEventBus.emit("daemon", { type: "ready", port: targetPort });
+      expect((await replacement.nextFrame()).payload.toString("utf8")).toContain('"event":"daemon"');
+      replacement.close();
+      await replacement.closed;
+      replacement = undefined;
+      await waitForCondition(() => projection.admittedClientCount === 0);
+
+      client = await connect();
+      client.sendFrame(1, Buffer.alloc(limit / 2, 0x61), false);
+      client.sendFrame(0, Buffer.alloc(limit / 2 + 1, 0x61));
+      client.sendFrame(9, Buffer.from("fragmented"));
+      const fragmentedClose = await client.nextFrame();
+      fragmentedOutcome = [fragmentedClose.opcode, fragmentedClose.opcode === 8 ? fragmentedClose.payload.readUInt16BE(0) : 0];
+      fragmentedRejected = fragmentedClose.opcode === 8 && fragmentedOutcome[1] === 1009;
+      if (!fragmentedRejected) client.close();
+      await client.closed;
+      client = undefined;
+      await waitForCondition(() => projection.admittedClientCount === 0);
+
+      replacement = await connect();
+      targetEventBus.emit("daemon", { type: "ready", port: targetPort });
+      expect((await replacement.nextFrame()).payload.toString("utf8")).toContain('"event":"daemon"');
+      expect([singleOutcome, fragmentedOutcome]).toEqual([[8, 1009], [8, 1009]]);
+    } finally {
+      client?.close();
+      replacement?.close();
+      await boundedServer.stop();
     }
   });
 
