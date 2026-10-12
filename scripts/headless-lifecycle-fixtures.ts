@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { writeSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   EffectClass,
   MissionState,
@@ -8,6 +9,7 @@ import {
   type PlanRevision,
 } from "../cli/src/mission/contracts.js";
 import { SqliteMissionStore } from "../cli/src/mission/sqlite-mission-store.js";
+import { LocalControlCredentialStore } from "../cli/src/daemon/local-control-auth.js";
 
 function makeMission(id: string, state: MissionState): Mission {
   const intent = `Synthetic lifecycle fixture ${id}`;
@@ -47,6 +49,11 @@ async function main(): Promise<void> {
     throw new Error("Usage: bun run scripts/headless-lifecycle-fixtures.ts <db-path> <idle|recovery|inspect>");
   }
 
+  const privateTokenFd = Number(process.env.OUROBOROS_PRIVATE_TOKEN_FD);
+  if (fixtureMode !== "inspect" && (!Number.isSafeInteger(privateTokenFd) || privateTokenFd < 3)) {
+    throw new Error("A private credential pipe is required to seed lifecycle fixtures");
+  }
+
   const dbPath = resolve(dbArgument);
   await mkdir(dirname(dbPath), { recursive: true });
   const store = new SqliteMissionStore(dbPath);
@@ -72,6 +79,7 @@ async function main(): Promise<void> {
         ["fixture-ready", MissionState.READY] as const,
       ];
 
+  const credentialStore = new LocalControlCredentialStore(join(dirname(dbPath), "local-control-auth.db"));
   try {
     for (const [id, state] of fixtureStates) {
       const mission = makeMission(id, state);
@@ -97,6 +105,12 @@ async function main(): Promise<void> {
       await store.createMission(mission);
       await store.savePlanRevision(revision);
     }
+    const credential = credentialStore.provision(
+      "lifecycle-baseline-reader",
+      ["mission.read"],
+      Date.now() + 15 * 60_000,
+    );
+    writeSync(privateTokenFd, credential.token, undefined, "utf8");
     console.log(JSON.stringify({
       database: dbPath,
       fixtureMode,
@@ -104,6 +118,7 @@ async function main(): Promise<void> {
       states: fixtureStates.map(([, state]) => state),
     }));
   } finally {
+    credentialStore.close();
     await store.close();
   }
 }
