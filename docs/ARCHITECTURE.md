@@ -469,18 +469,28 @@ Este documento foi reconciliado com as seguintes fontes do repositório
 | #94 | Reconciliação de status após M0 | Reconciliação documentada por esta mudança; estado vivo no GitHub |
 
 ### M1 Local Control Plane — Reconciliation (issue #160)
-**Status:** OPEN (not complete). Evidenced against `main` at `75fdf5a` with `bun run check` passing (0 quarantines).
+**Status:** OPEN (not complete). Evidenced against `main` at `75fdf5a` with `bun run check` passing (0 quarantines). M1 **not declared complete**.
 
-**Verified Current (code+tests):**
-- Headless daemon authority + lifecycle owner (`cli/src/daemon/main.ts`, `shutdown-coordinator.ts`); coordinated shutdown with RPC drain tracking, fail-safe store preservation on uncertain drain, forced termination with non-zero exit.
-- Authenticated local-control boundary (fail-closed). Bearer + short-lived browser sessions, scopes, revoke/rotate, provisioning required at startup (`cli/src/daemon/local-control-auth.ts`, shared contracts). Loopback HTTP/WS is current transport; UDS experimental (not promoted).
-- RPC/WS admission-limited and sanitized (`cli/src/daemon/server.ts`); CLI factual (`cli/src/commands/admin-cli.ts`) uses daemon authority only.
-- Durable Mission/Capability/Context primitives with bounded scheduler/recovery/pagination, keyset scans, resident driver wake-by-mutation (`cli/src/mission/*`, `cli/src/daemon/mission-scheduler-driver.ts`). Report IDs bounded for resident daemon.
-- Projection/isolation/reconnect behavior verified; DaemonProjection is read-only and a reasonable first supervision candidate.
+#### Per-criterion matrix (M1 / #70 and relevant lifecycle/supervision #59)
+All classifications use `PASS / PARTIAL / BLOCKED / NOT_CURRENT / UNPROVEN`. Evidence limited to code + tests present in repo.
 
-**Known gaps/blockers:**
-- **#131 (P1, OPEN/BLOCKED):** Resident scheduler pass failure does not reschedule a wake (liveness/resumption). No automatic retry/replay authorized by generic pass failure (#132 closed `not_planned`). Remains the highest-priority verifiable blocker.
-- Global scheduler memory/RSS not bound (bounded pages/report-IDs only). Some limitations documented in [docs/FAILURE_DOMAINS.md](FAILURE_DOMAINS.md).
-- Transport remains loopback HTTP/WS (Unix socket not default in production).
+| Critério original (#70/#59) | Owner | Estado | Arquivos/funções relevantes | Testes relacionados | Evidência verificada | Dependências | Limitações |
+|---|---|---|---|---|---|---|---|
+| Headless daemon como autoridade (lifecycle owner) | `cli/src/daemon/main.ts`, `shutdown-coordinator.ts` | PASS | `startHeadlessDaemon()` compõe storage/missionStore/auth/scheduler/server; `DaemonShutdownCoordinator` SIGINT/SIGTERM/RPC ordem + timeouts | `headless-composition.test.ts`, `main-lifecycle.test.ts`, `daemon-shutdown-race.test.ts`, `headless-shutdown.e2e.test.ts`, `rpc-gateway-lifecycle.test.ts`, `shutdown-coordinator.test.ts` | Composição e shutdown coordenados observados; em drain incerto stores preservados até terminação forçada. | #70, #117/#129 | Conservador por segurança; handlers não cancelados automaticamente. |
+| Autenticação local-control fail-closed | `cli/src/daemon/local-control-auth.ts`, `shared/local-control-auth-contract.ts` | PASS | Hash-only storage, scopes, browser session+origin, revoke/rotate, provisioning exigido no start | `local-control-auth.test.ts`, `local-control-auth.e2e.test.ts` | Startup falha sem credenciais ativas; rotas protegidas exigem auth/scope. | #70/#100 | Loopback HTTP/WS atual; UDS experimental (não promovido a produção). |
+| RPC/WS autenticados em loopback + admissão limitada | `cli/src/daemon/server.ts`, `rpc-gateway.ts` | PASS | Bind 127.0.0.1/::1, maxInFlightRpcOperations 1-1024 (default 32), auth+scope antes de capacidade, responses sanitizadas, tracking handler+response | `rpc-admission.test.ts`, `rpc-admission.e2e.test.ts`, `local-control-*.test.ts` | Admissão limitada e sanitização verificados por testes. | #70 | Limite é cardinalidade, não byte/RSS global. |
+| CLI factual de admin/recovery (usa autoridade do daemon) | `cli/src/commands/admin-cli.ts`, `local-control-client.ts` | PASS | Comandos status/missions/invocations/diagnostics/mission show/pause/resume/cancel + auth provision/rotate/revoke; sem scheduler/banco paralelo | `admin-cli.test.ts`, `admin-cli.e2e.test.ts`, `local-control-command-client.test.ts` | CLI consome contrato local via cliente; sem duplicação de autoridade. | #70 | Operações restritas ao contrato/local auth. |
+| Mission durável + policy determinística | `cli/src/mission/mission-engine.ts`, `policy.ts`, contratos | PASS | Transições autoritativas, engine/policy duráveis | `mission-*.test.ts`, `durable-mission-execution.test.ts` | Base M0 verificada. | #50/#62 | — |
+| Capability Registry + dispatch seam | `cli/src/capabilities/registry.ts`, `dispatch-seam.ts` | PASS | Registro, seam, capability-wait/restore | `dispatch-seam*.test.ts` | Sem conectores de produção compostos por default. | #63 | — |
+| Context Compiler / Context Packs bounded + provenance | `cli/src/mission/context-*` | PASS | Packs bounded/progressivos, provenance | `context-pack*.test.ts` | Limites documentados. | #64/#78 | Não é bound global de memória. |
+| Scheduler residente + recovery + paginação limitada | `cli/src/daemon/mission-scheduler-driver.ts`, `cli/src/mission/mission-scheduler.ts`, `sqlite-mission-store.ts` | PARTIAL | Driver wake-by-mutation/coalesced, recovery paginada keyset, decisões por EXISTS, `reportIdLimit` (daemon 0), `nextWakeAt` | `mission-scheduler-driver*.test.ts`, `mission-scheduler-daemon.e2e.test.ts`, `mission-scheduler*.test.ts`, `sqlite-mission-store*.test.ts` | Paginamento/limites verificados. **Liveness:** falha genérica do pass não agenda wake — defeito comprovado. | #50/#120, #131 | P1 liveness/resumption (#131 OPEN/BLOCKED). Sem retry/replay automático autorizado (#132 closed `not_planned`, sem produtor confiável de `safe_to_retry`). Memória/RSS total não bound global. |
+| Shutdown coordenado com quiescência + fail-safe | `cli/src/daemon/server.ts`, `shutdown-coordinator.ts` | PASS | RPC drain tracking (handler+response), timeouts, fail-safe deixando stores abertos em incerteza | `daemon-shutdown-race.test.ts`, `shutdown-coordinator.test.ts`, `headless-shutdown.e2e.test.ts` | Comportamento conservador verificado. | #117/#129 | Sem cancelamento automático de handlers. |
+| Projeção/eventos/isolamento WS | `cli/src/daemon/daemon-projection.ts`, `durable-projection.ts` | PASS | Handshakes/timeouts/limites/isolamento/backpressure | `daemon-projection*.test.ts`, `durable-projection*.test.ts` | Isolamento verificado. **Supervisão:** limites/admissão/erro/envio/timeouts/encerramento já existentes; não há defeito reproduzível ou requisito operacional não atendido identificado. | #38 | Read-only. `NO_ACTION — no supervisor implementation justified`. |
+| Contrato local versionado / boundary isolado | `shared/local-control-*.ts` | PASS | v1, scopes, sanitização, sem autoridade por loopback só | `local-control-*.test.ts` | Boundary isolado verificado. | #70 | Transporte atual HTTP/WS. |
 
-**M1 exit:** not declared complete. Factual state above is evidence-based; new work requires concrete, reproducible defect with safe scope respecting #131/#132.
+**Separação:** CURRENT=PASS/PARTIAL com evidência; NOT_CURRENT=fases futuras (Mission Control #68, IPC default UDS, cross-project #65-#67/#82); LEGACY classificado em `docs/LEGACY_MATRIX.md`; HYPOTHESIS=#58 etc.
+
+#### Blockers/gaps (P1)
+- **#131 (P1, OPEN/BLOCKED):** Falha genérica de `runOnce()` no driver residente não reprograma wake (liveness/resumption). **Não** comprovada como reentrada segura. **#132** concluiu não haver produtor confiável de `safe_to_retry`; não foi encontrada alternativa comprovadamente segura para re-agendamento automático nas condições atuais. **Recomendação:** `NO_EXECUTABLE_LEAF` — não implementar wake/retry automático neste estado. Não alterar trust model.
+
+**M1 exit:** não declarado concluído. Próximo slice não selecionado automaticamente por ausência de leaf executável seguro.
