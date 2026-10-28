@@ -467,3 +467,20 @@ Este documento foi reconciliado com as seguintes fontes do repositório
 | #58 | Avaliar Go como runtime core | Open; research-gated (no milestone) |
 | #78 | Context Packs bounded/progressivos | Closed; implemented (M0), with documented limits |
 | #94 | Reconciliação de status após M0 | Reconciliação documentada por esta mudança; estado vivo no GitHub |
+
+### M1 Local Control Plane — Reconciliation (issue #160)
+**Status:** OPEN (not complete). Evidenced against `main` at `75fdf5a` with `bun run check` passing (0 quarantines).
+
+**Verified Current (code+tests):**
+- Headless daemon authority + lifecycle owner (`cli/src/daemon/main.ts`, `shutdown-coordinator.ts`); coordinated shutdown with RPC drain tracking, fail-safe store preservation on uncertain drain, forced termination with non-zero exit.
+- Authenticated local-control boundary (fail-closed). Bearer + short-lived browser sessions, scopes, revoke/rotate, provisioning required at startup (`cli/src/daemon/local-control-auth.ts`, shared contracts). Loopback HTTP/WS is current transport; UDS experimental (not promoted).
+- RPC/WS admission-limited and sanitized (`cli/src/daemon/server.ts`); CLI factual (`cli/src/commands/admin-cli.ts`) uses daemon authority only.
+- Durable Mission/Capability/Context primitives with bounded scheduler/recovery/pagination, keyset scans, resident driver wake-by-mutation (`cli/src/mission/*`, `cli/src/daemon/mission-scheduler-driver.ts`). Report IDs bounded for resident daemon.
+- Projection/isolation/reconnect behavior verified; DaemonProjection is read-only and a reasonable first supervision candidate.
+
+**Known gaps/blockers:**
+- **#131 (P1, OPEN/BLOCKED):** Resident scheduler pass failure does not reschedule a wake (liveness/resumption). No automatic retry/replay authorized by generic pass failure (#132 closed `not_planned`). Remains the highest-priority verifiable blocker.
+- Global scheduler memory/RSS not bound (bounded pages/report-IDs only). Some limitations documented in [docs/FAILURE_DOMAINS.md](FAILURE_DOMAINS.md).
+- Transport remains loopback HTTP/WS (Unix socket not default in production).
+
+**M1 exit:** not declared complete. Factual state above is evidence-based; new work requires concrete, reproducible defect with safe scope respecting #131/#132.
