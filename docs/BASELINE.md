@@ -53,11 +53,11 @@ git add bun.lock web/bun.lock
 
 | Command | What it proves |
 |---------|----------------|
-| `bun run check:install` | Root + web install with frozen lockfiles; no tracked file drift |
+| `bun run check:install` | Root + web install with frozen lockfiles; no tracked file drift during install |
 | `bun run check:runtime` | Root TypeScript project compiles (`tsc` → CLI/runtime/scripts) |
 | `bun run check:web` | Web app typechecks and Vite production build succeeds |
 | `bun run check:tests` | **Mandatory** unit tests pass; quarantined suites listed, not counted green |
-| `bun run check` | All of the above, in order |
+| `bun run check` | All of the above, in order, plus a post-check working-tree integrity verification |
 
 Legacy aliases still present:
 
@@ -79,12 +79,14 @@ Steps:
 
 1. Checkout  
 2. Bun **1.3.9**  
-3. `bun install --frozen-lockfile` (root)  
-4. `bun install --frozen-lockfile` (web)  
-5. Fail if install dirtied the git tree  
-6. `bun run check:runtime`  
-7. `bun run check:web`  
-8. `bun run check:tests`  
+3. Snapshot the non-ignored working tree (`scripts/check-tree-integrity.ts snapshot`)
+4. `bun install --frozen-lockfile` (root)
+5. `bun install --frozen-lockfile` (web)
+6. Fail if install dirtied the git tree
+7. `bun run check:runtime`
+8. `bun run check:web`
+9. `bun run check:tests`
+10. Verify the tree against the pre-install snapshot (`scripts/check-tree-integrity.ts verify`)
 
 Properties:
 
@@ -92,6 +94,72 @@ Properties:
 - No paid model calls  
 - No `continue-on-error` on mandatory steps  
 - Minimal permissions (`contents: read`)
+
+## Working-tree integrity (issue #153)
+
+The baseline must not modify the checkout as a side effect of compiling or
+running tests. A clean checkout must remain clean after `bun run check`.
+
+### Regenerable artifacts
+
+`web/tsconfig.tsbuildinfo` is a TypeScript incremental build cache produced by
+`tsc -b`. It is not source, has no legitimate consumer, and is regenerated on
+every web build. It is **not tracked** by Git; the root `.gitignore` ignores
+`*.tsbuildinfo` so local builds can still create it.
+
+Other ignored build outputs (`node_modules/`, `web/dist/`, ...) remain ignored
+and are intentionally outside the integrity snapshot.
+
+### What the gate checks
+
+`bun run check` now runs the baseline through
+`scripts/check-tree-integrity.ts run`:
+
+1. Snapshot the non-ignored working tree before any install/build/test.
+2. Run `check:install`, `check:runtime`, `check:web`, and `check:tests` in order.
+3. Snapshot again and fail if the tree changed.
+
+The snapshot records `git status --porcelain -z -uall` entries (tracked
+modifications, deletions, and untracked files) plus a content hash for every
+entry. It fails the gate when:
+
+- a tracked file changes unexpectedly;
+- a new non-ignored file appears;
+- a preexisting dirty file changes content or status;
+- a preexisting change disappears;
+- `HEAD` changes;
+- `git status` / `git rev-parse` cannot run (missing git, not a repository,
+  non-zero exit, signal).
+
+For local runs the checkout does not need to be clean. Preexisting changes are
+captured before the gate and are allowed to remain only if their content and
+status are unchanged. This avoids hiding a baseline mutation in a file that was
+already modified.
+
+CI snapshots the clean checkout before installing dependencies and verifies the
+same snapshot after the mandatory tests. A green baseline therefore means the
+install, runtime compile, web build, and tests left no tracked or untracked
+non-ignored changes behind.
+
+### Test fixture isolation
+
+Legacy `MemoryManager` defaults to `process.cwd()` and creates
+`.agent/memory/`. `Orchestrator` accepts an optional `memoryRoot`; the
+`SessionManager` suite passes a unique `mkdtemp` directory per test and removes
+it in `afterEach`, including on failure. Tests that exercise the real
+`loopUntilSuccess` path (including cancel/resume) write memory only under that
+temporary root, never the repository.
+
+### Limitations
+
+- Ignored files are not inspected (by design: `node_modules/`, `dist/`,
+  `*.tsbuildinfo` are expected outputs).
+- A process that changes a file and restores it to the exact prior content
+  within the same run is not detected.
+- The gate inspects the repository working tree only; files outside it are out
+  of scope.
+- `git status` is the source of truth for "changed", so files excluded by
+  `.gitignore` cannot be asserted about.
 
 ## What CI does **not** cover
 
@@ -146,6 +214,11 @@ capability promotion/evolution.
 4. **`tool-executor.test.ts` reconstructed (#85)** — the merge-corrupted suite was rebuilt against the fail-close contract and re-entered the mandatory gate.
 5. **`QualityGateRegistry.test.ts` reactivated (#41)** — the two failing cases were assertion-API bugs (`await expect(promise).toThrow()` instead of `.rejects.toThrow()`); the registry already throws distinct `not registered` vs `disabled` errors and fails closed on required-gate failure/exception. The timeout case was made deterministic (strategy-owned timeout, no real sleep) and the suite now runs in the mandatory gate.
 6. **README feature claims** are not all `verified` by this baseline; only compile + mandatory tests are.
+7. **Tree integrity ignores ignored files** — `node_modules/`, `dist/`, and
+   `*.tsbuildinfo` are expected regenerable outputs and are not asserted about.
+8. **Write-then-restore is invisible** — the gate compares snapshots before and
+   after the run, so a process that restores a file to its exact prior content
+   is not detected.
 
 ## Negative test expectations
 
@@ -155,6 +228,10 @@ A correct CI / local check **must fail** when:
 - Web TypeScript/Vite build is broken → `check:web` non-zero  
 - A mandatory unit test fails → `check:tests` non-zero  
 - Lockfile out of sync → frozen install non-zero  
+- A tracked file is modified unexpectedly → tree integrity non-zero
+- A new non-ignored file appears → tree integrity non-zero
+- Git inspection fails → tree integrity non-zero (never treated as clean)
+- A build/test process leaves an unexpected artifact → tree integrity non-zero
 
 Do not use `|| true` or optional steps to hide these failures.
 

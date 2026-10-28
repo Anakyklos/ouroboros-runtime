@@ -67,7 +67,7 @@ export class Orchestrator {
 
     constructor(config: Partial<OrchestratorConfig> = {}, eventBus?: EventBus) {
         this.config = { ...DEFAULT_ORCHESTRATOR_CONFIG, ...config };
-        this.memory = new MemoryManager();
+        this.memory = new MemoryManager(this.config.memoryRoot);
         this.memoryRetriever = createMemoryRetriever();
 
         // Initialize quality gate registry (disabled by default, can be enabled via config)

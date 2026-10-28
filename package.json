@@ -20,7 +20,7 @@
     "check:runtime": "tsc",
     "check:web": "bun run --cwd web build",
     "check:tests": "bun run scripts/run-mandatory-tests.ts",
-    "check": "bun run check:install && bun run check:runtime && bun run check:web && bun run check:tests",
+    "check": "bun run scripts/check-tree-integrity.ts run",
     "health": "bun run scripts/health-check.ts",
     "start:headless": "bun run daemon",
     "agy": "bun run scripts/agy-bridge.ts",
