@@ -176,7 +176,6 @@ temporary root, never the repository.
 - TUI interactive runs  
 - Web runtime E2E in a browser  
 - Docker deployment paths in `docs/DEPLOYMENT.md`  
-- Gemini review workflows (separate, require secrets)
 
 ## Quarantined tests
 

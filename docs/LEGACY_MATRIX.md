@@ -327,13 +327,24 @@
 | **Rationale** | #61/#70: "duplicated frontend stores/state" classificado; frontend é projection. |
 | **Follow-up implication** | Consolidar após #62/#70; não duplicar state machine de Mission na UI. |
 
+### 29. GitHub Actions Gemini (automação de issues/PRs)
+
+| Campo | Valor |
+|---|---|
+| **Subsystem** | Cinco workflows `.github/workflows/gemini-*.yml` e quatro prompts `.github/commands/gemini-*.toml` (removidos em #154). |
+| **Historical responsibility/evidence** | Dispatch de eventos GitHub, review de PR, invoke de agente e triagem de issues, com tokens de escrita e ferramentas acessíveis ao modelo. `gemini-review.yml` tinha `secrets` em `steps.if`, inválido no `actionlint 1.7.12`; falhas repetidas sem jobs executados. |
+| **Decision** | **RETIRE** — autorização explícita de Pedro em 2026-10-28, após investigação da #154. |
+| **Future owner/boundary** | Nenhum workflow de agente Gemini com autoridade sobre GitHub permanece no Ouroboros. Trabalho de software pertence ao Runstead; qualquer automação futura requer policy, owner e autorização próprios. |
+| **Rationale** | Não há evidência de valor operacional suficiente para justificar agentes com acesso a review, labels e operações de código fora da Mission/policy. Instruções em prompts não são enforcement. |
+| **Follow-up implication** | Retirar cinco workflows e quatro prompts; manter apenas o CI obrigatório. O `GeminiCliBridge` da seção 11 continua **ADAPT** como candidato a planner provider opcional e não é afetado. O histórico Git preserva os arquivos removidos. |
+
 ---
 
 ## Resumo executivo
 
 | Decisão | Subsistemas |
 |---|---|
-| **RETIRE** | SelfModifyingEngine (#95), PersistentPythonREPL (#96), SandboxRunner, SandboxTool, Council/personas, ArchitectClient (persona hardcoded), Ralph loop, Council UI, Terminal UI, React/Ink TUI, Electron (como direção) |
+| **RETIRE** | SelfModifyingEngine (#95), PersistentPythonREPL (#96), SandboxRunner, SandboxTool, Council/personas, ArchitectClient (persona hardcoded), Ralph loop, Council UI, Terminal UI, React/Ink TUI, Electron (como direção), GitHub Actions Gemini (#154) |
 | **ADAPT** | WaveExecutor (scheduling), Anti-Vibe (mission gates), PromotionManager (approval), Antigravity/Gemini/Jules bridges (connectors), local inference (planner backend), MemoryManager (mission state), MemoryRetriever (context provenance), Memory UI, local web server, Fastify/WebSocket transport, web frontend, terminal pane, direct daemon/UI coupling, duplicated stores |
 | **DEFER** | MCP/SkillLoader (capability protocol candidate) |
 | **KEEP** | Daemon/headless core (server, rpc-gateway, session-manager, event-bus), SQLite storage, daemon controls, event contract, baseline CI (#35) |
