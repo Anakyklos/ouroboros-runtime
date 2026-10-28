@@ -1,10 +1,20 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
     compareTreeSnapshots,
+    hashPath,
+    readSnapshot,
     snapshotTree,
     writeSnapshot,
     TreeIntegrityError,
@@ -40,6 +50,12 @@ function createRepo(): string {
     return dir;
 }
 
+function commitFile(dir: string, name: string, content: string): void {
+    writeFileSync(join(dir, name), content);
+    git(dir, ["add", "--", name]);
+    git(dir, ["commit", "-q", "-m", `add ${name}`]);
+}
+
 afterEach(() => {
     while (tempDirs.length > 0) {
         rmSync(tempDirs.pop() as string, { recursive: true, force: true });
@@ -70,6 +86,113 @@ describe("check-tree-integrity", () => {
 
         const errors = compareTreeSnapshots(before, snapshotTree(dir));
         expect(errors.join("\n")).toContain("unexpected ?? entry appeared during baseline: artifact.txt");
+    });
+
+    it("detects a modified tracked file named __proto__", () => {
+        const dir = createRepo();
+        commitFile(dir, "__proto__", "one\n");
+
+        const before = snapshotTree(dir);
+        writeFileSync(join(dir, "__proto__"), "two\n");
+        const after = snapshotTree(dir);
+
+        expect(Object.keys(after.entries)).toContain("__proto__");
+        expect(Object.prototype.hasOwnProperty.call(after.entries, "__proto__")).toBe(true);
+
+        const errors = compareTreeSnapshots(before, after);
+        expect(errors.join("\n")).toContain("__proto__");
+        expect(errors.length).toBeGreaterThan(0);
+    });
+
+    it("detects an untracked file named __proto__", () => {
+        const dir = createRepo();
+        const before = snapshotTree(dir);
+
+        writeFileSync(join(dir, "__proto__"), "unexpected\n");
+        const after = snapshotTree(dir);
+        expect(Object.keys(after.entries)).toContain("__proto__");
+
+        const errors = compareTreeSnapshots(before, after);
+        expect(errors.join("\n")).toContain(
+            "unexpected ?? entry appeared during baseline: __proto__"
+        );
+    });
+
+    it("preserves __proto__ through snapshot JSON serialization", () => {
+        const dir = createRepo();
+        writeFileSync(join(dir, "__proto__"), "unexpected\n");
+        const snapshotFile = join(makeTempDir("ouroboros-tree-integrity-snapshot-"), "tree.json");
+
+        writeSnapshot(snapshotFile, snapshotTree(dir));
+        const loaded = readSnapshot(snapshotFile);
+
+        expect(Object.keys(loaded.entries)).toContain("__proto__");
+        expect(Object.prototype.hasOwnProperty.call(loaded.entries, "__proto__")).toBe(true);
+        expect(loaded.entries["__proto__"].status).toBe("??");
+    });
+
+    it("detects a modified tracked __proto__ through the real snapshot -> JSON -> verify flow", () => {
+        const dir = createRepo();
+        commitFile(dir, "__proto__", "one\n");
+        const snapshotFile = join(makeTempDir("ouroboros-tree-integrity-snapshot-"), "tree.json");
+
+        const snapshotResult = spawnSync(
+            "bun",
+            ["run", SCRIPT, "snapshot", "--root", dir, "--file", snapshotFile],
+            { encoding: "utf-8" }
+        );
+        expect(snapshotResult.status).toBe(0);
+
+        writeFileSync(join(dir, "__proto__"), "two\n");
+        const verifyResult = spawnSync("bun", ["run", SCRIPT, "verify", "--file", snapshotFile], {
+            encoding: "utf-8",
+        });
+
+        expect(verifyResult.status).not.toBe(0);
+        expect(verifyResult.stderr).toContain("__proto__");
+    });
+
+    it("detects an untracked __proto__ through the real snapshot -> JSON -> verify flow", () => {
+        const dir = createRepo();
+        const snapshotFile = join(makeTempDir("ouroboros-tree-integrity-snapshot-"), "tree.json");
+
+        const snapshotResult = spawnSync(
+            "bun",
+            ["run", SCRIPT, "snapshot", "--root", dir, "--file", snapshotFile],
+            { encoding: "utf-8" }
+        );
+        expect(snapshotResult.status).toBe(0);
+
+        writeFileSync(join(dir, "__proto__"), "unexpected\n");
+        const verifyResult = spawnSync("bun", ["run", SCRIPT, "verify", "--file", snapshotFile], {
+            encoding: "utf-8",
+        });
+
+        expect(verifyResult.status).not.toBe(0);
+        expect(verifyResult.stderr).toContain("__proto__");
+    });
+
+    it("preserves other Git-valid special names", () => {
+        const dir = createRepo();
+        const names = ["constructor", "toString", "hasOwnProperty"];
+        for (const name of names) {
+            commitFile(dir, name, "one\n");
+        }
+
+        const before = snapshotTree(dir);
+        for (const name of names) {
+            writeFileSync(join(dir, name), "two\n");
+        }
+        const after = snapshotTree(dir);
+
+        for (const name of names) {
+            expect(Object.prototype.hasOwnProperty.call(after.entries, name)).toBe(true);
+        }
+
+        const errors = compareTreeSnapshots(before, after);
+        for (const name of names) {
+            expect(errors.join("\n")).toContain(name);
+        }
     });
 
     it("fails when a child build/test process produces an artifact", () => {
@@ -138,6 +261,74 @@ describe("check-tree-integrity", () => {
 
         const errors = compareTreeSnapshots(before, snapshotTree(dir));
         expect(errors.join("\n")).toContain("preexisting entry disappeared during baseline: tracked.txt");
+    });
+
+    it("streams SHA-256 with the same digest for small and larger-than-buffer files", () => {
+        const dir = makeTempDir("ouroboros-tree-integrity-hash-");
+        const smallContent = Buffer.from("small file\n");
+        const largeContent = Buffer.alloc(256 * 1024 + 123);
+        for (let i = 0; i < largeContent.length; i++) {
+            largeContent[i] = i % 251;
+        }
+
+        const smallPath = join(dir, "small.bin");
+        const largePath = join(dir, "large.bin");
+        writeFileSync(smallPath, smallContent);
+        writeFileSync(largePath, largeContent);
+
+        const expectedSmall = createHash("sha256").update(smallContent).digest("hex");
+        const expectedLarge = createHash("sha256").update(largeContent).digest("hex");
+
+        expect(hashPath(smallPath)).toBe(expectedSmall);
+        expect(hashPath(largePath)).toBe(expectedLarge);
+        expect(hashPath(largePath)).not.toBe(expectedSmall);
+    });
+
+    it("returns null for a missing path and preserves symlink semantics", () => {
+        const dir = makeTempDir("ouroboros-tree-integrity-hash-");
+        const target = join(dir, "target.txt");
+        const link = join(dir, "link.txt");
+        writeFileSync(target, "target\n");
+        symlinkSync("target.txt", link);
+
+        expect(hashPath(join(dir, "missing.txt"))).toBeNull();
+        expect(hashPath(link)).toBe("symlink:target.txt");
+    });
+
+    it("fails closed for a non-file path instead of hashing silently", () => {
+        const dir = makeTempDir("ouroboros-tree-integrity-hash-");
+        expect(() => hashPath(dir)).toThrow(TreeIntegrityError);
+    });
+
+    it("allows a repository with no commits (legitimately unborn HEAD)", () => {
+        const dir = makeTempDir("ouroboros-tree-integrity-empty-repo-");
+        git(dir, ["init", "-q"]);
+
+        const snapshot = snapshotTree(dir);
+        expect(snapshot.head).toBeNull();
+        expect(compareTreeSnapshots(snapshot, snapshotTree(dir))).toEqual([]);
+    });
+
+    it("fails closed when HEAD cannot be resolved in a repository with commits", () => {
+        const dir = createRepo();
+        writeFileSync(join(dir, ".git", "HEAD"), "ref: refs/heads/does-not-exist\n");
+
+        expect(() => snapshotTree(dir)).toThrow(TreeIntegrityError);
+    });
+
+    it("fails closed through the CLI when HEAD cannot be resolved", () => {
+        const dir = createRepo();
+        writeFileSync(join(dir, ".git", "HEAD"), "ref: refs/heads/does-not-exist\n");
+        const snapshotFile = join(makeTempDir("ouroboros-tree-integrity-snapshot-"), "tree.json");
+
+        const result = spawnSync(
+            "bun",
+            ["run", SCRIPT, "snapshot", "--root", dir, "--file", snapshotFile],
+            { encoding: "utf-8" }
+        );
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("rev-parse");
     });
 
     it("fails closed when git cannot inspect the tree", () => {

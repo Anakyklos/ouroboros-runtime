@@ -121,15 +121,23 @@ and are intentionally outside the integrity snapshot.
 
 The snapshot records `git status --porcelain -z -uall` entries (tracked
 modifications, deletions, and untracked files) plus a content hash for every
-entry. It fails the gate when:
+entry. Entries are stored in a null-prototype map, so Git-valid names such as
+`__proto__`, `constructor`, and `toString` are preserved as own entries rather
+than falling through to `Object.prototype`. Content is hashed with SHA-256
+through a fixed 64 KiB buffer, so auxiliary memory does not scale with file
+size; symlinks are represented by their target string.
+
+It fails the gate when:
 
 - a tracked file changes unexpectedly;
 - a new non-ignored file appears;
 - a preexisting dirty file changes content or status;
 - a preexisting change disappears;
 - `HEAD` changes;
-- `git status` / `git rev-parse` cannot run (missing git, not a repository,
-  non-zero exit, signal).
+- `git status` fails (missing git, not a repository, non-zero exit, signal);
+- `git rev-parse` fails unexpectedly. A repository with **no commits at all**
+  is the only accepted unborn-HEAD case and is recorded as `head: null`; an
+  unresolvable HEAD in a repository that has commits fails the gate.
 
 For local runs the checkout does not need to be clean. Preexisting changes are
 captured before the gate and are allowed to remain only if their content and
@@ -230,6 +238,8 @@ A correct CI / local check **must fail** when:
 - Lockfile out of sync → frozen install non-zero  
 - A tracked file is modified unexpectedly → tree integrity non-zero
 - A new non-ignored file appears → tree integrity non-zero
+- A Git-valid special path (e.g. `__proto__`) is modified or created → tree integrity non-zero
+- `HEAD` is unresolvable in a repository with commits → tree integrity non-zero
 - Git inspection fails → tree integrity non-zero (never treated as clean)
 - A build/test process leaves an unexpected artifact → tree integrity non-zero
 

@@ -19,10 +19,13 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+    closeSync,
     lstatSync,
     mkdtempSync,
+    openSync,
     readFileSync,
     readlinkSync,
+    readSync,
     rmSync,
     writeFileSync,
 } from "node:fs";
@@ -30,6 +33,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const ROOT = resolve(join(import.meta.dir, ".."));
+
+/** Fixed buffer for streaming file hashes; memory use does not scale with file size. */
+const HASH_BUFFER_SIZE = 64 * 1024;
 
 /** Baseline steps run by `run` mode; each must stay in the mandatory gate. */
 const BASELINE_STEPS = ["check:install", "check:runtime", "check:web", "check:tests"] as const;
@@ -52,7 +58,7 @@ export class TreeIntegrityError extends Error {
     }
 }
 
-function runGit(root: string, args: string[]): string {
+function runGitResult(root: string, args: string[]) {
     const result = spawnSync("git", args, {
         cwd: root,
         encoding: "utf-8",
@@ -67,6 +73,12 @@ function runGit(root: string, args: string[]): string {
     if (result.signal) {
         throw new TreeIntegrityError(`git ${args.join(" ")} terminated by signal ${result.signal}`);
     }
+
+    return result;
+}
+
+function runGit(root: string, args: string[]): string {
+    const result = runGitResult(root, args);
     if (result.status !== 0) {
         const stderr = (result.stderr ?? "").trim();
         throw new TreeIntegrityError(
@@ -78,32 +90,80 @@ function runGit(root: string, args: string[]): string {
 }
 
 function readHead(root: string): string | null {
-    const result = spawnSync("git", ["rev-parse", "--verify", "HEAD"], {
-        cwd: root,
-        encoding: "utf-8",
-    });
+    const result = runGitResult(root, ["rev-parse", "--verify", "--quiet", "HEAD"]);
 
-    if (result.error) {
-        throw new TreeIntegrityError(`git rev-parse failed to run: ${result.error.message}`);
+    if (result.status === 0) {
+        const head = (result.stdout ?? "").trim();
+        if (head.length === 0) {
+            throw new TreeIntegrityError("git rev-parse returned an empty HEAD");
+        }
+        return head;
     }
-    if (result.signal) {
-        throw new TreeIntegrityError(`git rev-parse terminated by signal ${result.signal}`);
-    }
-    // A repository without commits has no HEAD; that is not an inspection failure.
-    if (result.status !== 0) return null;
 
-    const head = (result.stdout ?? "").trim();
-    return head.length > 0 ? head : null;
+    if (result.status !== 1) {
+        const stderr = (result.stderr ?? "").trim();
+        throw new TreeIntegrityError(
+            `git rev-parse HEAD failed with exit ${result.status}${stderr ? `: ${stderr}` : ""}`
+        );
+    }
+
+    // Exit 1 with --quiet may be a legitimately unborn HEAD. Confirm that the
+    // repository has no commits at all; otherwise an unresolvable HEAD is an
+    // inspection failure and must not be recorded as a valid snapshot.
+    const commits = runGitResult(root, ["rev-list", "--all", "--max-count=1"]);
+    if (commits.status !== 0) {
+        const stderr = (commits.stderr ?? "").trim();
+        throw new TreeIntegrityError(
+            `git rev-list failed with exit ${commits.status}${stderr ? `: ${stderr}` : ""}`
+        );
+    }
+    if ((commits.stdout ?? "").trim().length > 0) {
+        throw new TreeIntegrityError(
+            "git rev-parse HEAD failed although the repository has commits"
+        );
+    }
+
+    return null;
 }
 
-function hashPath(absolutePath: string): string | null {
+/**
+ * Hash a path with SHA-256 using a fixed-size buffer.
+ * Symlinks are represented by their target string; regular files are streamed
+ * so auxiliary memory does not grow with file size. Missing files return null.
+ */
+export function hashPath(absolutePath: string): string | null {
     try {
         const stat = lstatSync(absolutePath);
         if (stat.isSymbolicLink()) {
             return `symlink:${readlinkSync(absolutePath)}`;
         }
-        return createHash("sha256").update(readFileSync(absolutePath)).digest("hex");
+        if (!stat.isFile()) {
+            throw new TreeIntegrityError(`cannot hash non-file path: ${absolutePath}`);
+        }
+
+        let fd: number;
+        try {
+            fd = openSync(absolutePath, "r");
+        } catch (e) {
+            if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+            throw e;
+        }
+
+        const hash = createHash("sha256");
+        const buffer = Buffer.alloc(HASH_BUFFER_SIZE);
+        try {
+            while (true) {
+                const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+                if (bytesRead === 0) break;
+                hash.update(buffer.subarray(0, bytesRead));
+            }
+        } finally {
+            closeSync(fd);
+        }
+
+        return hash.digest("hex");
     } catch (e) {
+        if (e instanceof TreeIntegrityError) throw e;
         const code = (e as NodeJS.ErrnoException).code;
         if (code === "ENOENT") return null;
         const message = e instanceof Error ? e.message : String(e);
@@ -127,7 +187,8 @@ export function snapshotTree(root: string): TreeSnapshot {
         "--no-renames",
     ]);
 
-    const entries: Record<string, TreeEntry> = {};
+    // Null prototype keeps Git-valid names such as `__proto__` as own entries.
+    const entries: Record<string, TreeEntry> = Object.create(null);
     for (const record of raw.split("\0")) {
         if (record.length === 0) continue;
         if (record.length < 4) {
@@ -163,18 +224,47 @@ export function readSnapshot(file: string): TreeSnapshot {
         throw new TreeIntegrityError(`cannot read snapshot ${file}: ${message}`);
     }
 
+    if (!parsed || typeof parsed !== "object") {
+        throw new TreeIntegrityError(`invalid snapshot file: ${file}`);
+    }
+
+    const candidate = parsed as Partial<TreeSnapshot>;
+    const root = candidate.root;
+    const head = candidate.head;
+    const rawEntries = candidate.entries;
     if (
-        !parsed ||
-        typeof parsed !== "object" ||
-        typeof (parsed as TreeSnapshot).root !== "string" ||
-        !("head" in parsed) ||
-        !(parsed as TreeSnapshot).entries ||
-        typeof (parsed as TreeSnapshot).entries !== "object"
+        typeof root !== "string" ||
+        !("head" in candidate) ||
+        !(head === null || typeof head === "string") ||
+        !rawEntries ||
+        typeof rawEntries !== "object" ||
+        Array.isArray(rawEntries)
     ) {
         throw new TreeIntegrityError(`invalid snapshot file: ${file}`);
     }
 
-    return parsed as TreeSnapshot;
+    // JSON.parse creates own properties for `__proto__`; copy them into a
+    // null-prototype map so later lookups cannot fall through to Object.prototype.
+    const entries: Record<string, TreeEntry> = Object.create(null);
+    for (const [path, rawEntry] of Object.entries(rawEntries)) {
+        if (!rawEntry || typeof rawEntry !== "object") {
+            throw new TreeIntegrityError(`invalid snapshot entry for ${JSON.stringify(path)}: ${file}`);
+        }
+        const entry = rawEntry as Partial<TreeEntry>;
+        if (typeof entry.status !== "string" || !("hash" in entry)) {
+            throw new TreeIntegrityError(`invalid snapshot entry for ${JSON.stringify(path)}: ${file}`);
+        }
+        if (entry.hash !== null && typeof entry.hash !== "string") {
+            throw new TreeIntegrityError(`invalid snapshot entry for ${JSON.stringify(path)}: ${file}`);
+        }
+        entries[path] = { status: entry.status, hash: entry.hash };
+    }
+
+    return {
+        root,
+        head,
+        entries,
+    };
 }
 
 /**
