@@ -247,6 +247,39 @@ hashed request identities, durable invocation references, and the Mission
 verification outcome. Context text and external owner data are never stored
 for measurement. See [`CONTEXT_PACK_RUNTIME.md`](CONTEXT_PACK_RUNTIME.md).
 
+### Bounded due-invocation selection (#152)
+
+`SqliteMissionStore.listDueInvocations(now, limit)` applies one additional
+predicate for `FAILED` rows before `LIMIT`: the row must still be definitely
+retryable under the same authority as
+`MissionEngine.prepareInvocationRetry()` / `isSafeRetryEligible()`. In
+practice that means a preserved `failed` last attempt, remaining attempts,
+`idempotent` semantics, no uncertain attempt/delivery, and no attested
+negative owner verdict. Missing/NULL/malformed retry or attempt provenance
+fails closed.
+
+The predicate only skips rows the engine is guaranteed to reject; it never
+grants retry authority. The engine remains the authoritative retry
+transition and re-checks every condition before changing durable state.
+Pending/dispatched work keeps its existing due-work rules. Ordering is
+unchanged (`nextEligibleAt`, `createdAt`, `invocationId`) and the returned
+row count remains bounded by the caller's `limit`.
+
+`getNextInvocationWakeAt(now)` uses the same `FAILED` predicate, so an
+exhausted, non-idempotent, uncertain, or owner-rejected row cannot generate a
+future wakeup. Consequently an eligible row behind more than one bounded batch
+of definitively ineligible `FAILED` rows is still reached in a single pass.
+
+Mission-state eligibility remains a scheduler decision after selection:
+paused/waiting/terminal Missions are not auto-promoted, and this predicate is
+not an unbounded scan or a second retry state machine.
+
+Regression coverage is in `sqlite-mission-store.test.ts` (filtering, future
+wake, >64-row batch, reopen) and `mission-scheduler.test.ts` (real
+SQLite/engine/scheduler/seam, small and default batches, non-idempotent,
+uncertain, exhausted, owner-rejected and missing-attempt rows, restart and
+Mission isolation).
+
 ## Mission-level verification (fail-closed, typed, provenance-bound)
 
 `MissionVerifier` (engine default) verifies only the executive level:
