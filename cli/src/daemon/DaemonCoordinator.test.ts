@@ -4,13 +4,14 @@
  * Testes de hardening: startup, shutdown, recovery, health check.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { DaemonCoordinator, createDaemonCoordinator } from './DaemonCoordinator.js';
 import { EventBus } from './event-bus.js';
 import { existsSync, mkdirSync, rmSync, readFileSync } from 'fs';
 
 const TEST_ROOT = '/tmp/daemon-test-project';
 const STATE_DIR = '.ouroboros';
+const CONTROLLED_NOW = Date.parse('2026-10-28T00:00:00.000Z');
 
 describe('DaemonCoordinator', () => {
     let daemon: DaemonCoordinator;
@@ -177,22 +178,51 @@ describe('DaemonCoordinator', () => {
         });
 
         it('returns health when running', async () => {
-            await daemon.start();
-            const health = daemon.getHealth();
+            setSystemTime(CONTROLLED_NOW);
+            try {
+                await daemon.start();
+                const health = daemon.getHealth();
 
-            expect(health.status).toBe('running');
-            expect(health.uptime).toBeGreaterThan(0);
-            expect(health.components.budgetTracker).toBe(true);
-            expect(health.components.eventBus).toBe(true);
-            expect(health.lastCheckAt).toBeInstanceOf(Date);
+                expect(health.status).toBe('running');
+                // Date.now() has millisecond resolution: startup and this read may
+                // share the same timestamp, so zero uptime is valid while running.
+                expect(health.uptime).toBe(0);
+                expect(health.components.budgetTracker).toBe(true);
+                expect(health.components.eventBus).toBe(true);
+                expect(health.lastCheckAt).toBeInstanceOf(Date);
+            } finally {
+                setSystemTime();
+            }
+        });
+
+        it('reports elapsed uptime after controlled clock advance', async () => {
+            const elapsedMs = 1_234;
+            setSystemTime(CONTROLLED_NOW);
+            try {
+                await daemon.start();
+                setSystemTime(CONTROLLED_NOW + elapsedMs);
+
+                const health = daemon.getHealth();
+                expect(health.status).toBe('running');
+                expect(health.uptime).toBe(elapsedMs);
+            } finally {
+                setSystemTime();
+            }
         });
 
         it('returns health after stop', async () => {
-            await daemon.start();
-            await daemon.shutdown();
-            const health = daemon.getHealth();
+            setSystemTime(CONTROLLED_NOW);
+            try {
+                await daemon.start();
+                setSystemTime(CONTROLLED_NOW + 5_000);
+                await daemon.shutdown();
+                const health = daemon.getHealth();
 
-            expect(health.status).toBe('stopped');
+                expect(health.status).toBe('stopped');
+                expect(health.uptime).toBe(0);
+            } finally {
+                setSystemTime();
+            }
         });
     });
 
