@@ -1611,4 +1611,486 @@ describe("SqliteMissionStore (durability + recovery)", () => {
 
         await store.close();
     });
+
+    it("excludes definitively ineligible failed retries before due limits and future wakes", async () => {
+        const dir = track(makeTempDir("mission-due-filter-"));
+        const dbPath = join(dir.path, "missions.db");
+        const first = new SqliteMissionStore(dbPath);
+        await first.initialize();
+        const mission = await buildEngine(
+            new FakeClock(BASE_TIME),
+            new FakeIdGenerator("id-due-filter"),
+            first,
+        ).createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+
+        const failedRetry = (
+            invocationId: string,
+            createdAt: string,
+            overrides: Partial<CapabilityInvocation> = {},
+        ): CapabilityInvocation => makeFullInvocation(mission.missionId, {
+            invocationId,
+            stepId: `step-${invocationId}`,
+            effectFingerprint: `fingerprint-${invocationId}`,
+            requestId: `request-${invocationId}`,
+            status: InvocationStatus.FAILED,
+            completedAt: createdAt,
+            retry: {
+                maxAttempts: 3,
+                attempt: 1,
+                backoff: RetryBackoff.NONE,
+                backoffMs: 0,
+                nextEligibleAt: null,
+            },
+            attempts: [{
+                attempt: 0,
+                correlationId: `correlation-${invocationId}`,
+                state: "failed",
+                startedAt: createdAt,
+                finishedAt: createdAt,
+            }],
+            delivery: { state: "failed" },
+            reconciliation: {
+                support: ReconciliationSupport.NONE,
+                state: "resolved",
+                outcome: "not_performed",
+            },
+            ownerVerificationState: "not_required",
+            ownerVerification: undefined,
+            createdAt,
+            updatedAt: createdAt,
+            ...overrides,
+        });
+
+        await first.saveInvocation(failedRetry("exhausted-due", "2026-08-30T12:00:00.000Z", {
+            retry: {
+                maxAttempts: 1,
+                attempt: 1,
+                backoff: RetryBackoff.NONE,
+                backoffMs: 0,
+                nextEligibleAt: null,
+            },
+        }));
+        await first.saveInvocation(failedRetry("non-idempotent-due", "2026-08-30T12:01:00.000Z", {
+            idempotency: { mode: IdempotencyMode.UNKNOWN },
+        }));
+        await first.saveInvocation(failedRetry("uncertain-attempt-due", "2026-08-30T12:02:00.000Z", {
+            attempts: [{
+                attempt: 0,
+                correlationId: "correlation-uncertain-attempt-due",
+                state: "uncertain",
+                startedAt: "2026-08-30T12:02:00.000Z",
+            }],
+        }));
+        await first.saveInvocation(failedRetry("missing-attempt-due", "2026-08-30T12:03:00.000Z", {
+            attempts: [],
+        }));
+        await first.saveInvocation(failedRetry("owner-rejected-due", "2026-08-30T12:04:00.000Z", {
+            ownerVerificationState: "rejected",
+            ownerVerification: {
+                invocationId: "owner-rejected-due",
+                verified: false,
+                reason: "owner rejected",
+                owner: "runstead",
+                verifiedAt: "2026-08-30T12:04:00.000Z",
+            },
+        }));
+        await first.saveInvocation(failedRetry("exhausted-future", "2026-08-30T12:05:00.000Z", {
+            retry: {
+                maxAttempts: 1,
+                attempt: 1,
+                backoff: RetryBackoff.FIXED,
+                backoffMs: 1,
+                nextEligibleAt: "2026-08-30T15:00:00.000Z",
+            },
+        }));
+        await first.saveInvocation(failedRetry("eligible-due-a", "2026-08-30T12:10:00.000Z"));
+        await first.saveInvocation(failedRetry("eligible-due-b", "2026-08-30T12:11:00.000Z"));
+        await first.saveInvocation(failedRetry("eligible-future", "2026-08-30T12:12:00.000Z", {
+            retry: {
+                maxAttempts: 3,
+                attempt: 1,
+                backoff: RetryBackoff.FIXED,
+                backoffMs: 1,
+                nextEligibleAt: "2026-08-30T16:00:00.000Z",
+            },
+        }));
+
+        const now = "2026-08-30T13:00:00.000Z";
+        expect((await first.listDueInvocations(now, 2)).map((invocation) => invocation.invocationId)).toEqual([
+            "eligible-due-a",
+            "eligible-due-b",
+        ]);
+        expect(await first.getNextInvocationWakeAt(now)).toBe("2026-08-30T16:00:00.000Z");
+
+        await first.close();
+
+        // Restart must preserve the same selection and retry history. The
+        // exhausted rows are not promoted merely because they are old/due.
+        const second = new SqliteMissionStore(dbPath);
+        await second.initialize();
+        expect((await second.listDueInvocations(now, 2)).map((invocation) => invocation.invocationId)).toEqual([
+            "eligible-due-a",
+            "eligible-due-b",
+        ]);
+        expect(await second.getNextInvocationWakeAt(now)).toBe("2026-08-30T16:00:00.000Z");
+        expect(await second.getInvocation("exhausted-due")).toMatchObject({
+            status: InvocationStatus.FAILED,
+            retry: { attempt: 1, maxAttempts: 1 },
+            attempts: [{ attempt: 0, state: "failed" }],
+        });
+        expect(await second.getInvocation("non-idempotent-due")).toMatchObject({
+            status: InvocationStatus.FAILED,
+            idempotency: { mode: IdempotencyMode.UNKNOWN },
+        });
+        await second.close();
+    });
+
+    it("reaches an eligible retry after more than the default due batch of exhausted rows", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const mission = await buildEngine(
+            new FakeClock(BASE_TIME),
+            new FakeIdGenerator("id-due-overflow"),
+            store,
+        ).createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+
+        for (let index = 0; index < 70; index++) {
+            await store.saveInvocation(makeFullInvocation(mission.missionId, {
+                invocationId: `exhausted-${String(index).padStart(2, "0")}`,
+                stepId: `exhausted-step-${index}`,
+                effectFingerprint: `exhausted-effect-${index}`,
+                requestId: `exhausted-request-${index}`,
+                status: InvocationStatus.FAILED,
+                completedAt: "2026-08-30T11:00:00.000Z",
+                retry: {
+                    maxAttempts: 1,
+                    attempt: 1,
+                    backoff: RetryBackoff.NONE,
+                    backoffMs: 0,
+                    nextEligibleAt: null,
+                },
+                attempts: [{
+                    attempt: 0,
+                    correlationId: `exhausted-correlation-${index}`,
+                    state: "failed",
+                    startedAt: "2026-08-30T11:00:00.000Z",
+                    finishedAt: "2026-08-30T11:00:00.000Z",
+                }],
+                delivery: { state: "failed" },
+                reconciliation: {
+                    support: ReconciliationSupport.NONE,
+                    state: "resolved",
+                    outcome: "not_performed",
+                },
+                ownerVerificationState: "not_required",
+                ownerVerification: undefined,
+                createdAt: "2026-08-30T11:00:00.000Z",
+                updatedAt: "2026-08-30T11:00:00.000Z",
+            }));
+        }
+        await store.saveInvocation(makeFullInvocation(mission.missionId, {
+            invocationId: "eligible-after-exhausted",
+            stepId: "eligible-step",
+            effectFingerprint: "eligible-effect",
+            requestId: "eligible-request",
+            status: InvocationStatus.FAILED,
+            completedAt: BASE_TIME,
+            retry: {
+                maxAttempts: 3,
+                attempt: 1,
+                backoff: RetryBackoff.NONE,
+                backoffMs: 0,
+                nextEligibleAt: null,
+            },
+            attempts: [{
+                attempt: 0,
+                correlationId: "eligible-correlation",
+                state: "failed",
+                startedAt: BASE_TIME,
+                finishedAt: BASE_TIME,
+            }],
+            delivery: { state: "failed" },
+            reconciliation: {
+                support: ReconciliationSupport.NONE,
+                state: "resolved",
+                outcome: "not_performed",
+            },
+            ownerVerificationState: "not_required",
+            ownerVerification: undefined,
+            createdAt: BASE_TIME,
+            updatedAt: BASE_TIME,
+        }));
+
+        const due = await store.listDueInvocations("2026-08-30T13:00:00.000Z", 64);
+        expect(due.map((invocation) => invocation.invocationId)).toEqual(["eligible-after-exhausted"]);
+        expect(await store.getNextInvocationWakeAt("2026-08-30T13:00:00.000Z")).toBeNull();
+        await store.close();
+    });
+
+    it("fails closed on structurally invalid attempt elements without a SQL error", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const mission = await buildEngine(
+            new FakeClock(BASE_TIME),
+            new FakeIdGenerator("id-malformed-attempts"),
+            store,
+        ).createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+
+        await store.saveInvocation(makeFullInvocation(mission.missionId, {
+            invocationId: "invalid-attempt-history",
+            status: InvocationStatus.FAILED,
+            completedAt: BASE_TIME,
+            idempotency: { mode: IdempotencyMode.IDEMPOTENT, key: "invalid-attempt-history" },
+            retry: {
+                maxAttempts: 3,
+                attempt: 1,
+                backoff: RetryBackoff.NONE,
+                backoffMs: 0,
+                nextEligibleAt: null,
+            },
+            attempts: [
+                "unexpected",
+                {
+                    attempt: 0,
+                    correlationId: "invalid-attempt-history",
+                    state: "failed",
+                    startedAt: BASE_TIME,
+                    finishedAt: BASE_TIME,
+                },
+            ] as unknown as CapabilityInvocation["attempts"],
+            delivery: { state: "failed" },
+            reconciliation: {
+                support: ReconciliationSupport.NONE,
+                state: "resolved",
+                outcome: "not_performed",
+            },
+            ownerVerificationState: "not_required",
+            ownerVerification: undefined,
+            createdAt: BASE_TIME,
+            updatedAt: BASE_TIME,
+        }));
+
+        expect(await store.listDueInvocations("2026-08-30T13:00:00.000Z", 1)).toEqual([]);
+        expect(await store.getNextInvocationWakeAt("2026-08-30T13:00:00.000Z")).toBeNull();
+        await store.close();
+    });
+
+    it("keeps other Missions eligible and preserves a future wake across restart", async () => {
+        const dir = track(makeTempDir("mission-malformed-attempts-"));
+        const dbPath = join(dir.path, "missions.db");
+        const now = "2026-08-30T13:00:00.000Z";
+        const first = new SqliteMissionStore(dbPath);
+        await first.initialize();
+        const ids = new FakeIdGenerator("id-malformed-isolation");
+        const malformedMission = await buildEngine(new FakeClock(BASE_TIME), ids, first).createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+        const healthyMission = await buildEngine(new FakeClock(BASE_TIME), ids, first).createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+
+        const failedInvocation = (
+            missionId: string,
+            invocationId: string,
+            createdAt: string,
+            attempts: CapabilityInvocation["attempts"],
+            nextEligibleAt: string | null,
+        ): CapabilityInvocation => makeFullInvocation(missionId, {
+            invocationId,
+            stepId: `step-${invocationId}`,
+            effectFingerprint: `fingerprint-${invocationId}`,
+            requestId: `request-${invocationId}`,
+            status: InvocationStatus.FAILED,
+            completedAt: createdAt,
+            idempotency: { mode: IdempotencyMode.IDEMPOTENT, key: invocationId },
+            retry: {
+                maxAttempts: 3,
+                attempt: 1,
+                backoff: RetryBackoff.NONE,
+                backoffMs: 0,
+                nextEligibleAt,
+            },
+            attempts,
+            delivery: { state: "failed" },
+            reconciliation: {
+                support: ReconciliationSupport.NONE,
+                state: "resolved",
+                outcome: "not_performed",
+            },
+            ownerVerificationState: "not_required",
+            ownerVerification: undefined,
+            createdAt,
+            updatedAt: createdAt,
+        });
+        const validAttempts = (invocationId: string, createdAt: string): CapabilityInvocation["attempts"] => [{
+            attempt: 0,
+            correlationId: invocationId,
+            state: "failed",
+            startedAt: createdAt,
+            finishedAt: createdAt,
+        }];
+
+        await first.saveInvocation(failedInvocation(
+            malformedMission.missionId,
+            "invalid-due",
+            "2026-08-30T12:00:00.000Z",
+            ["unexpected", {
+                attempt: 0,
+                correlationId: "invalid-due",
+                state: "failed",
+                startedAt: "2026-08-30T12:00:00.000Z",
+                finishedAt: "2026-08-30T12:00:00.000Z",
+            }] as unknown as CapabilityInvocation["attempts"],
+            null,
+        ));
+        await first.saveInvocation(failedInvocation(
+            healthyMission.missionId,
+            "eligible-due",
+            "2026-08-30T12:01:00.000Z",
+            validAttempts("eligible-due", "2026-08-30T12:01:00.000Z"),
+            null,
+        ));
+        await first.saveInvocation(failedInvocation(
+            malformedMission.missionId,
+            "invalid-future",
+            "2026-08-30T12:02:00.000Z",
+            ["unexpected", {
+                attempt: 0,
+                correlationId: "invalid-future",
+                state: "failed",
+                startedAt: "2026-08-30T12:02:00.000Z",
+                finishedAt: "2026-08-30T12:02:00.000Z",
+            }] as unknown as CapabilityInvocation["attempts"],
+            "2026-08-30T15:00:00.000Z",
+        ));
+        await first.saveInvocation(failedInvocation(
+            healthyMission.missionId,
+            "eligible-future",
+            "2026-08-30T12:03:00.000Z",
+            validAttempts("eligible-future", "2026-08-30T12:03:00.000Z"),
+            "2026-08-30T16:00:00.000Z",
+        ));
+
+        expect((await first.listDueInvocations(now, 1)).map((invocation) => invocation.invocationId)).toEqual([
+            "eligible-due",
+        ]);
+        expect(await first.getNextInvocationWakeAt(now)).toBe("2026-08-30T16:00:00.000Z");
+
+        await first.close();
+
+        const second = new SqliteMissionStore(dbPath);
+        await second.initialize();
+        expect((await second.listDueInvocations(now, 1)).map((invocation) => invocation.invocationId)).toEqual([
+            "eligible-due",
+        ]);
+        expect(await second.getNextInvocationWakeAt(now)).toBe("2026-08-30T16:00:00.000Z");
+        expect(await second.getInvocation("eligible-due")).toMatchObject({
+            status: InvocationStatus.FAILED,
+            attempts: validAttempts("eligible-due", "2026-08-30T12:01:00.000Z"),
+        });
+        expect(await second.getInvocation("invalid-due")).toMatchObject({
+            status: InvocationStatus.FAILED,
+            retry: { attempt: 1, maxAttempts: 3 },
+        });
+        await second.close();
+    });
+
+    it("fails closed on NULL, non-array, and syntactically invalid legacy attempt histories", async () => {
+        const dir = track(makeTempDir("mission-legacy-attempts-"));
+        const dbPath = join(dir.path, "missions.db");
+        const legacy = new Database(dbPath);
+        legacy.exec(`
+            CREATE TABLE mission_invocations (
+                invocation_id TEXT PRIMARY KEY,
+                mission_id TEXT NOT NULL,
+                step_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                dispatched_at TEXT,
+                completed_at TEXT,
+                result_refs TEXT NOT NULL,
+                owner_verification TEXT,
+                error TEXT,
+                attempts TEXT
+            );
+        `);
+        legacy.close();
+
+        const store = new SqliteMissionStore(dbPath);
+        await store.initialize();
+        const mission = await buildEngine(
+            new FakeClock(BASE_TIME),
+            new FakeIdGenerator("id-legacy-attempts"),
+            store,
+        ).createMission({
+            intent: makeIntent(),
+            allowedCapabilityScope: DEFAULT_SCOPE,
+        });
+        const failedInvocation = (invocationId: string): CapabilityInvocation => makeFullInvocation(mission.missionId, {
+            invocationId,
+            stepId: `step-${invocationId}`,
+            effectFingerprint: `fingerprint-${invocationId}`,
+            requestId: `request-${invocationId}`,
+            status: InvocationStatus.FAILED,
+            completedAt: BASE_TIME,
+            idempotency: { mode: IdempotencyMode.IDEMPOTENT, key: invocationId },
+            retry: {
+                maxAttempts: 3,
+                attempt: 1,
+                backoff: RetryBackoff.NONE,
+                backoffMs: 0,
+                nextEligibleAt: null,
+            },
+            attempts: [{
+                attempt: 0,
+                correlationId: invocationId,
+                state: "failed",
+                startedAt: BASE_TIME,
+                finishedAt: BASE_TIME,
+            }],
+            delivery: { state: "failed" },
+            reconciliation: {
+                support: ReconciliationSupport.NONE,
+                state: "resolved",
+                outcome: "not_performed",
+            },
+            ownerVerificationState: "not_required",
+            ownerVerification: undefined,
+            createdAt: BASE_TIME,
+            updatedAt: BASE_TIME,
+        });
+        await store.saveInvocation(failedInvocation("legacy-null-attempts"));
+        await store.saveInvocation(failedInvocation("legacy-object-attempts"));
+        await store.saveInvocation(failedInvocation("legacy-invalid-json"));
+        await store.saveInvocation(failedInvocation("valid-control"));
+
+        const raw = new Database(dbPath);
+        raw.query("UPDATE mission_invocations SET attempts = ? WHERE invocation_id = ?").run(null, "legacy-null-attempts");
+        raw.query("UPDATE mission_invocations SET attempts = ? WHERE invocation_id = ?").run(
+            JSON.stringify({ state: "failed" }),
+            "legacy-object-attempts",
+        );
+        raw.query("UPDATE mission_invocations SET attempts = ? WHERE invocation_id = ?").run(
+            "[\"unexpected\"",
+            "legacy-invalid-json",
+        );
+        raw.close();
+
+        expect((await store.listDueInvocations("2026-08-30T13:00:00.000Z", 10)).map((invocation) => invocation.invocationId)).toEqual([
+            "valid-control",
+        ]);
+        expect(await store.getNextInvocationWakeAt("2026-08-30T13:00:00.000Z")).toBeNull();
+        await store.close();
+    });
 });

@@ -153,6 +153,51 @@ const MAX_MISSION_PAGE_SIZE = 1024;
 // owner rejection cannot consume a bounded batch or manufacture a wakeup.
 const RETRYABLE_OWNER_VERIFICATION_STATES_SQL =
     "owner_verification_state IN ('not_required', 'pending', 'verified')";
+
+// `json_valid(attempts)` proves only that the column parses as JSON; it does
+// not make each element safe to pass to a JSON path function. Normalize a
+// structurally unusable history to an empty array so the predicate is total
+// for NULL, non-array, and malformed values. CASE is used rather than relying
+// on AND/OR evaluation order.
+const SAFE_ATTEMPT_HISTORY_SQL = `CASE
+    WHEN json_valid(attempts) THEN
+        CASE WHEN json_type(attempts) = 'array' THEN attempts ELSE '[]' END
+    ELSE '[]'
+END`;
+
+// A FAILED row may occupy a bounded due batch only when it is definitely
+// retryable under the same authority as MissionEngine.prepareInvocationRetry
+// / isSafeRetryEligible. Pending/dispatched rows remain governed by their
+// existing due-work predicate. Unknown, NULL, or malformed retry/attempt
+// provenance fails closed: being old or due is never authorization to retry.
+// This predicate must not become a second retry state machine; it only skips
+// rows the engine is guaranteed to reject before the LIMIT is applied.
+const SAFE_FAILED_RETRY_SQL = `(
+    typeof(json_extract(retry, '$.attempt')) IN ('integer', 'real')
+    AND typeof(json_extract(retry, '$.maxAttempts')) IN ('integer', 'real')
+    AND json_extract(retry, '$.attempt') < json_extract(retry, '$.maxAttempts')
+    AND json_extract(idempotency, '$.mode') = 'idempotent'
+    AND NOT EXISTS (
+        SELECT 1
+        FROM json_each(${SAFE_ATTEMPT_HISTORY_SQL}) AS retry_attempt
+        WHERE retry_attempt.type <> 'object'
+           OR CASE
+                  WHEN retry_attempt.type = 'object'
+                  THEN json_extract(retry_attempt.value, '$.state')
+              END = 'uncertain'
+    )
+    AND CASE
+            WHEN json_type(${SAFE_ATTEMPT_HISTORY_SQL}, '$[#-1]') = 'object'
+            THEN json_extract(${SAFE_ATTEMPT_HISTORY_SQL}, '$[#-1].state')
+        END = 'failed'
+    AND COALESCE(
+        json_extract(
+            CASE WHEN json_valid(owner_verification) THEN owner_verification ELSE 'null' END,
+            '$.verified'
+        ),
+        1
+    ) != 0
+)`;
 const LIVE_MISSION_STATES_SQL = "state NOT IN ('completed', 'failed_terminal', 'cancelled')";
 const HISTORICAL_MISSION_STATES_SQL = "state IN ('completed', 'failed_terminal', 'cancelled')";
 const LIVE_INVOCATION_STATES_SQL = "status NOT IN ('completed', 'cancelled')";
@@ -1501,6 +1546,7 @@ export class SqliteMissionStore implements MissionStore {
                AND ${RETRYABLE_OWNER_VERIFICATION_STATES_SQL}
                AND (json_extract(retry, '$.nextEligibleAt') IS NULL
                     OR json_extract(retry, '$.nextEligibleAt') <= ?)
+               AND (status <> 'failed' OR ${SAFE_FAILED_RETRY_SQL})
              ORDER BY
                 CASE WHEN json_extract(retry, '$.nextEligibleAt') IS NULL THEN 0 ELSE 1 END ASC,
                 json_extract(retry, '$.nextEligibleAt') ASC,
@@ -1523,7 +1569,8 @@ export class SqliteMissionStore implements MissionStore {
                AND json_extract(reconciliation, '$.state') NOT IN ('pending', 'unsupported')
                AND ${RETRYABLE_OWNER_VERIFICATION_STATES_SQL}
                AND json_extract(retry, '$.nextEligibleAt') IS NOT NULL
-               AND json_extract(retry, '$.nextEligibleAt') > ?`,
+               AND json_extract(retry, '$.nextEligibleAt') > ?
+               AND (status <> 'failed' OR ${SAFE_FAILED_RETRY_SQL})`,
         ).get(now) as { next_eligible_at: string | null } | null;
         return row?.next_eligible_at ?? null;
     }

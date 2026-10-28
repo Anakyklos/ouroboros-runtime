@@ -180,6 +180,59 @@ async function acceptReviewMission(engine: MissionEngine): Promise<Mission> {
     return mission;
 }
 
+function failedRetryFixture(
+    missionId: string,
+    invocationId: string,
+    createdAt: string,
+    overrides: Partial<CapabilityInvocation> = {},
+): CapabilityInvocation {
+    return {
+        invocationId,
+        missionId,
+        stepId: `step-${invocationId}`,
+        capabilityId: "lifeos.query",
+        planRevisionId: "",
+        contractVersion: 1,
+        moduleOwner: "lifeos",
+        effectClass: EffectClass.READ,
+        requestId: `request-${invocationId}`,
+        effectFingerprint: `effect-${invocationId}`,
+        inputRefs: [`refs/lifeos/${invocationId}`],
+        idempotency: { mode: IdempotencyMode.IDEMPOTENT, key: `request-${invocationId}` },
+        retry: {
+            maxAttempts: 3,
+            attempt: 1,
+            backoff: RetryBackoff.NONE,
+            backoffMs: 0,
+            nextEligibleAt: null,
+        },
+        attempts: [{
+            attempt: 0,
+            correlationId: `correlation-${invocationId}`,
+            state: "failed",
+            startedAt: createdAt,
+            finishedAt: createdAt,
+        }],
+        delivery: { state: "failed" },
+        cancellation: {
+            support: CancellationSupport.NONE,
+            requested: false,
+            state: "not_requested",
+        },
+        reconciliation: {
+            support: ReconciliationSupport.NONE,
+            state: "resolved",
+            outcome: "not_performed",
+        },
+        ownerVerificationState: "not_required",
+        status: InvocationStatus.FAILED,
+        resultRefs: [],
+        createdAt,
+        updatedAt: createdAt,
+        ...overrides,
+    };
+}
+
 describe("MissionScheduler", () => {
     const cleanups: Array<() => void> = [];
 
@@ -2830,5 +2883,449 @@ describe("MissionScheduler", () => {
         expect(outcomes).toEqual(["Read the old status", "Read the new status", "Consume the old status"]);
         expect(materializedInvocationRows).toBeLessThan(16);
         expect(await store.listInvocations(created.missionId)).toHaveLength(131);
+    });
+
+    it("does not starve an eligible retry behind two exhausted FAILED rows", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const clock = new FakeClock(BASE_TIME);
+        const engine = createEngine(store, new FakeIdGenerator("due-starvation"));
+        const mission = await engine.createMission({
+            intent: {
+                requestId: "request-due-starvation",
+                source: "cli",
+                originalIntent: "Recover three due failures within a small batch",
+                constraints: [],
+                acceptanceCriteria: ["recovery progress"],
+            },
+            allowedCapabilityScope: makeMission("unused").allowedCapabilityScope,
+        });
+        const proposal = await engine.proposePlan(mission.missionId, {
+            planId: "due-starvation-plan",
+            missionId: mission.missionId,
+            plannerNote: "due invocation starvation regression",
+            steps: ["audit-0", "audit-1", "audit-2"].map((suffix) => ({
+                stepId: suffix,
+                desiredOutcome: `Read status ${suffix}`,
+                dependencyIds: [],
+                capabilityRequirement: "lifeos.query",
+                inputRefs: [`refs/lifeos/${suffix}`],
+                expectedAcceptance: ["recovery progress"],
+                effectClass: EffectClass.READ,
+            })),
+        });
+        if (!proposal.ok) throw new Error("due starvation plan was rejected");
+        await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+        const descriptor = (maxAttempts: number) => ({
+            contractVersion: 1,
+            moduleOwner: "lifeos",
+            idempotency: { mode: IdempotencyMode.IDEMPOTENT, keyScope: "request" as const },
+            retry: { maxAttempts, backoff: RetryBackoff.FIXED },
+            cancellationSupport: CancellationSupport.NONE,
+            reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
+        });
+        const failed: CapabilityInvocation[] = [];
+        for (const [index, stepId] of ["audit-0", "audit-1", "audit-2"].entries()) {
+            const invocation = await engine.dispatchStep(
+                mission.missionId,
+                stepId,
+                { descriptor: descriptor(index < 2 ? 1 : 3) },
+            );
+            await engine.recordInvocationResult(invocation.invocationId, {
+                invocationId: invocation.invocationId,
+                status: InvocationStatus.FAILED,
+                summary: `failure ${stepId}`,
+                evidenceRefs: [],
+                completedAt: clock.isoNow(),
+            });
+            failed.push(invocation);
+            clock.advance(1_000);
+        }
+
+        const [exhaustedA, exhaustedB, eligible] = failed;
+        expect((await store.listDueInvocations(clock.isoNow(), 2)).map((invocation) => invocation.invocationId)).toEqual([
+            eligible.invocationId,
+        ]);
+
+        const registry = createRegistry();
+        const seam = new ConnectorDispatchSeam(engine, registry, clock);
+        const invokedRefs: string[] = [];
+        seam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => registry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                invokedRefs.push(request.inputRefs[0]);
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "recovered read",
+                    evidence: [],
+                };
+            },
+        });
+
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam,
+            clock,
+            recoveryBatchSize: 2,
+        });
+        const report = await scheduler.runOnce();
+
+        expect(report.dispatchedInvocationIds).toEqual([eligible.invocationId]);
+        expect(invokedRefs).toEqual(["refs/lifeos/audit-2"]);
+        expect(report.nextWakeAt).toBeNull();
+        expect(await store.getInvocation(exhaustedA.invocationId)).toMatchObject({
+            status: InvocationStatus.FAILED,
+            retry: { attempt: 1, maxAttempts: 1 },
+        });
+        expect((await store.getInvocation(exhaustedA.invocationId))?.attempts).toHaveLength(1);
+        expect(await store.getInvocation(exhaustedB.invocationId)).toMatchObject({
+            status: InvocationStatus.FAILED,
+            retry: { attempt: 1, maxAttempts: 1 },
+        });
+        expect((await store.getInvocation(exhaustedB.invocationId))?.attempts).toHaveLength(1);
+        expect(await store.getInvocation(eligible.invocationId)).toMatchObject({
+            status: InvocationStatus.COMPLETED,
+            retry: { attempt: 1, maxAttempts: 3 },
+        });
+        expect((await store.getInvocation(eligible.invocationId))?.attempts).toHaveLength(2);
+        await store.close();
+    });
+
+    it("reaches an eligible retry after the default batch of exhausted rows and survives restart", async () => {
+        const db = tempDb();
+        cleanups.push(db.cleanup);
+        const firstStore = new SqliteMissionStore(db.path);
+        await firstStore.initialize();
+        const firstEngine = createEngine(firstStore, new FakeIdGenerator("due-overflow"));
+        const mission = await firstEngine.createMission({
+            intent: {
+                requestId: "request-due-overflow",
+                source: "cli",
+                originalIntent: "Recover one due failure behind a bounded exhausted batch",
+                constraints: [],
+                acceptanceCriteria: ["recovery progress"],
+            },
+            allowedCapabilityScope: makeMission("unused").allowedCapabilityScope,
+        });
+        const proposal = await firstEngine.proposePlan(mission.missionId, planFor(mission));
+        if (!proposal.ok) throw new Error("due overflow plan was rejected");
+        await firstEngine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+        for (let index = 0; index < 65; index++) {
+            await firstStore.saveInvocation(failedRetryFixture(
+                mission.missionId,
+                `exhausted-${String(index).padStart(2, "0")}`,
+                "2026-09-03T17:00:00.000Z",
+                {
+                    retry: {
+                        maxAttempts: 1,
+                        attempt: 1,
+                        backoff: RetryBackoff.NONE,
+                        backoffMs: 0,
+                        nextEligibleAt: null,
+                    },
+                },
+            ));
+        }
+
+        const eligible = await firstEngine.dispatchStep(mission.missionId, "read-status", {
+            descriptor: {
+                contractVersion: 1,
+                moduleOwner: "lifeos",
+                idempotency: { mode: IdempotencyMode.IDEMPOTENT, keyScope: "request" },
+                retry: { maxAttempts: 3, backoff: RetryBackoff.FIXED },
+                cancellationSupport: CancellationSupport.NONE,
+                reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
+            },
+        });
+        await firstEngine.recordInvocationResult(eligible.invocationId, {
+            invocationId: eligible.invocationId,
+            status: InvocationStatus.FAILED,
+            summary: "transient failure after default batch",
+            evidenceRefs: [],
+            completedAt: BASE_TIME,
+        });
+        expect((await firstStore.listDueInvocations(BASE_TIME, 64)).map((invocation) => invocation.invocationId)).toEqual([
+            eligible.invocationId,
+        ]);
+        await firstStore.close();
+
+        const secondStore = new SqliteMissionStore(db.path);
+        await secondStore.initialize();
+        const secondEngine = createEngine(secondStore, new FakeIdGenerator("due-overflow-restart"));
+        const registry = createRegistry();
+        const seam = new ConnectorDispatchSeam(secondEngine, registry, new FakeClock(BASE_TIME));
+        let invokes = 0;
+        seam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => registry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                invokes++;
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "recovered after restart",
+                    evidence: [],
+                };
+            },
+        });
+        const scheduler = new MissionScheduler({
+            engine: secondEngine,
+            store: secondStore,
+            seam,
+            clock: new FakeClock(BASE_TIME),
+        });
+        const report = await scheduler.runOnce();
+
+        expect(report.dispatchedInvocationIds).toEqual([eligible.invocationId]);
+        expect(invokes).toBe(1);
+        expect(await secondStore.getInvocation(eligible.invocationId)).toMatchObject({
+            status: InvocationStatus.COMPLETED,
+        });
+        expect(await secondStore.getInvocation("exhausted-00")).toMatchObject({
+            status: InvocationStatus.FAILED,
+            retry: { attempt: 1, maxAttempts: 1 },
+        });
+        await secondStore.close();
+    });
+
+    it("does not dispatch definitively ineligible failures before a small batch", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const clock = new FakeClock(BASE_TIME);
+        const engine = createEngine(store, new FakeIdGenerator("due-ineligible"));
+        const mission = await engine.createMission({
+            intent: {
+                requestId: "request-due-ineligible",
+                source: "cli",
+                originalIntent: "Recover only the invocation whose retry policy still allows it",
+                constraints: [],
+                acceptanceCriteria: ["safe retry"],
+            },
+            allowedCapabilityScope: makeMission("unused").allowedCapabilityScope,
+        });
+        const proposal = await engine.proposePlan(mission.missionId, planFor(mission));
+        if (!proposal.ok) throw new Error("due ineligible plan was rejected");
+        await engine.acceptPlan(mission.missionId, proposal.revision.revisionId);
+
+        await store.saveInvocation(failedRetryFixture(
+            mission.missionId,
+            "non-idempotent",
+            "2026-09-03T17:00:00.000Z",
+            { idempotency: { mode: IdempotencyMode.UNKNOWN } },
+        ));
+        await store.saveInvocation(failedRetryFixture(
+            mission.missionId,
+            "uncertain-attempt",
+            "2026-09-03T17:01:00.000Z",
+            {
+                attempts: [{
+                    attempt: 0,
+                    correlationId: "uncertain-correlation",
+                    state: "uncertain",
+                    startedAt: "2026-09-03T17:01:00.000Z",
+                }],
+            },
+        ));
+        await store.saveInvocation(failedRetryFixture(
+            mission.missionId,
+            "missing-attempt",
+            "2026-09-03T17:02:00.000Z",
+            { attempts: [] },
+        ));
+        await store.saveInvocation(failedRetryFixture(
+            mission.missionId,
+            "exhausted",
+            "2026-09-03T17:03:00.000Z",
+            {
+                retry: {
+                    maxAttempts: 1,
+                    attempt: 1,
+                    backoff: RetryBackoff.NONE,
+                    backoffMs: 0,
+                    nextEligibleAt: null,
+                },
+            },
+        ));
+        await store.saveInvocation(failedRetryFixture(
+            mission.missionId,
+            "owner-rejected",
+            "2026-09-03T17:04:00.000Z",
+            {
+                ownerVerificationState: "rejected",
+                ownerVerification: {
+                    invocationId: "owner-rejected",
+                    verified: false,
+                    reason: "owner rejected",
+                    owner: "runstead",
+                    verifiedAt: "2026-09-03T17:04:00.000Z",
+                },
+            },
+        ));
+
+        const eligible = await engine.dispatchStep(mission.missionId, "read-status", {
+            descriptor: {
+                contractVersion: 1,
+                moduleOwner: "lifeos",
+                idempotency: { mode: IdempotencyMode.IDEMPOTENT, keyScope: "request" },
+                retry: { maxAttempts: 3, backoff: RetryBackoff.FIXED },
+                cancellationSupport: CancellationSupport.NONE,
+                reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
+            },
+        });
+        await engine.recordInvocationResult(eligible.invocationId, {
+            invocationId: eligible.invocationId,
+            status: InvocationStatus.FAILED,
+            summary: "eligible retry",
+            evidenceRefs: [],
+            completedAt: BASE_TIME,
+        });
+
+        const registry = createRegistry();
+        const seam = new ConnectorDispatchSeam(engine, registry, clock);
+        const invokedRefs: string[] = [];
+        seam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => registry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => {
+                invokedRefs.push(request.inputRefs[0]);
+                return {
+                    status: CapabilityResultStatus.COMPLETED,
+                    requestId: request.requestId,
+                    summary: "safe retry completed",
+                    evidence: [],
+                };
+            },
+        });
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam,
+            clock,
+            recoveryBatchSize: 3,
+        });
+        const report = await scheduler.runOnce();
+
+        expect(report.dispatchedInvocationIds).toEqual([eligible.invocationId]);
+        expect(invokedRefs).toEqual(["refs/lifeos/status"]);
+        expect(await store.getInvocation("non-idempotent")).toMatchObject({
+            status: InvocationStatus.FAILED,
+            idempotency: { mode: IdempotencyMode.UNKNOWN },
+        });
+        expect((await store.getInvocation("uncertain-attempt"))?.attempts.at(-1)?.state).toBe("uncertain");
+        expect((await store.getInvocation("missing-attempt"))?.attempts).toEqual([]);
+        expect(await store.getInvocation("exhausted")).toMatchObject({
+            status: InvocationStatus.FAILED,
+            retry: { attempt: 1, maxAttempts: 1 },
+        });
+        expect(await store.getInvocation("owner-rejected")).toMatchObject({
+            status: InvocationStatus.FAILED,
+            ownerVerification: { verified: false },
+        });
+        expect(await store.getInvocation(eligible.invocationId)).toMatchObject({
+            status: InvocationStatus.COMPLETED,
+        });
+        await store.close();
+    });
+
+    it("keeps exhausted rows in one Mission from starving an independent Mission", async () => {
+        const store = new SqliteMissionStore(":memory:");
+        await store.initialize();
+        const clock = new FakeClock(BASE_TIME);
+        const engine = createEngine(store, new FakeIdGenerator("due-isolation"));
+        const blockedMission = await engine.createMission({
+            intent: {
+                requestId: "request-blocked-mission",
+                source: "cli",
+                originalIntent: "Hold exhausted work",
+                constraints: [],
+                acceptanceCriteria: ["none"],
+            },
+            allowedCapabilityScope: makeMission("unused").allowedCapabilityScope,
+        });
+        await store.saveInvocation(failedRetryFixture(
+            blockedMission.missionId,
+            "exhausted-owner",
+            "2026-09-03T17:00:00.000Z",
+            {
+                retry: {
+                    maxAttempts: 1,
+                    attempt: 1,
+                    backoff: RetryBackoff.NONE,
+                    backoffMs: 0,
+                    nextEligibleAt: null,
+                },
+            },
+        ));
+
+        const readyMission = await engine.createMission({
+            intent: {
+                requestId: "request-ready-mission",
+                source: "cli",
+                originalIntent: "Recover independent work",
+                constraints: [],
+                acceptanceCriteria: ["status read"],
+            },
+            allowedCapabilityScope: makeMission("unused").allowedCapabilityScope,
+        });
+        const proposal = await engine.proposePlan(readyMission.missionId, planFor(readyMission));
+        if (!proposal.ok) throw new Error("isolation plan was rejected");
+        await engine.acceptPlan(readyMission.missionId, proposal.revision.revisionId);
+        const eligible = await engine.dispatchStep(readyMission.missionId, "read-status", {
+            descriptor: {
+                contractVersion: 1,
+                moduleOwner: "lifeos",
+                idempotency: { mode: IdempotencyMode.IDEMPOTENT, keyScope: "request" },
+                retry: { maxAttempts: 3, backoff: RetryBackoff.FIXED },
+                cancellationSupport: CancellationSupport.NONE,
+                reconciliationSupport: ReconciliationSupport.STATUS_REPLAY,
+            },
+        });
+        await engine.recordInvocationResult(eligible.invocationId, {
+            invocationId: eligible.invocationId,
+            status: InvocationStatus.FAILED,
+            summary: "independent retry",
+            evidenceRefs: [],
+            completedAt: BASE_TIME,
+        });
+
+        const registry = createRegistry();
+        const seam = new ConnectorDispatchSeam(engine, registry, clock);
+        seam.registerConnector("lifeos.query", {
+            connectorContractVersion: 1,
+            capabilityId: "lifeos.query",
+            describe: () => registry.requireDescriptor("lifeos.query"),
+            invoke: async (request) => ({
+                status: CapabilityResultStatus.COMPLETED,
+                requestId: request.requestId,
+                summary: "independent retry completed",
+                evidence: [],
+            }),
+        });
+        const scheduler = new MissionScheduler({
+            engine,
+            store,
+            seam,
+            clock,
+            recoveryBatchSize: 1,
+        });
+        const report = await scheduler.runOnce();
+
+        expect(report.dispatchedInvocationIds).toEqual([eligible.invocationId]);
+        expect(await store.getInvocation(eligible.invocationId)).toMatchObject({
+            status: InvocationStatus.COMPLETED,
+        });
+        expect(await store.getInvocation("exhausted-owner")).toMatchObject({
+            status: InvocationStatus.FAILED,
+            retry: { attempt: 1, maxAttempts: 1 },
+        });
+        await store.close();
     });
 });
