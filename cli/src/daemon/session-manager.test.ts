@@ -1,10 +1,13 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SessionManager } from './session-manager.js';
 import { EventBus } from './event-bus.js';
 import type { StoragePort } from '../ports/storage.port.js';
 import { Orchestrator } from '../orchestration/Orchestrator.js';
 import { createTask } from '../orchestration/index.js';
-import { PersonaType, TaskStatus } from '../orchestration/types.js';
+import { PersonaType, TaskStatus, type OrchestratorConfig } from '../orchestration/types.js';
 
 // Subclass to expose protected methods for testing
 class TestSessionManager extends SessionManager {
@@ -35,12 +38,23 @@ function createDeferred() {
     return { promise, resolve, reject };
 }
 
+/** Per-test legacy-memory root; no fixture may write into the repository. */
+let memoryRoot: string;
+
+function createOrchestrator(
+    config: Partial<OrchestratorConfig> = {},
+    eventBus?: EventBus
+): Orchestrator {
+    return new Orchestrator({ memoryRoot, ...config }, eventBus);
+}
+
 describe('SessionManager', () => {
     let manager: TestSessionManager;
     let mockStorage: StoragePort;
     let mockEventBus: EventBus;
 
     beforeEach(() => {
+        memoryRoot = mkdtempSync(join(tmpdir(), 'ouroboros-session-manager-'));
         mockEventBus = new EventBus();
         mockStorage = {
             createSession: mock(async (data) => ({ ...data, id: 'session-1', createdAt: new Date(), updatedAt: new Date(), status: 'active', contextSnapshot: '', metadata: {} })),
@@ -70,6 +84,13 @@ describe('SessionManager', () => {
         manager = new TestSessionManager(mockStorage, mockEventBus, undefined, {
             opsStatePath: `/tmp/ouroboros-ops-test-main-${Date.now()}-${Math.random()}.json`,
         });
+    });
+
+    afterEach(() => {
+        // Cleanup must happen even when a test fails.
+        expect(existsSync(memoryRoot)).toBe(true);
+        rmSync(memoryRoot, { recursive: true, force: true });
+        expect(existsSync(memoryRoot)).toBe(false);
     });
 
     it('cleanupSession should wait for all tasks and clear activeTasks', async () => {
@@ -272,7 +293,7 @@ describe('SessionManager', () => {
         });
 
         it('status counts live tasks and sessions', () => {
-            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const orch = createOrchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
             manager.attachOrchestrator('sess-a', orch);
             manager.addTaskForTest('sess-a', 't1', createDeferred().promise);
             manager.addTaskForTest('sess-a', 't2', createDeferred().promise);
@@ -283,7 +304,7 @@ describe('SessionManager', () => {
         });
 
         it('status does not count terminal sessions with no live tasks', () => {
-            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const orch = createOrchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
             manager.attachOrchestrator('done-sess', orch);
             // no tasks → not live
             const status = manager.getStatusSnapshot();
@@ -309,7 +330,7 @@ describe('SessionManager', () => {
         });
 
         it('setMode pause pauses attached orchestrators', async () => {
-            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const orch = createOrchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
             const pauseSpy = mock(() => {});
             orch.pause = pauseSpy;
             manager.attachOrchestrator('sess-pause', orch);
@@ -327,7 +348,7 @@ describe('SessionManager', () => {
         });
 
         it('emergencyBrake cancels live work and settles tasks', async () => {
-            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const orch = createOrchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
             const cancelSpy = mock((..._args: unknown[]) => {});
             const realCancel = orch.cancel.bind(orch);
             manager.attachOrchestrator('sess-live', orch);
@@ -372,7 +393,7 @@ describe('SessionManager', () => {
             (mockStorage.updateSession as ReturnType<typeof mock>).mockImplementation(async () => {
                 throw new Error('db write failed');
             });
-            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const orch = createOrchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
             manager.attachOrchestrator('sess-fail', orch);
             const d = createDeferred();
             const realCancel = orch.cancel.bind(orch);
@@ -403,7 +424,7 @@ describe('SessionManager', () => {
                 }
                 return null;
             });
-            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const orch = createOrchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
             manager.attachOrchestrator('terminal-sess', orch);
             // Simulate stale task entry pointing at terminal session
             manager.addTaskForTest('terminal-sess', 'stale', createDeferred().promise);
@@ -419,7 +440,7 @@ describe('SessionManager', () => {
         });
 
         it('Orchestrator.cancel waits for inner execute settlement (no Promise.race abandon)', async () => {
-            const orch = new Orchestrator(
+            const orch = createOrchestrator(
                 { verbose: false, skipPhaseValidation: true, maxRetries: 3 },
                 mockEventBus
             );
@@ -471,7 +492,7 @@ describe('SessionManager', () => {
         });
 
         it('Orchestrator.cancel does not settle when execute ignores abort forever', async () => {
-            const orch = new Orchestrator(
+            const orch = createOrchestrator(
                 { verbose: false, skipPhaseValidation: true, maxRetries: 2 },
                 mockEventBus
             );
@@ -509,7 +530,7 @@ describe('SessionManager', () => {
             const m = new TestSessionManager(mockStorage, mockEventBus, undefined, {
                 controller,
             });
-            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const orch = createOrchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
             const resumeSpy = mock(() => {});
             orch.resume = resumeSpy as typeof orch.resume;
             m.attachOrchestrator('sess-resume', orch);
@@ -524,7 +545,7 @@ describe('SessionManager', () => {
         });
 
         it('sendInput removes tasks from metrics on resolve and reject', async () => {
-            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const orch = createOrchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
             manager.attachOrchestrator('session-1', orch);
 
             orch.loopUntilSuccess = mock(async () => ({
@@ -554,7 +575,7 @@ describe('SessionManager', () => {
         });
 
         it('blocks sendInput while braked / paused', async () => {
-            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const orch = createOrchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
             manager.attachOrchestrator('session-1', orch);
             await manager.emergencyBrake();
             await expect(manager.sendInput('session-1', 'nope')).rejects.toThrow(/brake|pause/i);
@@ -562,7 +583,7 @@ describe('SessionManager', () => {
         });
 
         it('rejects concurrent sendInput on the same session', async () => {
-            const orch = new Orchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
+            const orch = createOrchestrator({ verbose: false, skipPhaseValidation: true }, mockEventBus);
             manager.attachOrchestrator('session-1', orch);
             const hang = createDeferred();
             orch.loopUntilSuccess = mock(async () => {
@@ -618,7 +639,7 @@ describe('SessionManager', () => {
                 };
             });
 
-            const orch = new Orchestrator(
+            const orch = createOrchestrator(
                 { verbose: false, skipPhaseValidation: true, maxRetries: 2 },
                 mockEventBus
             );
@@ -647,7 +668,7 @@ describe('SessionManager', () => {
         });
 
         it('cancel before loopUntilSuccess is not cleared (zero provider calls)', async () => {
-            const orch = new Orchestrator(
+            const orch = createOrchestrator(
                 { verbose: false, skipPhaseValidation: true, maxRetries: 2 },
                 mockEventBus
             );
@@ -667,6 +688,33 @@ describe('SessionManager', () => {
             const result2 = await orch.loopUntilSuccess(task);
             expect(providerCalls).toBe(1);
             expect(result2.status).not.toBe(TaskStatus.CANCELLED);
+
+            // The resumed run persists memory into the fixture root, never the repo.
+            const today = new Date().toISOString().split('T')[0];
+            const isolatedLog = join(memoryRoot, '.agent', 'memory', `${today}.md`);
+            expect(existsSync(isolatedLog)).toBe(true);
+            expect(readFileSync(isolatedLog, 'utf-8')).toContain('pre-1');
+        });
+
+        it('writes legacy memory only to the isolated fixture root', async () => {
+            const orch = createOrchestrator(
+                { verbose: false, skipPhaseValidation: true },
+                mockEventBus
+            );
+            (orch as unknown as { executeWithTimeout: (p: string) => Promise<unknown> }).executeWithTimeout =
+                async () => ({ success: true, content: 'ok', toolCallsCount: 0, durationMs: 0 });
+
+            const memory = (orch as unknown as { memory: { getMemoryDir(): string } }).memory;
+            expect(memory.getMemoryDir()).toBe(join(memoryRoot, '.agent', 'memory'));
+
+            const task = createTask('isolated memory', PersonaType.DEVELOPER, { id: 'mem-isolated' });
+            const result = await orch.loopUntilSuccess(task);
+            expect(result.status).toBe(TaskStatus.SUCCESS);
+
+            const today = new Date().toISOString().split('T')[0];
+            const logPath = join(memoryRoot, '.agent', 'memory', `${today}.md`);
+            expect(existsSync(logPath)).toBe(true);
+            expect(readFileSync(logPath, 'utf-8')).toContain('mem-isolated');
         });
 
         it('emergencyBrake stays partial while execute/tool ignores abort (no false cancelled_confirmed)', async () => {
@@ -678,7 +726,7 @@ describe('SessionManager', () => {
             const m = new TestSessionManager(mockStorage, mockEventBus, undefined, {
                 controller,
             });
-            const orch = new Orchestrator(
+            const orch = createOrchestrator(
                 { verbose: false, skipPhaseValidation: true, maxRetries: 2 },
                 mockEventBus
             );
@@ -705,7 +753,7 @@ describe('SessionManager', () => {
         });
 
         it('provider AbortSignal is aborted by Orchestrator.cancel', async () => {
-            const orch = new Orchestrator(
+            const orch = createOrchestrator(
                 { verbose: false, skipPhaseValidation: true, maxRetries: 2 },
                 mockEventBus
             );

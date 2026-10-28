@@ -182,6 +182,7 @@ bun install --frozen-lockfile
 cd web && bun install --frozen-lockfile && cd ..
 
 # Baseline completo: install integrity + runtime tsc + web build + tests
+# + verificação de que o gate não alterou a árvore de trabalho
 bun run check
 ```
 
@@ -246,8 +247,8 @@ Baseline: [`docs/BASELINE.md`](docs/BASELINE.md) | CI:
 Comandos operacionais corretos (baseline #35):
 
 ```bash
-bun run check          # gate completo
-bun run check:install  # frozen installs + tree integrity
+bun run check          # gate completo + integridade da árvore após o gate
+bun run check:install  # frozen installs; sem drift durante o install
 bun run check:runtime  # tsc (runtime/CLI)
 bun run check:web      # web/ production build
 bun run check:tests    # testes obrigatórios

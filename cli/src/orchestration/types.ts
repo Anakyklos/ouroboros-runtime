@@ -109,6 +109,11 @@ export interface OrchestratorConfig {
     timeoutMs: number;
     /** Se true, pula validação Anti-Vibe (para tarefas simples de teste) */
     skipPhaseValidation: boolean;
+    /**
+     * Raiz do armazenamento de memória legado. Padrão: `process.cwd()`.
+     * Fixtures devem passar um diretório temporário para não escrever no repositório.
+     */
+    memoryRoot?: string;
 }
 
 /**

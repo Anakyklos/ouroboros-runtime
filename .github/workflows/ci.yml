@@ -32,6 +32,9 @@ jobs:
         with:
           bun-version: "1.3.9"
 
+      - name: Snapshot clean checkout before baseline
+        run: bun run scripts/check-tree-integrity.ts snapshot --file "$RUNNER_TEMP/tree-baseline.json"
+
       - name: Install root dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
 
@@ -60,3 +63,6 @@ jobs:
 
       - name: Check mandatory unit tests
         run: bun run check:tests
+
+      - name: Verify baseline did not mutate the working tree
+        run: bun run scripts/check-tree-integrity.ts verify --file "$RUNNER_TEMP/tree-baseline.json"
