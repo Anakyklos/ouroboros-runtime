@@ -256,7 +256,10 @@ retryable under the same authority as
 practice that means a preserved `failed` last attempt, remaining attempts,
 `idempotent` semantics, no uncertain attempt/delivery, and no attested
 negative owner verdict. Missing/NULL/malformed retry or attempt provenance
-fails closed.
+fails closed. Attempt history is usable evidence only when it parses as a JSON
+array whose elements are JSON objects; NULL, non-array, syntactically invalid,
+and scalar-element histories are normalized to an empty history for this
+query, so they cannot raise a JSON error or authorize a retry.
 
 The predicate only skips rows the engine is guaranteed to reject; it never
 grants retry authority. The engine remains the authoritative retry
@@ -275,10 +278,11 @@ paused/waiting/terminal Missions are not auto-promoted, and this predicate is
 not an unbounded scan or a second retry state machine.
 
 Regression coverage is in `sqlite-mission-store.test.ts` (filtering, future
-wake, >64-row batch, reopen) and `mission-scheduler.test.ts` (real
-SQLite/engine/scheduler/seam, small and default batches, non-idempotent,
-uncertain, exhausted, owner-rejected and missing-attempt rows, restart and
-Mission isolation).
+wake, >64-row batch, structurally invalid/NULL/non-array/malformed attempt
+histories, cross-Mission isolation, reopen) and `mission-scheduler.test.ts`
+(real SQLite/engine/scheduler/seam, small and default batches,
+non-idempotent, uncertain, exhausted, owner-rejected and missing-attempt rows,
+restart and Mission isolation).
 
 ## Mission-level verification (fail-closed, typed, provenance-bound)
 
