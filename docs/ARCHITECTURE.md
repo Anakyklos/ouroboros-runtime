@@ -467,3 +467,187 @@ Este documento foi reconciliado com as seguintes fontes do repositório
 | #58 | Avaliar Go como runtime core | Open; research-gated (no milestone) |
 | #78 | Context Packs bounded/progressivos | Closed; implemented (M0), with documented limits |
 | #94 | Reconciliação de status após M0 | Reconciliação documentada por esta mudança; estado vivo no GitHub |
+
+### M1 Local Control Plane — Exit-gate reconciliation (issue #160)
+
+**Status: M1 NÃO concluído.** Esta seção reconcilia individualmente os critérios
+originais de #70 (12 itens) e #59 (9 itens) com código, testes e evidência
+executada. Ela não altera o texto normativo das issues, não promove direção
+M2/M3 a CURRENT e não declara M1 concluído. Base auditada: `origin/main`
+`75fdf5a0bf1a2acf45bbf1b17d12ad4f2dab3efd`; árvore da branch reconciliada:
+`aa2a15a85aa44fc59eb742b4c17fd41816b2e1cd` (as alterações documentais desta PR
+vêm depois desse SHA e não alteram código de runtime).
+
+#### Vocabulário de classificação
+
+- `PASS`: o critério possui comportamento e evidência verificável na árvore auditada.
+- `PARTIAL`: parte do comportamento existe; o requisito completo não está atendido.
+- `BLOCKED`: dependência ou restrição comprovada impede conclusão segura.
+- `NOT_CURRENT`: requisito de fase posterior, decisão não implementada ou direção futura.
+- `UNPROVEN`: evidência insuficiente para determinar implementação ou comportamento.
+
+`PASS` abaixo sempre aponta para um teste executado ou para uma verificação
+estrutural explícita. Presença de arquivo de teste, checkbox de issue ou CI de
+outro SHA não é tratada como prova.
+
+#### Evidência executada
+
+Todas as execuções direcionadas abaixo ocorreram na árvore `aa2a15a` (mesmo
+código de `75fdf5a` mais o commit documental anterior). O gate completo foi
+executado com o Bun local **1.4.2** e também com o Bun fixado no CI **1.3.9**,
+obtido efemeramente via `npm exec --yes --package=bun@1.3.9 -- bun ...` sem
+alterar `package.json` ou lockfiles.
+
+| ID | Comando | Runtime | Resultado |
+|---|---|---|---|
+| E1 | `bun test cli/src/daemon/headless-composition.test.ts cli/src/daemon/main-lifecycle.test.ts cli/src/daemon/shutdown-coordinator.test.ts cli/src/daemon/daemon-shutdown-race.test.ts` | Bun 1.4.2 | 17 pass, 0 fail, 87 expect, 4 files |
+| E2 | `bun test cli/src/daemon/mission-scheduler-driver.test.ts cli/src/mission/mission-scheduler.test.ts cli/src/mission/sqlite-mission-store.test.ts` | Bun 1.4.2 | 70 pass, 0 fail, 576 expect, 3 files |
+| E3 | `bun test cli/src/daemon/headless-shutdown.e2e.test.ts` | Bun 1.4.2 | 2 pass, 0 fail, 18 expect, 1 file |
+| E4 | `bun test cli/src/daemon/mission-scheduler-daemon.e2e.test.ts` | Bun 1.4.2 | 7 pass, 0 fail, 82 expect, 1 file |
+| E5 | `bun test cli/src/daemon/local-control-auth.test.ts cli/src/daemon/local-control-auth.e2e.test.ts` | Bun 1.4.2 | 30 pass, 0 fail, 275 expect, 2 files |
+| E6 | `bun test cli/src/daemon/rpc-admission.test.ts cli/src/daemon/rpc-admission.e2e.test.ts` | Bun 1.4.2 | 5 pass, 0 fail, 35 expect, 2 files |
+| E7 | `bun test cli/src/commands/admin-cli.test.ts cli/src/commands/admin-cli.e2e.test.ts cli/src/commands/local-control-command-client.test.ts` | Bun 1.4.2 | 62 pass, 0 fail, 238 expect, 3 files |
+| E8 | `bun test cli/src/daemon/daemon-projection.test.ts cli/src/daemon/durable-projection.test.ts` | Bun 1.4.2 | 21 pass, 0 fail, 190 expect, 2 files |
+| E9 | `bun test cli/src/context/context-compiler.test.ts cli/src/context/progressive-context.test.ts cli/src/context/planner.test.ts` | Bun 1.4.2 | 89 pass, 0 fail, 469 expect, 3 files |
+| E10 | `bun test cli/src/mission/mission-engine.test.ts cli/src/mission/policy.test.ts cli/src/mission/durable-mission-execution.test.ts` | Bun 1.4.2 | 93 pass, 0 fail, 359 expect, 3 files |
+| E11 | `bun test cli/src/capabilities/dispatch-seam.test.ts cli/src/capabilities/capabilities.test.ts cli/src/capabilities/integration.test.ts` | Bun 1.4.2 | 95 pass, 0 fail, 386 expect, 3 files |
+| E12 | `bun test cli/src/daemon/local-control-uds.test.ts cli/src/daemon/local-control-command.test.ts cli/src/daemon/local-control-read.test.ts cli/src/daemon/rpc-gateway-lifecycle.test.ts` | Bun 1.4.2 | 45 pass, 0 fail, 196 expect, 4 files |
+| E13 | `bun run check` | Bun 1.4.2 | 83 mandatory files, 0 failed, 0 quarantined; tree unchanged |
+| E14 | `npm exec --yes --package=bun@1.3.9 -- bun test` com os 7 arquivos não-E2E de E1/E2 | Bun 1.3.9 | 87 pass, 0 fail, 667 expect |
+| E15 | `npm exec --yes --package=bun@1.3.9 -- bun test` com os 11 arquivos E2E/auth/CLI/projeção de E3–E8 | Bun 1.3.9 | 127 pass, 0 fail, 838 expect |
+| E16 | `npm exec --yes --package=bun@1.3.9 -- bun run check` | Bun 1.3.9 | 83 mandatory files, 0 failed, 0 quarantined; tree unchanged |
+| E17 | `python3 -m unittest discover -s scripts -p 'test_headless_lifecycle_baseline.py' -v` | Python 3.12.3 | 17 tests OK |
+| E18 | `python3 scripts/headless-lifecycle-baseline.py --repetitions 1 --idle-seconds 5 --transport-seconds 3 --output /tmp/opencode/headless-baseline-current.json` | Bun 1.4.2 | completed; 1 processo; RSS 62.988→62.596 KiB; CPU 0,2%; 24 threads; wakeups indisponíveis; cold start 0,180 s; SIGTERM 0,032 s exit 0 |
+| E19 | `grep -RIn electron package.json web/package.json bun.lock web/bun.lock`; `grep -RIn 'from "ink"' cli scripts bin web/src` | shell | nenhum runtime/entrypoint Electron ou Ink; apenas `electron-to-chromium` como metadado transitivo de browserslist no lockfile web |
+
+Limites da evidência:
+
+- Nenhum suite direcionado reportou `skip`, `todo` ou `only`; o gate obrigatório
+  reportou **0 quarentenas**.
+- E3–E7 usam Fastify/WebSocket/SQLite reais, mas **nenhum connector de produção**.
+  E4 injeta connectors tipados de teste via `configureCapabilitiesForTests`; isso
+  prova composição e idempotência, não integração externa real.
+- E18 é uma amostra única de 5 s no host atual, não o artefato de cinco
+  repetições de #105. O host nega tracepoints de `sched_wakeup`; contagem de
+  wakeups não é afirmada.
+- E1–E19 foram executados antes da edição documental. Como a mudança é
+  docs-only, o comportamento de runtime não muda; ainda assim, o CI do HEAD
+  exato da PR é a prova autoritativa e fica registrado na PR, não nesta tabela.
+- O Bun local (1.4.2) difere do pin de CI (1.3.9). Ambos foram exercitados;
+  nenhuma conclusão abaixo depende exclusivamente da versão local.
+
+#### #70 — critérios de aceite individuais
+
+| # | Critério original | Classificação | Owner | Comportamento atual | Implementação | Teste | Evidência | Dependência/blocker | Limitação residual |
+|---|---|---|---|---|---|---|---|---|---|
+| #70.1 | [M1] runtime headless é source of truth | PASS | Daemon lifecycle owner (composition root) | `startHeadlessDaemon()` compõe storage, MissionStore, auth local, registry, engine, seam, scheduler e server; a composição default não importa o gateway/agente legado | `cli/src/daemon/main.ts` (`startHeadlessDaemon`); `cli/src/daemon/server.ts` | `headless-composition.test.ts`, `main-lifecycle.test.ts` | E1, E14, E13/E16 | #98 (done), #70 | A superfície legada `agent.*` só existe se o gateway for composto explicitamente; não é autoridade default |
+| #70.2 | [M2] fechar desktop não cancela Missions | NOT_CURRENT | Interface futura (M2) + daemon lifecycle | Não existe desktop. Para as interfaces atuais, desconectar CLI/WS não cancela Mission durável; o cenário “fechar desktop” não é testável | `cli/src/daemon/server.ts`; `cli/src/daemon/durable-projection.ts`; UI futura em #68 | `local-control-auth.e2e.test.ts`, `daemon-projection.test.ts` | E5, E8 | #68/M2 | Comportamento de desktop permanece UNPROVEN até M2; evidência CLI/WS não substitui teste de desktop |
+| #70.3 | [M2/M3] desktop/CLI/Katherine são projections/interfaces distintas | NOT_CURRENT | Interface futura + boundary cross-project | CLI é projeção fina sobre o contrato local; desktop e Katherine não existem | `cli/src/commands/admin-cli.ts`; `cli/src/commands/local-control-client.ts`; `shared/local-control-read-contract.ts` | `admin-cli.test.ts`, `admin-cli.e2e.test.ts`, `local-control-command-client.test.ts` | E7 | #68 (M2), #65 (Katherine, deferred) | Só a projeção CLI existe; a distinção entre as três interfaces não é verificável hoje |
+| #70.4 | [M2] Mission Control é interface principal própria do Ouroboros | NOT_CURRENT | Interface futura (M2) | Não existe Mission Control desktop; o web frontend legado não é a interface M2 | Nenhuma implementação CURRENT; #68/M2 | Nenhum teste aplicável | Nenhuma | #68/M2 | Requisito de fase posterior; não contar o frontend web legado como cumprimento |
+| #70.5 | [M1] CLI mínima permanece disponível para recovery/automation | PASS | Local-control boundary + CLI projection | `status`, `missions`, `mission show/pause/resume/cancel`, `invocations`, `invocation show`, `diagnostics`, `capabilities`, `auth provision/rotate/revoke`; CLI usa RPC do daemon, sem scheduler/store paralelo | `cli/src/commands/admin-cli.ts` (`runAdminCli`); `cli/src/commands/local-control-client.ts`; `bin/ouroboros.js` | `admin-cli.test.ts`, `admin-cli.e2e.test.ts`, `local-control-command-client.test.ts` | E7, E15 | #99/#103 (done) | Operações limitadas ao contrato e aos scopes de auth; não há autoridade offline |
+| #70.6 | [M1/direção] web server não é requisito para IPC local | PARTIAL | Local-control boundary / transporte | Produção ainda usa Fastify HTTP/JSON-RPC + WebSocket em loopback; existe adaptador UDS read-only com paridade v1, não ligado à produção | `shared/local-control-read-contract.ts` (contrato transport-neutral); `cli/src/daemon/local-control-uds.ts` (experimental) | `local-control-uds.test.ts` | E12 | #100 (spike HYBRID); migração de transporte não aprovada | Comandos e eventos WS ainda exigem loopback; UDS não é transporte de produção |
+| #70.7 | [M1/M2] Electron não é default arquitetural | PASS | Interface futura / decisão arquitetural | Nenhuma dependência ou entrypoint Electron; daemon headless e CLI são os entrypoints atuais | `package.json`, `web/package.json`, `bin/ouroboros.js`; decisão em `docs/ARCHITECTURE.md` | Verificação estrutural de manifestos (sem teste de runtime) | E19 | #68 (escolha futura de framework) | `electron-to-chromium` aparece como metadado transitivo de browserslist no lockfile web, não como runtime Electron; ausência atual não vincula a escolha M2 |
+| #70.8 | [M1] TUI não compete como segunda UI principal | PASS | Interface futura / CLI | Entrypoint React/Ink removido em #104; scripts do pacote expõem daemon e CLI, sem TUI principal | `package.json` (scripts); `bin/ouroboros.js`; remoção #104 | `admin-cli.test.ts`; verificação estrutural de dependências | E7, E19 | #104 (done) | Frontend web legado continua no repositório, mas não é segunda TUI principal; componentes podem ser reutilizados em M2 |
+| #70.9 | [M1] local IPC possui contract versionado e security model | PASS | Local-control boundary | Contratos v1 de leitura/comando em `shared/`; auth com hash-only, scopes, Origin, revoke/rotate e startup fail-closed | `shared/local-control-read-contract.ts`, `shared/local-control-command-contract.ts`, `shared/local-control-auth-contract.ts`; `cli/src/daemon/local-control-auth.ts` | `local-control-auth.test.ts`, `local-control-auth.e2e.test.ts`, `local-control-read.test.ts` | E5, E12, E15 | #97/#100/#142 (done) | Contrato versionado, mas transporte atual é loopback HTTP/WS (ver #70.6); UDS experimental não tem peer credentials além do mesmo UID |
+| #70.10 | [M1] UI não contém policy/mission state autoritativo | PASS | Local-control boundary + interface futura | CLI apenas transporta leituras/comandos tipados; policy, estado de Mission, registry e scheduler permanecem no daemon; não há store/scheduler no CLI | `cli/src/commands/admin-cli.ts`; `cli/src/commands/local-control-client.ts`; `cli/src/daemon/local-control-command.ts` | `admin-cli.test.ts`, `admin-cli.e2e.test.ts`, `local-control-command.test.ts` | E7, E12 | #68/M2 para o desktop | Cobre as interfaces atuais (CLI/RPC); a UI desktop não existe e o invariante deve ser re-verificado em M2 |
+| #70.11 | [M1] idle behavior e resource budget são medidos | PASS | Daemon lifecycle owner / ops baseline | Baseline headless documenta 5 amostras: ~60 MB RSS, 0,1–0,2% de CPU, 18–20 threads, startup ~161 ms e shutdown gracioso ~7,4 ms; nova amostra em E18 mantém ~62,6 MB, 0,2% CPU, 24 threads | `scripts/headless-lifecycle-baseline.py`; `docs/evidence/headless-lifecycle-baseline-2026-10-07.md` | `scripts/test_headless_lifecycle_baseline.py`; E18 | E17, E18 | #105 (done) | Medição histórica em `1d84744`/Bun 1.4.2 e amostra única atual; sem contagem de wakeups (permissão negada); não é benchmark de carga nem garantia global de RSS |
+| #70.12 | [M2] framework desktop só é escolhido após benchmark/POC e contracts estáveis | NOT_CURRENT | Interface futura (M2) | Nenhum framework desktop foi escolhido; decisão explicitamente adiada | Nenhuma implementação CURRENT | Nenhum teste aplicável | Nenhuma | #68/M2; fatos M1 | Decisão aberta; não declarar Tauri/Wails/WebKit como escolha |
+
+#### #59 — critérios de aceite individuais
+
+| # | Critério original | Classificação | Owner | Comportamento atual | Implementação | Teste | Evidência | Dependência/blocker | Limitação residual |
+|---|---|---|---|---|---|---|---|---|---|
+| #59.1 | [M1] existe mapa explícito de supervisors/workers/failure domains | PASS | Ouroboros lifecycle / failure-domain owner | `docs/FAILURE_DOMAINS.md` inventaria 7 domínios, lifecycle owners, classes de persistência e gaps P1/P2 | `docs/FAILURE_DOMAINS.md` | Nenhum teste aplicável ao documento; comportamento sustentado pelos testes citados no mapa | E1, E2, E8 | #101/PR #115 (done) | É inventário CURRENT, não implementação de supervisor; gaps P2 permanecem |
+| #59.2 | [M1] lifecycle ownership é conhecido | PASS | Daemon lifecycle owner | Composition root, shutdown coordinator, scheduler driver, projeção e stores têm owner explícito no mapa e no código | `cli/src/daemon/main.ts`; `cli/src/daemon/shutdown-coordinator.ts`; `cli/src/daemon/mission-scheduler-driver.ts`; `cli/src/daemon/daemon-projection.ts` | `main-lifecycle.test.ts`, `shutdown-coordinator.test.ts`, `mission-scheduler-driver.test.ts` | E1, E2, E14 | #101/#117/#120 (done) | Ownership documentado para a composição atual; não implica supervisor genérico |
+| #59.3 | [direção] restart policies são tipadas e testadas | NOT_CURRENT | Supervisão futura (#59 Fase B) | Não existe restart policy/restart manager tipado para workers; elegibilidade de retry de Invocation é semântica distinta e não substitui restart policy | Nenhuma implementação CURRENT | Nenhum teste de restart policy | Nenhuma | #59 Fase B; contrato de supervisor não aprovado | Direção apenas; não inferir de retry de Invocation |
+| #59.4 | [direção] existe crash-loop protection | NOT_CURRENT | Supervisão futura | Não existe crash-loop protection de supervisor; #152 limita starvation de retry de Invocation, o que não é crash-loop de worker | Nenhuma implementação de supervisor; orçamento de retry em `cli/src/mission/mission-engine.ts`/`policy.ts` | `mission-engine.test.ts`, `policy.test.ts` (retry de Invocation, não crash-loop) | E10 | #59 Fase B | Direção apenas; não declarar #152 como crash-loop protection |
+| #59.5 | [M1] recovery usa estado persistido, não memória perdida do worker | PASS | MissionStore / MissionScheduler | Reopen SQLite; recovery percorre páginas duráveis de scheduling; efeito confirmado não é re-invocado; entrega incerta permanece bloqueada | `cli/src/mission/sqlite-mission-store.ts` (`listMissionSchedulingPage`, `getMissionSchedulingRecord`, `recordMissionRecovery`); `cli/src/mission/mission-scheduler.ts` (`recoverInternal`); `cli/src/daemon/mission-scheduler-driver.ts` | `sqlite-mission-store.test.ts`, `mission-scheduler.test.ts`, `mission-scheduler-daemon.e2e.test.ts`, `headless-shutdown.e2e.test.ts` | E2, E3, E4, E14, E15 | #50/#120/#128 (done) | Notificação é same-store, sem lease cross-process; nenhum connector de produção |
+| #59.6 | [M1] falhas independentes ficam isoladas | PARTIAL | Daemon lifecycle + projeção + MissionScheduler | Falha de cliente de projeção é isolada; falha de pass do scheduler não derruba o daemon; incerteza de connector não sobrescreve estado irmão; não há supervisor genérico de failure domains | `cli/src/daemon/daemon-projection.ts`; `cli/src/daemon/server.ts`; `cli/src/daemon/mission-scheduler-driver.ts`; `cli/src/capabilities/dispatch-seam.ts` | `daemon-projection.test.ts`, `local-control-auth.e2e.test.ts`, `mission-scheduler-daemon.e2e.test.ts`, `dispatch-seam.test.ts` | E8, E5, E4, E11 | #59 (parcial), #131 | Isolamento é por seam existente, não supervisor genérico; falha de pass sem wake permanece (#131) |
+| #59.7 | [M1] estados de espera continuam estados normais | PASS | Mission core / MissionStore | `waiting_for_*` são estados duráveis; scheduler só reconsidera `waiting_for_capability`; approval/context/provider/budget não são promovidos automaticamente; shutdown não terminaliza | `cli/src/mission/mission-engine.ts`; `cli/src/mission/mission-scheduler.ts`; `cli/src/mission/sqlite-mission-store.ts` | `mission-engine.test.ts`, `mission-scheduler.test.ts`, `durable-mission-execution.test.ts`, `headless-shutdown.e2e.test.ts` | E10, E2, E3 | #50/#102 (done) | Promoção automática de waits de provider/budget não existe por design |
+| #59.8 | [M1] nenhuma nova VM/runtime é necessária | PASS | Runtime baseline | Runtime atual é Bun/TypeScript + SQLite; nenhuma VM/runtime adicional foi introduzida | `package.json` (`packageManager: bun@1.3.9`, `engines`); `.github/workflows/ci.yml` | `bun run check` em 1.4.2 e 1.3.9 | E13, E16 | Nenhuma | #58 (Go) continua research-gated; este PASS vale para “não exigir nova VM hoje”, não para decidir linguagem |
+| #59.9 | [M1] custo em idle permanece compatível com hardware modesto | PASS | Daemon lifecycle owner / ops baseline | Amostra atual: 1 processo, ~62,6 MB RSS, 0,2% de um CPU lógico, 24 threads em 5 s ociosos; baseline histórico de 5 amostras em ~60 MB e 0,1–0,2% | `scripts/headless-lifecycle-baseline.py`; `docs/evidence/headless-lifecycle-baseline-2026-10-07.md` | `scripts/test_headless_lifecycle_baseline.py`; E18 | E17, E18 | #105 (done) | Amostra única atual + baseline histórico; sem wakeups medidos; específico do host e sem claim de carga |
+
+#### Separação M1 / M2 / M3 / decisões não implementadas
+
+- **M1 — Local Control Plane (CURRENT, parcial):** daemon headless,
+  persistência/recovery, auth local, CLI administrativa, scheduler residente,
+  shutdown coordenado, projeção/eventos, boundary versionada e failure domains
+  aplicáveis. É o escopo das tabelas acima.
+- **M2 — Mission Control (NOT_CURRENT):** interface desktop, `Needs You`,
+  navegação/experiência operacional, escolha de framework e controles
+  específicos de UI. Depende de #68 e dos fatos M1; não é cumprido pelo
+  frontend web legado.
+- **M3 — Cross-project (NOT_CURRENT):** Runstead, Katherine, Cadinho e
+  contratos de integrações externas. Ownership permanece com os módulos
+  externos; Ouroboros não absorve lifecycle, verificação técnica ou estado
+  privado deles.
+- **Decisões ainda não implementadas:** Unix domain socket como transporte de
+  produção; migração de linguagem (#58); supervisor genérico/actor system;
+  user-level systemd service; políticas de restart. Recomendação arquitetural
+  não é comportamento CURRENT.
+
+#### Revisão do domínio de supervisão candidato (#59)
+
+#59 registra `DaemonProjection` como possível primeiro domínio de supervisão.
+A revisão de código e testes encontrou mecanismos já implementados e
+verificados:
+
+- limite agregado de clientes (`DEFAULT_MAX_PROJECTION_CLIENTS = 64`,
+  configurável) e reserva de slot antes do upgrade/snapshot;
+- limite de operações de snapshot não resolvidas;
+- timeout de handshake de snapshot (5 s default) com timer one-shot;
+- cliente desconectado/abortado libera a reserva correta;
+- falha de envio fecha somente o cliente afetado;
+- backpressure por cliente (1 MiB e 32 eventos pendentes por default);
+- isolamento entre clientes e entre projeção e RPC;
+- encerramento coordenado cancela handshake e termina sockets no shutdown.
+
+Testes: `daemon-projection.test.ts`, `durable-projection.test.ts`,
+`local-control-auth.e2e.test.ts`, `rpc-admission.e2e.test.ts`,
+`headless-shutdown.e2e.test.ts` (E8, E5, E6, E3, E15). Não foi reproduzido
+defeito material nem requisito operacional não atendido nesse domínio.
+
+**Decisão: `NO_ACTION — no supervisor implementation justified`.** Não criar
+supervisor, actor system, restart manager ou testes especulativos apenas para
+satisfazer a direção conceitual de #59.
+
+#### #131 / #132 — bloqueio de segurança preservado
+
+- **#131 permanece OPEN/BLOCKED.** Uma falha genérica de `runOnce()` no
+  `MissionSchedulerDriver` emite diagnóstico sanitizado e **não** agenda wake
+  automático (`cli/src/daemon/mission-scheduler-driver.ts`, `drain`). Um novo
+  pass pode ocorrer apenas após mutação durável relevante ou restart.
+- O problema é de **liveness/resumption**: trabalho elegível pode permanecer sem
+  novo pass. Não há prova de perda ou duplicação de efeito.
+- **#132 fechou `not_planned` como pré-requisito negativo:** não existe produtor
+  de produção confiável de `safe_to_retry` no nível do pass. Um pass pode já ter
+  mutado estado durável ou cruzado handoff de connector (cancel/reconcile/invoke)
+  antes de uma rejeição posterior. A mensagem de erro não prova ausência de
+  efeito.
+- Por isso **não** é autorizado: retry automático de `runOnce()`, novo timer de
+  recuperação, inferência de segurança a partir de `Error.message`, novos tipos
+  de erro sem produtor confiável, mudança de idempotência ou replay de efeito
+  confirmado/incerto.
+- **Próximo leaf executável: `NO_EXECUTABLE_LEAF`.** Nenhuma implementação
+  independente e comprovadamente segura foi identificada nesta reconciliação.
+  Uma eventual proposta futura exige evidência nova e decisão de contrato pelo
+  mantenedor; não é aberta por esta PR.
+
+#### Estado de saída de M1
+
+Contagem dos 21 critérios mapeados:
+
+| Estado | #70 | #59 | Total |
+|---|---:|---:|---:|
+| PASS | 7 | 6 | 13 |
+| PARTIAL | 1 | 1 | 2 |
+| BLOCKED | 0 | 0 | 0 |
+| NOT_CURRENT | 4 | 2 | 6 |
+| UNPROVEN | 0 | 0 | 0 |
+
+Nenhum critério de aceite está `BLOCKED` de forma direta, mas M1 **não** está
+saudável para exit: #131 permanece uma limitação P1 de liveness/resumption sob
+#59.6, e os critérios M2/M3 continuam `NOT_CURRENT`. O gap de scheduler não
+converte nenhum critério em PASS e não autoriza retry.
+
+**M1 exit: NÃO declarado concluído.** Próximo slice: `NO_EXECUTABLE_LEAF`.
