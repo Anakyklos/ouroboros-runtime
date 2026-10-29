@@ -6,12 +6,13 @@
 ## Evidence boundary
 
 The original #101 inventory was audited on 2026-10-07 against
-`575deba140aae152e4cbbc5f9899b6e715a17360`. This reconciliation was checked
-against `main` at `deb69f25c0530e681ba6a31ec9060bc1406b36d3` on 2026-10-10,
-including merged M1 work in PRs #127, #128, #134, #136 and #138 and the live
-#59, #70, #131 and #132 issue records. Current claims below follow code, tests
-and observed behavior; Direction remains limited to approved #59 semantics and
-the repository architecture statement in [ARCHITECTURE.md](ARCHITECTURE.md).
+`575deba140aae152e4cbbc5f9899b6e715a17360`. This reconciliation was last
+checked against `main` at `75fdf5a0bf1a2acf45bbf1b17d12ad4f2dab3efd` on
+2026-10-29, including merged M1 work in PRs #127, #128, #134, #136, #138,
+#139, #143, #146 and #150, and the live #59, #70, #131 and #132 issue records.
+Current claims below follow code, tests and observed behavior; Direction
+remains limited to approved #59 semantics and the repository architecture
+statement in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Current and Direction
 
