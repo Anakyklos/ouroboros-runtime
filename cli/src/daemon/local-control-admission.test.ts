@@ -137,6 +137,46 @@ describe("LocalControlAdmissionService", () => {
     if (!retry.ok) expect(retry.code).toBe("ADMISSION_FAILED");
   });
 
+  it("bounds invocation ids on replay for missions with large history", async () => {
+    const { service, client, store } = await harness();
+    const first = await service.admit(request({ requestId: "req-bounded" }), client);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    for (let i = 0; i < 230; i += 1) {
+      await store.saveInvocation({
+        invocationId: `inv-${i}`,
+        missionId: first.data.missionId,
+        stepId: `step-${i}`,
+        capabilityId: "cap",
+        planRevisionId: "rev",
+        contractVersion: 1,
+        moduleOwner: "owner",
+        effectClass: "read",
+        requestId: `req-${i}`,
+        effectFingerprint: `fp-${i}`,
+        inputRefs: [],
+        idempotency: { mode: "unknown", keyScope: "none" },
+        retry: { maxAttempts: 0, attempt: 0, backoff: "none", backoffMs: 0, nextEligibleAt: null },
+        attempts: [],
+        delivery: { state: "not_submitted" },
+        cancellation: { support: "unsupported", requested: false, state: "not_requested" },
+        reconciliation: { support: "none", state: "unsupported" },
+        resultRefs: [],
+        ownerVerificationState: "pending",
+        status: "pending",
+        createdAt: "2026-10-29T00:00:00.000Z",
+        updatedAt: "2026-10-29T00:00:00.000Z",
+      } as any);
+    }
+    const replay = await service.admit(request({ requestId: "req-bounded" }), client);
+    expect(replay.ok).toBe(true);
+    if (replay.ok) {
+      expect(replay.data.missionId).toBe(first.data.missionId);
+      expect(replay.data.invocationIds.length).toBeLessThanOrEqual(100);
+      expect(replay.data.invocationIds.length).toBeLessThan(230);
+    }
+  });
+
   it("does not create a duplicate under concurrent equivalent requests", async () => {
     const { service, client } = await harness();
     const [a, b] = await Promise.all([service.admit(request(), client), service.admit(request(), client)]);

@@ -11,6 +11,7 @@ import {
   LOCAL_CONTROL_ADMISSION_MAX_TEXT_ITEM_LENGTH,
   LOCAL_CONTROL_ADMISSION_MAX_ARRAY_ITEMS,
   LOCAL_CONTROL_ADMISSION_MAX_TOTAL_TEXT_LENGTH,
+  LOCAL_CONTROL_ADMISSION_MAX_REPLAY_INVOCATION_IDS,
   type LocalControlAdmissionFailureCode,
   type LocalControlAdmissionResponse,
 } from "../../../shared/local-control-admission-contract.js";
@@ -137,7 +138,7 @@ export class LocalControlAdmissionService implements MissionAdmissionAuthority {
           if (existing.payloadFingerprint !== fingerprint) {
             throw new AdmissionConflictError();
           }
-          const found = await this.store.getMission(existing.missionId);
+          const found = await this.store.getMission(existing.missionId, { invocationLimit: LOCAL_CONTROL_ADMISSION_MAX_REPLAY_INVOCATION_IDS });
           if (!found) throw new Error("Admission record references a missing Mission");
           return { mission: found, replay: true };
         }
@@ -172,7 +173,7 @@ export class LocalControlAdmissionService implements MissionAdmissionAuthority {
           if (existing.payloadFingerprint !== fingerprint) {
             return failure("ADMISSION_CONFLICT");
           }
-          const found = await this.store.getMission(existing.missionId);
+          const found = await this.store.getMission(existing.missionId, { invocationLimit: LOCAL_CONTROL_ADMISSION_MAX_REPLAY_INVOCATION_IDS });
           if (found) {
             mission = found;
             replay = true;

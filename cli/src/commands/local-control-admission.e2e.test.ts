@@ -79,6 +79,34 @@ describe("mission admission E2E", () => {
         stderr: (text) => readerErr.push(text),
       });
       expect(readerCode).not.toBe(0);
+
+      const http403 = await fetch(`http://127.0.0.1:${port}/rpc`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${reader.token}` },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "scope-check",
+          method: "local_control.admit",
+          params: {
+            protocolVersion: 1,
+            operation: "mission.admit",
+            requestId: "req-http-403",
+            originalIntent: "Admit mission",
+            constraints: [],
+            acceptanceCriteria: [],
+          },
+        }),
+      });
+      expect(http403.status).toBe(403);
+
+      const storeBefore = new SqliteMissionStore(join(dataDir, "missions.db"));
+      await storeBefore.initialize();
+      const missionsBefore = await storeBefore.listMissions();
+      const admissionBefore = await storeBefore.getMissionAdmission(reader.clientId, "req-scope");
+      await storeBefore.close();
+      expect(missionsBefore.length).toBe(0);
+      expect(admissionBefore).toBeNull();
+
       await stop();
       stop = undefined;
 
@@ -94,6 +122,10 @@ describe("mission admission E2E", () => {
         stderr: () => {},
       });
       expect(invalidCode).not.toBe(0);
+      const invalidStore = new SqliteMissionStore(join(dataDir, "missions.db"));
+      await invalidStore.initialize();
+      expect(await invalidStore.getMissionAdmission("operator", "req-invalid")).toBeNull();
+      await invalidStore.close();
       await stop();
       stop = undefined;
 
@@ -113,6 +145,10 @@ describe("mission admission E2E", () => {
         stderr: () => {},
       });
       expect(revokedCode).not.toBe(0);
+      const revokedStore = new SqliteMissionStore(join(dataDir, "missions.db"));
+      await revokedStore.initialize();
+      expect(await revokedStore.getMissionAdmission("operator", "req-revoked")).toBeNull();
+      await revokedStore.close();
       await stop();
       stop = undefined;
 

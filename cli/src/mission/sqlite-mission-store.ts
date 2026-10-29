@@ -840,13 +840,13 @@ export class SqliteMissionStore implements MissionStore, MissionAdmissionStore {
     }
 
 
-    async getMission(missionId: string): Promise<Mission | null> {
+    async getMission(missionId: string, options?: { invocationLimit?: number }): Promise<Mission | null> {
         const row = this.stmt(
             "getMission",
             "SELECT * FROM missions WHERE mission_id = ?",
         ).get(missionId) as MissionRow | null;
         if (!row) return null;
-        return this.rowToMissionFromRefs(row, this.listInvocationRefRows(missionId));
+        return this.rowToMissionFromRefs(row, this.listInvocationRefRows(missionId, options?.invocationLimit));
     }
 
     async updateMission(missionId: string, updates: Partial<Mission>): Promise<void> {
@@ -1506,13 +1506,22 @@ export class SqliteMissionStore implements MissionStore, MissionAdmissionStore {
     }
 
     /** Sync helper used by complete Mission reads; selects only public refs. */
-    private listInvocationRefRows(missionId: string): InvocationRefRow[] {
-        return this.stmt(
-            "listInvocationRefs",
-            `SELECT invocation_id, mission_id, step_id, capability_id, status,
+    private listInvocationRefRows(missionId: string, limit?: number): InvocationRefRow[] {
+        const boundedLimit = typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : undefined;
+        const sql = boundedLimit === undefined
+            ? `SELECT invocation_id, mission_id, step_id, capability_id, status,
                     dispatched_at, completed_at, result_refs, owner_verification, error
-             FROM mission_invocations WHERE mission_id = ? ORDER BY rowid ASC`,
-        ).all(missionId) as unknown as InvocationRefRow[];
+             FROM mission_invocations WHERE mission_id = ? ORDER BY rowid ASC`
+            : `SELECT invocation_id, mission_id, step_id, capability_id, status,
+                    dispatched_at, completed_at, result_refs, owner_verification, error
+             FROM mission_invocations WHERE mission_id = ? ORDER BY rowid ASC LIMIT ?`;
+        const stmt = this.stmt(
+            boundedLimit === undefined ? "listInvocationRefs" : "listInvocationRefsBounded",
+            sql,
+        );
+        return (boundedLimit === undefined
+            ? stmt.all(missionId)
+            : stmt.all(missionId, boundedLimit)) as unknown as InvocationRefRow[];
     }
 
     async listInvocations(missionId: string): Promise<CapabilityInvocation[]> {

@@ -39,7 +39,9 @@ describe("mission admission expired credential E2E", () => {
       authStore.provision("active", ["mission.read"], Date.now() + 60 * 60_000);
       const expired = authStore.provision("expired", ["mission.create"], Date.now() + 1);
       authStore.close();
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      while (Date.now() <= expired.expiresAt) {
+        // busy-wait until the credential is deterministically expired
+      }
       const expiredFile = join(dataDir, "expired.json");
       writeLocalControlClientCredential(expiredFile, { schemaVersion: 1, clientId: expired.clientId, token: expired.token });
       process.env.OUROBOROS_CLIENT_CREDENTIAL_FILE = expiredFile;

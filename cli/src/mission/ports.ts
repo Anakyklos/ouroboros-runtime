@@ -52,7 +52,7 @@ export interface MissionStore {
 
     // Mission CRUD
     createMission(mission: Mission): Promise<Mission>;
-    getMission(missionId: string): Promise<Mission | null>;
+    getMission(missionId: string, options?: { invocationLimit?: number }): Promise<Mission | null>;
     updateMission(missionId: string, updates: Partial<Mission>): Promise<void>;
     /** Atomically persist context telemetry only while its Mission is non-terminal. */
     updateContextAccountingIfNonTerminal(
@@ -349,5 +349,5 @@ export interface MissionAdmissionRecord {
 export interface MissionAdmissionStore {
     getMissionAdmission(clientId: string, requestId: string): Promise<MissionAdmissionRecord | null>;
     createMissionAdmission(record: MissionAdmissionRecord): Promise<void>;
-    getMission(missionId: string): Promise<Mission | null>;
+    getMission(missionId: string, options?: { invocationLimit?: number }): Promise<Mission | null>;
 }
