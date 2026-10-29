@@ -49,6 +49,7 @@ import type {
     MissionProjectionLimits,
     MissionProjectionRead,
     MissionStore,
+    MissionAdmissionStore,
 } from "./ports.js";
 import { assertNoRawSecrets } from "./sanitize.js";
 
@@ -256,7 +257,7 @@ function assertImmutableInvocationIdentity(
     }
 }
 
-export class SqliteMissionStore implements MissionStore {
+export class SqliteMissionStore implements MissionStore, MissionAdmissionStore {
     private db: Database | null = null;
     private readonly dbPath: string;
     private readonly statements: Record<string, ReturnType<Database["prepare"]>> = {};
@@ -287,6 +288,7 @@ export class SqliteMissionStore implements MissionStore {
         if (this.db) return;
         this.db = new Database(this.dbPath);
         this.db.exec("PRAGMA journal_mode = WAL");
+        this.db.exec("PRAGMA foreign_keys = OFF");
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS missions (
                 mission_id TEXT PRIMARY KEY,
@@ -656,6 +658,17 @@ export class SqliteMissionStore implements MissionStore {
         db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_invocations_mission_effect ON mission_invocations(mission_id, effect_fingerprint)");
         db.exec("CREATE INDEX IF NOT EXISTS idx_invocations_effect ON mission_invocations(effect_fingerprint)");
         db.exec("CREATE INDEX IF NOT EXISTS idx_invocations_due ON mission_invocations(status, delivery, updated_at)");
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS mission_admissions (
+                client_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                mission_id TEXT NOT NULL,
+                payload_fingerprint TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (client_id, request_id)
+            )
+        `);
+        db.exec("CREATE INDEX IF NOT EXISTS idx_mission_admissions_mission ON mission_admissions(mission_id)");
     }
 
     async close(): Promise<void> {
@@ -779,13 +792,61 @@ export class SqliteMissionStore implements MissionStore {
         return mission;
     }
 
-    async getMission(missionId: string): Promise<Mission | null> {
+    async getMissionAdmission(clientId: string, requestId: string): Promise<{
+        clientId: string;
+        requestId: string;
+        missionId: string;
+        payloadFingerprint: string;
+        createdAt: string;
+    } | null> {
+        const row = this.stmt(
+            "getMissionAdmission",
+            "SELECT client_id, request_id, mission_id, payload_fingerprint, created_at FROM mission_admissions WHERE client_id = ? AND request_id = ?",
+        ).get(clientId, requestId) as {
+            client_id: string;
+            request_id: string;
+            mission_id: string;
+            payload_fingerprint: string;
+            created_at: string;
+        } | null;
+        if (!row) return null;
+        return {
+            clientId: row.client_id,
+            requestId: row.request_id,
+            missionId: row.mission_id,
+            payloadFingerprint: row.payload_fingerprint,
+            createdAt: row.created_at,
+        };
+    }
+
+    async createMissionAdmission(record: {
+        clientId: string;
+        requestId: string;
+        missionId: string;
+        payloadFingerprint: string;
+        createdAt: string;
+    }): Promise<void> {
+        this.stmt(
+            "createMissionAdmission",
+            `INSERT INTO mission_admissions (client_id, request_id, mission_id, payload_fingerprint, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
+        ).run(
+            record.clientId,
+            record.requestId,
+            record.missionId,
+            record.payloadFingerprint,
+            record.createdAt,
+        );
+    }
+
+
+    async getMission(missionId: string, options?: { invocationLimit?: number }): Promise<Mission | null> {
         const row = this.stmt(
             "getMission",
             "SELECT * FROM missions WHERE mission_id = ?",
         ).get(missionId) as MissionRow | null;
         if (!row) return null;
-        return this.rowToMissionFromRefs(row, this.listInvocationRefRows(missionId));
+        return this.rowToMissionFromRefs(row, this.listInvocationRefRows(missionId, options?.invocationLimit));
     }
 
     async updateMission(missionId: string, updates: Partial<Mission>): Promise<void> {
@@ -1445,13 +1506,22 @@ export class SqliteMissionStore implements MissionStore {
     }
 
     /** Sync helper used by complete Mission reads; selects only public refs. */
-    private listInvocationRefRows(missionId: string): InvocationRefRow[] {
-        return this.stmt(
-            "listInvocationRefs",
-            `SELECT invocation_id, mission_id, step_id, capability_id, status,
+    private listInvocationRefRows(missionId: string, limit?: number): InvocationRefRow[] {
+        const boundedLimit = typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : undefined;
+        const sql = boundedLimit === undefined
+            ? `SELECT invocation_id, mission_id, step_id, capability_id, status,
                     dispatched_at, completed_at, result_refs, owner_verification, error
-             FROM mission_invocations WHERE mission_id = ? ORDER BY rowid ASC`,
-        ).all(missionId) as unknown as InvocationRefRow[];
+             FROM mission_invocations WHERE mission_id = ? ORDER BY rowid ASC`
+            : `SELECT invocation_id, mission_id, step_id, capability_id, status,
+                    dispatched_at, completed_at, result_refs, owner_verification, error
+             FROM mission_invocations WHERE mission_id = ? ORDER BY rowid ASC LIMIT ?`;
+        const stmt = this.stmt(
+            boundedLimit === undefined ? "listInvocationRefs" : "listInvocationRefsBounded",
+            sql,
+        );
+        return (boundedLimit === undefined
+            ? stmt.all(missionId)
+            : stmt.all(missionId, boundedLimit)) as unknown as InvocationRefRow[];
     }
 
     async listInvocations(missionId: string): Promise<CapabilityInvocation[]> {

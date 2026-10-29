@@ -353,6 +353,8 @@ export function requiredLocalControlScope(method: unknown, params: unknown): Loc
       return ["mission.pause", "mission.resume", "mission.cancel"].includes(String(params.operation))
         ? "mission.control"
         : null;
+    case "local_control.admit":
+      return "mission.create";
     case "daemon.setMode":
     case "daemon.emergencyBrake":
     case "system.shutdown":
