@@ -505,26 +505,45 @@ export class MissionEngine {
             return { ok: false, decision };
         }
 
-        const revisions = await this.store.getPlanRevisions(missionId);
-        const revisionNumber = revisions.length + 1;
-        const revision: PlanRevision = {
-            revisionId: this.ids.generate(),
-            revisionNumber,
-            planId: candidate.planId,
-            missionId,
-            // Free-form planner text is sanitized before durable storage.
-            // sanitizePlanStep structurally sanitizes ALL nested text fields.
-            steps: candidate.steps.map(sanitizePlanStep),
-            status: "proposed",
-            reason: sanitizeText(candidate.plannerNote) || "Proposed by planner",
-            createdAt: this.clock.isoNow(),
-        };
-        await this.store.savePlanRevision(revision);
+        // Persist the proposed revision and the Mission state transition
+        // atomically. Reading revisions and re-validating terminal state
+        // happen inside the transaction so concurrent proposals allocate
+        // distinct revision numbers and never commit against a Mission that
+        // became terminal (or disappeared) in the meantime.
+        const revision = await this.store.withTransaction(async () => {
+            const currentMission = await this.requireMission(missionId);
+            if (TERMINAL_STATES.has(currentMission.state)) {
+                throw new InvalidStateTransitionError(
+                    missionId,
+                    currentMission.state,
+                    MissionState.PLANNING,
+                    `terminal missions cannot be re-planned`,
+                );
+            }
 
-        // Invalid output never mutates state; valid proposal moves to planning.
-        await this.store.updateMission(missionId, {
-            state: MissionState.PLANNING,
-            updatedAt: this.clock.isoNow(),
+            const revisions = await this.store.getPlanRevisions(missionId);
+            const revisionNumber = revisions.length + 1;
+            const newRevision: PlanRevision = {
+                revisionId: this.ids.generate(),
+                revisionNumber,
+                planId: candidate.planId,
+                missionId,
+                // Free-form planner text is sanitized before durable storage.
+                // sanitizePlanStep structurally sanitizes ALL nested text fields.
+                steps: candidate.steps.map(sanitizePlanStep),
+                status: "proposed",
+                reason: sanitizeText(candidate.plannerNote) || "Proposed by planner",
+                createdAt: this.clock.isoNow(),
+            };
+            await this.store.savePlanRevision(newRevision);
+
+            // Invalid output never mutates state; valid proposal moves to planning.
+            await this.store.updateMission(missionId, {
+                state: MissionState.PLANNING,
+                updatedAt: this.clock.isoNow(),
+            });
+
+            return newRevision;
         });
 
         return { ok: true, revision, decision };
