@@ -3,116 +3,113 @@
 > **Estado:** PROPOSAL ONLY — nenhuma implementação de produção, nenhum contrato público ratificado, nenhuma autorização concedida.
 > **Repositório:** `Anakyklos/ouroboros-runtime`
 > **Issue:** #166 (P1), epic principal #70 (M1 Local Control Plane)
-> **Base SHA auditado:** `4a0d6d52075bc665568e126124eb24ec8b8b2ed0` (`main`, após `git pull --ff-only origin main`)
+> **PR:** https://github.com/Anakyklos/ouroboros-runtime/pull/167 (revisão formal de REQUEST_CHANGES)
+> **Base SHA auditado:** `4a0d6d52075bc665568e126124eb24ec8b8b2ed0` (`main`)
+> **HEAD auditado anterior:** `56685502a6b1f94d3720109ce2b01706807901a8`
 > **Bun (local):** `1.4.2` (CI pin: `1.3.9`)
 > **Data:** 2026-10-29
 > **Branch:** `docs/166-capability-grant-trust-contract`
-> **PR planejada:** `docs(trust): propose explicit capability grant contract (#166)`
-> **Classificação de status:** `NEEDS_APPROVAL — aguardando decisão normativa sobre o contrato de grants`
+> **Classificação de status:** `NEEDS_APPROVAL — proposta corrigida, aguardando revisão do mantenedor e decisão normativa de Pedro`
 
 ---
 
 ## Legenda de classificação
 
-Toda afirmação neste documento carrega uma das seguintes classificações:
+Toda afirmação neste documento carrega uma das seguintes classificações estritas:
 
-- **PROVADO NO CÓDIGO** — verificável no código-fonte atual da base auditada.
-- **CONTRATO EXISTENTE** — definido por contrato/documento aprovado e presente no repositório.
+- **PROVADO NO CÓDIGO** — verificável no código-fonte atual da base auditada (`main`).
+- **CONTRATO EXISTENTE** — definido por contrato normativo ou documento aprovado presente no repositório.
 - **PROPOSTA** — comportamento ou contrato proposto por este documento; não implementado.
-- **HIPÓTESE** — possibilidade não verificada; requer POC/benchmark/evidência.
-- **DECISÃO PENDENTE** — requer aprovação explícita de Pedro/mantenedor.
+- **HIPÓTESE** — possibilidade técnica ou arquitetural não comprovada; requer POC ou evidência empírica.
+- **DECISÃO PENDENTE** — escolha de design ou escopo que requer aprovação explícita de Pedro / mantenedor.
 
 ---
 
 ## 1. Executive decision summary
 
-**Recomendação (PROPOSTA):** adotar a **Alternativa B** — um **ledger durável de concessões e revogações** de capabilities, com o escopo efetivo da Mission derivado deterministicamente a partir desse ledger, validado contra uma fonte confiável e independente de limites máximos do autorizador.
+**Recomendação arquitetural (PROPOSTA):** Adotar a **Alternativa B corrigida** — um **ledger durável e estritamente append-only** de eventos imutáveis de concessão e revogação de capabilities, armazenado no SQLite local do runtime. A autoridade de execução decorre exclusivamente da **associação atômica** mantida por cada grant individual ativo, validada contra uma fonte confiável independente de limites máximos do autorizador.
 
-**Justificativa resumida (PROPOSTA):**
+**Correções centrais em relação à revisão anterior (PROPOSTA):**
 
-- A base atual já prova o padrão de idempotência/ledger em `mission_admissions` (PROVADO NO CÓDIGO, `cli/src/daemon/local-control-admission.ts`), o que torna a Alternativa B a mais consistente com a arquitetura real, sem introduzir infraestrutura nova.
-- A Alternativa A (atualização direta do escopo) não preserva provenance/identidade de concessão nem revogação granular; torna a autorização indistinguível de uma mutação genérica de Mission e enfraquece auditoria e recovery.
-- A Alternativa C (autoridade de policy externa/registro independente) é desproporcional para M1: introduz um segundo sistema de autoridade e um novo boundary de confiança antes de existir evidência de necessidade; conflita com a direção de daemon headless como autoridade local (#70).
+1. **Eliminação do produto cartesiano de autorização:** Fica extinta a hipótese de autorizar operações pela união independente de três listas globais (`capabilityIds`, `allowedEffectClasses`, `allowedRefPrefixes`). A proposta estabelece que **nenhuma capability pode operar sobre referências ou classes de efeito que não tenham sido concedidas juntas, no mesmo grant ativo e válido, emitido por autoridade legítima**. A allowlist materializada plana atual (`AllowedCapabilityScope`) é formalmente declarada insuficiente como fonte autoritativa de controle de acesso.
+2. **Ledger verdadeiramente auditável e append-only:** Elimina-se toda mutação destrutiva (`UPDATE`) no histórico de concessões. Concessões e revogações passam a ser modeladas como eventos imutáveis distintos (`INSERT-only`), com identificadores estáveis, ordenação determinística, deduplicação idempotente por fingerprint canônico e redução determinística de estado após restart.
+3. **Fail-closed estrito para Missions legadas e estados incertos:** Rejeita-se o fallback automático que convertia escopos legados sem proveniência em autorização ativa ou fazia união com novos grants. Missions sem proveniência verificável no ledger têm novas ações bloqueadas, preservando integralmente o histórico e as evidências de efeitos já executados. Nenhuma permissão histórica é transformada em grant sintético sem procedimento explícito.
+4. **Revalidação autoritativa nos quatro gates e limites de concorrência:** A proposta audita o código atual de `main` e identifica as janelas de corrida existentes em `proposePlan`, `acceptPlan`, `dispatchStep` e no agendador. Estabelece quatro gates obrigatórios de revalidação autoritativa (proposta, aceitação, claim de invocation e handoff ao executor). Reconhece taxativamente que uma transação SQLite **não confere atomicidade a efeitos executados externamente**, formalizando o ciclo de vida dos efeitos (`prepared`, `submitted`, `uncertain`, `confirmed`) sem replay automático.
+5. **Normalização tipada e diferenciação entre sanitização e defesa de injeção:** Normaliza-se o contrato tipado (`CAPABILITY_GRANT_PROTOCOL_VERSION` e `CAPABILITY_GRANT_CONTRACT_VERSION`), clarificam-se os modelos de expiração e revogação, e formaliza-se que proteção contra prompt injection reside na separação estrutural de dados vs. instruções e no caráter estritamente consultivo do LLM, jamais em mera sanitização de strings.
 
-**Direção preferencial de slices futuros (PROPOSTA):**
+**Direção de implementação futura em slices isolados (PROPOSTA):**
 
-- Slice A — persistência e policy de grants, sem superfície pública.
-- Slice B — operação autenticada e auditável de concessão/revogação.
-- Slice C — planejamento consultivo e aceitação sob escopo autorizado.
-- Slice D — integração de execução, condicionada aos gates anteriores e aprovação específica.
+- **Slice A** — Persistência do ledger append-only e política correlacionada de validação de grants (sem superfície pública RPC).
+- **Slice B** — Operações autenticadas e auditáveis de concessão e revogação no Local Control Plane, sob escopo dedicado.
+- **Slice C** — Planejamento consultivo e aceitação de planos sob revalidação autoritativa atômica.
+- **Slice D** — Portões de dispatch, handoff ao executor, isolamento de incerteza e reconciliação sem replay.
 
 **Invariantes centrais preservadas (CONTRATO EXISTENTE):**
 
 1. `MissionIntent != Mission`; a Mission nasce dentro do Ouroboros.
-2. Planning/LLM é advisory; código/policy autoriza effects.
-3. Um scope de autenticação **não pode, sozinho**, autorizar qualquer capability existente (DECISÃO APROVADA em `docs/decisions/2026-10-08-local-control-authz.md`).
-4. `daemon.admin` e `mission.create` **não** concedem capabilities implicitamente.
-5. Capability grant ≠ step approval ≠ plan acceptance ≠ dispatch authorization.
+2. Modelos de IA e planners são estritamente consultivos (*advisory*); código compilado e políticas determinísticas autorizam efeitos.
+3. Um escopo de autenticação **não pode, sozinho**, conceder qualquer capability (decisão aprovada em `docs/decisions/2026-10-08-local-control-authz.md`).
+4. `daemon.admin` e `mission.create` **não** concedem capabilities nem ampliam limites implicitamente.
+5. `Capability Grant != Step Approval != Plan Acceptance != Dispatch Authorization`.
 
-**Decisões que exigem aprovação de Pedro (DECISÃO PENDENTE):** ver §14.
-
-**Estado final:** `NEEDS_APPROVAL`. Nenhuma implementação iniciada.
+**Decisões que exigem aprovação explícita de Pedro (DECISÃO PENDENTE):** ver §14.
+**Estado final:** `NEEDS_APPROVAL`. Nenhuma implementação de código realizada.
 
 ---
 
 ## 2. Baseline factual auditado
 
-### 2.1 Referência Git
+### 2.1 Referência Git e auditoria de HEAD
 
-- Base SHA: `4a0d6d52075bc665568e126124eb24ec8b8b2ed0` (PROVADO NO CÓDIGO via `git rev-parse HEAD` em `main` após pull).
-- Branch de trabalho: `docs/166-capability-grant-trust-contract`.
-- Estado inicial de `main`: limpo após stash/checkout (mudanças não relacionadas preservadas em stash).
+- **Base SHA auditado:** `4a0d6d52075bc665568e126124eb24ec8b8b2ed0` (`main`).
+- **HEAD auditado anterior:** `56685502a6b1f94d3720109ce2b01706807901a8` (commit do PR #167 com review `REQUEST_CHANGES`).
+- **Branch de trabalho:** `docs/166-capability-grant-trust-contract`.
+- **Arquivos modificados:** Exclusivamente `docs/analysis/operator-capability-grant-trust-contract-2026-10-29.md`.
 
-### 2.2 Lacuna reproduzida (PROVADO NO CÓDIGO)
+### 2.2 Lacuna reproduzida no runtime atual (PROVADO NO CÓDIGO)
 
-Hoje, a admissão pública de MissionIntent cria Missions com escopo **vazio**:
+Na base atual de `main`, a admissão pública de uma `MissionIntent` instancia Missions com escopo de capabilities estritamente vazio:
 
-```text
-cli/src/daemon/local-control-admission.ts:25
+```typescript
+// cli/src/daemon/local-control-admission.ts:25-29
 const EMPTY_SCOPE: AllowedCapabilityScope = {
   capabilityIds: [],
   allowedEffectClasses: [],
   allowedRefPrefixes: [],
 };
-...
-cli/src/daemon/local-control-admission.ts:153
+// cli/src/daemon/local-control-admission.ts:153
 allowedCapabilityScope: EMPTY_SCOPE,
 ```
 
-Consequência (PROVADO NO CÓDIGO): toda Mission criada por operador via `mission.admit` é `CREATED + EMPTY_SCOPE`. Sem uma operação de concessão, nenhuma capability pode ser planejada (`PlanPolicyValidator` rejeita `CAPABILITY_NOT_AUTHORIZED`) nem despachada.
+Consequência auditada: Toda Mission criada pelo operador via `mission.admit` nasce em estado `CREATED` com `EMPTY_SCOPE`. Sem uma operação de concessão, nenhum passo de plano pode ser validado (`PlanPolicyValidator` rejeita deterministicamente com `CAPABILITY_NOT_AUTHORIZED` ou `EFFECT_NOT_AUTHORIZED`) e nenhuma invocação pode ser despachada.
 
-Não existe, em nenhuma superfície pública, operação para conceder capabilities (PROVADO NO CÓDIGO via busca por `grant` em `shared/` e `cli/src/commands/`).
+Adicionalmente, não existe na API pública do daemon (JSON-RPC ou UDS) nenhuma operação para conceder, listar ou revogar capabilities para uma Mission (PROVADO NO CÓDIGO via inspeção em `shared/local-control-*-contract.ts` e `cli/src/daemon/local-control-auth.ts`).
 
-### 2.3 Arquivos e linhas auditados
+### 2.3 Arquivos, linhas e comportamento atual auditados
 
-| Arquivo | Linhas relevantes | Fato |
+| Arquivo | Linhas | Fato auditado no código |
 |---|---|---|
-| `cli/src/mission/contracts.ts` | 126-136 | `AllowedCapabilityScope` (capabilityIds, allowedEffectClasses, allowedRefPrefixes) |
-| `cli/src/mission/contracts.ts` | 140-160 | `ApprovalRequirement` com `scopeDescriptor` imutável e `effectFingerprint` |
-| `cli/src/mission/contracts.ts` | 230-260 | `Mission` inclui `allowedCapabilityScope`, `approvalRequirements` |
-| `cli/src/mission/policy.ts` | 100-115 | `PlanPolicyValidator` |
-| `cli/src/mission/policy.ts` | 140-155 | `CAPABILITY_NOT_AUTHORIZED` quando capability fora do scope |
-| `cli/src/mission/policy.ts` | 155-175 | `EFFECT_NOT_AUTHORIZED` |
-| `cli/src/mission/mission-engine.ts` | 424-485 | `createMission()` persiste scope fornecido |
-| `cli/src/mission/mission-engine.ts` | 489-550 | `proposePlan()` valida policy antes de persistir |
-| `cli/src/mission/mission-engine.ts` | 562-665 | `acceptPlan()` cria requirements não concedidos |
-| `cli/src/mission/mission-engine.ts` | 671-700 | `recordApproval()` único caminho de grant de approval |
-| `cli/src/mission/mission-engine.ts` | 726-900 | `dispatchStep()` gates incluindo revalidação de policy |
-| `cli/src/daemon/local-control-admission.ts` | 25-35, 153 | `EMPTY_SCOPE` no admission |
-| `cli/src/daemon/local-control-auth.ts` | 2-20, 338-365 | scopes `mission.read/create/control`, `daemon.admin`; `requiredLocalControlScope()` |
-| `shared/local-control-auth-contract.ts` | 1-10 | `LOCAL_CONTROL_AUTH_SCOPES` |
-| `cli/src/mission/sqlite-mission-store.ts` | 293-315 | schema `missions` com `allowed_capability_scope` |
-| `cli/src/mission/sqlite-mission-store.ts` | 1918-1945 | `withTransaction` (BEGIN/COMMIT/ROLLBACK + fila) |
-| `cli/src/capabilities/registry.ts` | 1-60 | Capability Registry, discovery ≠ authorization |
-| `cli/src/daemon/durable-projection.ts` | 40-55 | `projectMission()` não expõe scope |
-| `docs/decisions/2026-10-08-local-control-authz.md` | completo | decisão de authz local aprovada |
+| `cli/src/mission/contracts.ts` | 126-136 | `AllowedCapabilityScope` define três listas planas: `capabilityIds`, `allowedEffectClasses`, `allowedRefPrefixes`. |
+| `cli/src/mission/contracts.ts` | 140-165 | `ApprovalRequirement` vincula `approvalId` a um `scopeDescriptor` imutável com `effectFingerprint`. |
+| `cli/src/mission/contracts.ts` | 230-265 | `Mission` embute `allowedCapabilityScope` como atributo direto. |
+| `cli/src/mission/policy.ts` | 100-180 | `PlanPolicyValidator.validate()` avalia cada passo contra `mission.allowedCapabilityScope`. |
+| `cli/src/mission/policy.ts` | 181-220 | Rejeita `CAPABILITY_NOT_AUTHORIZED` se `capabilityRequirement` não constar em `capabilityIds`. Rejeita `EFFECT_NOT_AUTHORIZED` se `effectClass` não constar em `allowedEffectClasses`. |
+| `cli/src/mission/policy.ts` | 275-310 | `validateInputRefs()` checa se `inputRef` inicia com algum prefixo em `allowedRefPrefixes` de forma desacoplada da capability. |
+| `cli/src/mission/mission-engine.ts` | 489-530 | `proposePlan()` invoca `this.policy.validate()` **antes** de abrir a transação SQLite `withTransaction`. Dentro da transação, revalida unicamente se a Mission não se tornou terminal. |
+| `cli/src/mission/mission-engine.ts` | 562-630 | `acceptPlan()` **não executa revalidação de policy** contra o escopo atual da Mission antes de mover para `READY` / `WAITING_FOR_APPROVAL`. |
+| `cli/src/mission/mission-engine.ts` | 726-820 | `dispatchStep()` invoca `this.policy.validate()` **fora e antes** de `withTransaction(claimInvocation)`. |
+| `cli/src/mission/mission-engine.ts` | 880-915 | `withTransaction` em `dispatchStep` executa `claimInvocation` e move a Mission para `EXECUTING`, sem checar grants ativos na transação. |
+| `cli/src/mission/mission-scheduler.ts` | 165-270 | O agendador processa invocações em batch e submete à seam de conectores sem novo gate de policy no momento do handoff de rede. |
+| `cli/src/daemon/local-control-auth.ts` | 338-365 | `requiredLocalControlScope()` restringe estritamente `local_control.admit` a `mission.create` e comandos a `mission.control`. Não há escopo de concessão de capabilities. |
+| `cli/src/mission/sqlite-mission-store.ts` | 295-320 | Tabela `missions` persiste `allowed_capability_scope TEXT NOT NULL DEFAULT '{}'`. Não existe tabela de grants. |
+| `cli/src/mission/sqlite-mission-store.ts` | 1918-1945 | `withTransaction()` provê exclusão mútua local via fila de promessas em memória (`transactionQueue`) e transação `BEGIN/COMMIT/ROLLBACK` no SQLite. Publica mutações unicamente após commit bem-sucedido. |
+| `cli/src/daemon/durable-projection.ts` | 40-75 | `projectMission()` projeta campos de resumo da Mission para o frontend/clientes sem expor `allowedCapabilityScope` nem dados de políticas. |
 
-### 2.4 Evidência de testes relevantes (PROVADO NO CÓDIGO)
+### 2.4 Evidência de testes e comportamento de concorrência em main
 
-- `cli/src/daemon/local-control-admission.test.ts` — idempotência, conflito, isolamento por cliente, injeção de authority rejeitada.
-- `cli/src/mission/mission-engine.test.ts` — dispatch gates, replay protection, approval scope mismatch.
-- `cli/src/mission/sqlite-mission-store.test.ts` — transações, recovery, restart, mutation publishing após commit.
-- `cli/src/daemon/local-control-auth.test.ts` / `.e2e.test.ts` — 401/403, rotação, revogação, revalidação WS 500ms.
+- Testes de integridade de admissão (`cli/src/daemon/local-control-admission.test.ts`): comprovam rejeição de campos desconhecidos, isolamento de requisições por cliente e idempotência por `requestId + payloadFingerprint`.
+- Testes transacionais (`cli/src/mission/sqlite-mission-store.test.ts`): comprovam rollback completo em caso de erro e despacho de mutações somente pós-commit.
+- Testes de agendamento e recuperação (`cli/src/mission/mission-scheduler.test.ts`): comprovam que invocações com `delivery.state !== "not_submitted"` entram em recuperação e reconciliação sem duplicação de claims.
 
 ---
 
@@ -121,19 +118,17 @@ Não existe, em nenhuma superfície pública, operação para conceder capabilit
 **CONTRATO EXISTENTE:**
 
 - `MISSION_CONTRACT_VERSION = 1` (`cli/src/mission/contracts.ts`).
-- `AllowedCapabilityScope` é a única representação autoritativa de escopo de capability de uma Mission.
-- O planner não pode alterar `allowedCapabilityScope` (não está em `PlanCandidate` nem em `PlanStep`).
-- `PlanPolicyValidator.validate()` rejeita capability fora do scope (`CAPABILITY_NOT_AUTHORIZED`) e effect class não autorizado (`EFFECT_NOT_AUTHORIZED`).
-- `dispatchStep()` revalida o plano aceito contra policy atual antes de criar invocation.
-- `mission_admissions` garante idempotência por `(clientId, requestId)` com fingerprint de payload.
-- `withTransaction` garante atomicidade multi-registro e publicação de eventos somente após commit.
-- `daemon.admin`/`mission.create` são scopes de acesso ao controle local, não autorização de capabilities.
+- O planner (LLM ou heurística) não tem autoridade para conceder, solicitar ou alterar escopo de capabilities (`PlanCandidate` não contém campo de autorização).
+- `PlanPolicyValidator.validate()` é uma função pura e determinística em relação aos parâmetros fornecidos.
+- Uma aprovação de passo (`ApprovalRequirement`) concedida para um efeito específico (comprovada por `effectFingerprint`) não pode ser reutilizada por outro passo com efeito divergente (`APPROVAL_SCOPE_MISMATCH`).
+- Autenticação local em `local-control-auth.ts` valida credenciais via tokens HMAC/Bearer e revogação local (`LocalControlCredentialStore`). A presença de credencial válida confere acesso à rota RPC, mas **não** confere autoridade sobre capabilities do sistema operacional ou da máquina.
+- A atomicidade do SQLite garante integridade ACID estritamente para o arquivo de banco de dados local.
 
 **PROVADO NO CÓDIGO:**
 
-- Admission cria Missions com `EMPTY_SCOPE`.
-- Nenhuma capability pode ser autorizada sem scope não-vazio.
-- `recordApproval()` é o único caminho que seta `granted = true` em `ApprovalRequirement`.
+- Toda Mission admitida por cliente externo possui escopo vazio (`EMPTY_SCOPE`).
+- Apenas `recordApproval()` no `MissionEngine` pode transicionar um `ApprovalRequirement` de `granted: false` para `granted: true`.
+- Concorrência de transações no daemon é serializada pela fila em memória de `sqlite-mission-store.ts`.
 
 ---
 
@@ -141,598 +136,706 @@ Não existe, em nenhuma superfície pública, operação para conceder capabilit
 
 ### 4.1 Alternativa A — Atualizar diretamente o escopo da Mission mediante operação autenticada
 
-**Descrição (PROPOSTA de análise):** uma operação autenticada muta `Mission.allowedCapabilityScope` (union) dentro de uma transação, com auditoria via `updatedAt`/mutation events.
+**Descrição (PROPOSTA de análise):** Uma nova chamada RPC autenticada executa um `UPDATE missions SET allowed_capability_scope = ...` diretamente na linha da Mission.
 
 | Critério | Avaliação |
 |---|---|
-| Segurança / least privilege | Médio — depende de validação do grantor, mas mutação direta mistura autorização com estado da Mission |
-| Simplicidade | Alta — reutiliza `updateMission` |
-| Consistência transacional | Alta — uma transação |
-| Auditoria | Baixa/Média — sem identidade de concessão, sem histórico de revogação, sem fingerprint de grant |
-| Revogação | Fraca — revogar exige recomputar diff sem histórico |
-| Recovery após crash | Média — estado materializado persiste, mas sem ledger para reconstruir provenance |
-| Compatibilidade Mission v1 | Alta — apenas muta campo existente |
-| Custo operacional | Baixo |
-| Risco de ampliação de autoridade | Alto — concessão e revogação indistinguíveis; sem identidade idempotente de grant; combinável silenciosamente |
+| Segurança e least privilege | **Fraca** — Concessões e revogações se misturam em um JSON único; impossível auditar quem concedeu o quê e por quê. |
+| Simplicidade | **Alta** — Reutiliza a coluna existente na tabela `missions`. |
+| Consistência transacional | **Média** — Uma transação SQLite simples, mas sem rastro de eventos. |
+| Auditoria e provenance | **Nula** — Não preserva histórico de emissores, hashes de intenção ou motivo de revogação. |
+| Revogação granular | **Inviável** — Revogar uma capability exige calcular diffs manuais arriscados sobre listas agregadas. |
+| Risco de ampliação de autoridade | **Crítico** — Favorece o produto cartesiano e perda de proveniência de referências. |
 
-**Veredito (PROPOSTA):** insuficiente para "auditável e revogável". Rejeitada como direção principal, mas pode ser a **materialização efetiva** derivada do ledger (cache), não a autoridade.
+**Veredito (PROPOSTA):** Rejeitada. Não atende aos requisitos de auditoria, rastreabilidade e segurança formal.
 
-### 4.2 Alternativa B — Ledger durável de concessões e revogações, escopo efetivo derivado deterministicamente
+### 4.2 Alternativa B (Recomendada e Corrigida) — Ledger durável append-only de concessões e revogações com escopo efetivo associado
 
-**Descrição (PROPOSTA):** introduzir tabela `mission_capability_grants` (nome candidato) com registros imutáveis de grant/revoke; `Mission.allowedCapabilityScope` passa a ser uma **projeção materializada** (cache) derivada do ledger ativo; toda mutação de autorização cria um registro de ledger.
+**Descrição (PROPOSTA):** O daemon mantém duas estruturas relacionais append-only no SQLite: `mission_capability_grants` (para eventos de concessão) e `mission_capability_revocations` (para eventos de revogação). Nenhuma linha é alterada via `UPDATE`. Cada grant vincula rigidamente a tupla `(capabilityId, effectClass, allowedRefPrefixes, resourceLimits)` ao emissor autenticado. A autorização de qualquer ação decorre da validação da tupla em um grant ativo no ledger.
 
 | Critério | Avaliação |
 |---|---|
-| Segurança / least privilege | Alta — cada grant validado contra limites independentes do grantor; revogação granular |
-| Simplicidade | Média — padrão já existe (`mission_admissions`) |
-| Consistência transacional | Alta — ledger + cache + Mission em uma transação |
-| Auditoria | Alta — histórico imutável, provenance, fingerprint |
-| Revogação | Alta — revoke explícito, fail-closed, sem undo de efeitos |
-| Recovery após crash | Alta — reconstrução do escopo a partir do ledger |
-| Compatibilidade Mission v1 | Alta — campo existente permanece como cache; schema bump opcional |
-| Custo operacional | Baixo/Médio — uma tabela adicional |
-| Risco de ampliação de autoridade | Baixo — composição governada, sem wildcard, validação por grantor |
+| Segurança e least privilege | **Excelente** — Elimina produto cartesiano; autorização fail-closed; validação contra limites do autorizador. |
+| Simplicidade | **Boa** — Segue exatamente o padrão comprovado de `mission_admissions` sem criar dependências externas. |
+| Consistência transacional | **Excelente** — Eventos de ledger e transições da Mission residem na mesma transação atômica SQLite. |
+| Auditoria e provenance | **Máxima** — Histórico imutável de emissão, versão de credencial do emissor, timestamp e revogações explícitas. |
+| Revogação granular | **Excelente** — Revogação direcionada por `grantId`, idempotente, fail-closed para novas operações. |
+| Recovery e restart | **Determinístico** — Reconstrução do estado ativo por redução pura dos eventos do ledger. |
+| Risco de ampliação de autoridade | **Mínimo** — Composição granular por tupla; inexistência de super-grants por união desvinculada. |
 
-**Veredito (PROPOSTA):** recomendada.
+**Veredito (PROPOSTA):** **Recomendada**. Representa a solução mais segura, limpa e alinhada à arquitetura do Ouroboros.
 
 ### 4.3 Alternativa C — Autoridade de policy externa ou registro independente de autorizações
 
-**Descrição (PROPOSTA de análise):** um serviço/registro externo (ou módulo separado) decide e fornece autorizações; Ouroboros consulta-o.
+**Descrição (PROPOSTA de análise):** Delegação da decisão de autorização para um daemon externo (ex.: OPA, Spire ou serviço HTTP de governança).
 
 | Critério | Avaliação |
 |---|---|
-| Segurança / least privilege | Potencialmente alta, mas cria segundo trust boundary |
-| Simplicidade | Baixa — novo serviço, protocolo, deploy |
-| Consistência transacional | Baixa/Média — coordenação cross-process |
-| Auditoria | Alta (se bem feito) |
-| Revogação | Depende do externo |
-| Recovery após crash | Depende de disponibilidade externa |
-| Compatibilidade Mission v1 | Média |
-| Custo operacional | Alto |
-| Risco de ampliação de autoridade | Médio — risco de implícito "externo = confiável" |
+| Segurança e least privilege | Alta em tese, mas adiciona novo vetor de rede e novo boundary de confiança não auditado. |
+| Complexidade operacional | **Inaceitável para M1** — Requer dependência de rede, latência externa, processo adicional e sincronização cross-process. |
+| Consistência transacional | **Fraca** — Quebra a atomicidade SQLite; impossível coordenar 2PC sem complexidade desmedida. |
+| Recovery após crash | Dependente da disponibilidade do serviço externo no boot. |
 
-**Veredito (PROPOSTA):** desproporcional para M1. A direção #70 estabelece o daemon headless como autoridade local. Não há evidência de necessidade (HIPÓTESE não verificada) de autoridade externa. Rejeitada neste estágio, com reavaliação futura se multi-daemon/multi-host for necessário (HIPÓTESE).
-
-### 4.4 Comparação resumida
-
-| Alternativa | Auditoria | Revogação | Recovery | Complexidade | Risco de escalada |
-|---|---|---|---|---|---|
-| A | Baixa | Fraca | Média | Baixa | Alto |
-| B | Alta | Alta | Alta | Média | Baixo |
-| C | Alta | Depende | Depende | Alta | Médio |
-
-**Decisão proposta (PROPOSTA):** B.
+**Veredito (PROPOSTA):** Rejeitada para M1. O daemon headless local é a autoridade de execução local definida no épico #70.
 
 ---
 
-## 5. Arquitetura recomendada (Alternativa B)
+## 5. Arquitetura recomendada (Alternativa B corrigida)
 
-### 5.1 Visão geral
+### 5.1 Visão geral do fluxo autoritativo
 
 ```text
-Operator (autenticado, scope mission.grant — nome candidato)
-        ↓
- RPC local_control.grant_capabilities (novo, versionado)
-        ↓
- CapabilityGrantService (novo, daemon-side)
-        ↓ valida grantor contra fonte confiável independente
-        ↓ valida payload (allowlist, limites)
-        ↓ transação SQLite:
-            - insere registro imutável em mission_capability_grants
-            - recompute allowedCapabilityScope (cache) a partir do ledger ativo
-            - updateMission(...) atomicamente
-            - publica mutation após commit
-        ↓
- Mission (scope efetivo derivado)
-        ↓
- Planner advisory → PlanPolicyValidator (scope atual)
-        ↓
- Dispatch (revalidação de scope atual)
+Operador Autenticado (token com scope 'mission.grant_capabilities')
+        │
+        ▼
+RPC local_control.grant_capabilities (payload estrito, sem autoridade auto-declarada)
+        │
+        ▼
+CapabilityGrantService (daemon-side)
+        │
+        ├─► 1. Valida grantor contra fonte independente de limites (ex.: operator policy)
+        ├─► 2. Valida compatibilidade da tupla (capabilityId ∈ limites, effectClass ∈ contract, refs ∈ limites)
+        ├─► 3. Calcula fingerprint canônico (sha256 determinístico)
+        │
+        ▼
+Transação SQLite Atômica (withTransaction):
+        ├─► INSERT INTO mission_capability_grants (...) [registro imutável]
+        ├─► Verifica integridade e consistência da Mission alvo
+        ├─► Atualiza updatedAt da Mission
+        └─► COMMIT (dispara publicação de mutações aos observadores)
 ```
 
-**PROPOSTA:** o ledger é a autoridade; `Mission.allowedCapabilityScope` é cache materializado, sempre recomputável.
+### 5.2 Preservação estrita da tupla de grant (eliminação do produto cartesiano)
 
-### 5.2 Fonte confiável independente de limites máximos do grantor
+A falha central do modelo anterior residia em consolidar grants em três listas planas e independentes:
+- `capabilityIds: string[]`
+- `allowedEffectClasses: EffectClass[]`
+- `allowedRefPrefixes: string[]`
 
-**PROPOSTA + DECISÃO PENDENTE:** os direitos máximos de concessão do autorizador **não** podem ser auto-declarados pelo cliente nem derivados de `mission.create`/`daemon.admin`. Fontes candidatas (a decidir):
+No modelo corrigido (PROPOSTA), a autorização **nunca é avaliada contra listas globais unificadas**. Toda autorização preserva a tupla indissociável:
 
-1. **Arquivo de policy do operador** (recomendado para M1): arquivo JSON assinado/propriedade do operador em `OUROBOROS_DATA_DIR`, mode `0600`, definindo `maxCapabilityIds`, `maxEffectClasses`, `maxRefPrefixes` por `clientId`. Lido pelo daemon no boot; alteração exige restart ou operação `daemon.admin` explícita.
-2. **Extensão da tabela `local_control_clients`**: coluna `grant_limits_json` provisionada via CLI `auth provision ... --grant-limits <file>`. Mais integrado, mas muda schema de auth (DECISÃO PENDENTE).
-3. **Configuração de daemon** (`OUROBOROS_GRANT_POLICY_FILE`).
+$$\text{Grant} = \langle \text{grantId}, \text{capabilityId}, \text{effectClass}, \text{allowedRefPrefixes}, \text{resourceLimits}, \text{grantorId}, \text{validity} \rangle$$
 
-**HIPÓTESE:** para multi-host, uma autoridade externa (Alternativa C) pode ser necessária; não verificado.
+Um passo de plano `P` com requisito de capability `C`, classe de efeito `E` e conjunto de referências de entrada $R = \{r_1, r_2, \dots, r_k\}$ só é autorizado se existir **um mesmo grant ativo** $G$ tal que:
+1. $C \in G.\text{capabilityIds}$
+2. $E \in G.\text{allowedEffectClasses}$
+3. $\forall r \in R, \exists p \in G.\text{allowedRefPrefixes} \text{ tal que } r \text{ inicia com } p$
+4. $G$ não está expirado nem revogado no momento da verificação.
+5. O emissor $G.\text{grantorId}$ permanece com autoridade válida.
 
-**Invariantes (PROPOSTA):**
+Se uma operação necessitar de capabilities distintas, cada passo deve encontrar sua correspondência individual e completa em um grant ativo. **Não é permitida a combinação cruzada de campos entre grants distintos.**
 
-- Um grantor nunca pode conceder capability fora de seu `max*` (fail-closed).
-- `daemon.admin` permite gerenciar a policy de limites, mas **não** concede capabilities a Missions.
-- `mission.create` permite admitir Missions, mas **não** concede capabilities.
-- Rotação/revogação de credencial invalida grants futuros; grants já emitidos permanecem auditáveis mas **não** autorizam novos efeitos após revalidação (ver §9).
+### 5.3 Exemplo adversarial: Produto Cartesiano A × B
+
+Para evidenciar a vulnerabilidade eliminada por esta regra, considere o seguinte cenário:
+
+1. **Grant A emitido pelo Operador de Suporte:**
+   - `capabilityId`: `fs.read_file`
+   - `allowedEffectClasses`: `[READ]`
+   - `allowedRefPrefixes`: `["storage://public/logs/"]`
+2. **Grant B emitido pelo Operador Financeiro:**
+   - `capabilityId`: `db.execute_ledger_transaction`
+   - `allowedEffectClasses`: `[WRITE, EXECUTION]`
+   - `allowedRefPrefixes`: `["db://financial/production/"]`
+
+**Cenário vulnerável sob listas globais unificadas (REJEITADO):**
+Se o sistema unisse as listas na Mission:
+- `capabilityIds` = `["fs.read_file", "db.execute_ledger_transaction"]`
+- `allowedEffectClasses` = `[READ, WRITE, EXECUTION]`
+- `allowedRefPrefixes` = `["storage://public/logs/", "db://financial/production/"]`
+
+Um planner malicioso ou induzido por prompt injection poderia propor o seguinte passo:
+- Passo: `step-exfiltrate`
+- `capabilityRequirement`: `fs.read_file`
+- `effectClass`: `READ`
+- `inputRefs`: `["db://financial/production/credentials.key"]`
+
+Sob a verificação desacoplada:
+- `fs.read_file` está em `capabilityIds`? **Sim.**
+- `READ` está em `allowedEffectClasses`? **Sim.**
+- `db://financial/production/credentials.key` começa com algum prefixo em `allowedRefPrefixes`? **Sim** (inicia com `db://financial/production/`).
+
+**Resultado no modelo vulnerável:** A operação seria **AUTORIZADA**, permitindo que uma ferramenta de leitura de arquivos leia credenciais do banco financeiro, algo que **nenhum dos dois grants autorizou individualmente**.
+
+**Resultado no modelo corrigido (PROPOSTA):**
+- Testa-se contra o Grant A: `fs.read_file` bate, `READ` bate, mas a ref `db://financial/production/...` **não** inicia com `storage://public/logs/` $\rightarrow$ **Rejeitado**.
+- Testa-se contra o Grant B: a ref bate, mas a capability `fs.read_file` **não** pertence ao Grant B $\rightarrow$ **Rejeitado**.
+- Nenhum grant cobre a tupla conjuntamente $\rightarrow$ **Bloqueado deterministicamente com `CAPABILITY_REF_OUT_OF_GRANT_BOUNDS`**.
+
+### 5.4 Fonte confiável e independente de limites máximos do grantor
+
+**PROPOSTA + DECISÃO PENDENTE:** Um cliente autenticado não pode conceder autorizações que excedam seus próprios privilégios máximos provisionados. Esses limites máximos **não podem ser derivados de scopes genéricos** como `daemon.admin` ou `mission.create`.
+
+Opções em avaliação (DECISÃO PENDENTE):
+1. **Arquivo local de limites de governança (`grant-limits.json`)**: Arquivo de configuração de root/operador em `$OUROBOROS_DATA_DIR/security/operator-limits.json`, mode `0600`, mapeando `clientId` para suas allowlists máximas.
+2. **Provisionamento na tabela `local_control_clients`**: Coluna `max_grant_limits_json` provisionada via CLI administrativa no ato da criação da credencial.
+
+Regra mandatória: O `CapabilityGrantService` valida que:
+$$G.\text{capabilityIds} \subseteq \text{Limit}.\text{maxCapabilities}$$
+$$G.\text{allowedEffectClasses} \subseteq \text{Limit}.\text{maxEffectClasses}$$
+$$G.\text{allowedRefPrefixes} \subseteq \text{Limit}.\text{maxRefPrefixes}$$
+Qualquer discrepância resulta em rejeição imediata com `CAPABILITY_EXCEEDS_GRANTOR_LIMITS`.
 
 ---
 
-## 6. Modelo de autoridade
+## 6. Modelo de autoridade e composição determinística
 
-### 6.1 Identidade do autorizador
+### 6.1 Identidade, autoridade e ciclo de vida do emissor (grantor)
 
-**PROPOSTA:**
+- **Quem pode conceder:** Cliente autenticado no Local Control Plane portador do scope específico `mission.grant_capabilities` (DECISÃO PENDENTE quanto ao nome exato).
+- **Identidade imutável no ledger:** Toda concessão armazena o `grantorClientId` e a `grantorCredentialVersion` (hash do token ativo no momento do despacho).
+- **Impossibilidade de forja:** Campos de autoridade não são aceitos no corpo da requisição RPC; são extraídos diretamente do objeto `LocalControlAuthenticatedClient` validado pelo daemon Fastify/UDS.
 
-- **Quem pode conceder:** um cliente autenticado com scope dedicado `mission.grant_capabilities` (nome candidato; DECISÃO PENDENTE) **e** com limites máximos provisionados na fonte confiável independente.
-- **Identidade autoritativa:** `clientId` + `credentialVersion` (hash do token) derivados do contexto autenticado pelo daemon (PROVADO NO CÓDIGO: `LocalControlAuthenticatedClient`).
-- **Verificação:** o daemon revalida a credencial a cada operação (`isClientStillAuthorized`) e antes de cada efeito (§9); identidade nunca é confiada a campos do payload.
-- **Provisionamento:** via CLI `auth provision <client> mission.grant_capabilities,...` + limites; armazenado no registry local (PROVADO NO CÓDIGO: `LocalControlCredentialStore.provision`).
-- **Revogação:** `auth revoke <client>` invalida credencial; grants emitidos permanecem no ledger (auditoria) mas não autorizam novos efeitos.
-- **Evitar implícito:** `requiredLocalControlScope()` deve mapear a nova operação **apenas** para o novo scope; `daemon.admin` e `mission.create` não satisfazem `mission.grant_capabilities` (PROVADO NO CÓDIGO: padrão de mapeamento em `local-control-auth.ts:338-365`).
+### 6.2 Escopo de cada concessão (tupla associada autoritativa)
 
-### 6.2 Escopo de cada concessão
+Cada registro de concessão possui a seguinte estrutura formal:
 
-**PROPOSTA:** cada grant vincula explicitamente:
+```typescript
+export interface CapabilityGrantRecord {
+  readonly grantId: string;
+  readonly missionId: string;
+  readonly grantorClientId: string;
+  readonly grantorCredentialVersion: string;
+  readonly capabilityIds: readonly string[];
+  readonly allowedEffectClasses: readonly EffectClass[];
+  readonly allowedRefPrefixes: readonly string[];
+  readonly resourceLimits?: {
+    readonly maxInvocations?: number;
+    readonly maxDurationMs?: number;
+    readonly budgetUnits?: number;
+  };
+  readonly issuedAt: string;        // ISO 8601 UTC
+  readonly expiresAt?: string;       // ISO 8601 UTC ou undefined (sem expiração temporal)
+  readonly contractVersion: number;  // CAPABILITY_GRANT_CONTRACT_VERSION
+  readonly fingerprint: string;      // sha256 canônico
+  readonly createdAt: string;
+}
+```
 
-| Campo | Tipo | Regra |
-|---|---|---|
-| `grantId` | string | Identidade estável da concessão (idempotência) |
-| `missionId` | string | Mission alvo (obrigatório) |
-| `grantorClientId` | string | Derivado do contexto autenticado |
-| `grantorCredentialVersion` | string | Hash do token no momento da emissão |
-| `capabilityIds` | string[] | Allowlist explícita; sem wildcards; subset dos limites do grantor |
-| `allowedEffectClasses` | EffectClass[] | Subset dos limites do grantor |
-| `allowedRefPrefixes` | string[] | Prefixos de refs; subset dos limites do grantor |
-| `resourceLimits` | objeto opcional | `maxInvocations`, `maxDurationMs`, `budgetUnits` (quando aplicável) |
-| `issuedAt` | string (ISO) | Timestamp do daemon |
-| `expiresAt` | string (ISO) opcional | Expiração; ausência = sem expiração, mas revogável |
-| `contractVersion` | number | Versão do contrato de grant |
-| `fingerprint` | string (sha256) | Fingerprint canônico do payload |
-| `revokedAt` | string opcional | Timestamp de revogação |
-| `revocationReason` | string opcional | Sanitizado |
-| `revokedBy` | string opcional | clientId do revogador |
+Regras sintáticas e semânticas:
+- Proibidos wildcards vazios (`""`) ou globais (`"*"`).
+- `capabilityIds` devem existir no catálogo compilado do `CapabilityRegistry`.
+- `allowedEffectClasses` deve ser subconjunto das classes declaradas pelas capabilities no catálogo.
+- `allowedRefPrefixes` devem ser URIs canônicas bem formadas (ex.: `storage://`, `ref://`, `memory://`).
 
-**Regras (PROPOSTA):**
+### 6.3 Regra determinística de composição e anti-escalada
 
-- Sem wildcards irrestritos (`"*"`, `""`) em `capabilityIds` ou `allowedRefPrefixes`.
-- Sem permissões globais implícitas: ausência de grant = escopo vazio (fail-closed).
-- `capabilityIds` devem ser capacidades registradas no `CapabilityRegistry` (PROVADO NO CÓDIGO: resolver existente) — grant de capability desconhecida é rejeitado.
-- `allowedEffectClasses` deve ser subset das classes da capability concedida (validação cruzada).
-- `allowedRefPrefixes` deve ser subset dos limites do grantor e dos prefixos da capability.
+1. **União de tuplas, não de campos:** Ter múltiplos grants ativos para uma mesma Mission significa que o executor pode executar ações cobertas pelo Grant A OU pelo Grant B. Não existe fusão de atributos entre A e B.
+2. **Redução e Revogação:** A autorização cessa para uma tupla assim que for registrado um evento de revogação para o respectivo `grantId`.
+3. **Impossibilidade de sobrelevação:** Nenhuma concessão pode elevar permissões além do limite provisionado do grantor. Concessões adicionadas por operadores distintos operam de forma disjunta.
 
-### 6.3 Composição de permissões
+### 6.4 Impacto e mudanças futuras em contratos e componentes
 
-**PROPOSTA:**
+Para que a Alternativa B corrigida seja implementada futuramente nos slices adequados, as seguintes modificações estruturais serão necessárias:
 
-- **Escopo efetivo** = união determinística dos grants ativos (não revogados, não expirados) para a Mission, intersectado com os limites de cada grantor (já validados na emissão).
-- **Adicionar autorização:** novo grant ativo adiciona capacidades ao escopo efetivo (union).
-- **Reduzir autorização:** não existe operação de "reduzir" parcial independente; redução ocorre por revogação de grant (remove sua contribuição) ou por concessão de um grant mais restrito que substitui? **PROPOSTA:** não permitir substituição implícita; redução = revoke + novo grant. Evita ambiguidade.
-- **Revogar autorização:** remove a contribuição do grant; escopo efetivo recomputado.
-- **Anti-escalada:** 
-  - Nenhum grant pode "herdar" capacidades de outro grant.
-  - A união não cria um novo grant mais amplo; não existe operação de merge.
-  - Revogar um grant não pode ser compensado por outro grant sem revalidação.
-  - O escopo efetivo nunca excede a união dos grants ativos validados; nunca excede os limites do grantor de cada grant.
-  - Concessões parciais de múltiplos grantors podem se compor por union, mas cada grant é auditável e revogável individualmente; a autoridade coletiva é a soma de autoridades individuais legitimamente provisionadas, não uma amplificação.
-
-**DECISÃO PENDENTE:** confirmar se a composição deve ser union (recomendado) ou se deve haver um "teto de Mission" (capability ceiling) definido na admissão. A admissão atual não define ceiling (EMPTY_SCOPE). Propomos **não** introduzir ceiling implícito; grants explícitos são o único caminho.
+1. **Em `cli/src/mission/contracts.ts`:**
+   - O tipo `AllowedCapabilityScope` na interface `Mission` não pode permanecer como três listas globais. Ele deve ser substituído ou complementado por `activeGrants: readonly CapabilityGrantRecord[]` ou por uma projeção que preserve o vínculo estruturado `(capabilityId, effectClass, refPrefixes)`.
+2. **Em `cli/src/mission/policy.ts` (`PlanPolicyValidator`):**
+   - A função `validateStep` deve abandonar as consultas isoladas `inScope = capabilityIds.includes(...)` e `inMissionScope = allowedRefPrefixes.some(...)`.
+   - O validador deve iterar sobre os grants ativos da Mission e verificar a cobertura integral:
+     ```typescript
+     const coveringGrant = mission.activeGrants.find(grant =>
+       grantCoversStep(grant, step, contract)
+     );
+     if (!coveringGrant) {
+       decision.reject(PolicyRejectionCode.CAPABILITY_NOT_AUTHORIZED, ...);
+     }
+     ```
+3. **Nos gates de `MissionEngine`:**
+   - `proposePlan`, `acceptPlan` e `dispatchStep` devem consultar o estado do ledger atômico de grants e assegurar que a cobertura do grant permanece válida durante a transição de estado.
+4. **Nos gates de agendamento e despacho:**
+   - A `CapabilityInvocation` gerada deve registrar a proveniência, incluindo o `grantId` autorizador no descritor de auditoria.
 
 ---
 
 ## 7. Contrato tipado proposto (PROPOSTA)
 
-### 7.1 Operações candidatas
-
-```text
-mission.grant_capabilities   (RPC local_control.grant)
-mission.revoke_capability_grant
-mission.list_capability_grants   (leitura, scope mission.read?)
-```
-
-**DECISÃO PENDENTE:** nomes finais e se leitura de grants requer `mission.read` ou novo scope.
-
-### 7.2 Request/Response (grant)
+### 7.1 Identificadores e constantes normativas
 
 ```typescript
-// PROPOSTA — não é contrato ratificado
+export const CAPABILITY_GRANT_PROTOCOL_VERSION = 1 as const;
 export const CAPABILITY_GRANT_CONTRACT_VERSION = 1 as const;
-export const CAPABILITY_GRANT_OPERATION = "mission.grant_capabilities" as const;
 
+export const CAPABILITY_GRANT_OPERATIONS = {
+  GRANT: "mission.grant_capabilities",
+  REVOKE: "mission.revoke_capability_grant",
+  LIST: "mission.list_capability_grants",
+} as const;
+```
+
+### 7.2 Request/Response de Concessão (`mission.grant_capabilities`)
+
+```typescript
 export interface CapabilityGrantRequest {
-  protocolVersion: typeof CAPABILITY_GRANT_PROTOCOL_VERSION;
-  operation: typeof CAPABILITY_GRANT_OPERATION;
-  missionId: string;
-  grantId: string;                 // idempotency key (escopado a mission+grantor)
-  capabilityIds: string[];
-  allowedEffectClasses: EffectClass[];
-  allowedRefPrefixes: string[];
-  resourceLimits?: {
-    maxInvocations?: number;
-    maxDurationMs?: number;
-    budgetUnits?: number;
+  readonly protocolVersion: typeof CAPABILITY_GRANT_PROTOCOL_VERSION;
+  readonly operation: typeof CAPABILITY_GRANT_OPERATIONS.GRANT;
+  readonly missionId: string;
+  readonly grantId: string; // Chave de idempotência fornecida pelo cliente
+  readonly capabilityIds: string[];
+  readonly allowedEffectClasses: EffectClass[];
+  readonly allowedRefPrefixes: string[];
+  readonly resourceLimits?: {
+    readonly maxInvocations?: number;
+    readonly maxDurationMs?: number;
+    readonly budgetUnits?: number;
   };
-  expiresAt?: string;              // ISO, opcional
-  // NÃO incluir grantor, grantedBy, scope de auth — derivados do contexto
+  readonly expiresAt?: string; // ISO 8601 opcional
 }
 
 export type CapabilityGrantResponse =
-  | { ok: false; code: CapabilityGrantFailureCode; message: string }
   | {
-      ok: true;
-      protocolVersion: typeof CAPABILITY_GRANT_PROTOCOL_VERSION;
-      operation: typeof CAPABILITY_GRANT_OPERATION;
-      data: CapabilityGrantProjection;
+      readonly ok: true;
+      readonly protocolVersion: typeof CAPABILITY_GRANT_PROTOCOL_VERSION;
+      readonly operation: typeof CAPABILITY_GRANT_OPERATIONS.GRANT;
+      readonly data: CapabilityGrantProjection;
+    }
+  | {
+      readonly ok: false;
+      readonly protocolVersion: typeof CAPABILITY_GRANT_PROTOCOL_VERSION;
+      readonly operation: typeof CAPABILITY_GRANT_OPERATIONS.GRANT;
+      readonly code: CapabilityGrantErrorCode;
+      readonly message: string;
     };
 ```
 
-**Allowlist de campos (PROPOSTA):** exatamente os campos acima. Qualquer campo extra → `INVALID_REQUEST`. Campos de autoridade (`grantor`, `grantedBy`, `source`, `allowedCapabilityScope`) rejeitados (padrão de `local-control-admission.ts`).
-
-### 7.3 Request/Response (revoke)
+### 7.3 Request/Response de Revogação (`mission.revoke_capability_grant`)
 
 ```typescript
 export interface CapabilityGrantRevokeRequest {
-  protocolVersion: number;
-  operation: "mission.revoke_capability_grant";
-  missionId: string;
-  grantId: string;
-  reason: string;                  // sanitizado, obrigatório
+  readonly protocolVersion: typeof CAPABILITY_GRANT_PROTOCOL_VERSION;
+  readonly operation: typeof CAPABILITY_GRANT_OPERATIONS.REVOKE;
+  readonly missionId: string;
+  readonly grantId: string;       // ID do grant a revogar
+  readonly revocationId: string;  // Chave de idempotência da revogação
+  readonly reason: string;        // Justificativa obrigatória (sanitizada)
+}
+
+export type CapabilityGrantRevokeResponse =
+  | {
+      readonly ok: true;
+      readonly protocolVersion: typeof CAPABILITY_GRANT_PROTOCOL_VERSION;
+      readonly operation: typeof CAPABILITY_GRANT_OPERATIONS.REVOKE;
+      readonly data: {
+        readonly missionId: string;
+        readonly grantId: string;
+        readonly revocationId: string;
+        readonly revokedAt: string;
+      };
+    }
+  | {
+      readonly ok: false;
+      readonly protocolVersion: typeof CAPABILITY_GRANT_PROTOCOL_VERSION;
+      readonly operation: typeof CAPABILITY_GRANT_OPERATIONS.REVOKE;
+      readonly code: CapabilityGrantErrorCode;
+      readonly message: string;
+    };
+```
+
+### 7.4 Operação de Consulta (`mission.list_capability_grants`)
+
+```typescript
+export interface CapabilityGrantListRequest {
+  readonly protocolVersion: typeof CAPABILITY_GRANT_PROTOCOL_VERSION;
+  readonly operation: typeof CAPABILITY_GRANT_OPERATIONS.LIST;
+  readonly missionId: string;
+  readonly includeRevoked?: boolean;
+}
+
+export interface CapabilityGrantListResponse {
+  readonly ok: true;
+  readonly protocolVersion: typeof CAPABILITY_GRANT_PROTOCOL_VERSION;
+  readonly operation: typeof CAPABILITY_GRANT_OPERATIONS.LIST;
+  readonly data: {
+    readonly missionId: string;
+    readonly grants: CapabilityGrantProjection[];
+  };
 }
 ```
 
-### 7.4 Projeção pública sanitizada
+### 7.5 Projeções públicas e sanitizadas
 
 ```typescript
 export interface CapabilityGrantProjection {
-  grantId: string;
-  missionId: string;
-  capabilityIds: string[];
-  allowedEffectClasses: EffectClass[];
-  allowedRefPrefixes: string[];
-  issuedAt: string;
-  expiresAt?: string;
-  revokedAt?: string;
-  // grantorClientId pode ser exposto? DECISÃO PENDENTE (sanitização)
+  readonly grantId: string;
+  readonly missionId: string;
+  readonly capabilityIds: readonly string[];
+  readonly allowedEffectClasses: readonly EffectClass[];
+  readonly allowedRefPrefixes: readonly string[];
+  readonly issuedAt: string;
+  readonly expiresAt?: string;
+  readonly isRevoked: boolean;
+  readonly revokedAt?: string;
+  readonly revocationReason?: string;
 }
 ```
 
-**PROPOSTA:** não expor `grantorCredentialVersion` nem fingerprint na projeção pública (evita vazamento). Disponível em auditoria interna.
+*Nota de privacidade e segurança:* Segredos, tokens, versões de credenciais e fingerprints internos de hash não são projetados na interface pública.
 
-### 7.5 Códigos de erro (PROPOSTA)
+### 7.6 Códigos de erro determinísticos
 
 ```text
 INVALID_REQUEST
-PROTOCOL_VERSION_REQUIRED / UNSUPPORTED
+PROTOCOL_VERSION_REQUIRED
+PROTOCOL_VERSION_UNSUPPORTED
 INVALID_ID
 INVALID_PAYLOAD
 MISSION_NOT_FOUND
 MISSION_TERMINAL
 CAPABILITY_UNKNOWN
-CAPABILITY_NOT_GRANTABLE   // fora dos limites do grantor
+CAPABILITY_NOT_GRANTABLE
+CAPABILITY_EXCEEDS_GRANTOR_LIMITS
 EFFECT_CLASS_MISMATCH
 REF_PREFIX_NOT_ALLOWED
-GRANT_CONFLICT              // mesmo grantId, fingerprint diferente
-GRANT_EXPIRED
+GRANT_CONFLICT              // Mesmo grantId com payload divergente
+REVOCATION_CONFLICT         // Mesmo revocationId com motivo divergente
 GRANT_NOT_FOUND
 GRANT_ALREADY_REVOKED
-AUTHORITY_UNAVAILABLE
-GRANT_FAILED
+AUTHORITY_REVOKED           // Emissor do grant foi revogado
+CAPABILITY_REF_OUT_OF_GRANT_BOUNDS
 ```
 
-### 7.6 Limites de tamanho (PROPOSTA, a calibrar)
+### 7.7 Limites de tamanho e restrições sintáticas
 
-- `missionId`, `grantId`: ≤ 256 chars, não vazio, sem segredo.
-- `capabilityIds`: ≤ 64 itens, cada ≤ 128 chars.
-- `allowedRefPrefixes`: ≤ 64 itens, cada ≤ 256 chars.
-- `reason` (revoke): ≤ 1024 chars.
-- Payload total: ≤ 65536 chars (consistente com admission).
-
-### 7.7 Compatibilidade de versão
-
-- `CAPABILITY_GRANT_CONTRACT_VERSION = 1`. Bump em breaking change.
-- Missions antigas (schema v1) continuam válidas com `allowedCapabilityScope` materializado; grants são aditivos.
-- Se o ledger estiver ausente (dados pré-grant), escopo efetivo = valor persistido em `allowedCapabilityScope` (compatibilidade), mas marcado como `legacy_unaudited`? **PROPOSTA:** não reescrever; novos grants adicionam ao existente. Migração não destrutiva.
+- `missionId`, `grantId`, `revocationId`: $\le 256$ caracteres, padrão alfanumérico estrito sem caracteres de controle.
+- `capabilityIds`: $\le 64$ itens por grant; cada ID $\le 128$ caracteres.
+- `allowedRefPrefixes`: $\le 64$ itens por grant; cada prefixo $\le 256$ caracteres.
+- `reason` de revogação: $\le 1024$ caracteres (estruturalmente sanitizado).
+- Tamanho total do payload JSON: $\le 65.536$ bytes.
 
 ---
 
-## 8. Persistência, idempotência e recovery
+## 8. Persistência, ledger auditável, idempotência e recovery
 
-### 8.1 Registro durável do grant
+### 8.1 Schema do ledger append-only (sem mutações destrutivas)
 
-**PROPOSTA:** tabela `mission_capability_grants`:
+Para garantir auditoria forense íntegra e eliminar a contradição de `UPDATE` destrutivo sobre dados imutáveis, propõe-se a criação de duas tabelas estritamente `INSERT-only` no SQLite:
 
 ```sql
+-- 1. Registro imutável de eventos de concessão (Grant Ledger)
 CREATE TABLE IF NOT EXISTS mission_capability_grants (
   grant_id TEXT NOT NULL,
   mission_id TEXT NOT NULL,
   grantor_client_id TEXT NOT NULL,
   grantor_credential_version TEXT NOT NULL,
-  capability_ids TEXT NOT NULL DEFAULT '[]',
-  allowed_effect_classes TEXT NOT NULL DEFAULT '[]',
-  allowed_ref_prefixes TEXT NOT NULL DEFAULT '[]',
-  resource_limits TEXT NOT NULL DEFAULT '{}',
+  capability_ids TEXT NOT NULL,         -- JSON array de strings
+  allowed_effect_classes TEXT NOT NULL, -- JSON array de strings
+  allowed_ref_prefixes TEXT NOT NULL,   -- JSON array de strings
+  resource_limits TEXT NOT NULL,        -- JSON object
   issued_at TEXT NOT NULL,
   expires_at TEXT,
   contract_version INTEGER NOT NULL,
-  fingerprint TEXT NOT NULL,
-  revoked_at TEXT,
-  revocation_reason TEXT,
-  revoked_by TEXT,
+  fingerprint TEXT NOT NULL,            -- sha256 canônico do payload
   created_at TEXT NOT NULL,
-  PRIMARY KEY (mission_id, grant_id)
+  PRIMARY KEY (mission_id, grant_id),
+  FOREIGN KEY (mission_id) REFERENCES missions(mission_id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_grants_mission ON mission_capability_grants(mission_id);
-CREATE INDEX IF NOT EXISTS idx_grants_grantor ON mission_capability_grants(grantor_client_id);
+
+-- 2. Registro imutável de eventos de revogação (Revocation Ledger)
+CREATE TABLE IF NOT EXISTS mission_capability_revocations (
+  revocation_id TEXT NOT NULL,
+  mission_id TEXT NOT NULL,
+  target_grant_id TEXT NOT NULL,
+  revoked_by_client_id TEXT NOT NULL,
+  revoked_by_credential_version TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  revoked_at TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,            -- sha256 canônico do evento de revogação
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (mission_id, revocation_id),
+  FOREIGN KEY (mission_id, target_grant_id) REFERENCES mission_capability_grants(mission_id, grant_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_grants_mission_created
+  ON mission_capability_grants(mission_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_revocations_target
+  ON mission_capability_revocations(mission_id, target_grant_id);
 ```
 
-**Nota:** `grant_id` escopado a `mission_id` (PK composta), consistente com idempotência por Mission. Se grantor-global idempotency for necessário, DECISÃO PENDENTE.
+### 8.2 Identidade estável e ordenação determinística
 
-### 8.2 Provenance e versão
+- `grant_id`: Chave primária estável fornecida na emissão ou derivada de forma unívoca, garantindo idempotência e referência imutável.
+- `revocation_id`: Identificador estável do evento de revogação.
+- **Ordenação determinística:** Os eventos são ordenados sequencialmente por `created_at` (ISO 8601 UTC) com critério de desempate por `rowid`/chave primária no SQLite.
 
-- Cada registro armazena grantor, credential version, issuedAt, contractVersion, fingerprint.
-- `Mission.allowedCapabilityScope` (cache) é recomputado a partir dos grants ativos.
+### 8.3 Idempotência de concessão e revogação via fingerprint canônico
 
-### 8.3 Identidade idempotente e fingerprint canônico
+Seguindo o padrão arquitetural comprovado de `cli/src/daemon/local-control-admission.ts`:
+1. **Replay idêntico de Concessão:** Se uma requisição com o mesmo `(missionId, grantId)` e idêntico `fingerprint` for submetida, o serviço retorna o registro já gravado com sucesso (`HTTP 200 / ok: true`), sem gerar nova inserção.
+2. **Conflito de Concessão:** Se o `grantId` coincidir, mas o payload/fingerprint divergir, a operação é sumariamente rejeitada com `GRANT_CONFLICT`, impedindo qualquer mutação disfarçada.
+3. **Idempotência de Revogação:** Requisitar a revogação de um grant já revogado com a mesma chave e justificativa retorna sucesso idempotente. Motivos divergentes para o mesmo `revocationId` resultam em `REVOCATION_CONFLICT`.
 
-- `grantId` é a chave idempotente (fornecida pelo cliente ou derivada? **PROPOSTA:** fornecida pelo cliente, validada; o daemon pode derivar se ausente? DECISÃO PENDENTE. Preferimos exigir do cliente para idempotência explícita, como `requestId` na admission).
-- Fingerprint = sha256 de serialização canônica (stable key order) do payload normalizado (sem campos de autoridade).
-- Replay: mesmo `(missionId, grantId)` + mesmo fingerprint → retorna grant existente (idempotente).
-- Conflito: mesmo `(missionId, grantId)` + fingerprint diferente → `GRANT_CONFLICT`, sem mutação.
+### 8.4 Reconstrução determinística (Replay / Redução após restart)
 
-### 8.4 Replay seguro e conflito determinístico
+Após um restart abrupto ou crash do daemon, o estado de autorização de qualquer Mission é reconstruído deterministicamente através de uma função de redução pura:
 
-- Padrão de `LocalControlAdmissionService.admit()` (PROVADO NO CÓDIGO): transação com `getGrant` → se existe, compara fingerprint → replay ou conflito.
-- Race: unique constraint → fallback para leitura e comparação (mesmo padrão).
+$$S_{\text{active}}(M) = \text{Reduce}(\text{Grants}(M), \text{Revocations}(M), T_{\text{now}}, \text{CredentialStatus})$$
 
-### 8.5 Transações SQLite
+Um grant $g \in \text{Grants}(M)$ é considerado ativo se e somente se:
+1. Não existe nenhuma linha em `mission_capability_revocations` onde `target_grant_id = g.grant_id`.
+2. $g.\text{expires_at}$ é nulo ou $T_{\text{now}} < g.\text{expires_at}$.
+3. O cliente emissor $g.\text{grantor_client_id}$ não foi revogado na autoridade de credenciais (conforme política definida em §8.6).
 
-- Grant: `BEGIN` → insert grant → recompute scope → `updateMission` → `COMMIT` → publish mutations. Rollback em falha.
-- Revoke: `BEGIN` → update grant (revokedAt) → recompute scope → `updateMission` → `COMMIT`.
-- Publicação de eventos somente após commit (PROVADO NO CÓDIGO: `withTransaction`).
+A projeção materializada em memória é derivada unicamente dessa redução. Se o SQLite for reiniciado, a integridade é restabelecida sem perda de estado e sem mutação no disco.
 
-### 8.6 Comportamento após crash
+### 8.5 Transações SQLite, atomicidade e rollback local
 
-- Se crash antes do commit → rollback completo; nenhum grant parcial; escopo inalterado.
-- Se crash após commit → ledger e cache consistentes (ambos no mesmo commit).
-- Restart: recompute cache a partir do ledger para cada Mission carregada (ou validar cache; se divergência, ledger vence e cache é corrigido). Fail-closed: se ledger ilegível/corrupto, escopo = vazio para aquela Mission + log interno; não conceder capabilities implícitas.
+- Toda inserção no ledger append-only e eventual atualização de metadados da Mission ocorrem estritamente dentro de `store.withTransaction()`.
+- O mecanismo de `withTransaction()` em `cli/src/mission/sqlite-mission-store.ts` utiliza `BEGIN IMMEDIATE`, garantindo exclusão mútua contra leituras sujas e assegurando que falhas disparem `ROLLBACK` completo.
+- Mutações para eventos de domínio (`pendingMutations`) só são publicadas após o `COMMIT` bem-sucedido no SQLite. Se houver falha de validação ou escrita, nenhum evento é emitido aos observadores (PROVADO NO CÓDIGO).
 
-### 8.7 Rotação e revogação de credenciais
+### 8.6 Rotação de credenciais versus revogação de grants
 
-- Rotação invalida `credentialVersion`; grants emitidos com versão antiga permanecem no ledger.
-- Revalidação antes de novo efeito: se grantor não está mais autorizado, o grant **não** autoriza novos efeitos (fail-closed). **PROPOSTA:** grant permanece no ledger como histórico, mas é tratado como inativo para autorização futura se grantor revogado. **DECISÃO PENDENTE:** confirmar se revogação de grantor deve revogar automaticamente seus grants ou apenas desativá-los para novos efeitos. Recomendamos: desativar para novos efeitos, preservar evidência.
-
-### 8.8 Compatibilidade com dados anteriores
-
-- Missions pré-grant mantêm `allowedCapabilityScope` persistido; tratado como cache legado.
-- Novos grants adicionam (union) ao escopo legado.
-- Sem migração destrutiva.
-
----
-
-## 9. Revogação, concorrência e recovery
-
-### 9.1 Comportamento por estágio
-
-| # | Estágio | Comportamento ao revogar |
-|---|---|---|
-| 1 | Antes da geração do plano | Plano não pode usar capabilities revogadas; `proposePlan` valida policy contra scope atual → `CAPABILITY_NOT_AUTHORIZED` |
-| 2 | Durante a geração do plano | Planner é advisory; não tem autoridade. Revalidação final em `proposePlan` |
-| 3 | Depois de proposta, antes da aceitação | `acceptPlan` deve revalidar policy contra scope atual antes de aceitar; se revogado → rejeitar aceitação |
-| 4 | Depois da aceitação, antes do dispatch | `dispatchStep` gate de scope → `DispatchRejectedError` |
-| 5 | Durante a preparação de um efeito | Revalidação de scope antes de submeter; se revogado → bloquear, não submeter |
-| 6 | Depois de submissão externa com resultado incerto | Sem replay automático; reconciliação via `ReconciliationAuthority` apenas; revogação não cancela automaticamente efeito remoto |
-| 7 | Depois de efeito confirmado | Evidência preservada; revogação não desfaz efeito externo; Mission pode ser verificada com evidência existente |
-
-### 9.2 Revalidação autoritativa antes de cada novo efeito
-
-**PROPOSTA:** `dispatchStep()` e qualquer caminho de submissão de efeito devem ler o scope efetivo **atual** do ledger (não cache stale) antes de criar/submeter invocation. Cache pode ser usado apenas se validado contra ledger na mesma transação.
-
-### 9.3 Revogação fail-closed para operações ainda não autorizadas
-
-- Revogação remove contribuição do grant; operações subsequentes não veem a capability.
-- Operações já em voo (invocation criada mas não submetida) são bloqueadas antes da submissão.
-
-### 9.4 Preservação de evidência de efeitos confirmados
-
-- Revogação não apaga invocations, evidências ou verificações.
-- `isInvocationTerminal` e evidência permanecem.
-
-### 9.5 Impossibilidade de o planner reativar autorização
-
-- Planner não tem endpoint de grant; não pode setar scope.
-- `PlanCandidate` não contém campos de scope/grant.
-- Policy rejeita qualquer tentativa de mutação de scope (não há campo para mutar).
-
-### 9.6 Consistência entre transação, estado da Mission e scheduler
-
-- Revoke em transação atualiza ledger + cache + Mission; scheduler lê scope atual.
-- Concorrência revoke vs dispatch: serialização via `withTransaction` queue (PROVADO NO CÓDIGO). Dispatch revalida dentro da transação antes de claim invocation.
-
-### 9.7 Tratamento de concorrência revoke vs dispatch
-
-**PROPOSTA:** ordenação determinística:
-
-1. Dispatch adquire transação, revalida scope, claim invocation, commit.
-2. Revoke adquire transação, marca grant, recompute scope, commit.
-3. Se revoke commitou antes de dispatch revalidar → dispatch vê scope revogado → rejeita.
-4. Se dispatch commitou antes de revoke → invocation existe; revoke não cancela automaticamente; reconciliação/owner verification decidem.
-5. Nunca há "meio-termo": transação garante atomicidade.
-
-### 9.8 Efeito submetido/incerto
-
-- Revogação não gera replay automático de efeitos incertos.
-- Reconciliação apenas via `ReconciliationAuthority` (PROVADO NO CÓDIGO: `recordReconciledInvocationResult`).
-- Preservar `hasUncertainDelivery` e não re-submeter.
+É mandatório distinguir os efeitos de segurança:
+1. **Rotação de Credencial do Operador:**
+   - Ocorre quando o operador renova seu token. A `credentialVersion` do cliente avança.
+   - **Regra:** Grants emitidos legitimamente sob a versão anterior permanecem válidos até expiração ou revogação explícita, pois representam delegação autorizada registrada em ledger. A versão antiga não pode mais ser utilizada para emitir novos grants.
+2. **Revogação da Credencial do Operador:**
+   - Ocorre quando um operador é desautorizado ou demitido (`auth revoke <clientId>`).
+   - **Regra (Fail-Closed):** O daemon marca a credencial como revogada no `LocalControlCredentialStore`. Nos gates de revalidação (§9.2), qualquer grant emitido por um operador cuja credencial foi revogada é considerado **inativo para novos efeitos futuros**. Efeitos já confirmados continuam válidos no histórico forense.
+3. **Revogação de Grant Individual:**
+   - Ocorre via `mission.revoke_capability_grant`. Cessa a autorização daquela tupla específica sem impactar a credencial do operador nem outros grants.
 
 ---
 
-## 10. Threat model
+## 9. Revogação, concorrência e limites de atomicidade
 
-| Ataque | Vetor | Impacto | Controle | Teste esperado |
-|---|---|---|---|---|
-| Cliente com `mission.create` tenta conceder capabilities | Payload `mission.grant_capabilities` sem scope dedicado | Escalação de privilégio | `requiredLocalControlScope` retorna null/403; operação negada | 403 + zero mutação |
-| Operador excedendo seus direitos | Grant de capability fora dos limites | Escalação | Validação contra fonte independente → `CAPABILITY_NOT_GRANTABLE` | Teste de limite |
-| Modelo fabricando campos de autorização | PlanCandidate com `allowedCapabilityScope` (não existe) ou grant fields | Bypass | Contrato não aceita esses campos; policy rejeita desconhecidos | Teste de schema/allowlist |
-| Planner alterando capability/effect class | PlanStep com capability fora do scope | Execução não autorizada | Policy `CAPABILITY_NOT_AUTHORIZED`/`EFFECT_NOT_AUTHORIZED` | policy.test.ts |
-| Aprovação reaproveitada em outro efeito | Step referencia approvalId com fingerprint diferente | Reuso de grant | `APPROVAL_SCOPE_MISMATCH` | policy.test.ts |
-| Revogação concorrente com dispatch | Race revoke/dispatch | Efeito não autorizado | Serialização + revalidação | Concurrency test |
-| Replay após restart | Re-dispatch de step | Efeito duplicado | `InvocationConflictError` + ledger | Restart test |
-| Rotação/revogação de credenciais | Grantor revogado | Autorização stale | Revalidação fail-closed | Auth e2e |
-| References maliciosas | `inputRefs` com prefixos não autorizados | Acesso a dados | Policy `INPUT_INCOMPATIBLE`/`STORAGE_ACCESS_DENIED` | policy.test.ts |
-| Grants expirados | `expiresAt` passado | Uso de grant vencido | Filtro de ativos na derivação | Expiry test |
-| Capability removida/indisponível | Registry não resolve | Dispatch de capability inexistente | `CAPABILITY_UNKNOWN`/`DispatchRejectedError` | Registry test |
-| Corrupção parcial do ledger | Linhas inválidas | Autorização implícita | Fail-closed: escopo vazio + log | Corruption test |
-| Prompt injection | Texto em intent/constraints | Injeção de instrução | Sanitização + planner advisory | Sanitize tests |
-| Vazamento de tokens | Token em payload/logs | Comprometimento | Allowlist + redaction + não ecoar | Auth e2e |
-| Resultados de executores tratados como autoridade | Executor reporta "success" | Bypass de verification | Owner verification attestation + mission verifier | Verification tests |
+### 9.1 Auditoria do comportamento atual de main (janelas de corrida identificadas)
 
-**Invariantes de threat model (PROPOSTA):**
+A auditoria minuciosa do código atual de `main` revela quatro janelas de corrida críticas que tornam a sincronização entre revogação e execução dependente de correções normativas:
 
-- Nenhum conteúdo de modelo ou ferramenta pode alterar a policy.
-- Nenhum campo de payload pode conceder autoridade.
-- Fail-closed em toda ausência de evidência.
+1. **Janela em `proposePlan()` (`cli/src/mission/mission-engine.ts:489-530`):**
+   - O método executa `this.policy.validate(mission, candidate)` na linha 506, **fora da transação**.
+   - Apenas na linha 515 abre `this.store.withTransaction()`. Dentro da transação, o código revalida unicamente se a Mission é terminal.
+   - *Vulnerabilidade de corrida:* Se um grant for revogado entre as linhas 506 e 515, um plano baseado em capabilities recém-revogadas será gravado com status `proposed`.
+2. **Janela em `acceptPlan()` (`cli/src/mission/mission-engine.ts:562-630`):**
+   - O método recupera a revisão proposta e entra em `withTransaction()`.
+   - O método **não executa nenhuma revalidação de policy** antes de marcar a revisão como `accepted` e mover a Mission para `READY` ou `WAITING_FOR_APPROVAL`.
+   - *Vulnerabilidade de corrida:* Se a revogação ocorreu enquanto o plano estava em proposta, `acceptPlan` aceitará cegamente passos que já não possuem cobertura de grant.
+3. **Janela em `dispatchStep()` (`cli/src/mission/mission-engine.ts:726-890`):**
+   - O método executa a revalidação de policy na linha 778, **fora e antes** de `this.store.withTransaction()`.
+   - Na linha 884, dentro da transação, executa `claimInvocation(invocation)`.
+   - *Vulnerabilidade de corrida:* Se uma revogação for commitada entre a validação de policy e o claim, a invocação será criada e gravada como `dispatched`, violando a revogação.
+4. **Janela de Handoff ao Executor (`cli/src/mission/mission-scheduler.ts:165-220`):**
+   - A invocação persistida no SQLite com `delivery.state = "not_submitted"` é lida pelo agendador e enviada ao conector externo.
+   - Entre a gravação do claim e a transmissão pela rede/processo, pode transcorrer tempo arbitrário. Se a revogação ocorrer nesse intervalo, o conector submeterá o efeito se não houver um gate imediatamente anterior à entrega.
+
+### 9.2 Exigências de revalidação autoritativa nos quatro gates
+
+Para sanar categoricamente essas janelas, a proposta define quatro gates autoritativos de revalidação obrigatória:
+
+```text
+[Plano Proposto] ──Gate 1──► [Plano Aceito] ──Gate 2──► [Invocation Claimada] ──Gate 3──► [Handoff Externo] ──Gate 4──► [Executor]
+   (Propose)                    (Accept)                     (Dispatch/Claim)                 (Pre-Submission)
+```
+
+1. **Gate 1 — Validação na Proposta (`proposePlan`):**
+   - A validação de conformidade da tupla deve ocorrer sob estado consistente ou ser revalidada antes da escrita da revisão.
+2. **Gate 2 — Revalidação na Aceitação (`acceptPlan`):**
+   - Dentro da transação atômica de aceitação, `acceptPlan` deve revalidar se todos os passos do plano proposto continuam cobertos por grants ativos no ledger. Caso contrário, a aceitação é rejeitada com erro de autorização expirada/revogada.
+3. **Gate 3 — Revalidação no Claim da Invocação (`dispatchStep`):**
+   - Dentro de `store.withTransaction`, antes de persistir o claim da `CapabilityInvocation`, o motor deve verificar se o `grantId` associado ao passo permanece ativo e não revogado. Se revogado, o claim é abortado com `DispatchRejectedError`.
+4. **Gate 4 — Revalidação Imediatamente Pré-Submissão (Pre-Submission Handoff Gate):**
+   - Imediatamente antes de chamar a interface do conector ou despachar o payload para a rede/subprocesso, o scheduler/seam verifica se o grant não foi revogado. Se revogado, a entrega é abortada sem submissão externa (`delivery.state` transiciona para `failed` com código `REVOKED_BEFORE_SUBMISSION`).
+
+### 9.3 Linearização e ordem determinística de concorrência
+
+A concorrência entre operações de revogação (`revoke`) e despacho (`dispatch`) é linearizada pela ordem de commit no SQLite:
+
+1. **Cenário A — Revoke comita antes do Claim da Invocation:**
+   - O `dispatchStep` (Gate 3) tenta adquirir a transação. Ao ler os grants ativos, constata a revogação no ledger.
+   - **Resultado:** A invocação não é criada. A chamada falha com `DispatchRejectedError`. Comportamento estritamente fail-closed.
+2. **Cenário B — Claim da Invocation comita antes do Revoke:**
+   - A invocação foi gravada como `prepared / not_submitted`.
+   - O `revoke` comita em seguida no SQLite.
+   - O Gate 4 (Pre-Submission) detecta a revogação no momento em que o scheduler tenta submeter o efeito.
+   - **Resultado:** O efeito externo **NÃO é submetido**. A invocação é cancelada localmente de forma segura.
+3. **Cenário C — Revoke comita durante ou após a submissão externa:**
+   - O efeito já cruzou o limite do processo (a requisição TCP ou o comando OS já foram emitidos).
+   - O runtime **não pode garantir rollback físico** do efeito externo (§9.4). O status do efeito é tratado conforme o ciclo de vida (§9.5).
+
+### 9.4 Reconhecimento da impossibilidade de atomicidade SQLite + efeito externo
+
+> [!IMPORTANT]
+> **Princípio de Realidade Operacional:**
+> Uma transação no SQLite é puramente local ao arquivo de banco de dados do host. **Ela NÃO confere e NUNCA poderá conferir atomicidade a um efeito executado no mundo real** (como comandos shell, mutações de arquivos em disco, requisições de rede ou transações remotas de API).
+
+Qualquer alegação de que um rollback no SQLite desfaz um efeito externo executado é arquiteturalmente falsa. Uma vez que o payload cruza a fronteira do processo do daemon, a atomicidade transacional local encerra-se. A segurança depende de delimitar o ciclo de vida dos efeitos e proibir presunções ingênuas de sucesso ou retry.
+
+### 9.5 Ciclo de vida dos efeitos e ausência de replay automático
+
+Os efeitos de capabilities seguem o ciclo de estados estrito já previsto na arquitetura de entrega durável (#50):
+
+```text
+       ┌──────────────┐
+       │   PREPARED   │ (Gravado no SQLite; delivery.state = "not_submitted")
+       └──────┬───────┘
+              │ Gate 4 (Revalidação pré-submissão)
+              ▼
+       ┌──────────────┐
+       │  SUBMITTED   │ (Cruzou a fronteira do conector; delivery.state = "running")
+       └───┬──────┬───┘
+   Timeout │      │ Confirmação
+   /Crash  │      │
+           ▼      ▼
+┌────────────┐  ┌─────────────┐
+│ UNCERTAIN  │  │  CONFIRMED  │ (completed / failed no mundo real)
+└─────┬──────┘  └─────────────┘
+      │
+      ▼
+Reconciliação Exclusiva (ReconciliationAuthority)
+(PROIBIDO REPLAY AUTOMÁTICO)
+```
+
+1. **Efeitos Preparados (`prepared`):** Invocação gravada no SQLite, mas ainda não despachada ao conector. Revogação cancela a entrega localmente.
+2. **Efeitos Submetidos (`submitted`):** Invocação enviada ao executor. Se ocorrer revogação, o runtime registra intenção de cancelamento (`cancellation.requested = true`), mas não altera o fato da transmissão.
+3. **Efeitos Incertos (`uncertain`):** Queda de conexão, timeout ou crash durante a execução. **É ESTRITAMENTE PROIBIDO REPLAY AUTOMÁTICO.** O runtime não sabe se a operação foi executada na ponta remota. A resolução só pode ocorrer via `ReconciliationAuthority` determinística ou intervenção do operador.
+4. **Efeitos Confirmados (`confirmed`):** Efeitos com evidência definitiva registrada (`completed` ou `failed`). Uma revogação de grant posterior **nunca reverte, não apaga e não invalida a evidência do efeito executado**. O passado permanece imutável e auditável.
 
 ---
 
-## 11. Compatibilidade e migração
+## 10. Compatibilidade e migração com Missions legadas
 
-- Missions existentes permanecem válidas; `allowedCapabilityScope` persistido é tratado como cache legado.
-- Grants são aditivos; sem migração destrutiva.
-- `MISSION_CONTRACT_VERSION` permanece 1; grant contract tem versão própria (1).
-- Se grant ledger não existir (dados antigos), escopo efetivo = valor persistido; novos grants adicionam.
-- Projeções públicas (`projectMission`) não expõem scope nem grants (PROVADO NO CÓDIGO: `durable-projection.ts`).
-- Contratos públicos existentes não são alterados (restrição da issue).
+### 10.1 Os cinco cenários de compatibilidade e proveniência
+
+A proposta abandona a conversão permissiva e classifica formalmente cinco cenários distintos para instalações existentes e novas:
+
+| Cenário | Condição do Ambiente / Dados | Comportamento para Ações Futuras (Proposta / Aceitação / Dispatch) | Preservação de Histórico e Evidências |
+|---|---|---|---|
+| **1. Escopo histórico com autoridade verificável** | Ledger de grants presente, íntegro e correlacionado com o histórico da Mission. | **Permitido.** Escopo ativo é derivado deterministicamente pela redução dos eventos ativos no ledger. | Integralmente preservado. |
+| **2. Escopo histórico sem proveniência comprovada** | Mission pré-existente (v1) criada antes do ledger, contendo `allowedCapabilityScope` no banco, mas zero eventos no ledger de grants. | **FAIL-CLOSED (Bloqueado).** O escopo persistido antigo **NÃO** é tratado como autorização ativa e **NÃO** faz união com novos grants. Novas propostas, aceitações e dispatches são rejeitados até concessão explícita em ledger. | **Totalmente preservado.** Invocations passadas, revisões e evidências permanecem imutáveis para auditoria. |
+| **3. Ledger ausente em instalação nova** | Instalação limpa do runtime do zero. | **Permitido.** Tabelas são criadas limpas. Toda nova Mission nasce com escopo vazio (`EMPTY_SCOPE`). Concessões ocorrem exclusivamente via ledger. | N/A (banco novo). |
+| **4. Ledger ausente após migração** | Banco de dados existente atualizado via migration; tabelas de ledger criadas, porém vazias de registros históricos. | **FAIL-CLOSED (Bloqueado).** Aplica-se a regra do Cenário 2. As Missions antigas mantêm histórico forense preservado, mas nenhuma nova capability é executada sem concessão legítima por operador. | Totalmente preservado. Nenhuma deleção de dados. |
+| **5. Ledger corrompido / checksum mismatch** | Registros de grants ou revogações com integridade violada, JSON inválido ou divergência de fingerprint. | **FAIL-CLOSED IMEDIATO.** A Mission afetada é congelada para novas operações. Erro estruturado de auditoria é logado. Nenhuma inferência permissiva é tolerada. | Evidências existentes intactas. Operação bloqueada. |
+
+### 10.2 Princípio de não-conversão implícita em grants sintéticos
+
+> [!WARNING]
+> É terminantemente vedado ao código de migração criar "grants sintéticos", "grants mágicos" ou inferir intenção de autorizadores do passado. Qualquer concessão de autoridade deve derivar de uma transação explícita, assinada ou submetida por um operador autenticado e auditável.
+
+### 10.3 Preservação integral do histórico e evidências passadas
+
+Nenhuma política fail-closed para novas operações afetará:
+- Invocations pretéritas com status `completed` ou `failed`.
+- Atribuições de evidência em `evidence_refs` da Mission.
+- Atestados de verificação de critérios de aceitação já registrados.
+- O histórico de revisões propostas, aceitas ou substituídas.
+
+---
+
+## 11. Threat model e análise de segurança
+
+### 11.1 Matriz de ameaças e controles
+
+| Ameaça / Vetor | Impacto Potencial | Controle Arquitetural Proposto | Teste Obrigatório |
+|---|---|---|---|
+| **Escalação por produto cartesiano A × B** | Execução de capabilities com referências de outros grants | Preservação estrita da tupla no grant; validação atômica correlacionada (§5.2) | `test-grant-cartesian-rejection` |
+| **Operador concedendo além dos limites** | Elevação de privilégio do autorizador | Validação obrigatória contra fonte confiável de limites máximos (§5.4) | `test-grantor-limit-enforcement` |
+| **Bypass de escopo via `mission.create`** | Criação de Mission já com capabilities ativas | Admissão cria Missions estritamente em `EMPTY_SCOPE` (PROVADO NO CÓDIGO) | `test-admission-empty-scope` |
+| **Injeção de campos de autoridade pelo planner** | Planner inventando aprovações ou grants | Rejeição estrita no validador; `PlanCandidate` é dado passivo sem autoridade | `policy.test.ts` |
+| **Sequestro de aprovação (`approval hijacking`)** | Reuso de aprovação concedida para efeito diferente | Validação imutável via `effectFingerprint` de 4 fatores (PROVADO NO CÓDIGO) | `policy.test.ts` |
+| **Corrida entre Revoke e Dispatch** | Invocação despachada após revogação | Serialização transacional e revalidação nos quatro gates (§9.2) | `test-revoke-dispatch-race` |
+| **Replay após queda do daemon** | Re-execução indevida de efeito incerto | Proibição de replay automático; isolamento do estado `uncertain` (§9.5) | `test-uncertain-recovery-barrier` |
+| **Falsificação de identidade de emissor** | Parâmetros de grantor injetados no corpo RPC | Identidade e versão de credencial extraídas unicamente da sessão autenticada | `test-spoofed-grantor-rejection` |
+| **Corrupção parcial do ledger** | Assunção permissiva diante de dados inválidos | Fail-closed determinístico; congelamento de novas operações da Mission | `test-corrupted-ledger-fail-closed` |
+| **Vazamento de tokens em projeções** | Exposição de credenciais e segredos | Projeções sanitizadas em `durable-projection.ts`; sem segredos no wire | `test-sanitized-projections` |
+
+### 11.2 Defesa contra prompt injection vs mera sanitização de texto
+
+É fundamental formalizar a distinção entre **higiene sintática** e **segurança de autoridade**:
+- **Sanitização de texto (`sanitizeText`):** Remove caracteres de controle, trunca comprimentos excessivos e evita quebras de formatação no terminal ou logs. **Sanitização NÃO previne nem resolve prompt injection.**
+- **Defesa Arquitetural contra Prompt Injection:**
+  1. **Separação Estrutural de Dados vs. Instruções:** As diretivas do planner (`PlanCandidate`) são tratadas exclusivamente como **dados consultivos passivos**, jamais como código executável ou concessão de autoridade.
+  2. **Impotência de Autoridade do Modelo:** O modelo de IA não tem acesso a chaves criptográficas, não emite tokens de autorização, não invoca rotas de grant e não pode alterar o ledger do SQLite.
+  3. **Validação Determinística Compilada:** O `PlanPolicyValidator` e o `MissionEngine` são escritos em código TypeScript compilado e determinístico. Mesmo que o modelo seja 100% comprometido por injeção adversária e declare que tem autoridade ilimitada, o validador verificará o ledger relacional no SQLite e rejeitará sumariamente a tentativa.
 
 ---
 
 ## 12. Matriz de testes projetados (futuros)
 
-| Categoria | Testes |
-|---|---|
-| Authz 401/403 | Operação sem scope → 403; sem credencial → 401; scope `mission.create` não concede grant |
-| Rollback SQLite real | Falha no meio da transação → rollback; nenhum grant parcial |
-| Concorrência | Revoke vs dispatch; grants paralelos; idempotência concorrente |
-| Idempotência/conflitos | Replay de grant; conflito de fingerprint |
-| Restart | Recovery do escopo a partir do ledger; nenhum invocation duplicado |
-| Expiração/revogação | Grant expirado não autoriza; revoke remove contribuição |
-| Publisher/observer após commit | Mutation publicada só após commit; rollback não publica |
-| Ausência de capabilities implícitas | Mission nova tem escopo vazio; nenhum grant implícito |
-| Regressões de admissão | `mission.admit` continua criando EMPTY_SCOPE |
-| Revalidação de policy | Dispatch revalida scope atual |
-| Nenhuma Invocation após revogação | Dispatch rejeitado após revoke |
-| Efeito submetido/incerto | Sem replay automático; reconciliação via authority |
-| Daemon E2E real | Daemon real, SQLite temporário, credenciais provisionadas |
-| Preservação de contratos públicos | Schemas/versões inalterados |
+Para homologação futura das alterações propostas, a seguinte suíte de testes em ambiente real (com SQLite temporário e sem mocks voláteis) deverá ser implementada:
 
-**Regra (CONTRATO EXISTENTE):** mock isolado não prova recovery nem integração. Testes devem usar daemon real + SQLite temporário onde aplicável.
+| Identificador do Teste | Escopo / Cenário Validado | Critério de Aceite Estrito |
+|---|---|---|
+| `test_grant_cartesian_product_adversarial` | Concede Grant A (`capA`, `refsA`) e Grant B (`capB`, `refsB`). Propõe step com `capA` + `refsB`. | Rejeição determinística por falta de grant com cobertura conjunta. |
+| `test_grant_append_only_immutability` | Emite grant e subsequente revogação. | Nenhuma operação `UPDATE` executada no banco; duas linhas `INSERT` registradas. |
+| `test_grant_idempotency_replay_and_conflict` | Replay com mesmo hash $\rightarrow$ sucesso idempotente. Replay com hash divergente $\rightarrow$ erro `GRANT_CONFLICT`. | Zero mutações espúrias; respostas idempotentes comprovadas. |
+| `test_legacy_mission_fail_closed` | Carrega banco com Mission v1 (sem ledger). Tenta propor e despachar novo step. | Bloqueio imediato fail-closed; histórico e evidências passadas intactos. |
+| `test_race_revoke_during_proposal` | Revogação comita concorrentemente entre validação de política e persistência da proposta. | Proposta abortada ou rejeitada na transação. |
+| `test_race_revoke_before_accept` | Plano proposto com grant ativo; grant revogado antes do `acceptPlan`. | `acceptPlan` revalida e falha; Mission não move para `READY`. |
+| `test_race_revoke_before_claim` | Revogação comita imediatamente antes de `claimInvocation` dentro de `withTransaction`. | Claim abortado; nenhuma invocation criada. |
+| `test_race_revoke_before_handoff` | Invocação gravada como `not_submitted`; grant revogado antes do despacho ao conector. | Gate 4 bloqueia envio ao conector; `delivery.state` vira `failed`. |
+| `test_uncertain_delivery_no_replay` | Simula falha de entrega externa deixando estado `uncertain`. Emite revogação e dispara tick do scheduler. | Nenhum replay automático executado. Resolução unicamente via autoridade. |
+| `test_grantor_revocation_cascading_check` | Emissor do grant é revogado no `LocalControlCredentialStore`. | Novos dispatches sob os grants daquele emissor são bloqueados. |
 
 ---
 
-## 13. Decomposição futura (slices independentes)
+## 13. Decomposição futura (slices independentes de implementação)
 
-### Slice A — Persistência e policy de grants, sem superfície pública
+A implementação do contrato proposto não deve ser feita de forma monolítica. Propõe-se a seguinte divisão em quatro slices independentes:
 
-- **Objetivo:** criar ledger + derivação de escopo efetivo + validação contra limites, sem RPC/CLI.
-- **Dependências:** nenhuma (base atual).
-- **Arquivos prováveis:** `cli/src/mission/sqlite-mission-store.ts`, novo `cli/src/mission/capability-grants.ts`, `cli/src/mission/contracts.ts`, `cli/src/mission/ports.ts`, testes.
-- **Contratos:** `MISSION_CONTRACT_VERSION` inalterado; novo contrato de grant v1.
-- **Limites de autoridade:** apenas store/policy; nenhuma superfície pública.
-- **Invariantes:** ledger é autoridade; cache recomputável; fail-closed.
-- **Testes:** unit + SQLite real (rollback, restart, idempotência).
-- **Aceite:** store persiste/recomputa escopo; testes passam; `bun run check`.
-- **Evidência necessária:** restart real, rollback real.
-- **Riscos/stop conditions:** se ledger não puder ser transacional com Mission → parar.
+### Slice A — Persistência do ledger append-only e validação por tupla correlacionada
+- **Objetivo:** Adicionar tabelas `mission_capability_grants` e `mission_capability_revocations` no `SqliteMissionStore`, método de redução determinística de estado e reescrita do `PlanPolicyValidator` para validação por tupla indissociável (eliminando o produto cartesiano).
+- **Superfície pública:** Nenhuma (sem RPC ou CLI).
+- **Critério de parada:** Se a validação por tupla quebrar a compatibilidade de interfaces sem migração segura, pausar.
 
-### Slice B — Operação autenticada e auditável de concessão/revogação
+### Slice B — Operações administrativas de Concessão e Revogação no Local Control Plane
+- **Objetivo:** Implementar os endpoints JSON-RPC/UDS `mission.grant_capabilities`, `mission.revoke_capability_grant` e `mission.list_capability_grants` no daemon, protegidos pelo escopo `mission.grant_capabilities` e validados contra limites do grantor.
+- **Superfície pública:** Rotas internas versionadas no controle local.
+- **Critério de parada:** Rejeitar qualquer concessão se o emissor não possuir limites explicitamente configurados.
 
-- **Objetivo:** expor `mission.grant_capabilities` e revoke via RPC/CLI, com auth scope dedicado.
-- **Dependências:** Slice A; decisão de scope (`mission.grant_capabilities`).
-- **Arquivos prováveis:** `shared/local-control-*-contract.ts`, `cli/src/daemon/local-control-auth.ts`, `cli/src/daemon/server.ts`/rpc-gateway, `cli/src/commands/admin-cli.ts`, `cli/src/daemon/local-control-admission.ts` (padrão), testes e2e.
-- **Contratos:** novo contrato versionado.
-- **Limites de autoridade:** grantor validado contra fonte independente; `daemon.admin`/`mission.create` não concedem.
-- **Invariantes:** identidade derivada do contexto; allowlist de campos; limites de tamanho.
-- **Testes:** authz 401/403, e2e daemon real.
-- **Aceite:** operação funcional com credencial adequada; negada sem scope.
-- **Evidência necessária:** daemon E2E real.
-- **Riscos/stop conditions:** se novo scope não aprovado → não implementar.
+### Slice C — Revalidação autoritativa nos portões de planejamento e aceitação
+- **Objetivo:** Adaptar `proposePlan()` e `acceptPlan()` no `MissionEngine` para fechar as janelas de corrida 1 e 2 (§9.1), garantindo revalidação atômica antes de persistir propostas ou aceitar planos.
+- **Superfície pública:** Nenhuma alteração de assinatura.
+- **Critério de parada:** Qualquer plano sem cobertura ativa deve ser rejeitado sem alterar estado da Mission.
 
-### Slice C — Planejamento consultivo e aceitação sob escopo autorizado
-
-- **Objetivo:** garantir que `proposePlan`/`acceptPlan` usem scope atual e revalidem; possivelmente adicionar operação de "request plan" sob scope.
-- **Dependências:** Slices A-B.
-- **Arquivos prováveis:** `cli/src/mission/mission-engine.ts`, `policy.ts`.
-- **Contratos:** inalterados.
-- **Limites:** planner continua advisory.
-- **Invariantes:** revalidação antes de aceitação.
-- **Testes:** policy + engine.
-- **Aceite:** planos com capabilities fora do scope rejeitados em todas as etapas.
-- **Evidência:** testes de engine.
-- **Riscos:** se scope mudar mid-plan → rejeitar aceitação.
-
-### Slice D — Integração de execução
-
-- **Objetivo:** dispatch e submissão de efeitos condicionados ao scope atual; reconciliação.
-- **Dependências:** Slices A-C + aprovação específica.
-- **Arquivos prováveis:** `mission-engine.ts`, dispatch seam, scheduler.
-- **Contratos:** inalterados.
-- **Limites:** sem replay automático; fail-closed.
-- **Invariantes:** revalidação antes de cada efeito.
-- **Testes:** e2e real, recovery, concorrência.
-- **Aceite:** nenhuma invocation após revogação; evidência preservada.
-- **Evidência:** daemon E2E real.
-- **Riscos/stop conditions:** se reconciliação não puder ser provada → parar.
+### Slice D — Portões de dispatch, entrega e barreira de incerteza
+- **Objetivo:** Implementar o Gate 3 (dentro de `claimInvocation`) e Gate 4 (pre-submission handoff no `MissionSchedulerDriver`), integrando com o ciclo de entrega de #50 e isolando efeitos incertos.
+- **Superfície pública:** Nenhuma.
+- **Critério de parada:** Garantir que nenhum efeito incerto sofra retry automático.
 
 ---
 
 ## 14. Decisões que exigem aprovação de Pedro (DECISÃO PENDENTE)
 
-1. **Nome do scope de autenticação** para concessão (`mission.grant_capabilities` vs `capability.grant` vs outro).
-2. **Fonte confiável de limites máximos do grantor** (arquivo de policy vs coluna na tabela de auth vs config de daemon).
-3. **Composição:** union (recomendado) vs teto de Mission definido na admissão.
-4. **Idempotência do grant:** `grantId` fornecido pelo cliente (recomendado) vs derivado pelo daemon.
-5. **Exposição de `grantorClientId`** na projeção pública.
-6. **Revogação de grantor:** desativar grants para novos efeitos (recomendado) vs revogar automaticamente.
-7. **Leitura de grants:** scope `mission.read` vs novo scope.
-8. **Expiração default:** permitir grants sem expiração (recomendado, mas revogáveis) vs exigir `expiresAt`.
-9. **Compatibilidade legado:** tratar `allowedCapabilityScope` persistido como cache legado (recomendado) vs migrar para grants sintéticos.
-10. **Nomes finais das operações RPC** e versionamento.
+As seguintes questões arquiteturais e normativas permanecem em aberto e **dependem de aprovação explícita de Pedro**:
 
-**Nenhuma dessas decisões é presumida.** Toda implementação futura depende de aprovação explícita.
+1. **Nomenclatura do escopo de autorização para concessão:** Adotar `mission.grant_capabilities`, `capability.grant` ou integrar em um escopo administrativo mais amplo? (Recomendação: `mission.grant_capabilities` dedicado).
+2. **Localização da fonte de limites máximos do grantor:** Optar por arquivo de configuração estático (`$OUROBOROS_DATA_DIR/security/operator-limits.json`) ou coluna adicional provisionada na tabela `local_control_clients`? (Recomendação para M1: arquivo local de governança).
+3. **Política de expiração default:** Permitir grants sem data de expiração (`expiresAt` opcional, revogável a qualquer tempo) ou exigir prazo de validade máximo mandatório (ex.: leases de 24 horas)?
+4. **Política diante de revogação de credencial de operador:** Desativar grants emitidos para novos efeitos futuros (fail-closed, recomendado) ou disparar revogação em cascata com cancelamento de planos aceitos?
+5. **Escopo para leitura de grants (`mission.list_capability_grants`):** Permitir leitura com o escopo existente `mission.read` ou criar escopo específico para evitar enumeração de capabilities por clientes de telemetria básica?
+6. **Formato final de migração de Missions legadas:** Confirmar o tratamento fail-closed estrito sem criação de grants sintéticos para dados históricos.
+7. **Política de concorrência de múltiplos operadores:** Admitir revogação cruzada (Operador B revogar grant emitido pelo Operador A) se ambos possuírem autoridade de governança, ou restringir a revogação ao emissor original e `daemon.admin`?
 
 ---
 
-## 15. Evidências e referências ao código
+## 15. Evidências e referências ao código auditado
 
 **PROVADO NO CÓDIGO:**
-
-- `cli/src/daemon/local-control-admission.ts:25-35,153` — `EMPTY_SCOPE` e criação de Mission com escopo vazio.
-- `cli/src/mission/contracts.ts:126-136` — `AllowedCapabilityScope`.
-- `cli/src/mission/policy.ts:100-175` — `PlanPolicyValidator`, `CAPABILITY_NOT_AUTHORIZED`, `EFFECT_NOT_AUTHORIZED`.
-- `cli/src/mission/mission-engine.ts:424-485` — `createMission`.
-- `cli/src/mission/mission-engine.ts:489-550` — `proposePlan`.
-- `cli/src/mission/mission-engine.ts:562-665` — `acceptPlan`.
-- `cli/src/mission/mission-engine.ts:671-700` — `recordApproval`.
-- `cli/src/mission/mission-engine.ts:726-900` — `dispatchStep`.
-- `cli/src/daemon/local-control-auth.ts:338-365` — `requiredLocalControlScope`.
-- `shared/local-control-auth-contract.ts:1-10` — scopes.
-- `cli/src/mission/sqlite-mission-store.ts:1918-1945` — `withTransaction`.
-- `cli/src/daemon/durable-projection.ts:40-55` — `projectMission`.
+- `cli/src/daemon/local-control-admission.ts:25-35, 153` — Criação de Mission com `EMPTY_SCOPE`.
+- `cli/src/mission/contracts.ts:126-136` — Representação plana de `AllowedCapabilityScope`.
+- `cli/src/mission/policy.ts:100-220, 275-310` — Validação desacoplada de capability e referências em `PlanPolicyValidator`.
+- `cli/src/mission/mission-engine.ts:489-530` — `proposePlan` valida policy fora da transação.
+- `cli/src/mission/mission-engine.ts:562-630` — `acceptPlan` não revalida policy contra escopo atual.
+- `cli/src/mission/mission-engine.ts:726-890` — `dispatchStep` valida policy fora de `claimInvocation`.
+- `cli/src/mission/mission-scheduler.ts:165-270` — Scheduler despacha invocações preparadas sem revalidação de entrega.
+- `cli/src/mission/sqlite-mission-store.ts:1918-1945` — Fila em memória `transactionQueue` e semântica de `withTransaction`.
+- `cli/src/daemon/local-control-auth.ts:338-365` — Mapeamento estrito de métodos em `requiredLocalControlScope`.
+- `cli/src/daemon/durable-projection.ts:40-75` — `projectMission` e `projectInvocation` sem exposição de políticas ou segredos.
 
 **CONTRATO EXISTENTE:**
-
-- `docs/MISSION_CONTRACT.md` — Mission contract v1, approval authority.
-- `docs/decisions/2026-10-08-local-control-authz.md` — decisão de authz local.
-- `docs/ARCHITECTURE.md` — fluxo autoritativo, Current/Direction/Legacy.
-- `AGENTS.md` — regras, baseline.
-
-**PROPOSTA (este documento):** toda a §5-§9, §13-§14.
-
-**HIPÓTESE:**
-
-- Necessidade de autoridade externa (Alternativa C) para multi-host.
-- Redução de CPU/RAM de revalidação (não medido).
-
-**DECISÃO PENDENTE:** §14.
+- `docs/MISSION_CONTRACT.md` — Contrato v1 de Mission e autoridade de aprovações.
+- `docs/decisions/2026-10-08-local-control-authz.md` — Decisão de autorização local de controle.
+- `docs/ARCHITECTURE.md` — Fluxo autoritativo, distinção Current / Direction / Legacy.
+- `AGENTS.md` — Regras de baseline, não-regressão e restrições de integridade.
 
 ---
 
 ## Nota final
 
-Este documento é **proposta normativa**. Não implementa código, não altera contratos, não concede autorizações. A implementação futura, se aprovada, deve seguir os slices da §13 com gates da §12 e aprovação explícita de Pedro para as decisões da §14.
+Este documento constitui exclusivamente uma **proposta de contrato de confiança e análise arquitetural (PROPOSAL ONLY)**. Não implementa código de produção, não altera contratos públicos existentes, não adiciona tabelas ao banco de dados e não concede permissões reais.
 
-**Tarefa termina em: NEEDS_APPROVAL — aguardando decisão normativa sobre o contrato de grants.**
-```<|end|><|start|>translator<|channel|>analysis<|message|>Now write file. Then git diff --check, status. Then commit, push, PR. Need ensure only doc added. Let's write.<|end|><|start|>start<|channel|>write<|channel|>analysis <|constrain|>xml<|message|><rfl:parameter name="path">
-docs/analysis/operator-capability-grant-trust-contract-2026-10-29.md
+Toda implementação futura permanece estritamente condicionada à aprovação formal de Pedro para as decisões da §14 e à execução faseada através dos slices propostos na §13.
+
+**Estado da tarefa: NEEDS_APPROVAL — proposta corrigida e fundamentada, aguardando revisão do mantenedor e decisão normativa de Pedro.**
