@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import type { MissionEngine } from "../mission/mission-engine.js";
-import type { Mission } from "../mission/contracts.js";
-import type { MissionStore } from "../mission/ports.js";
-import { sanitizeText, sanitizeStringArray } from "../mission/sanitize.js";
+import type { Mission, AllowedCapabilityScope } from "../mission/contracts.js";
+import type { MissionStore, MissionAdmissionStore, MissionAdmissionRecord } from "../mission/ports.js";
+import { sanitizeText, sanitizeStringArray, containsRawSecret } from "../mission/sanitize.js";
 import {
   LOCAL_CONTROL_ADMISSION_OPERATION,
   LOCAL_CONTROL_ADMISSION_PROTOCOL_VERSION,
@@ -17,30 +17,15 @@ import {
 import { projectMission } from "./durable-projection.js";
 import type { LocalControlAuthenticatedClient } from "../../../shared/local-control-auth-contract.js";
 
-export interface MissionAdmissionRecord {
-  clientId: string;
-  requestId: string;
-  missionId: string;
-  payloadFingerprint: string;
-  createdAt: string;
-}
-
-export interface MissionAdmissionStore {
-  getMissionAdmission(clientId: string, requestId: string): Promise<MissionAdmissionRecord | null>;
-  createMissionAdmission(record: MissionAdmissionRecord): Promise<void>;
-  getMission(missionId: string): Promise<Mission | null>;
-  withTransaction<T>(fn: () => Promise<T>): Promise<T>;
-}
-
 export interface MissionAdmissionAuthority {
   admit(input: unknown, client: LocalControlAuthenticatedClient): Promise<LocalControlAdmissionResponse>;
 }
 
-const EMPTY_SCOPE = {
+const EMPTY_SCOPE: AllowedCapabilityScope = {
   capabilityIds: [],
   allowedEffectClasses: [],
   allowedRefPrefixes: [],
-} as const;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -98,10 +83,6 @@ export class LocalControlAdmissionService implements MissionAdmissionAuthority {
     }
   }
 
-  async admitMission(input: unknown, client: LocalControlAuthenticatedClient): Promise<LocalControlAdmissionResponse> {
-    return this.admit(input, client);
-  }
-
   async admit(input: unknown, client: LocalControlAuthenticatedClient): Promise<LocalControlAdmissionResponse> {
     if (!isRecord(input)) return failure("INVALID_REQUEST");
     if (input.protocolVersion === undefined) return failure("PROTOCOL_VERSION_REQUIRED");
@@ -120,6 +101,7 @@ export class LocalControlAdmissionService implements MissionAdmissionAuthority {
     if (Object.keys(input).some((key) => !allowedKeys.includes(key))) return failure("INVALID_REQUEST");
 
     if (!boundedText(input.requestId, LOCAL_CONTROL_ADMISSION_MAX_REQUEST_ID_LENGTH)) return failure("INVALID_ID");
+    if (containsRawSecret(input.requestId as string)) return failure("INVALID_ID");
     if (!boundedText(input.originalIntent, LOCAL_CONTROL_ADMISSION_MAX_INTENT_LENGTH)) return failure("INVALID_TEXT");
     if (!stringArray(input.constraints, LOCAL_CONTROL_ADMISSION_MAX_ARRAY_ITEMS, LOCAL_CONTROL_ADMISSION_MAX_TEXT_ITEM_LENGTH)) return failure("INVALID_PAYLOAD");
     if (!stringArray(input.acceptanceCriteria, LOCAL_CONTROL_ADMISSION_MAX_ARRAY_ITEMS, LOCAL_CONTROL_ADMISSION_MAX_TEXT_ITEM_LENGTH)) return failure("INVALID_PAYLOAD");
@@ -167,7 +149,7 @@ export class LocalControlAdmissionService implements MissionAdmissionAuthority {
             constraints,
             acceptanceCriteria,
           },
-          allowedCapabilityScope: EMPTY_SCOPE as never,
+          allowedCapabilityScope: EMPTY_SCOPE,
         });
         await this.store.createMissionAdmission({
           clientId,
@@ -225,4 +207,3 @@ export class AdmissionConflictError extends Error {
   }
 }
 
-export { LocalControlAdmissionService as MissionAdmissionService };

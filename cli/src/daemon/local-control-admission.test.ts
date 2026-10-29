@@ -103,6 +103,40 @@ describe("LocalControlAdmissionService", () => {
     }
   });
 
+  it("admits a valid request id", async () => {
+    const { service, client } = await harness();
+    const response = await service.admit(request({ requestId: "valid-request-id" }), client);
+    expect(response.ok).toBe(true);
+  });
+
+  it("rejects a request id containing a synthetic secret and writes nothing", async () => {
+    const { service, client, store } = await harness();
+    const beforeMissions = await store.listMissions();
+    const beforeAdmissions = await store.getMissionAdmission(client.clientId, "Bearer FAKESECRET123456");
+    const response = await service.admit(request({ requestId: "Bearer FAKESECRET123456" }), client);
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.code).toBe("INVALID_ID");
+    const afterMissions = await store.listMissions();
+    const afterAdmission = await store.getMissionAdmission(client.clientId, "Bearer FAKESECRET123456");
+    expect(afterMissions.length).toBe(beforeMissions.length);
+    expect(afterAdmission).toBeNull();
+    expect(beforeAdmissions).toBeNull();
+  });
+
+  it("keeps admission identity fail-closed when the Mission is deleted", async () => {
+    const { service, client, store } = await harness();
+    const first = await service.admit(request(), client);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    await store.deleteMission(first.data.missionId);
+    const record = await store.getMissionAdmission(client.clientId, "req-1");
+    expect(record).not.toBeNull();
+    expect(record?.missionId).toBe(first.data.missionId);
+    const retry = await service.admit(request(), client);
+    expect(retry.ok).toBe(false);
+    if (!retry.ok) expect(retry.code).toBe("ADMISSION_FAILED");
+  });
+
   it("does not create a duplicate under concurrent equivalent requests", async () => {
     const { service, client } = await harness();
     const [a, b] = await Promise.all([service.admit(request(), client), service.admit(request(), client)]);

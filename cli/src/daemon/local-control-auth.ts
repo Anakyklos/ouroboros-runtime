@@ -355,8 +355,6 @@ export function requiredLocalControlScope(method: unknown, params: unknown): Loc
         : null;
     case "local_control.admit":
       return "mission.create";
-    case "local_control.admit":
-      return "mission.create";
     case "daemon.setMode":
     case "daemon.emergencyBrake":
     case "system.shutdown":

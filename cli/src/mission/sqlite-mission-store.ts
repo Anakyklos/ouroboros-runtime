@@ -49,6 +49,7 @@ import type {
     MissionProjectionLimits,
     MissionProjectionRead,
     MissionStore,
+    MissionAdmissionStore,
 } from "./ports.js";
 import { assertNoRawSecrets } from "./sanitize.js";
 
@@ -256,7 +257,7 @@ function assertImmutableInvocationIdentity(
     }
 }
 
-export class SqliteMissionStore implements MissionStore {
+export class SqliteMissionStore implements MissionStore, MissionAdmissionStore {
     private db: Database | null = null;
     private readonly dbPath: string;
     private readonly statements: Record<string, ReturnType<Database["prepare"]>> = {};
@@ -287,6 +288,7 @@ export class SqliteMissionStore implements MissionStore {
         if (this.db) return;
         this.db = new Database(this.dbPath);
         this.db.exec("PRAGMA journal_mode = WAL");
+        this.db.exec("PRAGMA foreign_keys = OFF");
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS missions (
                 mission_id TEXT PRIMARY KEY,
@@ -663,8 +665,7 @@ export class SqliteMissionStore implements MissionStore {
                 mission_id TEXT NOT NULL,
                 payload_fingerprint TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                PRIMARY KEY (client_id, request_id),
-                FOREIGN KEY (mission_id) REFERENCES missions(mission_id) ON DELETE CASCADE
+                PRIMARY KEY (client_id, request_id)
             )
         `);
         db.exec("CREATE INDEX IF NOT EXISTS idx_mission_admissions_mission ON mission_admissions(mission_id)");
@@ -838,21 +839,6 @@ export class SqliteMissionStore implements MissionStore {
         );
     }
 
-    async getAdmission(clientId: string, requestId: string) {
-        return this.getMissionAdmission(clientId, requestId);
-    }
-    async createAdmission(record: {
-        clientId: string;
-        requestId: string;
-        missionId: string;
-        payloadFingerprint: string;
-        createdAt: string;
-    }): Promise<void> {
-        return this.createMissionAdmission(record);
-    }
-    async findAdmission(clientId: string, requestId: string) {
-        return this.getMissionAdmission(clientId, requestId);
-    }
 
     async getMission(missionId: string): Promise<Mission | null> {
         const row = this.stmt(

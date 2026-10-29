@@ -146,7 +146,7 @@ export async function startHeadlessDaemon(
         const dispatchSeam = new ConnectorDispatchSeam(missionEngine, capabilityRegistry);
         const admissionAuthority = new LocalControlAdmissionService(
             missionEngine,
-            missionStore as unknown as import("./local-control-admission.js").MissionAdmissionStore & import("../mission/ports.js").MissionStore,
+            missionStore as SqliteMissionStore,
         );
         dependencies.configureCapabilitiesForTests?.(capabilityRegistry, dispatchSeam);
         const missionScheduler = new MissionScheduler({
