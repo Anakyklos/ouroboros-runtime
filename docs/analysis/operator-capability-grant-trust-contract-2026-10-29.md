@@ -3,13 +3,13 @@
 > **Estado:** PROPOSAL ONLY — nenhuma implementação de produção, nenhum contrato público ratificado, nenhuma autorização concedida.
 > **Repositório:** `Anakyklos/ouroboros-runtime`
 > **Issue:** #166 (P1), epic principal #70 (M1 Local Control Plane)
-> **PR:** https://github.com/Anakyklos/ouroboros-runtime/pull/167 (revisão de review 5703209717)
+> **PR:** https://github.com/Anakyklos/ouroboros-runtime/pull/167 (revisão de review 5703514317)
 > **Base SHA auditado:** `4a0d6d52075bc665568e126124eb24ec8b8b2ed0` (`main`)
-> **HEAD auditado anterior:** `5a46c6ce32a59adab3b4e6203fbd07b79a49f304`
+> **HEAD auditado anterior:** `950d2275052e9913c531bc74ae30480e9f969284`
 > **Bun (local):** `1.4.2` (CI pin: `1.3.9`)
 > **Data:** 2026-10-29
 > **Branch:** `docs/166-capability-grant-trust-contract`
-> **Classificação de status:** `NEEDS_APPROVAL — proposta corrigida, aguardando revisão do mantenedor e ratificação normativa de Pedro`
+> **Classificação de status:** `NEEDS_APPROVAL — proposta corrigida e pronta para nova revisão`
 
 ---
 
@@ -27,20 +27,20 @@ Toda afirmação neste documento carrega uma das seguintes classificações estr
 
 ## 1. Executive decision summary
 
-**Recomendação arquitetural (PROPOSTA):** Adotar a **Alternativa B corrigida e blindada** — um **ledger durável e fisicamente append-only** de eventos imutáveis de concessão e revogação de capabilities no SQLite local do runtime (`SqliteMissionStore`). A autoridade para qualquer ação decorre exclusivamente da **associação atômica** mantida por um grant individual ativo, validada contra uma fonte confiável independente de limites máximos do autorizador.
+**Recomendação arquitetural (PROPOSTA):** Adotar a **Alternativa B com integridade física e controle de concorrência determinístico** — um **ledger durável e fisicamente append-only** de eventos imutáveis de concessão e revogação de capabilities no SQLite local do runtime (`SqliteMissionStore`). A autoridade para qualquer ação decorre exclusivamente da **associação atômica** mantida por um grant individual ativo, validada contra uma fonte confiável independente de limites máximos do autorizador.
 
 **Correções centrais incorporadas nesta revisão (PROPOSTA):**
 
-1. **Preservação física da imutabilidade do ledger (Fim do `ON DELETE CASCADE`):** Fica formalmente excluído o uso de deleção em cascata (`CASCADE`). As relações de integridade referencial passam a adotar `ON DELETE RESTRICT`, impedindo a deleção de Missions com histórico de autorização. O caráter append-only deixa de ser mera convenção da aplicação e passa a ser garantido fisicamente por triggers SQLite (`BEFORE UPDATE/DELETE RAISE(ABORT, ...)`), preservando a proveniência forense de forma perpétua contra exclusões acidentais, migrações e rotinas de manutenção de disco.
-2. **Eliminação da janela TOCTOU entre Revoke e Handoff:** Define-se o **ponto autoritativo de linearização** como a transação SQLite atômica que avança duravelmente a entrega da invocação de `not_submitted` para `submitting` (*submission lease*). Se a revogação comitar antes dessa transação, o envio é abortado no banco. Se comitar após a reserva durável, o runtime registra a intenção de cancelamento (`cancellation.requested = true`), mas reconhece explicitamente os limites físicos da realidade: o SQLite local não confere atomicidade sobre sockets de rede ou processos externos. Efeitos em estado incerto decorrentes de crash ou timeout **nunca sofrem replay automático** e dependem exclusivamente da `ReconciliationAuthority`.
-3. **Idempotência e replay vinculados estritamente ao emissor original:** Corrige-se a brecha de reutilização de identificadores de grant. A chave `(missionId, grantId)` e seu fingerprint só podem sofrer replay com sucesso pelo **mesmo emissor autenticado (`grantorClientId`)**. Tentativas de replay ou reaproveitamento por clientes distintos são rejeitadas como conflito de identidade (`GRANT_IDENTITY_CONFLICT`), sem vazar o conteúdo da concessão existente.
-4. **Compatibilidade nativa com Mission IDs reais do runtime:** A validação sintática de `missionId` é corrigida para aceitar nativamente os identificadores reais gerados por `crypto.randomUUID()` (UUIDs RFC 4122 v4 com hífens), rejeitando caracteres de controle, injeção de parâmetros ou path traversal.
-5. **Fronteira transacional e fail-closed entre MissionStore e AuthStore:** Esclarece-se que o `LocalControlCredentialStore` (auth store) reside em armazenamento separado de `SqliteMissionStore`. Não há transação 2PC cross-DB. A revalidação de credenciais e limites do emissor precede a transação do MissionStore; qualquer falha, latência ou indisponibilidade da autoridade de autenticação resulta em comportamento estritamente **fail-closed** (`AUTHORITY_UNAVAILABLE`).
-6. **Eliminação do produto cartesiano de autorização:** Preserva-se a associação indivisível $\langle \text{capabilityId}, \text{effectClass}, \text{allowedRefPrefixes}, \text{resourceLimits} \rangle$ sob o mesmo grant ativo. Listas globais agregadas são rejeitadas como fonte autoritativa.
+1. **Integridade referencial real sob `PRAGMA foreign_keys = OFF`:** Constata-se que `cli/src/mission/sqlite-mission-store.ts:291` desativa explicitamente as foreign keys do SQLite (`foreign_keys = OFF`). Portanto, confiar isoladamente em cláusulas `FOREIGN KEY ... ON DELETE RESTRICT` não impede a exclusão acidental de uma Mission com grants. A proposta institui um **trigger de proteção diretamente na tabela `missions`** (`prevent_mission_delete_with_grants`) que aborta fisicamente o comando `DELETE FROM missions` via `RAISE(ABORT, ...)`. Adicionalmente, especificam-se os requisitos mandatórios para uma futura migração que venha a habilitar `foreign_keys = ON`.
+2. **Impedimento definitivo da ressurreição de grants após revogação de emissor:** O runtime atual (`LocalControlCredentialStore.provision()`) reutiliza o mesmo `clientId` e limpa `revoked_at` em caso de reprovisionamento. Para impedir que grants históricos invalidados voltem a autorizar ações indevidas após um novo provisionamento do mesmo identificador, a proposta introduz o conceito de **geração de autoridade (`grantorAuthorityEpoch`)**. O grant fica rigidamente atrelado à época de autoridade em que nasceu; se o emissor for revogado ou reprovisionado, grants de épocas anteriores tornam-se definitivamente **caducos / extintos**, eliminando qualquer risco de concessão zumbi sem exigir transações distribuídas (2PC) entre AuthStore e MissionStore.
+3. **Remoção de limites de recursos decorativos (Adoção formal da Alternativa A):** Os campos `resourceLimits` (`maxInvocations`, `maxDurationMs`, `budgetUnits`) foram expressamente **removidos do contrato v1 proposto** e adiados para evolução futura. Incluir campos de limite na interface pública sem contadores duráveis atômicos, recuperação transacional em crash e tratamento de concorrência criaria uma perigosa ilusão de segurança (*security theater*). A governança de recursos no v1 permanece delegada à política de orçamento da Mission já existente (`budget_policy`), mantendo o contrato de grants estritamente focado no modelo de acesso fail-closed.
+4. **Resolução formal da janela TOCTOU entre Revoke e Handoff:** O ponto autoritativo de linearização é definido na transação atômica SQLite de **reserva durável de submissão** (`submitting`). Se a revogação comitar antes desse ponto, a submissão é abortada no banco sem tocar a rede. Se comitar após a reserva, o runtime tenta cancelar, mas reconhece honestamente a impossibilidade física de transacionar SQLite e rede/processos externos. Invocations em estado incerto decorrentes de crash ou timeout **nunca sofrem replay automático** e dependem unicamente da `ReconciliationAuthority`.
+5. **Idempotência e isolamento cross-grantor:** Replay idempotente de `(missionId, grantId)` é estritamente condicionado ao **mesmo emissor original (`grantorClientId`)**. Tentativas de reuso de identificadores por clientes distintos falham com `GRANT_IDENTITY_CONFLICT` sem vazamento de dados.
+6. **Compatibilidade nativa com UUIDs reais do runtime:** Validação sintática corrigida para suportar os UUIDs RFC 4122 v4 gerados por `crypto.randomUUID()` em `MissionEngine`.
 
 **Direção de implementação futura em slices isolados (PROPOSTA):**
-- **Slice A** — Persistência do ledger append-only (com triggers e `RESTRICT`) e política correlacionada de validação de grants por tupla.
-- **Slice B** — Endpoints autenticados de concessão e revogação no Local Control Plane com isolamento cross-grantor.
+- **Slice A** — Persistência do ledger append-only (triggers de proteção, isolamento de exclusão sob `foreign_keys = OFF`) e validação de grants por tupla atômica.
+- **Slice B** — Endpoints autenticados de concessão e revogação no Local Control Plane com checagem de época de autoridade e isolamento cross-grantor.
 - **Slice C** — Planejamento consultivo e aceitação de planos sob revalidação autoritativa atômica.
 - **Slice D** — Portões de dispatch, reserva durável de submissão (`submitting`), linearização de handoff e isolamento de incerteza sem replay.
 
@@ -61,7 +61,7 @@ Toda afirmação neste documento carrega uma das seguintes classificações estr
 ### 2.1 Referência Git e auditoria de HEAD
 
 - **Base SHA auditado:** `4a0d6d52075bc665568e126124eb24ec8b8b2ed0` (`main`).
-- **HEAD auditado anterior:** `5a46c6ce32a59adab3b4e6203fbd07b79a49f304` (commit com review `5703209717`).
+- **HEAD auditado anterior:** `950d2275052e9913c531bc74ae30480e9f969284` (commit com review `5703514317`).
 - **Branch de trabalho:** `docs/166-capability-grant-trust-contract`.
 - **Arquivos modificados:** Exclusivamente `docs/analysis/operator-capability-grant-trust-contract-2026-10-29.md`.
 
@@ -97,7 +97,9 @@ Adicionalmente, não existe na API pública do daemon (JSON-RPC ou UDS) nenhuma 
 | `cli/src/mission/mission-engine.ts` | 562-630 | `acceptPlan()` move revisão para `accepted` **sem revalidar policy** contra o escopo atual da Mission. |
 | `cli/src/mission/mission-engine.ts` | 726-890 | `dispatchStep()` valida policy **fora e antes** de `claimInvocation`. |
 | `cli/src/capabilities/dispatch-seam.ts` | 410-435 | Executa `markInvocationHandoff(..., { deliveryState: "submitted" })` antes de chamar `connector.invoke(request)`. |
-| `cli/src/daemon/local-control-auth.ts` | 20-55 | `LocalControlCredentialStore` opera em banco/arquivo isolado (`$XDG_CONFIG_HOME/ouroboros/local-control/`), desacoplado do DB de Missions. |
+| `cli/src/daemon/local-control-auth.ts` | 20-55, 94-115 | `LocalControlCredentialStore` opera em banco separado (`$XDG_CONFIG_HOME/ouroboros/local-control/`). `provision()` usa `ON CONFLICT(client_id) DO UPDATE ... revoked_at = NULL, created_at = excluded.created_at`. |
+| `cli/src/mission/sqlite-mission-store.ts` | 291 | `SqliteMissionStore.initialize()` executa explicitamente `PRAGMA foreign_keys = OFF`. |
+| `cli/src/mission/sqlite-mission-store.ts` | 1294-1296 | `deleteMission()` executa `DELETE FROM missions WHERE mission_id = ?`. Sob `foreign_keys = OFF`, FKs declaradas não são aplicadas pelo motor. |
 | `cli/src/mission/sqlite-mission-store.ts` | 1918-1945 | `withTransaction()` provê exclusão mútua local via `transactionQueue` e transação `BEGIN/COMMIT/ROLLBACK` no SQLite do runtime. |
 
 ---
@@ -118,6 +120,7 @@ Adicionalmente, não existe na API pública do daemon (JSON-RPC ou UDS) nenhuma 
 - Toda Mission admitida por cliente externo possui escopo vazio (`EMPTY_SCOPE`).
 - Apenas `recordApproval()` no `MissionEngine` pode transicionar um `ApprovalRequirement` de `granted: false` para `granted: true`.
 - Identidades de Mission (`missionId`) no runtime são UUIDs v4 com hífens gerados por `crypto.randomUUID()`.
+- O banco de dados de Missions opera com `PRAGMA foreign_keys = OFF`.
 
 ---
 
@@ -140,16 +143,16 @@ Adicionalmente, não existe na API pública do daemon (JSON-RPC ou UDS) nenhuma 
 
 ### 4.2 Alternativa B (Recomendada e Blindada) — Ledger durável append-only de concessões e revogações com escopo efetivo associado
 
-**Descrição (PROPOSTA):** O daemon mantém duas estruturas relacionais append-only no SQLite: `mission_capability_grants` (para eventos de concessão) e `mission_capability_revocations` (para eventos de revogação). Proíbe-se qualquer mutação destrutiva ou exclusão em cascata. Cada grant vincula rigidamente a tupla `(capabilityId, effectClass, allowedRefPrefixes, resourceLimits)` ao emissor autenticado. A autorização de qualquer ação decorre da validação da tupla em um grant ativo no ledger.
+**Descrição (PROPOSTA):** O daemon mantém duas estruturas relacionais append-only no SQLite: `mission_capability_grants` (para eventos de concessão) e `mission_capability_revocations` (para eventos de revogação). Proíbe-se qualquer mutação destrutiva ou exclusão em cascata, garantindo a integridade via trigger direto em `missions`. Cada grant vincula rigidamente a tupla `(capabilityId, effectClass, allowedRefPrefixes)` ao emissor e à sua época de autoridade (`grantorAuthorityEpoch`). A autorização decorre da validação da tupla em um grant ativo no ledger.
 
 | Critério | Avaliação |
 |---|---|
 | Segurança e least privilege | **Excelente** — Elimina produto cartesiano; autorização fail-closed; validação contra limites do autorizador. |
-| Simplicidade | **Boa** — Segue exatamente o padrão comprovado de `mission_admissions` sem criar dependências externas. |
+| Simplicidade | **Alta** — Sem campos de limites decorativos no v1; padrão append-only consolidado. |
 | Consistência transacional | **Excelente** — Eventos de ledger e transições da Mission residem na mesma transação atômica SQLite. |
-| Auditoria e provenance | **Máxima** — Histórico imutável de emissão, versão de credencial do emissor, timestamp e revogações explícitas; protegido por `RESTRICT` e triggers. |
-| Revogação granular | **Excelente** — Revogação direcionada por `grantId`, idempotente, fail-closed para novas operações. |
-| Linearização de concorrência | **Formalizada** — Ponto de linearização na transição durável para `submitting`; isolamento de efeitos externos sem replay de `uncertain`. |
+| Auditoria e provenance | **Máxima** — Histórico imutável de emissão, geração de credencial e revogações explícitas; protegido por trigger de bloqueio e triggers append-only. |
+| Revogação granular | **Excelente** — Revogação direcionada por `grantId`, idempotente, fail-closed para novas operações; sem ressuscitação pós-reprovisionamento. |
+| Linearização de concorrência | **Formalizada** — Ponto de linearização na transação durável para `submitting`; isolamento de efeitos externos sem replay de `uncertain`. |
 | Isolamento de replay | **Estrito** — Replay condicionado estritamente à identidade do emissor original (`grantorClientId`). |
 
 **Veredito (PROPOSTA):** **Recomendada**.
@@ -182,14 +185,15 @@ RPC local_control.grant_capabilities (payload estrito, sem autoridade auto-decla
 CapabilityGrantService (daemon-side)
         │
         ├─► 1. Autenticação e Entitlement Prévios (precedem leitura e escrita)
-        ├─► 2. Validação contra fonte independente de limites máximos (operator policy)
-        ├─► 3. Verificação de Replay Seguro (rejeita se grantId já existe sob outro grantor)
-        ├─► 4. Validação da tupla atômica (capabilityId ∈ limites, effectClass ∈ contract, refs ∈ limites)
-        ├─► 5. Cálculo do fingerprint canônico (sha256 determinístico)
+        ├─► 2. Captura da Época de Autoridade do Emissor (authorityEpoch do AuthStore)
+        ├─► 3. Validação contra fonte independente de limites máximos (operator policy)
+        ├─► 4. Verificação de Replay Seguro (rejeita se grantId já existe sob outro grantor)
+        ├─► 5. Validação da tupla atômica (capabilityId ∈ limites, effectClass ∈ contract, refs ∈ limites)
+        ├─► 6. Cálculo do fingerprint canônico (sha256 determinístico)
         │
         ▼
 Transação SQLite Atômica no MissionStore (withTransaction):
-        ├─► INSERT INTO mission_capability_grants (...) [registro fisicamente imutável]
+        ├─► INSERT INTO mission_capability_grants (...) [registro fisicamente imutável com authorityEpoch]
         ├─► Atualiza updatedAt da Mission
         └─► COMMIT (dispara publicação de mutações aos observadores)
 ```
@@ -198,14 +202,14 @@ Transação SQLite Atômica no MissionStore (withTransaction):
 
 A autorização **nunca é avaliada contra listas globais unificadas**. Toda autorização preserva a tupla indissociável:
 
-$$\text{Grant} = \langle \text{grantId}, \text{capabilityId}, \text{effectClass}, \text{allowedRefPrefixes}, \text{resourceLimits}, \text{grantorId}, \text{validity} \rangle$$
+$$\text{Grant} = \langle \text{grantId}, \text{capabilityId}, \text{effectClass}, \text{allowedRefPrefixes}, \text{grantorId}, \text{authorityEpoch}, \text{validity} \rangle$$
 
 Um passo de plano `P` com requisito de capability `C`, classe de efeito `E` e conjunto de referências de entrada $R = \{r_1, r_2, \dots, r_k\}$ só é autorizado se existir **um mesmo grant ativo** $G$ tal que:
 1. $C \in G.\text{capabilityIds}$
 2. $E \in G.\text{allowedEffectClasses}$
 3. $\forall r \in R, \exists p \in G.\text{allowedRefPrefixes} \text{ tal que } r \text{ inicia com } p$
 4. $G$ não está expirado nem revogado no momento da verificação.
-5. O emissor $G.\text{grantorId}$ permanece com autoridade válida.
+5. O emissor $G.\text{grantorId}$ permanece com autoridade válida e seu epoch atual coincide com $G.\text{authorityEpoch}$.
 
 ### 5.3 Exemplo adversarial: Produto Cartesiano A × B
 
@@ -249,7 +253,7 @@ Qualquer discrepância resulta em rejeição imediata com `CAPABILITY_EXCEEDS_GR
 ### 6.1 Identidade, autoridade e ciclo de vida do emissor (grantor)
 
 - **Quem pode conceder:** Cliente autenticado no Local Control Plane portador do scope específico `mission.grant_capabilities`.
-- **Identidade imutável no ledger:** Toda concessão armazena o `grantorClientId` e a `grantorCredentialVersion` (hash do token ativo no momento do despacho).
+- **Identidade imutável no ledger:** Toda concessão armazena o `grantorClientId`, a `grantorCredentialVersion` (hash do token ativo no momento do despacho) e o `grantorAuthorityEpoch` (época de provisionamento do cliente).
 - **Impossibilidade de forja:** Campos de autoridade não são aceitos no corpo da requisição RPC; são extraídos diretamente do objeto `LocalControlAuthenticatedClient` validado pelo daemon Fastify/UDS.
 
 ### 6.2 Escopo de cada concessão (tupla associada autoritativa)
@@ -260,14 +264,10 @@ export interface CapabilityGrantRecord {
   readonly missionId: string;
   readonly grantorClientId: string;
   readonly grantorCredentialVersion: string;
+  readonly grantorAuthorityEpoch: number; // Identificador/timestamp da geração de autoridade no AuthStore
   readonly capabilityIds: readonly string[];
   readonly allowedEffectClasses: readonly EffectClass[];
   readonly allowedRefPrefixes: readonly string[];
-  readonly resourceLimits?: {
-    readonly maxInvocations?: number;
-    readonly maxDurationMs?: number;
-    readonly budgetUnits?: number;
-  };
   readonly issuedAt: string;        // ISO 8601 UTC
   readonly expiresAt?: string;       // ISO 8601 UTC ou undefined (sem expiração temporal)
   readonly contractVersion: number;  // CAPABILITY_GRANT_CONTRACT_VERSION
@@ -275,6 +275,10 @@ export interface CapabilityGrantRecord {
   readonly createdAt: string;
 }
 ```
+
+> [!NOTE]
+> **Decisão de Simplificação e Segurança (Alternativa A adotada):**
+> Os campos `resourceLimits` (`maxInvocations`, `maxDurationMs`, `budgetUnits`) foram expressamente **removidos do contrato v1 proposto** e formalmente adiados para uma revisão futura (v2). A inclusão de campos de limite decorativos sem implementação durável de reserva, recuperação pós-crash e contadores atômicos criaria uma falsa sensação de segurança (*security theater*). O controle de orçamento e recursos permanece sob a governança existente da Mission (`budget_policy` em `missions`).
 
 ### 6.3 Regra determinística de composição e anti-escalada
 
@@ -310,11 +314,6 @@ export interface CapabilityGrantRequest {
   readonly capabilityIds: string[];
   readonly allowedEffectClasses: EffectClass[];
   readonly allowedRefPrefixes: string[];
-  readonly resourceLimits?: {
-    readonly maxInvocations?: number;
-    readonly maxDurationMs?: number;
-    readonly budgetUnits?: number;
-  };
   readonly expiresAt?: string; // ISO 8601 opcional
 }
 
@@ -428,6 +427,7 @@ REVOCATION_NOT_AUTHORIZED       // Emissor não tem autoridade para revogar este
 GRANT_NOT_FOUND
 GRANT_ALREADY_REVOKED
 AUTHORITY_REVOKED               // Emissor do grant foi revogado
+AUTHORITY_SUPERSEDED           // Grant pertence a época de autoridade extinta/reprovisionada
 AUTHORITY_UNAVAILABLE           // Auth store indisponível / inacessível (fail-closed)
 CAPABILITY_REF_OUT_OF_GRANT_BOUNDS
 REVOKED_BEFORE_SUBMISSION       // Revogação comitou antes da reserva de submissão
@@ -445,9 +445,15 @@ Para garantir total compatibilidade com os identificadores efetivamente produzid
 
 ## 8. Persistência, ledger auditável, idempotência e recovery
 
-### 8.1 Schema do ledger append-only e preservação permanente contra deleções
+### 8.1 Schema do ledger append-only e integridade sob `foreign_keys = OFF`
 
-Para assegurar que a proveniência e a evidência forense nunca sejam destruídas ou perdidas sob operações de exclusão de Missions, o schema adota integridade restritiva (`ON DELETE RESTRICT`) e triggers SQLite que barram fisicamente mutações destrutivas:
+No runtime atual, `cli/src/mission/sqlite-mission-store.ts:291` executa `PRAGMA foreign_keys = OFF`. Sob essa configuração nativa, qualquer declaração `FOREIGN KEY ... ON DELETE RESTRICT` é silenciosamente ignorada pelo SQLite no comando `DELETE FROM missions`.
+
+Para sanar este fato comprovado sem quebrar o banco atual nem presumir migrações não aprovadas:
+
+1. **Garantia Física por Trigger na Tabela `missions`:** Cria-se o trigger `prevent_mission_delete_with_grants` diretamente na tabela `missions`. Esse trigger é ativado pelo SQLite **mesmo com `foreign_keys = OFF`**, abortando qualquer exclusão direta caso existam concessões históricas para a Mission.
+2. **Triggers Append-Only nas Tabelas de Grants e Revocações:** Impossibilitam qualquer `UPDATE` ou `DELETE` direto nas tabelas do ledger.
+3. **DDL Proposto:**
 
 ```sql
 -- 1. Registro imutável de eventos de concessão (Grant Ledger)
@@ -456,17 +462,16 @@ CREATE TABLE IF NOT EXISTS mission_capability_grants (
   mission_id TEXT NOT NULL,
   grantor_client_id TEXT NOT NULL,
   grantor_credential_version TEXT NOT NULL,
-  capability_ids TEXT NOT NULL,         -- JSON array de strings
-  allowed_effect_classes TEXT NOT NULL, -- JSON array de strings
-  allowed_ref_prefixes TEXT NOT NULL,   -- JSON array de strings
-  resource_limits TEXT NOT NULL,        -- JSON object
+  grantor_authority_epoch INTEGER NOT NULL,  -- Timestamp/Epoch do ciclo de autoridade no AuthStore
+  capability_ids TEXT NOT NULL,              -- JSON array de strings
+  allowed_effect_classes TEXT NOT NULL,      -- JSON array de strings
+  allowed_ref_prefixes TEXT NOT NULL,        -- JSON array de strings
   issued_at TEXT NOT NULL,
   expires_at TEXT,
   contract_version INTEGER NOT NULL,
-  fingerprint TEXT NOT NULL,            -- sha256 canônico do payload
+  fingerprint TEXT NOT NULL,                 -- sha256 canônico do payload
   created_at TEXT NOT NULL,
-  PRIMARY KEY (mission_id, grant_id),
-  FOREIGN KEY (mission_id) REFERENCES missions(mission_id) ON DELETE RESTRICT
+  PRIMARY KEY (mission_id, grant_id)
 );
 
 -- 2. Registro imutável de eventos de revogação (Revocation Ledger)
@@ -478,10 +483,9 @@ CREATE TABLE IF NOT EXISTS mission_capability_revocations (
   revoked_by_credential_version TEXT NOT NULL,
   reason TEXT NOT NULL,
   revoked_at TEXT NOT NULL,
-  fingerprint TEXT NOT NULL,            -- sha256 canônico do evento de revogação
+  fingerprint TEXT NOT NULL,                 -- sha256 canônico do evento de revogação
   created_at TEXT NOT NULL,
-  PRIMARY KEY (mission_id, revocation_id),
-  FOREIGN KEY (mission_id, target_grant_id) REFERENCES mission_capability_grants(mission_id, grant_id) ON DELETE RESTRICT
+  PRIMARY KEY (mission_id, revocation_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_grants_mission_created
@@ -490,7 +494,16 @@ CREATE INDEX IF NOT EXISTS idx_grants_mission_created
 CREATE INDEX IF NOT EXISTS idx_revocations_target
   ON mission_capability_revocations(mission_id, target_grant_id);
 
--- 3. Triggers SQLite para garantia física de imutabilidade (Impossibilidade de UPDATE ou DELETE)
+-- 3. Triggers para garantir integridade física independente de PRAGMA foreign_keys
+CREATE TRIGGER IF NOT EXISTS prevent_mission_delete_with_grants
+BEFORE DELETE ON missions
+BEGIN
+  SELECT RAISE(ABORT, 'cannot delete mission: active or historical capability grants exist in ledger')
+  WHERE EXISTS (
+    SELECT 1 FROM mission_capability_grants WHERE mission_id = OLD.mission_id
+  );
+END;
+
 CREATE TRIGGER IF NOT EXISTS prevent_grant_update BEFORE UPDATE ON mission_capability_grants
 BEGIN
   SELECT RAISE(ABORT, 'mission_capability_grants is strictly append-only: updates are forbidden');
@@ -512,10 +525,12 @@ BEGIN
 END;
 ```
 
-**Regras de Preservação Permanente da Evidência:**
-1. **Tentativa de Exclusão de Mission:** Devido ao `ON DELETE RESTRICT`, qualquer comando `DELETE FROM missions WHERE mission_id = ?` falhará com erro de restrição de chave estrangeira caso existam registros de grants associados. Missions com histórico de autorização **não podem ser excluídas fisicamente** do banco de dados operacional; seu ciclo de vida deve ser encerrado unicamente através de cancelamento ou tombstone lógico (`state: MissionState.CANCELLED` ou metadados de arquivamento).
-2. **Preservação em Migrações:** Migrações de schema futuras são estritamente aditivas. É terminantemente proibido qualquer script de migration que execute `DROP TABLE`, `TRUNCATE` ou purga de linhas em `mission_capability_grants` ou `mission_capability_revocations`.
-3. **Preservação em Manutenção e Arquivamento:** Procedimentos de compactação de banco (`VACUUM`) ou rotação de logs para cold storage devem preservar o arquivo de ledger forense integralmente ou arquivá-lo com assinatura criptográfica antes de qualquer expurgo.
+**Requisitos para Habilitação Futura de `PRAGMA foreign_keys = ON`:**
+Caso uma evolução arquitetural futura decida ativar `foreign_keys = ON`:
+- Deve ser precedida por uma auditoria completa via `PRAGMA foreign_key_check` em todos os bancos de dados de produção existentes.
+- Deve incluir uma migração transacional que saneie registros órfãos pré-existentes.
+- Deve comprovar, em suíte de testes SQLite sob WAL mode, que a ativação não gera deadlocks com as transações da fila `transactionQueue`.
+- O contrato proposto funciona de forma **100% segura e comprovada tanto sob `foreign_keys = OFF` quanto sob `foreign_keys = ON`**.
 
 ### 8.2 Identidade estável e ordenação determinística
 
@@ -534,25 +549,28 @@ O runtime rejeita categoricamente que um cliente B reutilize o identificador de 
 3. **Tentativa de Replay por Outro Cliente (`currentClientId !== existingGrant.grantorClientId`):**
    - Se o cliente B submeter uma solicitação com um `grantId` já registrado pelo cliente A: O daemon rejeita sumariamente com **`GRANT_IDENTITY_CONFLICT`**.
    - **Garantia anti-vazamento:** A resposta de erro não divulga os dados, capacidades ou fingerprint do grant pertencente ao cliente A.
-4. **Tratamento de Rotação de Credenciais:** Se o emissor original A rotacionar seu token (mesmo `clientId`, nova `grantorCredentialVersion`), o replay de seus próprios grants existentes continua autorizado caso sua credencial permaneça ativa.
-5. **Tratamento de Revogação de Credenciais:** Se a credencial do emissor A tiver sido revogada no auth store, qualquer tentativa de requisição ou replay por ele é bloqueada com `AUTHORITY_REVOKED`.
 
-### 8.4 Reconstrução determinística (Replay / Redução após restart)
+### 8.4 Épocas de autoridade: Prevenção contra ressuscitação de grants pós-reprovisionamento
 
-Após um restart abrupto ou crash do daemon, o estado de autorização de qualquer Mission é reconstruído deterministicamente através de uma função de redução pura:
+No `LocalControlCredentialStore`, quando um cliente é revogado e posteriormente reprovisionado via `provision(clientId, ...)`, o código executa `ON CONFLICT(client_id) DO UPDATE SET revoked_at = NULL, created_at = excluded.created_at`. Isso reativa o `clientId` com um novo timestamp `created_at`.
 
-$$S_{\text{active}}(M) = \text{Reduce}(\text{Grants}(M), \text{Revocations}(M), T_{\text{now}}, \text{CredentialStatus})$$
+Para impedir que concessões antigas emitidas antes da revogação voltem a autorizar ações:
 
-Um grant $g \in \text{Grants}(M)$ é considerado ativo se e somente se:
-1. Não existe nenhuma linha em `mission_capability_revocations` onde `target_grant_id = g.grant_id`.
-2. $g.\text{expires_at}$ é nulo ou $T_{\text{now}} < g.\text{expires_at}$.
-3. O cliente emissor $g.\text{grantor_client_id}$ não foi revogado na autoridade de credenciais.
+1. **Registro da Época na Emissão:** Ao emitir um grant, o serviço grava `grantor_authority_epoch` = `client.created_at` (timestamp da época de autoridade corrente no AuthStore).
+2. **Diferenciação Estrita entre Estados de Emissor:**
+   - **Rotação Legítima de Credenciais:** O token do operador é renovado durante o mesmo ciclo de autoridade (`revoked_at` nunca foi acionado; `authorityEpoch` permanece o mesmo). Grants emitidos continuam ativos e válidos.
+   - **Revogação do Emissor:** O operador é revogado no AuthStore (`revoked_at !== null`). A autoridade daquela época é extinta. Todos os grants daquele emissor tornam-se inativos.
+   - **Reprovisionamento com o mesmo `clientId` (Novo Epoch):** O cliente é reprovisionado, gerando um novo `created_at` ($E_2 > E_1$).
+   - **Regra de Invalidação Permanente:** Na redução de grants, o runtime verifica:
+     $$\text{isGrantActive} \iff (\text{grant.grantorAuthorityEpoch} == \text{client.currentAuthorityEpoch}) \land (\text{client.revokedAt} == \text{null})$$
+     Grants emitidos no epoch $E_1$ falham na checagem ($E_1 \neq E_2$) e são considerados **permanentemente caducos (`AUTHORITY_SUPERSEDED`)**. Eles **NUNCA voltam à vida**.
+   - **Grants Emitidos Após o Reprovisionamento:** Recebem o epoch $E_2$ e operam normalmente dentro do seu novo ciclo legítimo.
 
 ### 8.5 Transações locais no MissionStore vs. Fronteira com o AuthStore
 
 - **Atomicidade local:** Toda escrita no ledger append-only de grants/revogações ocorre estritamente dentro de `store.withTransaction()`, que serializa operações via `transactionQueue` e comita atomicamente no SQLite local do `MissionStore`.
 - **Fronteira com o AuthStore (Sem 2PC cross-DB):** O `LocalControlCredentialStore` reside em um arquivo SQLite separado (`local-control`). Não existe transação distribuída (Two-Phase Commit) entre o banco de credenciais e o banco de Missions.
-- **Semântica Fail-Closed:** A revalidação da credencial e dos limites do emissor é realizada antes de iniciar a transação no `MissionStore`. Se o `AuthStore` estiver inacessível, lento, travado ou corrompido, a operação é rejeitada com **`AUTHORITY_UNAVAILABLE`**. Nenhuma transação é aberta e nenhum grant é gravado.
+- **Semântica Fail-Closed:** A revalidação da credencial e da época do emissor é realizada antes de iniciar a transação no `MissionStore`. Se o `AuthStore` estiver inacessível, lento, travado ou corrompido, a operação é rejeitada com **`AUTHORITY_UNAVAILABLE`**. Nenhuma transação é aberta e nenhum grant é gravado.
 
 ---
 
@@ -572,8 +590,8 @@ Para fechar definitivamente a janela TOCTOU sem assumir falsas premissas física
 
 1. **Definição do Ponto de Linearização:**
    O ponto autoritativo de linearização é a **transação SQLite atômica de reserva de submissão** executada imediatamente antes de invocar o conector externo. Dentro dessa transação:
-   - O runtime verifica se o `grantId` responsável pela invocação continua ativo e não revogado no ledger.
-   - Se ativo: comita duravelmente a transição de `delivery.state = "submitting"` (ou avança a tentativa para `submitting`) e registra o timestamp de envio.
+   - O runtime verifica se o `grantId` responsável pela invocação continua ativo, não revogado e com época válida no ledger.
+   - Se ativo: comita duravelmente a transição de `delivery.state = "submitting"` (reserva durável) e registra o timestamp de envio.
    - Se revogado: aborta a transição e marca `delivery.state = "failed"` com `error = "REVOKED_BEFORE_SUBMISSION"`.
 2. **Comportamento Pós-Linearização:**
    Assim que a transação de reserva comita `submitting`, a autorização de envio foi formalmente consumida. O runtime passa a chamada ao conector físico.
@@ -670,8 +688,9 @@ Nenhuma política fail-closed para novas operações afetará invocations preté
 |---|---|---|---|
 | **Escalação por produto cartesiano A × B** | Execução de capabilities com referências de outros grants | Preservação estrita da tupla no grant; validação atômica correlacionada (§5.2) | `test_grant_cartesian_product_adversarial` |
 | **Operador concedendo além dos limites** | Elevação de privilégio do autorizador | Validação obrigatória contra fonte confiável de limites máximos (§5.4) | `test_grantor_limit_enforcement` |
+| **Ressuscitação de grants pós-reprovisionamento** | Concessões antigas de emissor revogado voltam a autorizar ações | Validação de época de autoridade (`grantorAuthorityEpoch`); invalidação definitiva de épocas passadas (§8.4) | `test_grantor_revoke_and_reprovision_does_not_resurrect_grants` |
+| **Destruição de ledger via deleção de Mission sob FK OFF** | Perda de evidência forense de autorizações passadas | Trigger `prevent_mission_delete_with_grants` na tabela `missions`; aborta fisicamente o comando DELETE (§8.1) | `test_prevent_mission_delete_with_grants_trigger_under_fk_off` |
 | **Reuso de `grantId` por outro cliente (cross-grantor)** | Acesso ou reaproveitamento de grant de outro emissor | Vínculo estrito de idempotência ao `grantorClientId` original; erro `GRANT_IDENTITY_CONFLICT` (§8.3) | `test_cross_grantor_replay_isolation` |
-| **Destruição de ledger via deleção de Mission** | Perda de evidência forense de autorizações passadas | `ON DELETE RESTRICT` nas FKs de grants e revogações; bloqueio de exclusão física (§8.1) | `test_grant_delete_restrict_on_mission_deletion` |
 | **Mutação destrutiva do ledger no SQLite** | Modificação de registros imutáveis de grants | Triggers SQLite `prevent_grant_update/delete` que abortam qualquer escrita destrutiva (§8.1) | `test_grant_immutability_triggers` |
 | **Corrida TOCTOU entre Revoke e Handoff** | Disparo de efeito externo após revogação confirmada | Ponto de linearização na transação de reserva (`submitting`); isolamento de efeitos em voo (§9.2–9.3) | `test_handoff_linearization_race_before_reservation` |
 | **Replay após queda do daemon** | Re-execução indevida de efeito incerto | Proibição de replay automático; isolamento do estado `uncertain` (§9.5) | `test_uncertain_delivery_no_replay` |
@@ -691,9 +710,9 @@ Nenhuma política fail-closed para novas operações afetará invocations preté
 
 | Identificador do Teste | Escopo / Cenário Validado | Critério de Aceite Estrito |
 |---|---|---|
-| `test_grant_cartesian_product_adversarial` | Concede Grant A (`capA`, `refsA`) e Grant B (`capB`, `refsB`). Propõe step com `capA` + `refsB`. | Rejeição determinística por falta de grant com cobertura conjunta. |
+| `test_prevent_mission_delete_with_grants_trigger_under_fk_off` | Executa `DELETE FROM missions` sob `PRAGMA foreign_keys = OFF` para Mission que possui grants. | Trigger na tabela `missions` aborta a operação via `RAISE(ABORT)`; Mission e grants permanecem intactos. |
 | `test_grant_immutability_triggers` | Tenta executar `UPDATE` ou `DELETE` diretamente nas tabelas `mission_capability_grants` e `mission_capability_revocations`. | Triggers disparam `RAISE(ABORT)` e operação é cancelada no SQLite. |
-| `test_grant_delete_restrict_on_mission_deletion` | Tenta executar `DELETE FROM missions` em uma Mission que possui grants no ledger. | Operação abortada por violação de foreign key com `ON DELETE RESTRICT`. |
+| `test_grantor_revoke_and_reprovision_does_not_resurrect_grants` | Emite grant no epoch $E_1$, revoga emissor, reprovisiona emissor no epoch $E_2$. Tenta despachar passo autorizado pelo grant antigo. | Rejeitado deterministicamente com `AUTHORITY_SUPERSEDED`; grant antigo nunca ressuscita. |
 | `test_cross_grantor_replay_isolation` | Cliente B tenta submeter grant com `grantId` pertencente ao Cliente A. | Rejeitado com `GRANT_IDENTITY_CONFLICT` sem vazar dados do grant de A. |
 | `test_real_uuid_mission_id_lifecycle` | Emissão de grant, revoke e list utilizando UUIDs v4 com hífens gerados por `crypto.randomUUID()`. | Validação sintática aceita os UUIDs reais do runtime e rejeita malformados. |
 | `test_handoff_linearization_race_before_reservation` | Revoke comita imediatamente antes da transação de reserva (`submitting`). | Gate 4 bloqueia a reserva; invocação marca `failed` com `REVOKED_BEFORE_SUBMISSION`; zero chamadas ao conector. |
@@ -707,12 +726,12 @@ Nenhuma política fail-closed para novas operações afetará invocations preté
 ## 13. Decomposição futura (slices independentes de implementação)
 
 ### Slice A — Persistência do ledger append-only e validação por tupla correlacionada
-- **Objetivo:** Adicionar tabelas `mission_capability_grants` e `mission_capability_revocations` no `SqliteMissionStore` com `RESTRICT` e triggers de imutabilidade, método de redução determinística de estado e validação por tupla indissociável no `PlanPolicyValidator`.
+- **Objetivo:** Adicionar tabelas `mission_capability_grants` e `mission_capability_revocations` no `SqliteMissionStore`, trigger de proteção `prevent_mission_delete_with_grants` em `missions`, triggers de imutabilidade, método de redução determinística de estado e validação por tupla indissociável no `PlanPolicyValidator`.
 - **Superfície pública:** Nenhuma (sem RPC ou CLI).
 - **Critério de parada:** Se a validação por tupla quebrar a compatibilidade de interfaces sem migração segura, pausar.
 
 ### Slice B — Operações administrativas de Concessão e Revogação no Local Control Plane
-- **Objetivo:** Implementar os endpoints JSON-RPC/UDS `mission.grant_capabilities`, `mission.revoke_capability_grant` e `mission.list_capability_grants` no daemon, protegidos pelo escopo `mission.grant_capabilities`, isolamento cross-grantor e limites máximos.
+- **Objetivo:** Implementar os endpoints JSON-RPC/UDS `mission.grant_capabilities`, `mission.revoke_capability_grant` e `mission.list_capability_grants` no daemon, protegidos pelo escopo `mission.grant_capabilities`, isolamento cross-grantor e vinculação com a época de autoridade do emissor.
 - **Superfície pública:** Rotas internas versionadas no controle local.
 - **Critério de parada:** Rejeitar qualquer concessão se o emissor não possuir limites explicitamente configurados ou tentar usurpar `grantId` alheio.
 
@@ -735,10 +754,11 @@ As seguintes questões arquiteturais e normativas permanecem em aberto e **depen
 1. **Nomenclatura do escopo de autorização para concessão:** Adotar `mission.grant_capabilities`, `capability.grant` ou integrar em um escopo administrativo mais amplo? (Recomendação: `mission.grant_capabilities` dedicado).
 2. **Localização da fonte de limites máximos do grantor:** Optar por arquivo de configuração estático (`$OUROBOROS_DATA_DIR/security/operator-limits.json`) ou coluna adicional provisionada na tabela `local_control_clients`? (Recomendação para M1: arquivo local de governança).
 3. **Política de expiração default:** Permitir grants sem data de expiração (`expiresAt` opcional, revogável a qualquer tempo) ou exigir prazo de validade máximo mandatório (ex.: leases de 24 horas)?
-4. **Política diante de revogação de credencial de operador:** Desativar grants emitidos para novos efeitos futuros (fail-closed, recomendado) ou disparar revogação em cascata com cancelamento de planos aceitos?
+4. **Política diante de revogação de credencial de operador:** Desativar grants emitidos para novos efeitos futuros e extinguir a época de autoridade (fail-closed, recomendado) vs. cancelamento em cascata de planos aceitos.
 5. **Escopo para leitura de grants (`mission.list_capability_grants`):** Permitir leitura com o escopo existente `mission.read` ou criar escopo específico para evitar enumeração de capabilities por clientes de telemetria básica?
 6. **Formato final de migração de Missions legadas:** Confirmar o tratamento fail-closed estrito sem criação de grants sintéticos para dados históricos.
-7. **Política de governança concorrente:** Admitir revogação cruzada (Operador B revogar grant emitido pelo Operador A) se ambos possuírem autoridade de governança, ou restringir a revogação ao emissor original e `daemon.admin`?
+7. **Governança concorrente:** Admitir revogação cruzada (Operador B revogar grant emitido pelo Operador A) se ambos possuírem autoridade de governança, ou restringir a revogação ao emissor original e `daemon.admin`?
+8. **Ratificação da remoção de limites de recursos no v1 (Alternativa A):** Confirmar o adiamento de quotas e orçamentos dinâmicos por grant para o contrato v2, mantendo a governança no v1 via `budget_policy` da Mission.
 
 ---
 
@@ -754,7 +774,9 @@ As seguintes questões arquiteturais e normativas permanecem em aberto e **depen
 - `cli/src/mission/mission-engine.ts:562-630` — `acceptPlan` não revalida policy contra escopo atual.
 - `cli/src/mission/mission-engine.ts:726-890` — `dispatchStep` valida policy fora de `claimInvocation`.
 - `cli/src/capabilities/dispatch-seam.ts:410-435` — `markInvocationHandoff(..., { deliveryState: "submitted" })` antes de `connector.invoke`.
-- `cli/src/daemon/local-control-auth.ts:20-55` — Separação física de armazenamento entre `LocalControlCredentialStore` e `SqliteMissionStore`.
+- `cli/src/daemon/local-control-auth.ts:20-55, 94-115` — `LocalControlCredentialStore` em banco separado; reprovisionamento com `revoked_at = NULL, created_at = excluded.created_at`.
+- `cli/src/mission/sqlite-mission-store.ts:291` — `initialize()` executa `PRAGMA foreign_keys = OFF`.
+- `cli/src/mission/sqlite-mission-store.ts:1294-1296` — `deleteMission()` executa `DELETE FROM missions WHERE mission_id = ?`.
 - `cli/src/mission/sqlite-mission-store.ts:1918-1945` — Fila em memória `transactionQueue` e semântica de `withTransaction`.
 - `cli/src/daemon/durable-projection.ts:40-75` — `projectMission` e `projectInvocation` sem exposição de políticas ou segredos.
 
