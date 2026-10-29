@@ -656,6 +656,18 @@ export class SqliteMissionStore implements MissionStore {
         db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_invocations_mission_effect ON mission_invocations(mission_id, effect_fingerprint)");
         db.exec("CREATE INDEX IF NOT EXISTS idx_invocations_effect ON mission_invocations(effect_fingerprint)");
         db.exec("CREATE INDEX IF NOT EXISTS idx_invocations_due ON mission_invocations(status, delivery, updated_at)");
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS mission_admissions (
+                client_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                mission_id TEXT NOT NULL,
+                payload_fingerprint TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (client_id, request_id),
+                FOREIGN KEY (mission_id) REFERENCES missions(mission_id) ON DELETE CASCADE
+            )
+        `);
+        db.exec("CREATE INDEX IF NOT EXISTS idx_mission_admissions_mission ON mission_admissions(mission_id)");
     }
 
     async close(): Promise<void> {
@@ -777,6 +789,69 @@ export class SqliteMissionStore implements MissionStore {
             mission,
         });
         return mission;
+    }
+
+    async getMissionAdmission(clientId: string, requestId: string): Promise<{
+        clientId: string;
+        requestId: string;
+        missionId: string;
+        payloadFingerprint: string;
+        createdAt: string;
+    } | null> {
+        const row = this.stmt(
+            "getMissionAdmission",
+            "SELECT client_id, request_id, mission_id, payload_fingerprint, created_at FROM mission_admissions WHERE client_id = ? AND request_id = ?",
+        ).get(clientId, requestId) as {
+            client_id: string;
+            request_id: string;
+            mission_id: string;
+            payload_fingerprint: string;
+            created_at: string;
+        } | null;
+        if (!row) return null;
+        return {
+            clientId: row.client_id,
+            requestId: row.request_id,
+            missionId: row.mission_id,
+            payloadFingerprint: row.payload_fingerprint,
+            createdAt: row.created_at,
+        };
+    }
+
+    async createMissionAdmission(record: {
+        clientId: string;
+        requestId: string;
+        missionId: string;
+        payloadFingerprint: string;
+        createdAt: string;
+    }): Promise<void> {
+        this.stmt(
+            "createMissionAdmission",
+            `INSERT INTO mission_admissions (client_id, request_id, mission_id, payload_fingerprint, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
+        ).run(
+            record.clientId,
+            record.requestId,
+            record.missionId,
+            record.payloadFingerprint,
+            record.createdAt,
+        );
+    }
+
+    async getAdmission(clientId: string, requestId: string) {
+        return this.getMissionAdmission(clientId, requestId);
+    }
+    async createAdmission(record: {
+        clientId: string;
+        requestId: string;
+        missionId: string;
+        payloadFingerprint: string;
+        createdAt: string;
+    }): Promise<void> {
+        return this.createMissionAdmission(record);
+    }
+    async findAdmission(clientId: string, requestId: string) {
+        return this.getMissionAdmission(clientId, requestId);
     }
 
     async getMission(missionId: string): Promise<Mission | null> {

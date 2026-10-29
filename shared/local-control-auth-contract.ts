@@ -2,6 +2,7 @@
 export const LOCAL_CONTROL_AUTH_SCOPES = [
   "mission.read",
   "mission.control",
+  "mission.create",
   "daemon.admin",
 ] as const;
 

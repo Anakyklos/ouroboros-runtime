@@ -9,6 +9,7 @@ import { DaemonServer, globalEventBus } from './index.js';
 import { SqliteAdapter } from '../adapters/sqlite.adapter.js';
 import { SqliteMissionStore } from '../mission/sqlite-mission-store.js';
 import { MissionEngine } from '../mission/mission-engine.js';
+import { LocalControlAdmissionService } from './local-control-admission.js';
 import { PlanPolicyValidator } from '../mission/policy.js';
 import { CapabilityRegistry } from '../capabilities/registry.js';
 import type { CapabilityRegistryApi } from '../capabilities/registry.js';
@@ -143,6 +144,10 @@ export async function startHeadlessDaemon(
             policy: new PlanPolicyValidator(capabilityRegistry),
         });
         const dispatchSeam = new ConnectorDispatchSeam(missionEngine, capabilityRegistry);
+        const admissionAuthority = new LocalControlAdmissionService(
+            missionEngine,
+            missionStore as unknown as import("./local-control-admission.js").MissionAdmissionStore & import("../mission/ports.js").MissionStore,
+        );
         dependencies.configureCapabilitiesForTests?.(capabilityRegistry, dispatchSeam);
         const missionScheduler = new MissionScheduler({
             engine: missionEngine,
@@ -174,6 +179,7 @@ export async function startHeadlessDaemon(
                 onShutdown,
                 authorization,
                 registry,
+                admissionAuthority,
             )
         ))(
             storage,

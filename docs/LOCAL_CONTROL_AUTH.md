@@ -6,7 +6,7 @@ The daemon binds to `127.0.0.1` and refuses to start until its credential regist
 OUROBOROS_DATA_DIR=.ouroboros bun run ouroboros auth provision operator-cli mission.read,mission.control,daemon.admin
 ```
 
-The command writes the bearer value to `$XDG_CONFIG_HOME/ouroboros/local-control/operator-cli.json` (or `~/.config/...`) with mode `0600`, and prints only the file path, grants, and expiry. Set `OUROBOROS_CLIENT_CREDENTIAL_FILE` when using a different path. Choose only the scopes the client needs: `mission.read` reads projections, `mission.control` pauses/resumes/cancels Missions, and `daemon.admin` controls daemon mode, emergency brake, and shutdown.
+The command writes the bearer value to `$XDG_CONFIG_HOME/ouroboros/local-control/operator-cli.json` (or `~/.config/...`) with mode `0600`, and prints only the file path, grants, and expiry. Set `OUROBOROS_CLIENT_CREDENTIAL_FILE` when using a different path. Choose only the scopes the client needs: `mission.read` reads projections, `mission.control` pauses/resumes/cancels Missions, `mission.create` admits new MissionIntents, and `daemon.admin` controls daemon mode, emergency brake, and shutdown.
 
 Rotate with the same command and an explicit client id and scope list. Rotation invalidates the previous value immediately:
 

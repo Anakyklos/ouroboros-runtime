@@ -3,6 +3,7 @@ import {
   LocalControlPayloadError,
   LocalControlFailureError,
   LocalControlCommandClient,
+  LocalControlAdmissionClient,
   LocalControlReadClient,
   LoopbackJsonRpcTransport,
   ProtocolVersionMismatchError,
@@ -19,6 +20,7 @@ import { LOCAL_CONTROL_AUTH_SCOPES, type LocalControlAuthScope } from "../../../
 export interface AdminCliDependencies {
   client?: Pick<LocalControlReadClient, "read">;
   commandClient?: Pick<LocalControlCommandClient, "execute">;
+  admissionClient?: Pick<LocalControlAdmissionClient, "admit">;
   stdout?: (text: string) => void;
   stderr?: (text: string) => void;
 }
@@ -40,6 +42,8 @@ function usage(): string {
     "  ouroboros mission pause <id> [reason]",
     "  ouroboros mission resume <id>",
     "  ouroboros mission cancel <id> [reason]",
+    "  ouroboros mission admit <request-id> --stdin",
+    "  ouroboros mission admit <request-id> --file <path>",
     "  ouroboros capabilities",
     "  ouroboros auth provision <client-id> <scope,scope> [days] [credential-file]",
     "  ouroboros auth rotate <client-id> <scope,scope> [days] [credential-file]",
@@ -55,6 +59,9 @@ export async function runAdminCli(args: readonly string[], dependencies: AdminCl
   const client = dependencies.client ?? new LocalControlReadClient(transport);
   const commandClient = dependencies.commandClient ?? new LocalControlCommandClient({
     request: (params) => transport.call("local_control.command", params),
+  });
+  const admissionClient = dependencies.admissionClient ?? new LocalControlAdmissionClient({
+    request: (params) => transport.call("local_control.admit", params),
   });
 
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h" || args[0] === "help") {
@@ -198,6 +205,58 @@ export async function runAdminCli(args: readonly string[], dependencies: AdminCl
             ? "operator requested pause via CLI"
             : "operator requested cancel via CLI");
           const response = await commandClient.execute({ operation, missionId, reason });
+          writeJson(stdout, response.data);
+          return 0;
+        }
+
+        if (args[1] === "admit") {
+          if (args.length < 3 || !args[2]) break;
+          const requestId = args[2];
+          let inputPath: string | undefined;
+          let useStdin = false;
+          for (let index = 3; index < args.length; index += 1) {
+            if (args[index] === "--stdin") useStdin = true;
+            else if (args[index] === "--file" && args[index + 1]) {
+              inputPath = args[index + 1];
+              index += 1;
+            } else break;
+          }
+          let raw = "";
+          if (inputPath) {
+            const { readFileSync } = await import("node:fs");
+            raw = readFileSync(inputPath, "utf8");
+          } else if (useStdin) {
+            const chunks: Buffer[] = [];
+            for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
+            raw = Buffer.concat(chunks).toString("utf8");
+          } else {
+            stderr("mission admit requires --stdin or --file <path>\n");
+            return 2;
+          }
+          let payload: unknown;
+          try {
+            payload = JSON.parse(raw);
+          } catch {
+            stderr("mission admit input must be valid JSON\n");
+            return 2;
+          }
+          if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+            stderr("mission admit input must be a JSON object\n");
+            return 2;
+          }
+          const record = payload as Record<string, unknown>;
+          if (typeof record.originalIntent !== "string" ||
+            !Array.isArray(record.constraints) ||
+            !Array.isArray(record.acceptanceCriteria)) {
+            stderr("mission admit input requires originalIntent, constraints, acceptanceCriteria\n");
+            return 2;
+          }
+          const response = await admissionClient.admit({
+            requestId,
+            originalIntent: record.originalIntent,
+            constraints: record.constraints as string[],
+            acceptanceCriteria: record.acceptanceCriteria as string[],
+          });
           writeJson(stdout, response.data);
           return 0;
         }

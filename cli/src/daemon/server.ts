@@ -35,6 +35,8 @@ import {
 } from './local-control-auth.js';
 import type { LocalControlAuthenticatedClient } from '../../../shared/local-control-auth-contract.js';
 import { projectSessionGetResult, projectSessionListResult } from './session-rpc-projection.js';
+import type { MissionAdmissionAuthority } from './local-control-admission.js';
+import { sanitizeLocalControlAdmissionResponse } from '../../../shared/local-control-admission-contract.js';
 import { isDaemonStatusProjection } from '../../../shared/daemon-event-contract.js';
 import { sanitizeLocalControlReadResponse } from '../../../shared/local-control-read-contract.js';
 import { projectDaemonStatus } from './durable-projection.js';
@@ -133,6 +135,7 @@ export class DaemonServer {
     private rpcDrainWaiters: Array<() => void> = [];
     private appClosed = false;
     private readonly authorization?: LocalControlAuthorizationPort;
+    private readonly missionAdmissionAuthority?: MissionAdmissionAuthority;
     private readonly websocketPrincipals = new Map<ProjectionClient, {
         socket: { close(code?: number, reason?: string): void; terminate(): void };
         principal: LocalControlAuthenticatedClient;
@@ -157,6 +160,7 @@ export class DaemonServer {
         onShutdownRequested?: () => void,
         authorization?: LocalControlAuthorizationPort,
         capabilityRegistry?: Pick<CapabilityRegistryApi, 'listDescriptors'>,
+        missionAdmissionAuthority?: MissionAdmissionAuthority,
     ) {
         this.config = { ...DEFAULT_CONFIG, ...config };
         if (
@@ -167,6 +171,7 @@ export class DaemonServer {
             throw new RangeError('maxInFlightRpcOperations must be an integer between 1 and 1024');
         }
         this.authorization = authorization;
+        this.missionAdmissionAuthority = missionAdmissionAuthority;
         this.eventBus = eventBus;
         this.rpcGateway = rpcGateway ?? new RpcGateway(
             storage,
@@ -552,6 +557,24 @@ export class DaemonServer {
 
             const handlerSettled = this.beginRpcRequest(reply.raw, request.raw, request.raw.socket);
             try {
+                if (rpcRequest.method === 'local_control.admit') {
+                    if (!this.missionAdmissionAuthority) {
+                        return {
+                            jsonrpc: '2.0',
+                            id: rpcRequest.id,
+                            result: { ok: false, code: 'AUTHORITY_UNAVAILABLE', message: 'Mission admission authority is unavailable' },
+                        };
+                    }
+                    const admissionResult = await this.missionAdmissionAuthority.admit(
+                        rpcRequest.params ?? {},
+                        principal,
+                    );
+                    const safeResult = sanitizeLocalControlAdmissionResponse(admissionResult);
+                    if (safeResult === null) {
+                        return { jsonrpc: '2.0', id: rpcRequest.id, error: safeGatewayError(null) };
+                    }
+                    return { jsonrpc: '2.0', id: rpcRequest.id, result: safeResult };
+                }
                 const result = await this.rpcGateway.handleRequest({
                     jsonrpc: '2.0',
                     id: rpcRequest.id,

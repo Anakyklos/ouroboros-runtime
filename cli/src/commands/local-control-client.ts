@@ -8,6 +8,13 @@ import {
   type LocalControlReadResponse,
 } from "../../../shared/local-control-read-contract.js";
 import {
+  LOCAL_CONTROL_ADMISSION_PROTOCOL_VERSION,
+  LOCAL_CONTROL_ADMISSION_OPERATION,
+  sanitizeLocalControlAdmissionResponse,
+  type LocalControlAdmissionFailureCode,
+  type LocalControlAdmissionResponse,
+} from "../../../shared/local-control-admission-contract.js";
+import {
   LOCAL_CONTROL_COMMAND_PROTOCOL_VERSION,
   type LocalControlCommandFailureCode,
   type LocalControlCommandOperation,
@@ -429,5 +436,53 @@ export class LoopbackJsonRpcTransport implements LocalControlReadTransport {
     }
     if (!hasExactKeys(body, ["jsonrpc", "id", "result"])) throw new RpcProtocolError();
     return body.result;
+  }
+}
+
+
+export interface LocalControlAdmissionTransport {
+  request(params: unknown): Promise<unknown>;
+}
+
+const LOCAL_CONTROL_ADMISSION_FAILURE_MESSAGES: Record<LocalControlAdmissionFailureCode, string> = {
+  INVALID_REQUEST: "Mission admission request was rejected",
+  PROTOCOL_VERSION_REQUIRED: "Mission admission protocol version is required",
+  PROTOCOL_VERSION_UNSUPPORTED: "Mission admission protocol version is unsupported",
+  INVALID_ID: "Mission request identity is invalid",
+  INVALID_TEXT: "Mission admission text is invalid",
+  INVALID_PAYLOAD: "Mission admission payload is invalid",
+  ADMISSION_CONFLICT: "Mission admission conflicts with an existing request",
+  AUTHORITY_UNAVAILABLE: "Mission admission authority is unavailable",
+  ADMISSION_FAILED: "Mission admission failed",
+};
+
+/** Executes one versioned Mission admission request. */
+export class LocalControlAdmissionClient {
+  constructor(private readonly transport: LocalControlAdmissionTransport) {}
+
+  async admit(request: {
+    requestId: string;
+    originalIntent: string;
+    constraints: string[];
+    acceptanceCriteria: string[];
+  }): Promise<Extract<LocalControlAdmissionResponse, { ok: true }>> {
+    const params = {
+      protocolVersion: LOCAL_CONTROL_ADMISSION_PROTOCOL_VERSION,
+      operation: LOCAL_CONTROL_ADMISSION_OPERATION,
+      requestId: request.requestId,
+      originalIntent: request.originalIntent,
+      constraints: request.constraints,
+      acceptanceCriteria: request.acceptanceCriteria,
+    };
+    const raw = await this.transport.request(params);
+    const response = sanitizeLocalControlAdmissionResponse(raw);
+    if (!response) throw new LocalControlPayloadError();
+    if (!response.ok) {
+      if (response.code === "PROTOCOL_VERSION_UNSUPPORTED") {
+        throw new ProtocolVersionMismatchError(LOCAL_CONTROL_ADMISSION_PROTOCOL_VERSION);
+      }
+      throw new LocalControlFailureError(response.code, LOCAL_CONTROL_ADMISSION_FAILURE_MESSAGES[response.code]);
+    }
+    return response;
   }
 }
