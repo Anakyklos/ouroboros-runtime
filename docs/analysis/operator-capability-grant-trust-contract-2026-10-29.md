@@ -3,9 +3,9 @@
 > **Estado:** PROPOSAL ONLY — nenhuma implementação de produção, nenhum contrato público ratificado, nenhuma autorização concedida.
 > **Repositório:** `Anakyklos/ouroboros-runtime`
 > **Issue:** #166 (P1), epic principal #70 (M1 Local Control Plane)
-> **PR:** https://github.com/Anakyklos/ouroboros-runtime/pull/167 (revisão de review 5725232060)
+> **PR:** https://github.com/Anakyklos/ouroboros-runtime/pull/167 (revisão de review 5725465753)
 > **Base SHA auditado:** `4a0d6d52075bc665568e126124eb24ec8b8b2ed0` (`main`)
-> **HEAD auditado anterior:** `7c257b02501329a7e08c536ca291a5893cd0c2a3`
+> **HEAD auditado anterior:** `f92e2a1c7a0057479e40fe3804f5e0216e7dcefb`
 > **Bun (local):** `1.4.2` (CI pin: `1.3.9`)
 > **Data:** 2026-10-31
 > **Branch:** `docs/166-capability-grant-trust-contract`
@@ -32,35 +32,35 @@ Toda afirmação neste documento carrega uma das seguintes classificações estr
 **Correções centrais incorporadas nesta revisão (PROPOSTA):**
 
 1. **Integridade referencial sob `PRAGMA foreign_keys = OFF` (PROPRIEDADE PROPOSTA A COMPROVAR):** Constata-se que `cli/src/mission/sqlite-mission-store.ts:291` desativa explicitamente as foreign keys do SQLite (`foreign_keys = OFF`). Portanto, confiar isoladamente em cláusulas `FOREIGN KEY ... ON DELETE RESTRICT` não impede a exclusão acidental de uma Mission com grants. A proposta institui um **trigger de proteção diretamente na tabela `missions`** (`prevent_mission_delete_with_grants`) que aborta fisicamente o comando `DELETE FROM missions` via `RAISE(ABORT, ...)`. Esta garantia estrutural é um requisito a comprovar na suíte de testes do Slice A.
-2. **Diferenciação entre rotação de segredo e redução de autoridade, salvaguarda do high-water mark e delimitação da fronteira de confiança:**
-   - *Fato factual:* No código atual (`cli/src/daemon/local-control-auth.ts:94-115`), `provision(clientId, ...)` sobrescreve tanto `token_hash` quanto `scopes_json = excluded.scopes_json`. Preservar `authority_epoch` em rotações sem diferenciar troca de segredo de alteração de privilégios permitiria que grants antigos continuassem válidos mesmo após a retirada de `mission.grant_capabilities` ou redução de limites provisionados.
-   - *Solução proposta:* Distingue-se formalmente a **rotação de segredo pura** (novo token bearer, mesmo `scopes_json` e limites inalterados; `authority_epoch` preservado e grants vigentes mantidos) da **modificação/redução de privilégios** (alteração de escopos ou encolhimento de limites). Grants existentes são imediatamente desautorizados para efeitos que excedam os novos privilégios reduzidos. Submetem-se a Pedro modelos de aplicação: avanço automático de época ($E_{new} = E_{old} + 1$) sob alteração de escopos vs. revalidação dinâmica contínua nos gates de dispatch (§14).
-   - *Monotonicidade durável e triggers em ambas as tabelas:*
-     1. `prevent_client_delete` em `local_control_clients`: veda deleção física de clientes (desativação via `revoked_at`).
-     2. `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement` na tabela auxiliar durável `local_control_authority_epochs`: vedam deleção física do high-water mark e proíbem regressão/decremento de `max_epoch`.
-     3. No `INSERT`, a geração inicial é derivada atomicamente: `COALESCE((SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = :client_id), 1)`.
-   - *Delimitação estrita do trust boundary:* Os triggers SQLite garantem monotonicidade e impedem mutações acidentais ou abusivas via DML no nível da aplicação. Não se promete resistência absoluta a atores com privilégios administrativos no sistema operacional capazes de executar DDL (`DROP TRIGGER`) ou manipular diretamente o arquivo de banco; essa proteção reside em permissões do SO, auditoria de host e backups assinados.
-3. **Fronteira arquitetural real entre AuthStore e MissionStore (CLI vs. Daemon e ausência de 2PC):**
-   - *Fato factual:* A CLI administrativa (`cli/src/commands/admin-cli.ts:73-99`) executa como **um processo de sistema operacional separado**, instanciando `LocalControlCredentialStore` diretamente sobre o arquivo SQLite `local-control-auth.db` para `provision`, `rotate` e `revoke`. O daemon de background roda em outro processo gerenciando `missions.sqlite3`.
-   - *Semântica corrigida:* Retira-se qualquer alegação de garantia estrita cross-database de "zero-window" sustentada por estruturas em memória RAM. Uma estrutura em memória no daemon não recebe notificações de escritas efetuadas pela CLI externa. Mesmo em processo único, uma checagem em memória antes de abrir transação em outro banco não forma uma seção crítica compartilhada.
-   - *Separação formal dos dois domínios:*
-     - **Revogação de grant no MissionStore (Linearizada localmente):** Dentro da mesma transação SQLite do Gate 4 (`store.withTransaction()`), a revogação comitada impede atômica e confiavelmente a reserva de submissão.
-     - **Revogação de operador no AuthStore (Fronteira Cross-DB assíncrona):** Representa uma fronteira sem transação distribuída (2PC). Para coordenar essa relação sem garantias decorativas, submetem-se **três opções arquiteturais à decisão normativa de Pedro (§14)**: (1) Unificação da boundary administrativa via Daemon RPC; (2) Unificação dos bancos no mesmo arquivo SQLite (`ouroboros.sqlite3`); ou (3) Consistência eventual com janela de lease e cancelamento assíncrono.
-4. **Proteção contra downgrade e preservação inegociável de evidências duráveis:**
-   - *Fato factual:* O binário legado v1 atualmente em `main` (`cli/src/mission/sqlite-mission-store.ts:287-350`) **não lê nem valida `PRAGMA user_version`**. Gravar `user_version = 2` em um banco não impede que o binário v1 abra o arquivo. O downgrade in-place no mesmo arquivo é FORMALMENTE NÃO SUPORTADO E INSEGURO.
-   - *Diferenciação essencial de cenários operacionais:*
-     - **Cenário A — Rollback Quiescente sem Efeitos Posteriores:** O upgrade para v2 ocorreu, mas nenhuma mutação relevante, nova Mission, emissão de grant, reserva de submissão ou invocação foi executada no v2. O retorno para v1 mediante restauração de backup consistente pré-upgrade é permitido, desde que comprovada documentalmente a ausência de novos efeitos.
-     - **Cenário B — Downgrade Pós-Execução Durável (Efeitos Confirmados ou Trabalho Executado no v2):** O runtime v2 processou trabalho, emitiu grants, comitou reservas ou invocou conectores externos. **A restauração destrutiva do banco antigo como procedimento normal de downgrade é TERMINANTEMENTE PROIBIDA.** Efeitos físicos no mundo real permanecem executados; apagar seus registros no banco criaria divergência catastrófica entre o estado do sistema e a realidade externa, abrindo margem para replay indevido de efeitos já confirmados.
-     - *Reconciliação e bloqueio:* Na ausência de ferramenta de migração regressiva validada, o sistema deve recusar o downgrade e entrar em **`READ_ONLY_LOCKOUT`** até reconciliação explícita.
-   - *Especificação de backup consistente em modo WAL:* A realização de backups do SQLite sob modo WAL exige a API Online Backup (`sqlite3_backup_*`) ou quiescência de escrita acompanhada de checkpoint síncrono truncante (`PRAGMA wal_checkpoint(TRUNCATE)`), abrangendo coordenadamente ambos os arquivos (`missions.sqlite3` e `local-control-auth.db`).
+2. **Impedimento total de regressão de `authority_epoch` por DML e delimitação do trust boundary:**
+   - *Fato factual:* A salvaguarda anterior focava em `local_control_authority_epochs.max_epoch`, mas não continha trigger na tabela `local_control_clients` que impedisse um comando DML direto `UPDATE local_control_clients SET authority_epoch = 1` sobre uma linha em epoch 7, o que permitiria ressuscitar grants históricos de época 1 satisfazendo a igualdade de época.
+   - *Solução proposta:* Estabelece-se o invariante durável estrito de monotonicidade e coerência relacional em ambas as tabelas:
+     1. `prevent_client_authority_epoch_decrement` em `local_control_clients`: aborta qualquer `UPDATE` onde `NEW.authority_epoch < OLD.authority_epoch` ou onde `NEW.authority_epoch < max_epoch`.
+     2. `enforce_client_authority_epoch_insert_monotonicity` em `local_control_clients`: aborta qualquer `INSERT` onde `NEW.authority_epoch < max_epoch`.
+     3. `prevent_client_delete` em `local_control_clients`: veda deleção física de clientes (desativação via `revoked_at`).
+     4. `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement` em `local_control_authority_epochs`: vedam deleção física e impedem regressão/decremento de `max_epoch`.
+     5. Distinção estrita entre rotação de segredo pura (mesmo `scopes_json`, `authority_epoch` inalterado) e alteração/redução de privilégios (invalidação de autoridade prévia).
+   - *Delimitação estrita do trust boundary:* Os triggers SQLite garantem monotonicidade contra qualquer DML da aplicação ou scripts conectados à sessão. O SQLite é in-process e não possui RBAC para DDL; proteção contra `DROP TRIGGER` ou deleção de arquivo no SO exige governança host-level (permissões DAC/MAC e auditoria).
+3. **Fronteira arquitetural real entre AuthStore e MissionStore (Eliminação de garantias impossíveis cross-DB):**
+   - *Fato factual:* A CLI administrativa (`cli/src/commands/admin-cli.ts:73-99`) executa como **um processo OS separado**, instanciando `LocalControlCredentialStore` diretamente sobre `local-control-auth.db`. O daemon roda em outro processo gerenciando `missions.db` (`cli/src/daemon/main.ts`).
+   - *Semântica corrigida:* Elimina-se qualquer promessa de "zero chamadas externas" ou detecção "imediata" incondicional no baseline para a interleaving `T1 read AuthStore OK → T2 CLI shrink commit → T1 commit reservation MissionStore → T1 invoke`. No baseline atual (e sob Opção 3 — Consistência Eventual com Lease), uma chamada em voo pode cruzar para o conector externo, sendo tratada via cancelamento assíncrono e fail-closed para passos subsequentes. A eliminação estrita dessa janela só é viável sob modelos que introduzam coordenação real: Opção 1 (Daemon RPC com serialização de escritores) ou Opção 2 (Stores Unificados no mesmo arquivo SQLite).
+4. **Governança de downgrade sem perda de evidência, realidade do v1 e snapshot WAL coerente:**
+   - *Fato factual:* O binário legado v1 atualmente em `main` (`cli/src/mission/sqlite-mission-store.ts:287-350`) **não lê nem valida `PRAGMA user_version` nem adquire `flock`**. Implementar `flock` ou `READ_ONLY_LOCKOUT` no runtime v2 não altera retroativamente o binário v1.
+   - *Separação entre proteção de binários novos e salvaguardas operacionais para o v1:*
+     - Binários v2 e launchers compatíveis validam `user_version`, adquirem locks de cooperação e recusam downgrade entrando em `READ_ONLY_LOCKOUT`.
+     - A proteção contra inicialização inadvertida de binários legados v1 exige **fencing operacional estrito** e/ou **isolamento físico de caminhos de arquivos** (ex.: `missions.v2.db` ou `$OUROBOROS_DATA_DIR/v2/`), tornando impossível para o v1 apontar para o banco do v2.
+   - *Diferenciação operacional (Cenário A vs. Cenário B):*
+     - **Cenário A (Rollback Quiescente sem efeitos):** Upgrade v2 sem novas missões, grants, reservas ou invocações. Restauração de backup pré-upgrade consistente é permitida com comprovação documental.
+     - **Cenário B (Downgrade Pós-Execução Durável):** V2 executou trabalho durável ou efeitos externos confirmados. **Restauração destrutiva do banco v1 antigo é TERMINANTEMENTE PROIBIDA** para não apagar histórico nem causar repetição indevida de efeitos físicos já consumados.
+   - *Snapshot coerente sob SQLite WAL:* O SQLite Online Backup (`sqlite3_backup_*`) opera arquivo a arquivo e não forma transação distribuída conjunta. Capturar um snapshot consistente do conjunto do daemon (`missions.db`, `local-control-auth.db` e `daemon.db`) exige **quiescência operacional** como pré-condição mandatória, seguida de `PRAGMA wal_checkpoint(TRUNCATE)` em cada banco antes do backup.
 5. **Remoção de limites de recursos decorativos (Adoção formal da Alternativa A):** Os campos `resourceLimits` (`maxInvocations`, `maxDurationMs`, `budgetUnits`) foram expressamente **removidos do contrato v1 proposto** e adiados para evolução futura, evitando *security theater*. A governança de recursos no v1 permanece delegada à política de orçamento da Mission já existente (`budget_policy`).
-6. **Matriz de aceite completa e reconciliada com a Issue #166:** Reconciliação integral da seção 12 com todos os requisitos normativos da issue #166 (401/403, entitlement de escopo, capability inválida, wildcards/prefixos malformados, expiração, conflitos de idempotência, isolamento cross-grantor, rollback de observers, limites de 64KB/64 itens, redaction de segredos, concorrência CLI/daemon, persistência sob deleção adversária, distinção de rotação vs. redução de autoridade, downgrade sem perda de evidência e teste E2E com daemon real UDS e SQLite), todos rigorosamente classificados como testes futuros projetados.
+6. **Matriz de aceite completa e reconciliada com a Issue #166:** Reconciliação integral da seção 12 com todos os requisitos normativos da issue #166 (401/403, entitlement de escopo, capability inválida, wildcards/prefixos malformados, expiração, conflitos de idempotência, isolamento cross-grantor, rollback de observers, limites de 64KB/64 itens, redaction de segredos, concorrência CLI/daemon sem promessas impossíveis, persistência sob deleção adversária e teste E2E com daemon real UDS e SQLite), todos rigorosamente classificados como testes futuros projetados.
 
 **Direção de implementação futura em slices isolados (PROPOSTA):**
 - **Slice A** — Persistência do ledger append-only (triggers de proteção, isolamento de exclusão sob `foreign_keys = OFF`) e validação de grants por tupla atômica.
-- **Slice B** — Endpoints autenticados de concessão e revogação no Local Control Plane, incluindo migração do schema do AuthStore com monotonicidade estrita de `authority_epoch` (triggers `prevent_client_delete`, `prevent_authority_epochs_delete`, `prevent_authority_epochs_update_decrement`, high-water mark em `local_control_authority_epochs`, diferenciação de rotação de segredo vs. alteração de escopos), guardas de overflow e isolamento cross-grantor.
+- **Slice B** — Endpoints autenticados de concessão e revogação no Local Control Plane, incluindo migração do schema do AuthStore com monotonicidade estrita de `authority_epoch` (triggers `prevent_client_delete`, `prevent_client_authority_epoch_decrement`, `enforce_client_authority_epoch_insert_monotonicity`, `prevent_authority_epochs_delete`, `prevent_authority_epochs_update_decrement`, tabela `local_control_authority_epochs`), guardas de overflow e isolamento cross-grantor.
 - **Slice C** — Planejamento consultivo e aceitação de planos sob revalidação autoritativa atômica.
-- **Slice D** — Portões de dispatch, linearização de reserva de submissão no Gate 4, compatibilização versionada de `CapabilityInvocationDelivery`, recovery durável no SQLite para `uncertain` + `reconciliation.pending`, procedimento operacional de upgrade/downgrade com diferenciação dos Cenários A e B, política de backup WAL consistente, isolamento de arquivos e prevenção de replay de efeitos confirmados.
+- **Slice D** — Portões de dispatch, linearização de reserva de submissão no Gate 4, compatibilização versionada de `CapabilityInvocationDelivery`, recovery durável no SQLite para `uncertain` + `reconciliation.pending`, procedimento operacional de upgrade/downgrade com diferenciação dos Cenários A e B, política de backup WAL consistente com quiescência de processo, isolamento de arquivos e prevenção de replay de efeitos confirmados.
 
 
 **Invariantes centrais preservadas (CONTRATO EXISTENTE):**
@@ -271,12 +271,27 @@ $$G.\text{allowedEffectClasses} \subseteq \text{Limit}.\text{maxEffectClasses}$$
 $$G.\text{allowedRefPrefixes} \subseteq \text{Limit}.\text{maxRefPrefixes}$$
 Qualquer discrepância resulta em rejeição imediata com `CAPABILITY_EXCEEDS_GRANTOR_LIMITS`.
 
-**Comportamento dinâmico após redução de limites máximos do emissor (Encolhimento de Entitlement):**
+**Comportamento dinâmico e delimitação factual da fronteira cross-DB (Encolhimento de Entitlement):**
 Caso a governança reduza os limites máximos de um operador (seja via alteração em `$OUROBOROS_DATA_DIR/security/operator-limits.json` ou via update no registro de `local_control_clients`), grants emitidos no passado sob limites mais amplos **não podem continuar autorizando ações que extrapolem os novos limites reduzidos**.
 
 Nos portões de avaliação e dispatch (Gate 3 e Gate 4), o motor revalida o grant contra os limites atualmente vigentes do grantor:
 - Se $G.\text{capabilityIds} \not\subseteq \text{CurrentLimit}.\text{maxCapabilities}$ ou qualquer prefixo/classe violar os limites atuais, a autorização falha de forma fail-closed com o código estruturado **`GRANTOR_ENTITLEMENT_SHRUNK`**.
-- Fica formalmente garantido que uma redução de privilégios administrativos no emissor repercute imediatamente sobre a eficácia de grants prévios, impedindo a sobrevivência de privilégios revogados.
+
+> [!WARNING]
+> **Fronteira Factual Cross-DB e Janela de Corrida Inter-Processos:**
+> O AuthStore (`local-control-auth.db`) e o MissionStore (`missions.db`) residem em arquivos de banco SQLite distintos manipulados por processos separados (CLI administrativa externa vs. Daemon de background) sem transação distribuída 2PC.
+> Por essa razão, **não é possível prometer no baseline que a redução de privilégios seja detectada antes do commit da reserva em 100% dos cenários concorrentes**.
+> Considera-se a seguinte sequência adversarial incontornável no baseline:
+> 1. Daemon valida privilégios e limites no AuthStore (leitura bem-sucedida).
+> 2. CLI externa reduz privilégios ou limites do operador e comita no AuthStore.
+> 3. Daemon abre transação e comita a reserva de submissão (`submitting`) no MissionStore (`missions.db`).
+> 4. Conector recebe a chamada externa (efeito despachado em voo).
+>
+> Sem um mecanismo de coordenação que serialize os processos antes do passo 3, a chamada cruza irreversivelmente para o conector. Não se promete "zero efeitos externos" no baseline. O runtime apenas garante que:
+> - Passos subsequentes serão bloqueados fail-closed (`GRANTOR_ENTITLEMENT_SHRUNK` ou `GRANTOR_SCOPE_REVOKED`);
+> - Um cancelamento assíncrono best-effort é sinalizado ao conector.
+>
+> A eliminação estrita dessa janela (garantindo zero efeitos externos) depende da decisão normativa de Pedro (§14 Decisão 12): Opção 1 (Daemon RPC centralizando mutações) ou Opção 2 (Unificação relacional em banco SQLite único).
 
 ---
 
@@ -329,8 +344,16 @@ Quando a operação administrativa for estritamente uma troca de credencial bear
 
 #### 6.1.3 Condições de concorrência, persistência e recuperação
 
-1. **Persistência durável no SQLite WAL:** As alterações de escopo, rotações e revogações no `local-control-auth.db` são executadas em transação SQLite com `PRAGMA synchronous = NORMAL` ou `FULL` no modo WAL. Nenhuma alteração de autoridade é confirmada ao operador antes do `fsync` do arquivo de log da transação.
-2. **Concorrência entre alteração de autoridade e reserva de submissão:** A coordenação segue o ponto de linearização formal do Gate 4 no MissionStore. Se a modificação de privilégios for comitada no AuthStore antes da transação do Gate 4, a revalidação detecta a redução e aborta a reserva durável. Se a reserva de submissão já houver comitado no MissionStore, o conector externo já recebeu autorização irreversível de transmissão, mas passos subsequentes são imediatamente bloqueados.
+1. **Persistência durável no SQLite WAL e política de sincronização:**
+   As alterações de escopo, rotações e revogações no `local-control-auth.db` são executadas sob transação SQLite em modo WAL.
+   - Sob `PRAGMA synchronous = NORMAL` (padrão recomendado em modo WAL), o SQLite não executa `fsync` a cada commit de transação (a sincronização para o disco físico ocorre apenas durante checkpoints do WAL). Nesse modo, as transações são duráveis contra crashes do processo da aplicação, mas um desligamento abrupto do sistema operacional ou perda física de energia do host pode reverter transações comitadas após o último checkpoint.
+   - Sob `PRAGMA synchronous = FULL`, o SQLite emite `fsync` síncrono a cada commit de transação no WAL, assegurando durabilidade estrita contra falhas de host antes de confirmar a operação ao operador, à custa de latência de I/O.
+   A definição entre `NORMAL` e `FULL` é tratada como política de durabilidade configurável (§14) e não deve ser documentalmente apresentada como fsync garantido por transação sob `NORMAL`.
+2. **Concorrência entre alteração de autoridade e reserva de submissão (Fronteira Cross-DB):**
+   A coordenação de envio no MissionStore (`missions.db`) ocorre no Gate 4 (`store.withTransaction()`).
+   Contudo, como o AuthStore (`local-control-auth.db`) reside em outro arquivo de banco manipulado por processo independente (CLI administrativa), não existe transação ACID distribuída:
+   - Se a alteração de privilégios for comitada no AuthStore e observada antes da leitura do Gate 4, a revalidação detecta a redução e aborta a reserva durável fail-closed (`GRANTOR_SCOPE_REVOKED` ou `GRANTOR_ENTITLEMENT_SHRUNK`).
+   - **Janela de Corrida Cross-DB (Interleaving J):** Caso o Daemon valide os privilégios no AuthStore, a CLI externa comite a redução no AuthStore, e o Daemon comite a reserva no MissionStore antes de atualizar sua visão do AuthStore, a chamada externa já é despachada ao conector. No baseline (sem RPC unificado ou banco único), **não há garantia de zero chamadas externas** nessa interleaving. O runtime apenas sinaliza cancelamento assíncrono (best-effort) e bloqueia passos posteriores. A eliminação total dessa janela depende da escolha normativa de Pedro (§14 Decisão 12: Opção 1 via Daemon RPC ou Opção 2 via Stores Unificados).
 3. **Recuperação pós-restart:** Ao reiniciar o daemon ou o processo da CLI, o AuthStore reconstrói o estado autoritativo lendo as colunas `authority_epoch`, `scopes_json` e `revoked_at` diretamente das páginas do banco. Nenhum estado volátil em memória pode atuar como autoridade após o boot.
 
 ### 6.2 Escopo de cada concessão (tupla associada autoritativa)
@@ -677,11 +700,31 @@ Para resolver integralmente essa inconsistência sem recorrer a timestamps de re
      max_epoch INTEGER NOT NULL
    );
 
-   -- Trigger mandatário no SQLite que proíbe terminantemente a deleção física de clientes
+   -- Triggers mandatários no SQLite que protegem local_control_clients contra mutações destrutivas
    CREATE TRIGGER IF NOT EXISTS prevent_client_delete
    BEFORE DELETE ON local_control_clients
    BEGIN
      SELECT RAISE(ABORT, 'physical deletion of local_control_clients is forbidden: clients must be deactivated via revoke()');
+   END;
+
+   CREATE TRIGGER IF NOT EXISTS prevent_client_authority_epoch_decrement
+   BEFORE UPDATE OF authority_epoch ON local_control_clients
+   BEGIN
+     SELECT CASE
+       WHEN NEW.authority_epoch < OLD.authority_epoch THEN
+         RAISE(ABORT, 'decrementing authority_epoch on local_control_clients is strictly forbidden')
+       WHEN NEW.authority_epoch < COALESCE((SELECT max_epoch FROM local_control_authority_epochs WHERE client_id = OLD.client_id), 0) THEN
+         RAISE(ABORT, 'authority_epoch cannot be updated below historical max_epoch recorded in local_control_authority_epochs')
+     END;
+   END;
+
+   CREATE TRIGGER IF NOT EXISTS enforce_client_authority_epoch_insert_monotonicity
+   BEFORE INSERT ON local_control_clients
+   BEGIN
+     SELECT CASE
+       WHEN NEW.authority_epoch < COALESCE((SELECT max_epoch FROM local_control_authority_epochs WHERE client_id = NEW.client_id), 0) THEN
+         RAISE(ABORT, 'authority_epoch cannot be inserted below historical max_epoch recorded in local_control_authority_epochs')
+     END;
    END;
 
    -- Triggers mandatários no SQLite que protegem a tabela permanente de high-water mark
@@ -698,6 +741,25 @@ Para resolver integralmente essa inconsistência sem recorrer a timestamps de re
        WHEN NEW.max_epoch < OLD.max_epoch THEN
          RAISE(ABORT, 'decrementing max_epoch in local_control_authority_epochs is strictly forbidden')
      END;
+   END;
+
+   -- Triggers que sincronizam automaticamente o high-water mark permanente em mutações legítimas
+   CREATE TRIGGER IF NOT EXISTS sync_authority_epoch_to_max_on_update
+   AFTER UPDATE OF authority_epoch ON local_control_clients
+   BEGIN
+     INSERT INTO local_control_authority_epochs (client_id, max_epoch)
+     VALUES (NEW.client_id, NEW.authority_epoch)
+     ON CONFLICT(client_id) DO UPDATE SET
+       max_epoch = MAX(local_control_authority_epochs.max_epoch, excluded.max_epoch);
+   END;
+
+   CREATE TRIGGER IF NOT EXISTS sync_authority_epoch_to_max_on_insert
+   AFTER INSERT ON local_control_clients
+   BEGIN
+     INSERT INTO local_control_authority_epochs (client_id, max_epoch)
+     VALUES (NEW.client_id, NEW.authority_epoch)
+     ON CONFLICT(client_id) DO UPDATE SET
+       max_epoch = MAX(local_control_authority_epochs.max_epoch, excluded.max_epoch);
    END;
 
    -- Provisionamento Inicial, Rotação e Reprovisionamento Atômico (Transação única)
@@ -724,7 +786,7 @@ Para resolver integralmente essa inconsistência sem recorrer a timestamps de re
      revoked_at = NULL,
      created_at = excluded.created_at;
 
-   -- Sincronização durável da época máxima atingida na mesma transação
+   -- Sincronização durável da época máxima atingida na mesma transação (redundância declarativa)
    INSERT INTO local_control_authority_epochs (client_id, max_epoch)
    VALUES (:client_id, (SELECT authority_epoch FROM local_control_clients WHERE client_id = :client_id))
    ON CONFLICT(client_id) DO UPDATE SET
@@ -749,13 +811,15 @@ Para resolver integralmente essa inconsistência sem recorrer a timestamps de re
      $$\text{authority\_epoch}_{\text{new}} = \text{local\_control\_clients}.\text{authority\_epoch} + 1$$
      O registro é reativado com `revoked_at = NULL`. A sincronização de `local_control_authority_epochs` atualiza `max_epoch` para o novo valor ($E_{\text{new}} = E_{\text{old}} + 1$).
 3. **Prevenção matemática de reversão e delimitação da fronteira de confiança (Trust Boundary):**
-   - **Barreira 1 (Trigger de Motor em `local_control_clients`):** O trigger `prevent_client_delete` impede no nível do SQLite qualquer comando `DELETE FROM local_control_clients`, garantindo que desativações sejam sempre lógicas.
+   - **Barreira 1A (Proteção Relacional contra Decremento Direto em `local_control_clients`):** O trigger `prevent_client_authority_epoch_decrement` impede no nível do SQLite qualquer comando `UPDATE` que reduza `authority_epoch` (aborta se `NEW.authority_epoch < OLD.authority_epoch` ou se `NEW.authority_epoch < max_epoch`).
+   - **Barreira 1B (Proteção contra Inserção Abaixo do High-Water Mark):** O trigger `enforce_client_authority_epoch_insert_monotonicity` aborta qualquer comando `INSERT` direto que tente registrar um cliente com `authority_epoch` inferior à marca máxima histórica já comitada em `local_control_authority_epochs`.
+   - **Barreira 1C (Trigger de Vedação a Exclusão Física):** O trigger `prevent_client_delete` veda qualquer `DELETE FROM local_control_clients`, garantindo que desativações sejam sempre lógicas (`revoked_at`).
    - **Barreira 2 (Triggers de Imutabilidade em `local_control_authority_epochs`):** Os triggers `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement` abortam qualquer exclusão física ou regressão numérica em `max_epoch`.
    - **Barreira 3 (High-Water Mark Monotônico no `INSERT`):** Se em um cenário extremo de desastre operacional a linha de um cliente for fisicamente apagada de `local_control_clients`, a recriação subsequente do cliente via `INSERT` executa:
      `COALESCE((SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = 'alice'), 1)`
      Como a tabela de salvaguarda preserva $7$, a consulta retorna $7 + 1 = 8$. O registro é recriado diretamente na época 8. **Fica categoricamente eliminado o cenário `epoch 7 → DELETE → INSERT → epoch 1`.**
    - **Delimitação estrita do Trust Boundary do SQLite:**
-     - *O que a arquitetura garante dentro do motor:* Os triggers e restrições relacionais impedem eficazmente qualquer regressão ou mutação destrutiva acidental ou abusiva via instruções DML padrão (`INSERT`, `UPDATE`, `DELETE`) executadas pelo runtime, por dependências ou por scripts conectados à sessão de banco de dados.
+     - *O que a arquitetura garante dentro do motor:* Os triggers e restrições relacionais impedem eficazmente qualquer regressão ou mutação destrutiva acidental ou abusiva via instruções DML padrão (`INSERT`, `UPDATE`, `DELETE`) executadas pelo runtime, por dependências ou por scripts conectados à sessão de banco de dados. Qualquer tentativa direta de rebaixar a época de um cliente via `UPDATE local_control_clients SET authority_epoch = 1` falha imediatamente por trigger.
      - *O que exige governança administrativa e proteção de host:* O SQLite é uma engine embutida (*in-process library*) e compartilha o mesmo espaço de processo e privilégios de I/O do usuário do sistema operacional. O SQLite não possui controle de acesso autônomo baseado em papéis (RBAC nativo) para operações DDL. Um operador administrativo com permissões de host suficientes para executar DDL arbitrária (`DROP TRIGGER`, `DROP TABLE`) ou com acesso direto ao sistema de arquivos (modificar/deletar o arquivo `.db` via OS) **não pode ser impedido exclusivamente por código SQL embutido**. A proteção contra essa ameaça host-level reside fora do SQLite: permissões de sistema de arquivos do Linux (DAC/MAC), separação de usuários de serviço, backups duráveis imutáveis (WORM) e auditoria forense no nível do host. Não se promete resistência mágica além dessa fronteira física.
 4. **Prevenção de overflow de inteiros:**
    Tanto no runtime TypeScript quanto no SQLite, inteiros seguros são delimitados por `Number.MAX_SAFE_INTEGER` ($9.007.199.254.740.991$, $2^{53} - 1$).
@@ -764,7 +828,7 @@ Para resolver integralmente essa inconsistência sem recorrer a timestamps de re
    Se atingido o limite máximo seguro, a operação de reprovisionamento é abortada de forma fail-closed com erro estruturado **`AUTHORITY_EPOCH_OVERFLOW`**, impedindo qualquer wrap-around ou perda de monotonicidade.
 5. **Comportamento após restart e migração:**
    - **Migração:** Ao migrar bancos existentes sem as novas colunas, o SQLite preenche `authority_epoch = 1` e `credential_version = 1` para todos os clientes legados, e uma migração idempotente popula `local_control_authority_epochs` com `max_epoch = 1`.
-   - **Restart:** As tabelas do `LocalControlCredentialStore` residem no SQLite WAL com `fsync` síncrono. Ao reiniciar o daemon ou o sistema operacional, as épocas de autoridade, escopos e estados de revogação permanecem exatamente como comitados no disco. Nenhum estado volátil de autoridade reside exclusivamente em memória RAM.
+   - **Restart:** As tabelas do `LocalControlCredentialStore` residem no SQLite WAL com política de durabilidade configurável (`NORMAL` ou `FULL`). Ao reiniciar o daemon ou o sistema operacional, as épocas de autoridade, escopos e estados de revogação permanecem exatamente como comitados no disco. Nenhum estado volátil de autoridade reside exclusivamente em memória RAM.
 6. **Regra de Invalidação Permanente (`AUTHORITY_SUPERSEDED`):**
    Na redução determinística de grants para autorizar um passo ou handoff, o runtime verifica:
    $$\text{isGrantActive} \iff (G.\text{grantorAuthorityEpoch} == \text{client}.\text{authority\_epoch}) \land (\text{client}.\text{revoked\_at} == \text{null})$$
@@ -782,6 +846,14 @@ Para resolver integralmente essa inconsistência sem recorrer a timestamps de re
      A tabela `local_control_authority_epochs` atualiza `max_epoch = 8`.
      Tentativas de utilizar grants das gerações $E=1, 2, \dots, 7$ falham com `AUTHORITY_SUPERSEDED`.
      Nenhuma colisão com o valor padrão `DEFAULT 1` ocorre.
+   - **Cenário C0 (Adversarial) — Tentativa de atualização DML direta no cliente ($E=7 \to \text{UPDATE client epoch 1} \to \text{abortado}):**
+     Operador `alice` atingiu `authority_epoch = 7` (e `local_control_authority_epochs.max_epoch = 7`).
+     Um invasor, script ou bug de aplicação tenta rebaixar o cliente diretamente executando:
+     `UPDATE local_control_clients SET authority_epoch = 1 WHERE client_id = 'alice';`
+     O trigger `prevent_client_authority_epoch_decrement` dispara BEFORE UPDATE, avalia `NEW.authority_epoch (1) < OLD.authority_epoch (7)` e aborta imediatamente com `RAISE(ABORT)`.
+     O registro permanece intacto em `authority_epoch = 7`.
+     Tentativas subsequentes de usar grants emitidos na época 1 continuam falhando com `AUTHORITY_SUPERSEDED`.
+     Caso um atacante tente inserir diretamente via `INSERT INTO local_control_clients (client_id, authority_epoch, ...) VALUES ('alice', 1, ...)`, o trigger `enforce_client_authority_epoch_insert_monotonicity` consulta `local_control_authority_epochs` e aborta imediatamente a inserção.
    - **Cenário D — Mesmo milissegundo:** Executar revoke e reprovisionamento no mesmo milissegundo exato; o contador monotônico durável incrementa numericamente de forma determinística ($E_2 = 2 > E_1 = 1$), eliminando qualquer dependência ou colisão temporal de relógio de parede (`Date.now()`).
    - **Cenário E — Replay histórico:** Atacante tenta reenviar ou reutilizar o identificador `grantId` emitido no epoch 1 após o emissor ter sido reprovisionado no epoch 8; rejeitado com `AUTHORITY_SUPERSEDED`.
    - **Cenário F — Deleção física adversária ($E=7 \to \text{DELETE} \to \text{INSERT} \to E=8$):**
@@ -805,12 +877,12 @@ Para resolver integralmente essa inconsistência sem recorrer a timestamps de re
 ### 8.5 Concorrência entre AuthStore e MissionStore (Fronteira sem 2PC)
 
 A arquitetura do Ouroboros estabelece uma separação física e de responsabilidades entre dois bancos de dados SQLite independentes:
-- **`MissionStore` (`missions.sqlite3`):** Armazena o ciclo de vida da Mission, revisões de planos, invocações, ledger de grants (`mission_capability_grants`) e ledger de revogações (`mission_capability_revocations`).
+- **`MissionStore` (`missions.db`):** Armazena o ciclo de vida da Mission, revisões de planos, invocações, ledger de grants (`mission_capability_grants`) e ledger de revogações (`mission_capability_revocations`).
 - **`AuthStore` (`local-control-auth.db`):** Armazena identidades locais de operadores (`local_control_clients`), credenciais bearer com hash, escopos provisionados e gerações de autoridade (`authority_epoch`).
 
 > [!WARNING]
 > **Ausência de Transação Distribuída (2PC Cross-DB):**
-> O SQLite não provê transações atômicas distribuídas entre arquivos de banco distintos sem coordenador de commit em duas fases. Não existe nem deve existir commit conjunto entre `local-control-auth.db` e `missions.sqlite3`.
+> O SQLite não provê transações atômicas distribuídas entre arquivos de banco distintos sem coordenador de commit em duas fases. Não existe nem deve existir commit conjunto entre `local-control-auth.db` e `missions.db`.
 > Uma transação aberta via `store.withTransaction()` no `MissionStore` **NÃO protege nem serializa escritas concorrentes executadas no `AuthStore`**.
 
 #### 8.5.1 Separação estrita dos dois domínios de revogação
@@ -818,7 +890,7 @@ A arquitetura do Ouroboros estabelece uma separação física e de responsabilid
 Para eliminar falsas promessas de linearização cross-database, separam-se formalmente os dois tipos de revogação:
 
 1. **(A) Revogação de Grant no MissionStore (Linearizada localmente no mesmo banco):**
-   - O grant reside no ledger `mission_capability_grants` e a sua revogação é gravada em `mission_capability_revocations`, **no mesmo arquivo de banco de dados SQLite (`missions.sqlite3`)** que gerencia o ciclo de vida das invocações.
+   - O grant reside no ledger `mission_capability_grants` e a sua revogação é gravada em `mission_capability_revocations`, **no mesmo arquivo de banco de dados SQLite (`missions.db`)** que gerencia o ciclo de vida das invocações.
    - Quando o `MissionEngine` processa o Gate 4 (reserva de submissão), ele abre `store.withTransaction()`.
    - Dentro da **mesma transação SQLite ACID**, o motor verifica se o `grantId` associado ao passo possui registro ativo em `mission_capability_revocations`. Se possuir, a transação aborta a reserva durável e marca a invocação como `failed` com código `REVOKED_BEFORE_SUBMISSION`.
    - **Semântica proposta a verificar:** Como o grant e a invocação residem no mesmo arquivo físico SQLite, a revogação de um grant no `MissionStore` é serializada de forma ACID pela transação local. Se o commit do revoke ocorrer antes do commit da reserva durável, a reserva aborta e zero efeitos externos são despachados.
@@ -826,14 +898,14 @@ Para eliminar falsas promessas de linearização cross-database, separam-se form
    - A revogação do operador ocorre em `local_control_clients.revoked_at` no `local-control-auth.db`.
    - **Auditoria da Arquitetura Real (CLI vs. Daemon):**
      - No código atual (`cli/src/commands/admin-cli.ts:73-99`), a CLI administrativa executa como um **processo de sistema operacional independente**. Ao executar `ouroboros auth revoke <clientId>`, a CLI instancia `new LocalControlCredentialStore(...)`, executa `registry.revoke(clientId)` diretamente no arquivo SQLite `local-control-auth.db`, e encerra sua execução.
-     - O daemon de background roda em outro processo do sistema operacional, gerenciando `missions.sqlite3`.
+     - O daemon de background roda em outro processo do sistema operacional, gerenciando `missions.db`.
      - **Ausência de Memória Compartilhada:** Não existe memória RAM compartilhada nem IPC entre a CLI externa e o daemon no código atual. Qualquer estrutura em memória mantida pelo daemon não é notificada das escritas em disco efetuadas pela CLI.
    - **Análise da Janela de Corrida Inter-Bancos e Inter-Processos:**
      1. $T_1$: Daemon lê no AuthStore que o operador `client-1` está ativo (`authority_epoch = 1, revoked_at = NULL`).
      2. $T_2$: Processo CLI externo revoga `client-1` e comita a escrita em `local-control-auth.db`.
      3. $T_3$: Daemon abre `store.withTransaction()` no `MissionStore` e comita a reserva de submissão (`submitting`).
      4. $T_4$: Daemon aciona o conector externo.
-   - **Constatação factual:** Sem coordenação física entre processos ou unificação de transações, a verificação no passo 1 já estava desatualizada no momento do commit no passo 3. Mesmo dentro de um único processo, consultar uma barreira em memória antes de abrir transação em outro banco não forma uma seção crítica compartilhada. Um lease de despacho apenas limita a idade de um token de autorização, mas não elimina a possibilidade de interleaving antes do commit da reserva.
+   - **Constatação factual:** Sem coordenação física entre processos ou unificação de transações, a verificação no passo 1 já estava desatualizada no momento do commit no passo 3. Mesmo dentro de um único processo, consultar qualquer sinalizador antes de abrir transação em outro banco não forma uma seção crítica compartilhada. Um lease de despacho apenas limita a idade de um token de autorização, mas não elimina a possibilidade de interleaving antes do commit da reserva.
 
 #### 8.5.2 Modelos de ordenação e opções arquiteturais (DECISÃO PENDENTE para Pedro)
 
@@ -845,7 +917,7 @@ Para ordenar as mutações administrativas e o despacho de efeitos sem recorrer 
    - O daemon centraliza todas as escritas no AuthStore e, sob a mesma seção crítica do processo, sincroniza imediatamente o estado de despacho, abortando qualquer reserva em curso para o cliente revogado.
    - O acesso direto a arquivo pela CLI fica restrito estritamente a modo de emergência/bootstrap offline (quando o daemon estiver comprovadamente inativo).
 2. **Opção 2 — Unificação Relacional dos Stores no Mesmo Banco SQLite:**
-   - As tabelas de controle de acesso (`local_control_clients`, `local_control_authority_epochs`) e as tabelas de missões (`missions`, `mission_invocations`, `mission_capability_grants`, `mission_capability_revocations`) são consolidadas em um **único arquivo de banco de dados SQLite** (`ouroboros.sqlite3`).
+   - As tabelas de controle de acesso (`local_control_clients`, `local_control_authority_epochs`) e as tabelas de missões (`missions`, `mission_invocations`, `mission_capability_grants`, `mission_capability_revocations`) são consolidadas em um **único arquivo de banco de dados SQLite** (`ouroboros.db`).
    - Com essa unificação, o Gate 4 executa uma única transação SQLite ACID que lê `local_control_clients.revoked_at` E comita a reserva de submissão (`submitting`).
    - **Propriedade:** Proporciona linearização zero-window real sustentada pelo lock transacional nativo do SQLite (WAL), eliminando completamente a fronteira cross-database.
 3. **Opção 3 — Consistência Eventual com Janela Bounded e Cancelamento Assíncrono:**
@@ -860,7 +932,7 @@ Para ordenar as mutações administrativas e o despacho de efeitos sem recorrer 
 #### 8.5.3 Semântica de persistência e tratamento de falhas (Rollbacks)
 
 - **Falha de persistência no AuthStore durante Revoke:** Se a transação SQLite no `local-control-auth.db` sofrer erro de I/O ou rollback, a escrita em disco não ocorre. O operador permanece ativo no banco; a coerência relacional interna do AuthStore é preservada.
-- **Falha de persistência no MissionStore durante Reserva:** Se a transação SQLite de reserva de submissão sofrer rollback no `missions.sqlite3`, a invocação permanece em estado `not_submitted`. Nenhum conector externo é chamado (zero submissão física).
+- **Falha de persistência no MissionStore durante Reserva:** Se a transação SQLite de reserva de submissão sofrer rollback no `missions.db`, a invocação permanece em estado `not_submitted`. Nenhum conector externo é chamado (zero submissão física).
 - **Indisponibilidade do AuthStore:** Se o AuthStore estiver inacessível, travado ou corrompido durante a validação pré-reserva, a política fail-closed aborta a submissão imediatamente com `AUTHORITY_UNAVAILABLE`. Zero reservas e zero efeitos externos ocorrem.
 
 ---
@@ -945,17 +1017,26 @@ A introdução de um estado explícito de **reserva de submissão (`submitting`)
      - Em bancos SQLite operando em modo WAL (`PRAGMA journal_mode = WAL`), simples cópias de arquivos via sistema operacional (`cp`) com o processo ativo geram snapshots inconsistentes ou corrompidos, pois páginas transacionadas recentes residem no arquivo `-wal`.
      - Procedimento obrigatório de backup consistente:
        1. Utilizar a API Online Backup do SQLite (`sqlite3_backup_*`), que copia atomicamente as páginas sob travas compartilhadas; OU
-       2. Estabelecer quiescência operacional do runtime e executar checkpoint síncrono truncante:
+   - **Especificação de Snapshot Consistente sob SQLite WAL (Multi-Store):**
+     - Em bancos SQLite operando em modo WAL (`PRAGMA journal_mode = WAL`), simples cópias de arquivos via sistema operacional (`cp`) com o processo ativo geram snapshots inconsistentes ou corrompidos, pois páginas transacionadas recentes residem no arquivo `-wal`.
+     - Além disso, o SQLite Online Backup (`sqlite3_backup_*`) opera banco a banco de forma isolada; **backups individuais de arquivos distintos NÃO constituem uma transação conjunta nem um snapshot consistente distribuído**. Capturas assimétricas em momentos distintos podem registrar um operador em época desatualizada no `local-control-auth.db` em relação aos grants já persistidos no `missions.db`.
+     - **Procedimento Obrigatório de Snapshot Consistente Coordenado:**
+       1. Estabelecer **quiescência operacional prévia** no runtime (pausar o loop do scheduler, suspender a aceitação de novas missões e bloquear mutações de autoridade na CLI);
+       2. Executar o checkpoint truncante síncrono em cada store:
           `PRAGMA wal_checkpoint(TRUNCATE);`
-          garantindo a reintegração integral de todas as páginas do WAL ao arquivo principal e o esvaziamento do arquivo WAL antes da cópia física.
-   - **Coordenação entre AuthStore e MissionStore:**
-     O procedimento de backup consistente deve coordenar atomicamente a captura de ambos os arquivos: `missions.sqlite3` e `local-control-auth.db`. Capturas assimétricas podem registrar um operador em época desatualizada em relação aos grants já persistidos no MissionStore.
-   - **Proteção contra Execução Concorrente de Versões Incompatíveis:**
-     O runtime deve implementar lock exclusivo no nível do sistema de arquivos (`flock` em `$OUROBOROS_DATA_DIR/ouroboros.lock`), impedindo fisicamente que instâncias com binários v1 e v2 operem concorrentemente sobre os mesmos arquivos de banco de dados.
+          garantindo a reintegração integral de todas as páginas do WAL aos arquivos principais (`missions.db`, `local-control-auth.db`, `daemon.db`) e o esvaziamento total dos arquivos WAL antes de qualquer cópia;
+       3. Realizar a cópia atômica dos arquivos no nível de bloco/sistema de arquivos (ou via snapshot consistente de storage LVM/ZFS);
+       4. Retomar a operação normal do daemon.
+   - **Proteção de Binários Novos vs. Limitações de Binários Legados e Fencing Operacional:**
+     - *Proteção nos binários novos (v2):* Binários v2 adquirem lock cooperativo via `flock` em `$OUROBOROS_DATA_DIR/ouroboros.lock`, validam `PRAGMA user_version = 2` no startup e entram em `READ_ONLY_LOCKOUT` caso detectem downgrade não autorizado com dados pós-execução (Cenário B).
+     - *Limitações factuais de binários legados (v1):* O binário legado v1 atualmente em `main` (`cli/src/mission/sqlite-mission-store.ts:287-350`) **não lê nem verifica `PRAGMA user_version` nem adquire `flock`**. Portanto, adicionar `flock` ou `READ_ONLY_LOCKOUT` no código do v2 **não impede que um binário v1 seja executado diretamente contra o arquivo de banco**.
+     - *Procedimentos mandatórios de isolamento operacional para o v1:*
+       - **Isolamento físico de arquivos (Opção A):** O runtime v2 utiliza caminhos segregados (ex.: `$OUROBOROS_DATA_DIR/v2/missions.db` ou `missions.v2.db`), tornando impossível para o binário v1 antigo abrir os dados do v2 por engano.
+       - **Fencing operacional no host:** Desinstalação/remoção dos binários compilados v1 dos nós de execução, uso de containers ou wrappers de inicialização que rejeitam a invocação de versões legadas v1 sobre os nós migrados.
    - **Preservação dos IDs de Invocação, Fingerprints e Prevenção de Replay:**
      Em qualquer procedimento de recuperação ou migração, os identificadores `invocationId`, fingerprints SHA-256 e vínculos de evidência forense devem permanecer rigorosamente imutáveis. Efeitos confirmados jamais são recolocados na fila de despacho.
    - **Opções Arquiteturais Submetidas a Pedro (DECISÃO PENDENTE §14):**
-     - *Opção A (Isolamento de Arquivo Físico):* O runtime v2 passa a utilizar um arquivo ou diretório segregado (ex.: `missions.v2.sqlite3` ou `$OUROBOROS_DATA_DIR/v2/`), prevenindo fisicamente que binários legados montem bases de dados v2.
+     - *Opção A (Isolamento de Arquivo Físico):* O runtime v2 passa a utilizar um arquivo ou diretório segregado (ex.: `missions.v2.db` ou `$OUROBOROS_DATA_DIR/v2/`), prevenindo fisicamente que binários legados montem bases de dados v2.
      - *Opção B (Adoção de `PRAGMA user_version` a partir de v2):* O runtime v2 passa a validar `PRAGMA user_version` em `initialize()` para proteger contra migrações futuras (v3+), enquanto a proteção v1 → v2 é garantida pelo procedimento operacional de backup consistente e isolamento de arquivos.
 6. **Preservação de Provenance e Evidência Histórica:**
    A transição de recuperação para `uncertain` mantém absolutamente intactos os identificadores (`invocationId`, `stepId`, `missionId`), timestamps originais de disparo (`dispatchedAt`), parâmetros de entrada (`inputRefs`), fingerprints e histórico prévio de tentativas em `attempts`. Nenhuma evidência forense é apagada ou truncada.
@@ -963,7 +1044,7 @@ A introdução de um estado explícito de **reserva de submissão (`submitting`)
 #### 9.2.2 Ponto autoritativo de linearização
 
 O ponto autoritativo de linearização para consumo de autoridade de grants é a **transação atômica SQLite de reserva de submissão (Gate 4)** no `SqliteMissionStore`:
-- **Antes do commit da reserva (mesmo banco):** Se uma revogação de grant comitar no ledger de grants no MissionStore (`missions.sqlite3`), o Gate 4 detecta a revogação dentro da transação ACID, aborta a transição e marca a invocação como `failed` com erro `REVOKED_BEFORE_SUBMISSION`. Zero chamadas ao conector ocorrem.
+- **Antes do commit da reserva (mesmo banco):** Se uma revogação de grant comitar no ledger de grants no MissionStore (`missions.db`), o Gate 4 detecta a revogação dentro da transação ACID, aborta a transição e marca a invocação como `failed` com erro `REVOKED_BEFORE_SUBMISSION`. Zero chamadas ao conector ocorrem.
 - **Revogação concorrente de operador no AuthStore (Fronteira Cross-DB / Cross-Processo):**
   Como a CLI administrativa e o daemon operam em bancos e processos distintos sem 2PC, o Gate 4 do MissionStore não possui visibilidade atômica instantânea de mutações do AuthStore no código atual. A ordenação dessa fronteira depende da decisão arquitetural de Pedro (§14): centralização via Daemon RPC (Opção 1), unificação em banco único (Opção 2) ou tolerância de consistência eventual com janela de lease (Opção 3).
 - **Após o commit da reserva:** A autorização de despacho foi formalmente consumida no ledger durável. O runtime entrega a requisição ao conector externo. Qualquer revogação posterior registra intenção de cancelamento (`cancellation.requested = true`), mas não altera o fato da transmissão física já ter sido despachada.
@@ -986,13 +1067,13 @@ A tabela a seguir define a semântica rigorosa para todas as interleavings obrig
 | **C — Crash antes do commit da reserva** | Processo morre antes do commit da transação SQLite de reserva | SQLite efetua rollback automático da transação | No boot, invocação permanece em `not_submitted`; nenhum conector chamado | **Não** |
 | **D — Crash após commit e antes de invoke** | Processo morre entre o commit de `submitting` e a chamada `connector.invoke()` | Fato durável de reserva persiste no SQLite | No boot, recovery durável converte em disco para `uncertain` + `reconciliation.pending`; **zero replay cego** | **Indeterminado (Auditado)** |
 | **E — Crash durante invoke** | Processo morre durante a execução da chamada externa do conector | Chamada foi efetuada mas resultado não foi recebido | No boot, recovery mantém estado em `uncertain` + `reconciliation.pending`; replay automático estritamente proibido; requer `ReconciliationAuthority` | **Indeterminado (Auditado)** |
-| **F1 — Rollback Quiescente sem efeitos (Cenário A)** | Upgrade v1 → v2 sem trabalho executado; decisão de regressão para v1 | Restauração de backup pré-upgrade consistente de ambos os bancos | Permitido; ausência de novos efeitos comprovada; retorno íntegro ao v1 | **Não** |
-| **F2 — Downgrade Pós-Execução com Efeito Externo Confirmado (Cenário B — MANDATÓRIO)** | Upgrade v1 → v2; execução de efeito externo confirmado; tentativa de downgrade para v1 | Tentativa de sobrescrita destrutiva via backup v1 é barrada; downgrade in-place rejeitado | Sistema entra em `READ_ONLY_LOCKOUT`; preserva histórico forense no v2; **terminantemente proibido apagar evidências ou duplicar efeito** | **Não (Bloqueado) / Efeito pretérito permanece realizado e intacto** |
+| **F1 — Rollback Quiescente sem efeitos (Cenário A)** | Upgrade v1 → v2 sem trabalho executado; decisão de regressão para v1 | Restauração de backup pré-upgrade consistente sob quiescência | Permitido; ausência de novos efeitos comprovada; retorno íntegro ao v1 | **Não** |
+| **F2 — Downgrade Pós-Execução com Efeito Externo Confirmado (Cenário B — MANDATÓRIO)** | Upgrade v1 → v2; execução de efeito externo confirmado; tentativa de downgrade para v1 | Tentativa de sobrescrita destrutiva via backup v1 é barrada; runtime v2 entra em `READ_ONLY_LOCKOUT` e recusa downgrade; binários legados v1 são bloqueados via isolamento físico de arquivos e fencing operacional | Preserva histórico forense no v2; **terminantemente proibido apagar evidências ou duplicar efeito** | **Não (Bloqueado) / Efeito pretérito permanece realizado e intacto** |
 | **G1 — Concorrência Cross-DB / Cross-Processo (Ordem 1: Auth check → CLI Auth revoke → Mission commit)** | Daemon valida operador no AuthStore; processo CLI externo revoga operador no AuthStore; daemon tenta comitar reserva no MissionStore | Sem RPC ou banco consolidado, daemon comita a reserva sem ver o commit da CLI externa. Sob Opção 1 (RPC) ou Opção 2 (banco consolidado), revogação serializa antes do commit | Semântica proposta a verificar conforme modelo adotado (§14); ausência de garantia estrita cross-DB no código atual | **Sim / Em voo (comportamento atual); Não (sob Opção 1 ou 2)** |
 | **G2 — Concorrência Cross-DB (Ordem 2: Mission commit → Auth revoke → invoke)** | T1 comita reserva de submissão no MissionStore; T2 revoga operador no AuthStore; T1 chama conector | Reserva já comitou duravelmente no ledger de Missions | Chamada externa ocorre sob a reserva comitada; revogação de autoridade impede novos passos subsequentes; cancelamento assíncrono sinalizado | **Sim / Em voo** |
-| **H — Rollback no AuthStore durante Revoke** | Erro de I/O causa rollback da revogação do operador no `local-control-auth.db` | Barreira em memória reverte sinalização pendente | Operador e grants continuam válidos no banco de dados; coerência preservada | **Conforme status ativo** |
-| **I — Rollback no MissionStore durante Reserva** | Falha de persistência aborta transação de reserva no `missions.sqlite3` | Invocação não transiciona para `submitting` | Invocação permanece `not_submitted`; nenhum conector externo é acionado | **Não** |
-| **J — Concorrência entre Redução de Entitlement do Grantor e Reserva de Submissão** | Admin reduz limites ou remove `mission.grant_capabilities` no AuthStore enquanto Gate 4 prepara reserva | Revalidação nos gates detecta redução antes do commit da reserva | Reserva abortada com `GRANTOR_SCOPE_REVOKED` ou `GRANTOR_ENTITLEMENT_SHRUNK`; zero chamadas externas | **Não** |
+| **H — Rollback no AuthStore durante Revoke** | Erro de I/O causa rollback da revogação do operador no `local-control-auth.db` | Rollback no SQLite aborta a escrita; operador e grants mantêm o status comitado anterior | Operador e grants continuam válidos no banco de dados; coerência relacional interna preservada | **Conforme status ativo** |
+| **I — Rollback no MissionStore durante Reserva** | Falha de persistência aborta transação de reserva no `missions.db` | Invocação não transiciona para `submitting` | Invocação permanece `not_submitted`; nenhum conector externo é acionado | **Não** |
+| **J — Concorrência entre Redução de Entitlement do Grantor e Reserva de Submissão (Interleaving Adversarial: 1. Daemon valida AuthStore; 2. CLI comita redução no AuthStore; 3. Daemon comita reserva no MissionStore; 4. Conector recebe chamada)** | Admin/CLI reduz limites ou remove `mission.grant_capabilities` no AuthStore enquanto Gate 4 prepara reserva | Sem RPC unificado ou banco único (baseline/Opção 3), a reserva comita no MissionStore e a chamada cruza para o conector; runtime sinaliza cancelamento assíncrono e bloqueia passos posteriores. Sob Opção 1 (Daemon RPC) ou Opção 2 (Stores Unificados), a mutação serializa antes do commit da reserva | Semântica proposta a verificar conforme modelo (§14); baseline não promete zero chamadas externas nesta corrida | **Sim / Em voo (baseline / Opção 3); Não (sob Opção 1 ou 2)** |
 
 ### 9.4 Reconhecimento da impossibilidade de atomicidade SQLite + efeito externo
 
@@ -1063,7 +1144,7 @@ Nenhuma política fail-closed para novas operações afetará invocations preté
 
 ### 10.4 Proibição de restauração destrutiva em downgrade pós-trabalho durável (Cenário B)
 
-Caso o runtime v2 tenha processado trabalho (criação de missões, concessão de grants, comutação de reservas ou invocações de conectores com efeitos confirmados no mundo exterior), **a restauração destrutiva do banco pré-upgrade é terminantemente proibida**. Restaurar o banco antigo apagaria a evidência forense de que efeitos externos já aconteceram, abrindo margem para o binário v1 re-executar cegamente as mesmas ações. Na ausência de ferramenta de migração regressiva segura, o sistema deve recusar o downgrade e permanecer em **`READ_ONLY_LOCKOUT`** até reconciliação explícita.
+Caso o runtime v2 tenha processado trabalho (criação de missões, concessão de grants, comutação de reservas ou invocações de conectores com efeitos confirmados no mundo exterior), **a restauração destrutiva do banco pré-upgrade é terminantemente proibida**. Restaurar o banco antigo apagaria a evidência forense de que efeitos externos já aconteceram, abrindo margem para o binário v1 re-executar cegamente as mesmas ações. Na ausência de ferramenta de migração regressiva segura, o sistema deve recusar o downgrade e permanecer em **`READ_ONLY_LOCKOUT`** até reconciliação explícita. Como o binário legado v1 não valida `user_version` nem respeita `flock`, o impedimento de execução do v1 sobre dados do v2 exige **isolamento físico de caminhos de arquivo** (`missions.v2.db` ou `$OUROBOROS_DATA_DIR/v2/`) e **fencing operacional no host**.
 
 ---
 
@@ -1076,9 +1157,11 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 | **Escalação por produto cartesiano A × B** | Execução de capabilities com referências de outros grants | Preservação estrita da tupla indissociável no grant; validação atômica correlacionada (§5.2) | `test_grant_cartesian_product_adversarial` |
 | **Operador concedendo além dos limites** | Elevação de privilégio do autorizador | Validação obrigatória contra fonte confiável de limites máximos (§5.4) | `test_grantor_limit_enforcement` |
 | **Redução de escopos do emissor sem revogação** | Grants anteriores continuam ativos após grantor perder `mission.grant_capabilities` | Avanço de época no AuthStore ou revalidação dinâmica nos gates; erro `GRANTOR_SCOPE_REVOKED` (§6.1) | `test_grantor_scope_drop_invalidates_grants` |
-| **Redução de limites do emissor (entitlement shrink)** | Grants antigos continuam executando capabilities desautorizadas | Revalidação contínua de envelope no Gate 3 e Gate 4; erro `GRANTOR_ENTITLEMENT_SHRUNK` (§5.4, §6.1) | `test_grantor_shrink_entitlement_envelope_fails_dispatch` |
+| **Redução de limites do emissor (entitlement shrink)** | Grants antigos continuam executando capabilities desautorizadas | Revalidação contínua de envelope no Gate 3 e Gate 4; erro `GRANTOR_ENTITLEMENT_SHRUNK`. Sem 2PC cross-DB, chamada em voo no baseline tratada via cancelamento assíncrono; zero efeitos garantido sob Opção 1 (RPC) ou 2 (banco único) (§5.4, §9.3) | `test_grantor_shrink_entitlement_envelope_fails_dispatch` |
 | **Rotação de token invalidando autoridade** | Grants legítimos tornam-se inoperantes após rotação regular de segredo | Separação entre segredo físico e autoridade; `authority_epoch` inalterado na rotação pura (§8.4) | `test_grantor_rotate_token_preserves_grants` |
 | **Ressurreição de grants pós-reprovisionamento** | Concessões antigas de emissor revogado voltam a autorizar ações | Incremento durável monotônico de `authority_epoch` no reprovisionamento; extinção definitiva (§8.4) | `test_grantor_revoke_and_reprovision_does_not_resurrect_grants` |
+| **Regressão direta de `authority_epoch` via UPDATE no cliente** | Atacante executa `UPDATE local_control_clients SET authority_epoch = 1` rebaixando cliente da época 7 para 1 | Trigger `prevent_client_authority_epoch_decrement` aborta DML com `RAISE(ABORT)`; época mantida em 7 (§8.4.2) | `test_client_authority_epoch_decrement_forbidden_by_trigger` |
+| **Inserção direta de cliente abaixo do High-Water Mark** | Inserção direta via SQL com `authority_epoch` inferior à marca máxima histórica | Trigger `enforce_client_authority_epoch_insert_monotonicity` aborta DML consultando `local_control_authority_epochs` (§8.4.2) | `test_client_authority_epoch_insert_lower_than_max_epoch_forbidden_by_trigger` |
 | **Colisão de época no mesmo milissegundo** | Reuso acidental de identificador de época por operações em loop | Geração de autoridade baseada em contador sequencial monotônico no SQLite, não em `Date.now()` (§8.4) | `test_grantor_same_millisecond_reprovision_monotonic` |
 | **Replay de grantId histórico** | Restauração de autorização em nova geração do mesmo operador | Invalidação permanente com `AUTHORITY_SUPERSEDED` para qualquer grant de geração anterior (§8.4) | `test_grant_historical_replay_superseded` |
 | **Destruição de ledger via deleção de Mission sob FK OFF** | Perda de evidência forense de autorizações passadas | Trigger `prevent_mission_delete_with_grants` na tabela `missions`; aborta fisicamente o comando DELETE (§8.1) | `test_prevent_mission_delete_with_grants_trigger_under_fk_off` |
@@ -1090,8 +1173,8 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 | **Revogação pós-reserva (em voo)** | Tentativa de cancelamento após consumo da autorização | Runtime registra cancelamento assíncrono no conector sem prometer reversão física no mundo real (§9.2–9.3) | `test_handoff_linearization_interleaving_b_revoke_after_reservation` |
 | **Crash após reserva e antes/durante invoke** | Incerteza se efeito físico ocorreu externamente | Recovery no boot classifica entrega conservadoramente como `uncertain`; zero replay cego (§9.2, §9.5) | `test_handoff_linearization_interleaving_d_crash_after_reservation_commit_recovers_uncertain` |
 | **Replay cego após queda do daemon** | Re-execução indevida de efeito incerto | Proibição de replay automático; isolamento estrito de `uncertain` delegado à `ReconciliationAuthority` (§9.5) | `test_uncertain_delivery_no_replay` |
-| **Downgrade destrutivo com replay de efeito confirmado (Cenário B)** | Sobrescrita do banco por backup antigo v1 apaga registro de efeito confirmado; v1 re-executa passo no conector | Proibição categórica de restauração destrutiva pós-trabalho; `READ_ONLY_LOCKOUT`; preservação de evidência (§9.2.1, §10.4) | `test_downgrade_post_execution_preserves_evidence_prevents_replay` |
-| **Inconsistência de snapshot SQLite em modo WAL** | Backup corrompido ou incompleto por páginas não sincronizadas no `-wal` | Procedimento com API Online Backup ou quiescência + `PRAGMA wal_checkpoint(TRUNCATE)` coordenado (§9.2.1) | `test_wal_consistent_backup_across_stores` |
+| **Downgrade destrutivo com replay de efeito confirmado (Cenário B)** | Sobrescrita do banco por backup antigo v1 apaga registro de efeito confirmado; v1 re-executa passo no conector | Proibição categórica de restauração destrutiva pós-trabalho; `READ_ONLY_LOCKOUT`; isolamento de arquivos e fencing contra v1 (§9.2.1, §10.4) | `test_downgrade_post_execution_preserves_evidence_prevents_replay` |
+| **Inconsistência de snapshot SQLite em modo WAL** | Backup corrompido ou incompleto por páginas não sincronizadas no `-wal` | Quiescência operacional mandatória + `PRAGMA wal_checkpoint(TRUNCATE)` coordenado em todos os bancos antes da cópia (§9.2.1) | `test_wal_consistent_backup_across_stores` |
 | **Estados desconhecidos de delivery em versões mistas** | Interpretação indevida de estado por runtime desatualizado | Fallback fail-closed no parser de `delivery` em `rowToInvocation`, normalizando para `uncertain` (§9.2) | `test_unknown_delivery_state_fallback_uncertain` |
 | **Bypass de validação via UUID malformado** | Rejeição de IDs reais ou injeção de parâmetros | Parser compatível com UUIDs RFC 4122 v4 reais gerados por `crypto.randomUUID()` (§7.7) | `test_real_uuid_mission_id_lifecycle` |
 | **Indisponibilidade do AuthStore** | Assunção permissiva sem checagem de credencial | Sem 2PC cross-DB; fail-closed imediato com `AUTHORITY_UNAVAILABLE` (§8.5) | `test_auth_store_unavailable_fail_closed` |
@@ -1167,6 +1250,8 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 | `test_client_delete_forbidden_by_trigger` | Tentativa de executar `DELETE FROM local_control_clients WHERE client_id = ?` diretamente via SQL. | Trigger `prevent_client_delete` aborta a operação via `RAISE(ABORT)`; deleção física é rejeitada pelo SQLite. |
 | `test_client_tombstone_preserves_epoch_across_adversarial_delete` (Cenário F) | Cliente atinge epoch 7; drop simulado do trigger + deleção física; recriação posterior via `provision/INSERT`. | Subquery `COALESCE((SELECT max_epoch + 1 FROM local_control_authority_epochs ...), 1)` aloca 8 ($7 + 1 = 8$); nunca regride a 1. |
 | `test_grantor_epoch_overflow_fail_closed` (Cenário G) | Tentativa de reprovisionar cliente cujo `authority_epoch` atingiu `Number.MAX_SAFE_INTEGER`. | Operação aborta de forma fail-closed com erro estruturado `AUTHORITY_EPOCH_OVERFLOW`. |
+| `test_client_authority_epoch_decrement_forbidden_by_trigger` (Cenário C0) | Executa `UPDATE local_control_clients SET authority_epoch = 1 WHERE client_id = 'alice'` para cliente no epoch 7. | Trigger `prevent_client_authority_epoch_decrement` aborta a instrução via `RAISE(ABORT)`; época do cliente permanece 7 e grants de épocas anteriores continuam rejeitados com `AUTHORITY_SUPERSEDED`. |
+| `test_client_authority_epoch_insert_lower_than_max_epoch_forbidden_by_trigger` | Inserção direta via `INSERT INTO local_control_clients` com `authority_epoch` inferior à marca máxima histórica em `local_control_authority_epochs`. | Trigger `enforce_client_authority_epoch_insert_monotonicity` aborta a inserção via `RAISE(ABORT)`. |
 | `test_auth_store_unavailable_fail_closed` (Cenário H) | Simulação de indisponibilidade, timeout ou corrupção no banco do `LocalControlCredentialStore`. | Operação rejeitada imediatamente com `AUTHORITY_UNAVAILABLE`; zero escritas no `MissionStore`. |
 | `test_auth_store_restart_preserves_authority_epochs` (Cenário I) | Emissão de grants, revogação de operador e reinício do processo do daemon. | Na reabertura do banco WAL, épocas e revogações persistem intactas; grants revogados continuam inativos. |
 
@@ -1177,9 +1262,9 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 | `test_cross_db_race_external_cli_revoke_vs_daemon_reservation` | T1 daemon valida operador ativo; T2 processo CLI externo revoga operador no AuthStore; T1 daemon tenta comitar reserva de submissão no MissionStore. | Avalia a fronteira entre processos conforme modelo adotado (§14); demonstra que sem RPC ou banco unificado a CLI comita independentemente. |
 | `test_cross_db_race_daemon_barrier_check_interleaving` | Interleaving interna no daemon: checagem de autoridade → chamada de revoke concorrente → commit da reserva no MissionStore. | Avalia a eficácia de pontos de sincronização sob concorrência em memória e delimitação temporal por leases. |
 | `test_cross_db_race_auth_revoke_vs_mission_reservation_interleaving_2` | T1 comita reserva de submissão no MissionStore; T2 revoga operador no AuthStore; T1 entra no conector. | Reserva comitada autoriza a chamada externa em voo; cancelamento assíncrono é emitido; próximos passos bloqueados. |
-| `test_cross_db_race_entitlement_shrink_vs_reservation` (Interleaving J) | Admin reduz entitlement do grantor ou remove escopo no AuthStore concorrentemente com reserva de submissão. | Gate 4 dentro da transação atômica detecta desautorização do grantor antes do commit da reserva; aborta com erro estruturado. |
+| `test_cross_db_race_entitlement_shrink_vs_reservation` (Interleaving J) | Sequência adversarial cross-DB: 1. Daemon valida privilégios no AuthStore; 2. CLI externa comita redução de limites ou remoção de `mission.grant_capabilities` no AuthStore; 3. Daemon comita reserva no MissionStore; 4. Conector recebe chamada. | Demonstra que no baseline / Opção 3 a chamada ocorre em voo com cancelamento assíncrono e fail-closed subsequente; sob Opção 1 (Daemon RPC) ou Opção 2 (Stores Unificados), a reserva é abortada antes do disparo ao conector com erro estruturado (`GRANTOR_SCOPE_REVOKED` ou `GRANTOR_ENTITLEMENT_SHRUNK`). |
 | `test_cross_db_rollback_auth_store_revoke` | Falha de I/O causa rollback da transação SQLite de revogação no `local-control-auth.db`. | A transação do AuthStore reverte; operador permanece ativo e grants válidos; consistência preservada. |
-| `test_cross_db_rollback_mission_store_reservation` | Falha de persistência aborta a transação de reserva no `missions.sqlite3`. | Invocação permanece em `not_submitted`; nenhum conector externo é acionado (zero chamadas físicas). |
+| `test_cross_db_rollback_mission_store_reservation` | Falha de persistência aborta a transação de reserva no `missions.db`. | Invocação permanece em `not_submitted`; nenhum conector externo é acionado (zero chamadas físicas). |
 
 ### 12.7 Handoff, Reserva de Submissão, Linearização e Incerteza (P1)
 
@@ -1201,7 +1286,7 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 | `test_runtime_schema_validator_rejects_untyped_delivery_state` | Desserialização de linha com valor não tipado/desconhecido em `delivery.state` (sem confiar em tipos TS). | Validador estruturado em runtime classifica como `UNKNOWN_DELIVERY_STATE` e normaliza para `uncertain`. |
 | `test_downgrade_quiescent_rollback_safe` (Cenário A) | Upgrade v1 → v2 sem trabalho executado; decisão de regressão para v1 com restauração de backup consistente pré-upgrade. | Rollback permitido; integridade de v1 preservada; ausência de mutações no v2 confirmada documentalmente. |
 | `test_downgrade_post_execution_preserves_evidence_prevents_replay` (Cenário B — MANDATÓRIO) | `upgrade v1→v2 → efeito externo confirmado em v2 → tentativa de downgrade para v1`. | Restauração destrutiva do banco v1 é bloqueada; downgrade in-place rejeitado; sistema entra em `READ_ONLY_LOCKOUT`; histórico forense e evidências preservados no v2; zero duplicação/replay de efeitos já confirmados. |
-| `test_wal_consistent_backup_across_stores` | Execução de backup coordenado em modo WAL para `missions.sqlite3` e `local-control-auth.db`. | Utiliza API de backup online ou checkpoint síncrono `wal_checkpoint(TRUNCATE)`; banco copiado é válido, consistente e sem corrupção. |
+| `test_wal_consistent_backup_across_stores` | Execução de procedimento de backup sob WAL para `missions.db`, `local-control-auth.db` e `daemon.db`. | Exige quiescência operacional prévia do runtime seguida de checkpoint síncrono `PRAGMA wal_checkpoint(TRUNCATE)` em cada banco antes da cópia; sem quiescência, backups individuais de arquivos distintos não formam transação conjunta. |
 | `test_downgrade_v2_to_v1_incompatible_limbo_demonstration` | Binário legado v1 abre banco modificado por v2 contendo invocações em estado `submitting`. | O binário v1 abre sem erro e ignora invocações em `submitting` (limbo durável), comprovando a necessidade de proibir downgrade in-place. |
 | `test_legacy_mission_fail_closed` | Inicializa runtime v2 sobre banco legado v1 (Missions criadas sem ledger de grants). | Missions antigas operam em fail-closed para novos passos; histórico forense e evidências passadas 100% intactos. |
 
@@ -1225,7 +1310,7 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 - **Critério de parada:** Se a validação por tupla quebrar a compatibilidade de interfaces sem migração segura, pausar.
 
 ### Slice B — Operações administrativas de Concessão e Revogação no Local Control Plane
-- **Objetivo:** Implementar os endpoints JSON-RPC/UDS `mission.grant_capabilities`, `mission.revoke_capability_grant` e `mission.list_capability_grants` no daemon, protegidos pelo escopo `mission.grant_capabilities`, isolamento cross-grantor, migração do schema do AuthStore com triggers `prevent_client_delete`, `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement`, tabela de high-water mark permanente `local_control_authority_epochs`, diferenciação operacional de rotação de segredo pura vs. alteração de escopos, expressão atômica de `INSERT ... ON CONFLICT DO UPDATE` consultando a época máxima, e guardas de overflow (`AUTHORITY_EPOCH_OVERFLOW`).
+- **Objetivo:** Implementar os endpoints JSON-RPC/UDS `mission.grant_capabilities`, `mission.revoke_capability_grant` e `mission.list_capability_grants` no daemon, protegidos pelo escopo `mission.grant_capabilities`, isolamento cross-grantor, migração do schema do AuthStore com triggers `prevent_client_delete`, `prevent_client_authority_epoch_decrement`, `enforce_client_authority_epoch_insert_monotonicity`, `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement`, tabela de high-water mark permanente `local_control_authority_epochs`, diferenciação operacional de rotação de segredo pura vs. alteração de escopos, expressão atômica de `INSERT ... ON CONFLICT DO UPDATE` consultando a época máxima, e guardas de overflow (`AUTHORITY_EPOCH_OVERFLOW`).
 - **Superfície pública:** Rotas internas versionadas no controle local.
 - **Critério de parada:** Rejeitar qualquer concessão se o emissor não possuir limites explicitamente configurados ou tentar usurpar `grantId` alheio.
 
@@ -1235,7 +1320,7 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 - **Critério de parada:** Qualquer plano sem cobertura ativa deve ser rejeitado sem alterar estado da Mission.
 
 ### Slice D — Portões de dispatch, linearização de reserva de submissão e incerteza
-- **Objetivo:** Implementar o Gate 3 (dentro de `claimInvocation`), a transação atômica de reserva de submissão (`submitting`) no Gate 4 com validação dinâmica contínua de escopos e limites do grantor, a evolução contratual versionada de `CapabilityInvocationDelivery`, a atualização do startup recovery em `SqliteMissionStore.initialize()` para converter duravelmente em disco `submitting` em `uncertain` + `reconciliation.pending`, validador de schema em runtime para delivery, barreira de incerteza sem replay automático, procedimento operacional de backup consistente em modo WAL (`sqlite3_backup_*` ou `PRAGMA wal_checkpoint(TRUNCATE)` coordenado entre AuthStore e MissionStore), diferenciação rigorosa de downgrade entre Cenário A (quiescente) e Cenário B (pós-execução durável com `READ_ONLY_LOCKOUT` e preservação integral de evidências/zero replay).
+- **Objetivo:** Implementar o Gate 3 (dentro de `claimInvocation`), a transação atômica de reserva de submissão (`submitting`) no Gate 4 com validação dinâmica contínua de escopos e limites do grantor, a evolução contratual versionada de `CapabilityInvocationDelivery`, a atualização do startup recovery em `SqliteMissionStore.initialize()` para converter duravelmente em disco `submitting` em `uncertain` + `reconciliation.pending`, validador de schema em runtime para delivery, barreira de incerteza sem replay automático, procedimento operacional de snapshot consistente sob SQLite WAL exigindo quiescência prévia seguida de `PRAGMA wal_checkpoint(TRUNCATE)` coordenado entre `missions.db`, `local-control-auth.db` e `daemon.db`, diferenciação rigorosa de downgrade entre Cenário A (quiescente) e Cenário B (pós-execução durável com `READ_ONLY_LOCKOUT`, isolamento de arquivos `missions.v2.db` e fencing de host para impedir acesso inadvertido por binários legados v1).
 - **Superfície pública:** Evolução versionada de `CapabilityInvocationDelivery` em `contracts.ts` (sujeita a ratificação).
 - **Critério de parada:** Garantir que nenhum efeito incerto sofra retry automático e nenhum efeito com revoke pré-reserva seja despachado.
 
@@ -1253,11 +1338,14 @@ As seguintes questões arquiteturais e normativas permanecem em aberto e **depen
 6. **Formato final de migração de Missions legadas:** Confirmar o tratamento fail-closed estrito sem criação de grants sintéticos para dados históricos.
 7. **Governança concorrente:** Admitir revogação cruzada (Operador B revogar grant emitido pelo Operador A) se ambos possuírem autoridade de governança, ou restringir a revogação ao emissor original e `daemon.admin`?
 8. **Ratificação da remoção de limites de recursos no v1 (Alternativa A):** Confirmar o adiamento de quotas e orçamentos dinâmicos por grant para o contrato v2, mantendo a governança no v1 via `budget_policy` da Mission.
-9. **Modelo de armazenamento da geração monotônica de autoridade no AuthStore e delimitação de trust boundary:** Adoção dos triggers mandatários de motor `prevent_client_delete` (em `local_control_clients`), `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement` (em `local_control_authority_epochs`), tabela permanente de high-water mark `local_control_authority_epochs`, e comando atômico de `INSERT ... ON CONFLICT DO UPDATE` derivando a época inicial de `COALESCE((SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = :client_id), 1)`, com guarda contra overflow (`AUTHORITY_EPOCH_OVERFLOW`). Delimitação explícita de que os triggers garantem monotonicidade contra DML de aplicação/scripts, enquanto a resistência contra DDL host (`DROP TRIGGER`) e manipulação de arquivos reside em permissões do SO e auditoria externa de host.
-10. **Representação tipada e versionamento contratual da reserva de submissão:** Elevação formal de `CapabilityInvocationDelivery` para `CAPABILITY_INVOCATION_CONTRACT_VERSION = 2` / `MISSION_CONTRACT_VERSION = 2` contemplando o estado `\"submitting\"`, com query durável de recuperação em disco em `SqliteMissionStore.initialize()` convertendo para `uncertain` + `reconciliation.pending`.
+9. **Modelo de armazenamento da geração monotônica de autoridade no AuthStore e delimitação de trust boundary:** Adoção dos triggers mandatários de motor `prevent_client_delete`, `prevent_client_authority_epoch_decrement` e `enforce_client_authority_epoch_insert_monotonicity` (em `local_control_clients`), `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement` (em `local_control_authority_epochs`), tabela permanente de high-water mark `local_control_authority_epochs`, e comando atômico de `INSERT ... ON CONFLICT DO UPDATE` derivando a época inicial de `COALESCE((SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = :client_id), 1)`, com guarda contra overflow (`AUTHORITY_EPOCH_OVERFLOW`). Delimitação explícita de que os triggers garantem monotonicidade contra DML de aplicação/scripts (inclusive impedindo qualquer `UPDATE local_control_clients SET authority_epoch = 1`), enquanto a resistência contra DDL host (`DROP TRIGGER`) e manipulação de arquivos reside em permissões do SO e auditoria externa de host.
+10. **Representação tipada e versionamento contratual da reserva de submissão:** Elevação formal de `CapabilityInvocationDelivery` para `CAPABILITY_INVOCATION_CONTRACT_VERSION = 2` / `MISSION_CONTRACT_VERSION = 2` contemplando o estado `"submitting"`, com query durável de recuperação em disco em `SqliteMissionStore.initialize()` convertendo para `uncertain` + `reconciliation.pending`.
 11. **Política de validação em runtime para dados de entrega:** Utilização de validador estruturado de schema em runtime em substituição ao cast estático via generic TypeScript em `rowToInvocation`.
-12. **Fronteira normativa de concorrência cross-database e entre processos (AuthStore vs. MissionStore):** Escolha entre (Opção 1) Boundary Administrativa Única via Daemon RPC (CLI delega mutations ao daemon por UDS); (Opção 2) Unificação Relacional dos Stores no Mesmo Banco SQLite (`ouroboros.sqlite3`); ou (Opção 3) Consistência Eventual com Janela Bounded pelo lease de despacho e cancelamento assíncrono.
-13. **Governança estrita de downgrade e recuperação sem perda de evidência:** Confirmação da diferenciação formal entre Cenário A (Rollback Quiescente sem efeitos posteriores, onde restauração de backup consistente pré-upgrade é permitida) e Cenário B (Downgrade Pós-Execução com trabalho durável ou efeitos confirmados, onde a restauração destrutiva do banco antigo é TERMINANTEMENTE PROIBIDA, exigindo preservação do histórico forense e entrada em `READ_ONLY_LOCKOUT` para evitar duplicação de efeitos externos). Ratificação do procedimento de backup consistente em modo WAL coordenado entre AuthStore e MissionStore via `sqlite3_backup_*` ou `PRAGMA wal_checkpoint(TRUNCATE)`.
+12. **Fronteira normativa de concorrência cross-database e entre processos (AuthStore vs. MissionStore):** Escolha entre:
+    - **Opção 1:** Boundary Administrativa Única via Daemon RPC (CLI delega mutations ao daemon por UDS; daemon serializa operações e impede submissões externas concorrentes com zero efeitos);
+    - **Opção 2:** Unificação Relacional dos Stores no Mesmo Banco SQLite (`ouroboros.db`, onde uma única transação ACID local elimina fisicamente a interleaving);
+    - **Opção 3:** Consistência Eventual com Janela Bounded pelo lease de despacho e cancelamento assíncrono (baseline atual: a chamada cruzará para o conector em voo caso o commit da CLI ocorra entre o check do daemon e o commit da reserva, não se prometendo zero efeitos externos sem a sincronização da Opção 1 ou 2).
+13. **Governança estrita de downgrade e recuperação sem perda de evidência:** Confirmação da diferenciação formal entre Cenário A (Rollback Quiescente sem efeitos posteriores, onde restauração de backup consistente pré-upgrade é permitida) e Cenário B (Downgrade Pós-Execução com trabalho durável ou efeitos confirmados, onde a restauração destrutiva do banco antigo é TERMINANTEMENTE PROIBIDA, exigindo preservação do histórico forense e entrada em `READ_ONLY_LOCKOUT` para evitar duplicação de efeitos externos). Reconhecimento de que o binário legado v1 em `main` não lê `user_version` nem adquire `flock`, exigindo isolamento físico de arquivos (`missions.v2.db` ou `$OUROBOROS_DATA_DIR/v2/`) e fencing operacional no host para impedir sua execução inadvertida sobre o banco v2. Ratificação do procedimento de snapshot consistente sob SQLite WAL exigindo quiescência operacional prévia seguida de `PRAGMA wal_checkpoint(TRUNCATE)` em cada um dos bancos (`missions.db`, `local-control-auth.db`, `daemon.db`), sem presumir que backups individuais de arquivos distintos constituam transação conjunta.
 14. **Modelo arquitetural para redução de autoridade e escopos do grantor:** Escolha normativa entre (Opção A) Avanço Automático de `authority_epoch` no AuthStore via SQL no `provision/update` quando `scopes_json` for reduzido/alterado ($E_{new} = E_{old} + 1$), extinguindo imediatamente grants anteriores com `AUTHORITY_SUPERSEDED`; ou (Opção B) Revalidação Dinâmica Contínua de Entitlement e Escopos nos Portões de Dispatch (Gate 3 e Gate 4), avaliando continuamente se o emissor mantém `mission.grant_capabilities` e se o grant se mantém dentro do envelope reduzido de limites, abortando com `GRANTOR_SCOPE_REVOKED` ou `GRANTOR_ENTITLEMENT_SHRUNK`; ou (Opção C) Modelo Híbrido (avanço de época na remoção de `mission.grant_capabilities` combinado com checagem dinâmica de encolhimento de envelope de limites).
 
 ---
@@ -1278,6 +1366,7 @@ As seguintes questões arquiteturais e normativas permanecem em aberto e **depen
 - `cli/src/mission/mission-engine.ts:2349-2360` — `isHandoffDeliveryUpdateAllowed` autoriza apenas transições restritas entre estados existentes do v1.
 - `cli/src/capabilities/dispatch-seam.ts:410-435` — `markInvocationHandoff(..., { deliveryState: "submitted" })` imediatamente antes de `connector.invoke`.
 - `cli/src/daemon/local-control-auth.ts:20-55, 94-115, 130-145` — `LocalControlCredentialStore` em banco separado; método `provision` com `ON CONFLICT` sobrescrevendo `scopes_json = excluded.scopes_json` juntamente com `token_hash` e `created_at` via `Date.now()`, permitindo alteração simultânea de escopos e rotação de credenciais; `authorizeToken` sem leitura ou retorno de geração de autoridade.
+- `cli/src/mission/sqlite-mission-store.ts:60` e `cli/src/daemon/main.ts:86` — Caminho padrão do MissionStore definido como `missions.db` no daemon e CLI, operando juntamente com `local-control-auth.db` e `daemon.db` sem transação unificada.
 - `cli/src/mission/sqlite-mission-store.ts:287-350` — `SqliteMissionStore.initialize()` em `main` não lê nem valida `PRAGMA user_version`, permitindo que um binário v1 abra qualquer arquivo SQLite sem fail-closed automático; inicialização em modo WAL sem sincronização de checkpoint coordenada com o AuthStore para backup.
 - `cli/src/mission/sqlite-mission-store.ts:291` — `initialize()` executa `PRAGMA foreign_keys = OFF`.
 - `cli/src/mission/sqlite-mission-store.ts:630-635` — Startup recovery converte apenas `not_submitted` para `uncertain`.
