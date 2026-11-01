@@ -29,6 +29,7 @@ const TOKEN_SECRET_BYTES = 32;
 const TOKEN_SECRET_LENGTH = 43;
 const MAX_CREDENTIAL_FILE_BYTES = 1_024;
 const BROWSER_SESSION_COOKIE = "ouroboros_control_session";
+const MAX_AUTHORITY_ORDINAL = Number.MAX_SAFE_INTEGER;
 
 export function defaultLocalControlClientCredentialPath(clientId = "operator-cli"): string {
   const configDir = process.env.XDG_CONFIG_HOME || resolve(homedir(), ".config");
@@ -77,18 +78,16 @@ export class LocalControlCredentialStore {
     securePrivateDirectory(dirname(databasePath));
     assertPrivateRegularFileOrMissing(databasePath);
     this.db = new Database(databasePath);
-    chmodSync(databasePath, 0o600);
-    this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS local_control_clients (
-        client_id TEXT PRIMARY KEY,
-        token_hash TEXT NOT NULL,
-        scopes_json TEXT NOT NULL,
-        expires_at INTEGER NOT NULL,
-        revoked_at INTEGER,
-        created_at INTEGER NOT NULL
-      )
-    `);
+    try {
+      chmodSync(databasePath, 0o600);
+      this.db.exec("PRAGMA busy_timeout = 5000");
+      this.db.exec("PRAGMA recursive_triggers = ON");
+      this.db.exec("PRAGMA journal_mode = WAL");
+      this.migrate();
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
   /** Provision or rotate one explicitly scoped client. */
@@ -100,15 +99,46 @@ export class LocalControlCredentialStore {
     const token = `${TOKEN_PREFIX}.${Buffer.from(clientId).toString("base64url")}.${secret}`;
     const tokenHash = hashTokenSecret(secret);
     this.db.query(`
-      INSERT INTO local_control_clients (client_id, token_hash, scopes_json, expires_at, revoked_at, created_at)
-      VALUES (?, ?, ?, ?, NULL, ?)
+      INSERT INTO local_control_clients (
+        client_id, token_hash, scopes_json, expires_at, revoked_at, created_at,
+        authority_epoch, credential_generation
+      )
+      VALUES (
+        ?, ?, ?, ?, NULL, ?,
+        COALESCE((
+          SELECT CASE
+            WHEN existing.revoked_at IS NOT NULL
+              OR ${canonicalScopeSetSql("existing.scopes_json")} IS NOT ${canonicalScopeSetSql("?")}
+            THEN existing.authority_epoch + 1
+            ELSE existing.authority_epoch
+          END
+          FROM local_control_clients AS existing WHERE existing.client_id = ?
+        ), COALESCE((
+          SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = ?
+        ), 1)),
+        COALESCE((
+          SELECT credential_generation + 1 FROM local_control_clients WHERE client_id = ?
+        ), 1)
+      )
       ON CONFLICT(client_id) DO UPDATE SET
         token_hash = excluded.token_hash,
         scopes_json = excluded.scopes_json,
         expires_at = excluded.expires_at,
+        authority_epoch = excluded.authority_epoch,
+        credential_generation = excluded.credential_generation,
         revoked_at = NULL,
         created_at = excluded.created_at
-    `).run(clientId, tokenHash, JSON.stringify(normalizedScopes), expiresAt, Date.now());
+    `).run(
+      clientId,
+      tokenHash,
+      JSON.stringify(normalizedScopes),
+      expiresAt,
+      Date.now(),
+      JSON.stringify(normalizedScopes),
+      clientId,
+      clientId,
+      clientId,
+    );
     return { clientId, token, scopes: normalizedScopes, expiresAt };
   }
 
@@ -167,6 +197,325 @@ export class LocalControlCredentialStore {
 
   close(): void {
     this.db.close();
+  }
+
+  private migrate(): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS local_control_clients (
+          client_id TEXT PRIMARY KEY,
+          token_hash TEXT NOT NULL,
+          scopes_json TEXT NOT NULL,
+          expires_at INTEGER NOT NULL,
+          revoked_at INTEGER,
+          created_at INTEGER NOT NULL
+        )
+      `);
+
+      const columns = this.db.query("PRAGMA table_info(local_control_clients)").all() as Array<{ name: string }>;
+      const names = new Set(columns.map(({ name }) => name));
+      const hasAuthorityEpoch = names.has("authority_epoch");
+      const hasCredentialGeneration = names.has("credential_generation");
+      const hasAuthorityHistoryTable = Boolean(this.db.query(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'local_control_authority_epochs'
+      `).get());
+      const isLegacySchema = !hasAuthorityEpoch && !hasCredentialGeneration && !hasAuthorityHistoryTable;
+      // The additive migration is transactional; one new ordinal column without history is its recognizable partial state.
+      const isPartialMigration = hasAuthorityEpoch !== hasCredentialGeneration && !hasAuthorityHistoryTable;
+      const isFullyMigrated = hasAuthorityEpoch && hasCredentialGeneration && hasAuthorityHistoryTable;
+      const canBootstrapAuthorityHistory = isLegacySchema || isPartialMigration;
+      if (!canBootstrapAuthorityHistory && !isFullyMigrated) {
+        throw new Error("Local-control authority schema is inconsistent");
+      }
+
+      if (!hasAuthorityEpoch) {
+        this.db.exec("ALTER TABLE local_control_clients ADD COLUMN authority_epoch INTEGER NOT NULL DEFAULT 1");
+      }
+      if (!hasCredentialGeneration) {
+        this.db.exec("ALTER TABLE local_control_clients ADD COLUMN credential_generation INTEGER NOT NULL DEFAULT 1");
+      }
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS local_control_authority_epochs (
+          client_id TEXT PRIMARY KEY,
+          max_epoch INTEGER NOT NULL CHECK (
+            typeof(max_epoch) = 'integer' AND max_epoch >= 1 AND max_epoch <= ${MAX_AUTHORITY_ORDINAL}
+          )
+        )
+      `);
+
+      this.assertValidStoredAuthorityState();
+
+      const nonInitialBootstrapState = canBootstrapAuthorityHistory ? this.db.query(`
+        SELECT client_id FROM local_control_clients
+        WHERE authority_epoch != 1 OR credential_generation != 1 LIMIT 1
+      `).get() as { client_id: string } | null : null;
+      if (nonInitialBootstrapState) {
+        throw new Error("Local-control authority bootstrap has non-initial ordinals");
+      }
+
+      const inconsistentHistory = this.db.query(`
+        SELECT clients.client_id FROM local_control_clients AS clients
+        JOIN local_control_authority_epochs AS epochs ON epochs.client_id = clients.client_id
+        WHERE epochs.max_epoch != clients.authority_epoch LIMIT 1
+      `).get() as { client_id: string } | null;
+      if (inconsistentHistory) throw new Error("Local-control authority history is inconsistent");
+
+      const missingHistory = this.db.query(`
+        SELECT clients.client_id FROM local_control_clients AS clients
+        LEFT JOIN local_control_authority_epochs AS epochs ON epochs.client_id = clients.client_id
+        WHERE epochs.client_id IS NULL LIMIT 1
+      `).get() as { client_id: string } | null;
+      if (isFullyMigrated && missingHistory) {
+        throw new Error("Local-control authority history is missing a high-water mark");
+      }
+      if (canBootstrapAuthorityHistory) {
+        // Bootstrap only absent legacy history; existing high-water values are never reconstructed from client rows.
+        this.db.exec(`
+          INSERT INTO local_control_authority_epochs (client_id, max_epoch)
+          SELECT client_id, authority_epoch FROM local_control_clients AS clients
+          WHERE NOT EXISTS (
+            SELECT 1 FROM local_control_authority_epochs AS epochs WHERE epochs.client_id = clients.client_id
+          )
+        `);
+      }
+
+      this.installIntegrityTriggers();
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private assertValidStoredAuthorityState(): void {
+    const invalidOrdinals = this.db.query(`
+      SELECT client_id FROM local_control_clients
+      WHERE typeof(authority_epoch) != 'integer' OR authority_epoch < 1 OR authority_epoch > ${MAX_AUTHORITY_ORDINAL}
+         OR typeof(credential_generation) != 'integer' OR credential_generation < 1
+         OR credential_generation > ${MAX_AUTHORITY_ORDINAL}
+      LIMIT 1
+    `).get() as { client_id: string } | null;
+    if (invalidOrdinals) throw new Error("Local-control credential authority ordinals are invalid");
+
+    const invalidScopes = this.db.query(`
+      SELECT client_id FROM local_control_clients
+      WHERE json_valid(scopes_json) = 0 LIMIT 1
+    `).get() as { client_id: string } | null;
+    if (invalidScopes) throw new Error("Local-control credential scopes are corrupt");
+
+    const malformedScopes = this.db.query(`
+      SELECT clients.client_id FROM local_control_clients AS clients
+      WHERE json_type(clients.scopes_json) != 'array'
+         OR NOT EXISTS (SELECT 1 FROM json_each(clients.scopes_json) LIMIT 1)
+         OR EXISTS (SELECT 1 FROM json_each(clients.scopes_json) WHERE type != 'text')
+      LIMIT 1
+    `).get() as { client_id: string } | null;
+    if (malformedScopes) throw new Error("Local-control credential scopes are corrupt");
+
+    const invalidHighWaterMark = this.db.query(`
+      SELECT client_id FROM local_control_authority_epochs
+      WHERE typeof(max_epoch) != 'integer' OR max_epoch < 1 OR max_epoch > ${MAX_AUTHORITY_ORDINAL}
+      LIMIT 1
+    `).get() as { client_id: string } | null;
+    if (invalidHighWaterMark) throw new Error("Local-control authority high-water mark is corrupt");
+  }
+
+  private installIntegrityTriggers(): void {
+    const maxOrdinal = MAX_AUTHORITY_ORDINAL;
+    const oldScopes = canonicalScopeSetSql("OLD.scopes_json");
+    const newScopes = canonicalScopeSetSql("NEW.scopes_json");
+    const insertedScopes = canonicalScopeSetSql("NEW.scopes_json");
+    const existingScopes = canonicalScopeSetSql("existing.scopes_json");
+
+    this.db.exec(`
+      DROP TRIGGER IF EXISTS prevent_client_delete;
+      DROP TRIGGER IF EXISTS enforce_client_authority_epoch_insert_monotonicity;
+      DROP TRIGGER IF EXISTS prevent_client_unauthorized_update;
+      DROP TRIGGER IF EXISTS prevent_authority_epochs_delete;
+      DROP TRIGGER IF EXISTS prevent_authority_epochs_update_decrement;
+      DROP TRIGGER IF EXISTS enforce_authority_epoch_high_water_insert;
+      DROP TRIGGER IF EXISTS sync_authority_epoch_to_max_on_insert;
+      DROP TRIGGER IF EXISTS sync_authority_epoch_to_max_on_update;
+
+      CREATE TRIGGER prevent_client_delete
+      BEFORE DELETE ON local_control_clients
+      BEGIN
+        SELECT RAISE(ABORT, 'physical deletion of local_control_clients is forbidden');
+      END;
+
+      CREATE TRIGGER enforce_client_authority_epoch_insert_monotonicity
+      BEFORE INSERT ON local_control_clients
+      BEGIN
+        SELECT CASE
+          WHEN json_valid(NEW.scopes_json) = 0 OR json_type(NEW.scopes_json) != 'array'
+          THEN RAISE(ABORT, 'scopes_json must be a valid JSON array')
+        END;
+        SELECT CASE
+          WHEN EXISTS (SELECT 1 FROM json_each(NEW.scopes_json) WHERE type != 'text')
+            OR NOT EXISTS (SELECT 1 FROM json_each(NEW.scopes_json) LIMIT 1)
+          THEN RAISE(ABORT, 'scopes_json must contain at least one text scope')
+        END;
+        SELECT CASE
+          WHEN typeof(NEW.credential_generation) != 'integer' OR NEW.credential_generation < 1
+          THEN RAISE(ABORT, 'CREDENTIAL_GENERATION_INVALID')
+          WHEN NEW.credential_generation > ${maxOrdinal}
+          THEN RAISE(ABORT, 'CREDENTIAL_GENERATION_OVERFLOW')
+          WHEN typeof(NEW.authority_epoch) != 'integer' OR NEW.authority_epoch < 1
+          THEN RAISE(ABORT, 'AUTHORITY_EPOCH_INVALID')
+          WHEN NEW.authority_epoch > ${maxOrdinal}
+          THEN RAISE(ABORT, 'AUTHORITY_EPOCH_OVERFLOW')
+        END;
+        SELECT CASE
+          WHEN NOT EXISTS (
+            SELECT 1 FROM local_control_authority_epochs WHERE client_id = NEW.client_id
+          ) AND NEW.authority_epoch != 1
+          THEN RAISE(ABORT, 'AUTHORITY_EPOCH_MUST_START_AT_ONE')
+          WHEN EXISTS (
+            SELECT 1 FROM local_control_authority_epochs WHERE client_id = NEW.client_id
+          ) AND NEW.authority_epoch > (
+            SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = NEW.client_id
+          )
+          THEN RAISE(ABORT, 'AUTHORITY_EPOCH_STEP_INVALID')
+        END;
+        SELECT CASE
+          WHEN EXISTS (
+            SELECT 1 FROM local_control_authority_epochs AS epochs WHERE epochs.client_id = NEW.client_id
+              AND NEW.authority_epoch <= epochs.max_epoch
+          ) AND NOT EXISTS (
+            SELECT 1 FROM local_control_clients AS existing
+            JOIN local_control_authority_epochs AS epochs ON epochs.client_id = existing.client_id
+            WHERE existing.client_id = NEW.client_id
+              AND existing.revoked_at IS NULL
+              AND existing.authority_epoch = epochs.max_epoch
+              AND NEW.authority_epoch = existing.authority_epoch
+              AND existing.credential_generation < ${maxOrdinal}
+              AND NEW.credential_generation = existing.credential_generation + 1
+              AND NEW.token_hash IS NOT existing.token_hash
+              AND ${insertedScopes} IS ${existingScopes}
+          )
+          THEN RAISE(ABORT, 'authority_epoch must exceed historical max_epoch')
+        END;
+      END;
+
+      CREATE TRIGGER prevent_client_unauthorized_update
+      BEFORE UPDATE ON local_control_clients
+      BEGIN
+        SELECT CASE
+          WHEN json_valid(NEW.scopes_json) = 0 OR json_type(NEW.scopes_json) != 'array'
+          THEN RAISE(ABORT, 'scopes_json must be a valid JSON array')
+        END;
+        SELECT CASE
+          WHEN EXISTS (SELECT 1 FROM json_each(NEW.scopes_json) WHERE type != 'text')
+            OR NOT EXISTS (SELECT 1 FROM json_each(NEW.scopes_json) LIMIT 1)
+          THEN RAISE(ABORT, 'scopes_json must contain at least one text scope')
+          WHEN NEW.client_id IS NOT OLD.client_id
+          THEN RAISE(ABORT, 'client_id identity is immutable')
+        END;
+        SELECT CASE
+          WHEN typeof(NEW.credential_generation) != 'integer' OR NEW.credential_generation < 1
+          THEN RAISE(ABORT, 'CREDENTIAL_GENERATION_INVALID')
+          WHEN NEW.credential_generation > ${maxOrdinal}
+             OR (NEW.token_hash IS NOT OLD.token_hash AND OLD.credential_generation >= ${maxOrdinal})
+          THEN RAISE(ABORT, 'CREDENTIAL_GENERATION_OVERFLOW')
+          WHEN NEW.token_hash IS NOT OLD.token_hash
+             AND NEW.credential_generation != OLD.credential_generation + 1
+          THEN RAISE(ABORT, 'CREDENTIAL_GENERATION_STEP_INVALID')
+          WHEN NEW.token_hash IS OLD.token_hash
+             AND NEW.credential_generation != OLD.credential_generation
+          THEN RAISE(ABORT, 'CREDENTIAL_GENERATION_REQUIRES_SECRET_ROTATION')
+        END;
+        SELECT CASE
+          WHEN typeof(NEW.authority_epoch) != 'integer' OR NEW.authority_epoch < 1
+          THEN RAISE(ABORT, 'AUTHORITY_EPOCH_INVALID')
+          WHEN NEW.authority_epoch > ${maxOrdinal}
+          THEN RAISE(ABORT, 'AUTHORITY_EPOCH_OVERFLOW')
+          WHEN NEW.authority_epoch < OLD.authority_epoch
+          THEN RAISE(ABORT, 'authority_epoch cannot decrease')
+          WHEN NEW.authority_epoch > OLD.authority_epoch AND NEW.authority_epoch != OLD.authority_epoch + 1
+          THEN RAISE(ABORT, 'AUTHORITY_EPOCH_STEP_INVALID')
+          WHEN NEW.authority_epoch < COALESCE((
+            SELECT max_epoch FROM local_control_authority_epochs WHERE client_id = OLD.client_id
+          ), 0)
+          THEN RAISE(ABORT, 'authority_epoch cannot be lower than historical max_epoch')
+          WHEN ${newScopes} IS NOT ${oldScopes} AND NEW.authority_epoch <= OLD.authority_epoch
+          THEN RAISE(ABORT, 'changing the effective scope set requires advancing authority_epoch')
+          WHEN OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NULL
+             AND (NEW.authority_epoch <= OLD.authority_epoch OR NEW.token_hash IS OLD.token_hash)
+          THEN RAISE(ABORT, 'reactivating a revoked client requires a new secret and authority_epoch')
+        END;
+      END;
+
+      CREATE TRIGGER prevent_authority_epochs_delete
+      BEFORE DELETE ON local_control_authority_epochs
+      BEGIN
+        SELECT RAISE(ABORT, 'deleting local_control_authority_epochs is forbidden');
+      END;
+
+      CREATE TRIGGER enforce_authority_epoch_high_water_insert
+      BEFORE INSERT ON local_control_authority_epochs
+      BEGIN
+        SELECT CASE
+          WHEN typeof(NEW.max_epoch) != 'integer' OR NEW.max_epoch < 1
+          THEN RAISE(ABORT, 'AUTHORITY_EPOCH_HIGH_WATER_INVALID')
+          WHEN NEW.max_epoch > ${maxOrdinal}
+          THEN RAISE(ABORT, 'AUTHORITY_EPOCH_OVERFLOW')
+          WHEN EXISTS (
+            SELECT 1 FROM local_control_authority_epochs AS existing WHERE existing.client_id = NEW.client_id
+          ) AND NEW.max_epoch <= (
+            SELECT max_epoch FROM local_control_authority_epochs WHERE client_id = NEW.client_id
+          )
+          THEN RAISE(ABORT, 'authority high-water mark cannot be reused or decreased')
+          WHEN NOT EXISTS (
+            SELECT 1 FROM local_control_authority_epochs AS existing WHERE existing.client_id = NEW.client_id
+          ) AND NEW.max_epoch != 1
+          THEN RAISE(ABORT, 'authority high-water mark must start at one')
+          WHEN EXISTS (
+            SELECT 1 FROM local_control_authority_epochs AS existing WHERE existing.client_id = NEW.client_id
+          ) AND NEW.max_epoch != (
+            SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = NEW.client_id
+          )
+          THEN RAISE(ABORT, 'authority high-water mark must advance one ordinal at a time')
+        END;
+      END;
+
+      CREATE TRIGGER prevent_authority_epochs_update_decrement
+      BEFORE UPDATE ON local_control_authority_epochs
+      BEGIN
+        SELECT CASE
+          WHEN NEW.client_id IS NOT OLD.client_id
+          THEN RAISE(ABORT, 'authority high-water identity is immutable')
+          WHEN typeof(NEW.max_epoch) != 'integer' OR NEW.max_epoch < 1
+          THEN RAISE(ABORT, 'AUTHORITY_EPOCH_HIGH_WATER_INVALID')
+          WHEN NEW.max_epoch > ${maxOrdinal}
+          THEN RAISE(ABORT, 'AUTHORITY_EPOCH_OVERFLOW')
+          WHEN NEW.max_epoch < OLD.max_epoch
+          THEN RAISE(ABORT, 'decrementing authority high-water mark is forbidden')
+          WHEN NEW.max_epoch > OLD.max_epoch AND NEW.max_epoch != OLD.max_epoch + 1
+          THEN RAISE(ABORT, 'authority high-water mark must advance one ordinal at a time')
+        END;
+      END;
+
+      CREATE TRIGGER sync_authority_epoch_to_max_on_insert
+      AFTER INSERT ON local_control_clients
+      BEGIN
+        INSERT INTO local_control_authority_epochs (client_id, max_epoch)
+        VALUES (NEW.client_id, NEW.authority_epoch)
+        ON CONFLICT(client_id) DO UPDATE SET
+          max_epoch = MAX(local_control_authority_epochs.max_epoch, excluded.max_epoch);
+      END;
+
+      CREATE TRIGGER sync_authority_epoch_to_max_on_update
+      AFTER UPDATE OF authority_epoch ON local_control_clients
+      WHEN NEW.authority_epoch > OLD.authority_epoch
+      BEGIN
+        INSERT INTO local_control_authority_epochs (client_id, max_epoch)
+        VALUES (NEW.client_id, NEW.authority_epoch)
+        ON CONFLICT(client_id) DO UPDATE SET
+          max_epoch = MAX(local_control_authority_epochs.max_epoch, excluded.max_epoch);
+      END;
+    `);
   }
 
   private clientRow(clientId: string): ClientRow | null {
@@ -384,6 +733,12 @@ function hashTokenSecret(secret: string): string {
 
 function hashOpaqueSecret(secret: string): string {
   return createHash("sha256").update(secret, "utf8").digest("hex");
+}
+
+function canonicalScopeSetSql(jsonExpression: string): string {
+  return `(SELECT json_group_array(scope_value) FROM (
+    SELECT DISTINCT value AS scope_value FROM json_each(${jsonExpression}) ORDER BY value
+  ))`;
 }
 
 function constantTimeHexEqual(left: string, right: string): boolean {

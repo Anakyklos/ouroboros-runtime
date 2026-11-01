@@ -232,6 +232,7 @@ describe("mission admission E2E", () => {
       await store.initialize();
       const mission = await store.getMission(admitted.missionId);
       expect(mission?.state).toBe(MissionState.CREATED);
+      expect(mission?.allowedCapabilityScope).toEqual({ capabilityIds: [], allowedEffectClasses: [], allowedRefPrefixes: [] });
       const revisions = await store.getPlanRevisions(admitted.missionId);
       expect(revisions.length).toBe(0);
       const invocations = await store.listInvocations(admitted.missionId);

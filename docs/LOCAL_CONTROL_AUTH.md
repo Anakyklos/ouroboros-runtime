@@ -22,6 +22,52 @@ OUROBOROS_DATA_DIR=.ouroboros bun run ouroboros auth revoke operator-cli
 
 The registry stores a SHA-256 hash of each secret, grants, expiry, and revocation state in `local-control-auth.db` under the private data directory. The bearer secret is generated with a cryptographic random source and is never printed by the provisioning command. Protect backups and access to the same operating-system user accordingly.
 
+## AuthStore authority generations (B1, internal)
+
+The current AuthStore also stores two non-secret integer facts per client:
+
+- `credential_generation` starts at `1` and advances once for every successful
+  credential rotation or reprovisioning. Revocation alone does not change it.
+- `authority_epoch` starts at `1`. It advances once when the effective set of
+  provisioned scopes changes, including additions, or when a revoked client is
+  reprovisioned. A pure secret rotation with the same effective scope set keeps
+  the epoch unchanged; changing only the JSON array order also keeps it
+  unchanged.
+
+`local_control_authority_epochs` retains the highest committed epoch for each
+`client_id`, including a tombstone if the client row is ever absent. Physical
+client deletion and epoch reuse/decrement are rejected by SQLite triggers.
+Managed store connections enable `PRAGMA recursive_triggers = ON`; credential
+changes use parameterized `INSERT ... ON CONFLICT(client_id) DO UPDATE` and do
+not use `REPLACE`. Integer overflow, malformed stored scope JSON, and
+inconsistent authority history fail closed.
+
+The schema upgrade is additive and runs in a SQLite write transaction. Existing
+client fields and rows are preserved; legacy clients receive generation and
+epoch `1`, and the initial high-water mark is populated from that epoch. The
+migration can resume from a partially added column and is safe to run again.
+Corrupt legacy scopes or ordinals prevent the AuthStore from opening rather than
+being repaired into an active credential.
+
+These facts remain internal to `LocalControlCredentialStore`. They are not
+returned by an RPC, are not added to `LocalControlAuthenticatedClient`, and are
+not copied to the MissionStore. `credentialVersion: string` remains bound to
+the active token hash for constant-time bearer, browser-cookie, and WebSocket
+revalidation. B1 does not issue or revoke operational grants and does not
+change the scopes accepted by authentication or the authority of `mission.create`.
+
+SQLite triggers enforce relational invariants; they do not authenticate a host
+user or protect against unrestricted database-file/DDL access. With
+`recursive_triggers = OFF`, SQLite does not run a delete trigger for the
+implicit delete performed by `REPLACE`. The insert guard rejects reuse of a
+revoked or tombstoned epoch, while an active same-scope credential rotation is
+valid at the current epoch. Therefore a direct writer with `recursive_triggers
+= OFF` is outside the managed writer boundary and may bypass the delete guard;
+the triggers are not database-file access control. Managed writers enable
+recursive triggers, and the private directory/database permissions remain
+part of the host boundary. These controls do not claim protection from a
+compromised host administrator.
+
 Authenticated RPC admission is bounded to 32 simultaneous operations by
 default (the daemon setting accepts 1–1024). When capacity is full, a request
 that has already passed authentication and scope/revocation checks receives a
