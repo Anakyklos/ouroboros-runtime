@@ -18,7 +18,7 @@
 
 ## Limites da ratificação
 
-**Permanecem expressamente NEEDS_APPROVAL:** D01, D02, D04, D05, D07, D09, D10, D11, D12, D13 e D14.
+**Na data desta ratificação, permaneciam expressamente NEEDS_APPROVAL:** D01, D02, D04, D05, D07, D09, D10, D11, D12, D13 e D14. D09/D14 foram ratificadas depois, no ADR B1; as outras decisões desta lista continuam pendentes.
 
 A aprovação não outorga capacidades a qualquer Mission, não autoriza endpoint RPC, criação de grants por operadores, nova credencial, transporte, mutations de AuthStore, dispatch, fallback de executor, mudanças de Runstead/Katherine ou relaxamento de recovery. `mission.create` continua criando Missions inertes, sem grants.
 
@@ -33,4 +33,8 @@ Não confundir **seleção normativa do desenho** com **execução autorizada**.
 
 ## Estado da issue
 
-A issue #166 continua aberta para a ratificação das outras 11 escolhas e fechamento do contrato completo. A PR #167 contém documentação; incorporá-la à `main` não implica que seus trechos ainda em estado `PROPOSTA` estejam ratificados.
+Na data da ratificação do Slice A, a issue #166 continuava aberta para as 11 escolhas então pendentes e para o fechamento do contrato completo. Após a ratificação posterior de D09/D14 no B1, nove decisões permanecem pendentes. A PR #167 contém documentação; incorporá-la à `main` não implica que seus trechos ainda em estado `PROPOSTA` estejam ratificados.
+
+## Nota de supersessão factual posterior
+
+Após esta ratificação, D09 opção 1 e D14 opção A foram ratificadas no ADR B1 de 2026-11-01. Esta nota atualiza somente a lista de decisões que ainda estavam pendentes na data deste ADR; não altera D03, D06, D08 ou D15 nem amplia o alcance do Slice A. A implementação B1 posterior permanece interna e não ativa entitlement ou emissão operacional de grants.
