@@ -5,7 +5,7 @@
 > **Issue:** #166 (P1), epic principal #70 (M1 Local Control Plane)
 > **PR:** https://github.com/Anakyklos/ouroboros-runtime/pull/167 (revisão de review 5725513117)
 > **Base SHA auditado:** `4a0d6d52075bc665568e126124eb24ec8b8b2ed0` (`main`)
-> **HEAD auditado anterior:** `e9043e2929d84e265c5f203c3b0aacee4d4c53f5` (PR #167, CI `41259991432` SUCCESS)
+> **HEAD auditado anterior:** `21a8d29be5c447ab5111175b43d13780e744e249` (PR #167, CI `41262096104` SUCCESS, review 5725952603 REQUEST_CHANGES)
 > **Bun (local):** `1.4.2` (CI pin: `1.3.9`)
 > **Data:** 2026-10-31
 > **Branch:** `docs/166-capability-grant-trust-contract`
@@ -57,7 +57,9 @@ Toda afirmação neste documento carrega uma das seguintes classificações estr
      - A proteção contra execução indevida de binários legados v1 sobre dados v2 exige **fencing operacional estrito** e/ou **isolamento físico de caminhos de arquivos** (ex.: `missions.v2.db` ou `$OUROBOROS_DATA_DIR/v2/`).
    - *Snapshot coerente e unificado sob SQLite WAL:* Eliminação do trecho duplicado/órfão de backup. A política de snapshot requer **quiescência operacional prévia** do daemon, seguida por `PRAGMA wal_checkpoint(TRUNCATE)` coordenado nos três stores (`missions.db`, `local-control-auth.db` e `daemon.db`) antes da cópia física. Proibição categórica de restauração destrutiva de backup antigo após processamento de trabalho no v2 (Cenário B).
 5. **Remoção de limites de recursos decorativos (Adoção formal da Alternativa A):** Os campos `resourceLimits` (`maxInvocations`, `maxDurationMs`, `budgetUnits`) foram expressamente **removidos do contrato v1 proposto** e adiados para evolução futura, evitando *security theater*. A governança de recursos no v1 permanece delegada à política de orçamento da Mission já existente (`budget_policy`).
-6. **Matriz de aceite completa e reconciliada com a Issue #166:** Reconciliação integral da seção 12 com todos os requisitos normativos da issue #166 (401/403, entitlement de escopo, capability inválida, wildcards/prefixos malformados, expiração, conflitos de idempotência, isolamento cross-grantor, rollback de observers, limites de 64KB/64 itens, redaction de segredos, concorrência CLI/daemon sem promessas impossíveis, persistência sob deleção adversária e teste E2E com daemon real UDS e SQLite), todos rigorosamente classificados como testes futuros projetados.
+6. **Matriz de aceite completa e reconciliada com a Issue #166:** Reconciliação integral da seção 12 com todos os requisitos normativos da issue #166 (401/403, entitlement de escopo, capability inválida, wildcards/prefixos malformados, expiração, conflitos de idempotência, isolamento cross-grantor, rollback de observers, limites de 64KB/64 itens, redaction de segredos, concorrência CLI/daemon sem promessas impossíveis, persistência sob deleção adversária e teste E2E com daemon real sobre transporte aprovado em loopback e SQLite), todos rigorosamente classificados como testes futuros projetados.
+7. **Eliminação de autorização combinatória não demonstrada (Produto Cartesiano Intra-Grant) e Entitlement Correlacionado (P1):** Constata-se que o uso de três listas planas (`capabilityIds[]`, `allowedEffectClasses[]`, `allowedRefPrefixes[]`) dentro de um mesmo grant permitia inadvertidamente um produto cartesiano intra-grant, onde uma capability de leitura podia ser combinada indevidamente com prefixos confidenciais autorizados apenas para outra capability. A proposta avalia formalmente três alternativas mínimas: (A) Grant Unitário Correlacionado (1 capability por grant com efeitos e prefixos vinculados); (B) Grant como Coleção de Bindings Correlacionados; (C) Produto Cartesiano Explícito sob Autorização do Emissor. Apresentam-se os trade-offs e recomenda-se a Alternativa A (menor complexidade, schema relacional direto no SQLite, least privilege estrito) ou Alternativa B (agrupamento por `grantId`), submetendo a escolha formal à deliberação de Pedro (§14 Decisão 15).
+8. **Uniformização da operação RPC e remoção de dependência mandatória de UDS (P2):** O diagrama de fluxo autoritativo foi alinhado à nomenclatura normativa proposta `mission.grant_capabilities` (eliminando a divergência com `local_control.grant_capabilities`). Removeu-se qualquer dependência mandatória de transporte UDS do contrato #166, reiterando que o controle local opera sob o transporte aprovado em `docs/decisions/2026-10-08-local-control-authz.md` (HTTP JSON-RPC / WebSocket em loopback); UDS permanece puramente como proposta de otimização futura sob decisão e slice independentes.
 
 **Direção de implementação futura em slices isolados (PROPOSTA):**
 - **Slice A** — Persistência do ledger append-only (triggers de proteção, isolamento de exclusão sob `foreign_keys = OFF`) e validação de grants por tupla atômica.
@@ -83,7 +85,7 @@ Toda afirmação neste documento carrega uma das seguintes classificações estr
 ### 2.1 Referência Git e auditoria de HEAD
 
 - **Base SHA auditado:** `4a0d6d52075bc665568e126124eb24ec8b8b2ed0` (`main`).
-- **HEAD auditado anterior:** `e9043e2929d84e265c5f203c3b0aacee4d4c53f5` (PR #167, CI `41259991432` SUCCESS, review técnico APPROVED com observação P2).
+- **HEAD auditado anterior:** `21a8d29be5c447ab5111175b43d13780e744e249` (PR #167, CI `41262096104` SUCCESS, review 5725952603 REQUEST_CHANGES).
 - **Branch de trabalho:** `docs/166-capability-grant-trust-contract`.
 - **Arquivos modificados:** Exclusivamente `docs/analysis/operator-capability-grant-trust-contract-2026-10-29.md`.
 
@@ -104,7 +106,7 @@ allowedCapabilityScope: EMPTY_SCOPE,
 
 Toda Mission criada pelo operador via `mission.admit` nasce em estado `CREATED` com `EMPTY_SCOPE`. Sem uma operação de concessão explícita, nenhum passo de plano pode ser validado (`PlanPolicyValidator` rejeita com `CAPABILITY_NOT_AUTHORIZED` ou `EFFECT_NOT_AUTHORIZED`) e nenhuma invocação pode ser despachada.
 
-Adicionalmente, não existe na API pública do daemon (JSON-RPC ou UDS) nenhuma operação para conceder, listar ou revogar capabilities para uma Mission (PROVADO NO CÓDIGO via inspeção em `shared/local-control-*-contract.ts` e `cli/src/daemon/local-control-auth.ts`).
+Adicionalmente, não existe na API pública do daemon (JSON-RPC em loopback ou transporte de controle local) nenhuma operação para conceder, listar ou revogar capabilities para uma Mission (PROVADO NO CÓDIGO via inspeção em `shared/local-control-*-contract.ts` e `cli/src/daemon/local-control-auth.ts`).
 
 ### 2.3 Arquivos, linhas e comportamento atual auditados
 
@@ -207,16 +209,16 @@ Adicionalmente, não existe na API pública do daemon (JSON-RPC ou UDS) nenhuma 
 Operador Autenticado (token com scope 'mission.grant_capabilities')
         │
         ▼
-RPC local_control.grant_capabilities (payload estrito, sem autoridade auto-declarada)
+RPC mission.grant_capabilities (payload estrito, sem autoridade auto-declarada)
         │
         ▼
 CapabilityGrantService (daemon-side)
         │
         ├─► 1. Autenticação e Entitlement Prévios (precedem leitura e escrita)
         ├─► 2. Captura da Época de Autoridade do Emissor (authorityEpoch do AuthStore)
-        ├─► 3. Validação contra fonte independente de limites máximos (operator policy)
+        ├─► 3. Validação contra envelope correlacionado de limites máximos (operator policy)
         ├─► 4. Verificação de Replay Seguro (rejeita se grantId já existe sob outro grantor)
-        ├─► 5. Validação da tupla atômica (capabilityId ∈ limites, effectClass ∈ contract, refs ∈ limites)
+        ├─► 5. Validação da associação correlacionada (capabilityId ∈ limites, effectClass ∈ contract, refs ∈ limites da respectiva capability)
         ├─► 6. Cálculo do fingerprint canônico (sha256 determinístico)
         │
         ▼
@@ -226,20 +228,59 @@ Transação SQLite Atômica no MissionStore (withTransaction):
         └─► COMMIT (dispara publicação de mutações aos observadores)
 ```
 
-### 5.2 Preservação estrita da tupla de grant (eliminação do produto cartesiano)
+### 5.2 Preservação estrita da tupla de grant e eliminação de autorização combinatória (P1)
 
-A autorização **nunca é avaliada contra listas globais unificadas**. Toda autorização preserva a tupla indissociável:
+> [!IMPORTANT]
+> **Lacuna Formal Identificada na Formulação Anterior (Produto Cartesiano Intra-Grant):**
+> Embora o contrato rejeitasse categoricamente o cruzamento de atributos entre *grants distintos* (§5.3.1), a utilização de três listas planas independentes (`capabilityIds[]`, `allowedEffectClasses[]`, `allowedRefPrefixes[]`) dentro de um *mesmo grant* $G$ permitia inadvertidamente um **produto cartesiano intra-grant** ($C \times E \times R$). Se um único grant contivesse duas capabilities com propósitos e níveis de privilégio distintos, o predicado anterior autorizava qualquer combinação combinatória entre elas, violando frontalmente o princípio de *least privilege*.
 
-$$\text{Grant} = \langle \text{grantId}, \text{capabilityId}, \text{effectClass}, \text{allowedRefPrefixes}, \text{grantorId}, \text{authorityEpoch}, \text{validity} \rangle$$
+Para assegurar que nenhuma capability exerça autoridade sobre referências ou classes de efeito para as quais não foi especificamente autorizada, avaliam-se três alternativas mínimas de modelo de dados e avaliação:
 
-Um passo de plano `P` com requisito de capability `C`, classe de efeito `E` e conjunto de referências de entrada $R = \{r_1, r_2, \dots, r_k\}$ só é autorizado se existir **um mesmo grant ativo** $G$ tal que:
-1. $C \in G.\text{capabilityIds}$
-2. $E \in G.\text{allowedEffectClasses}$
-3. $\forall r \in R, \exists p \in G.\text{allowedRefPrefixes} \text{ tal que } r \text{ inicia com } p$
+#### 5.2.1 Avaliação das Alternativas Mínimas para Associação Correlacionada
+
+1. **Alternativa A — Grant como Tupla Unitária Correlacionada (Menor Complexidade):**
+   - *Estrutura:* Cada registro de grant no ledger representa estritamente **uma combinação indivisível** de uma única capability com suas classes de efeito e prefixos de referência vinculados:
+     $$\text{Grant} = \langle \text{grantId}, \text{missionId}, \text{grantorClientId}, \text{grantorAuthorityEpoch}, \mathbf{capabilityId}, \mathbf{allowedEffectClasses}, \mathbf{allowedRefPrefixes}, \dots \rangle$$
+   - *Comportamento:* Se uma missão necessitar de acesso a leitura de logs e execução de banco de dados, o operador emite **dois grants unitários distintos** ($G_1$ para `fs.read_file` e $G_2$ para `db.execute_ledger_transaction`).
+   - *Trade-offs:*
+     - *Vantagens:* Menor complexidade estrutural e de implementação; schema SQLite limpo com coluna relacional direta (`capability_id TEXT NOT NULL`) indexável sem necessidade de parsing de arrays JSON para a identificação da capability; ciclo de vida e revogação granulares (pode-se revogar o grant de banco sem afetar o de logs); eliminação matemática absoluta de produto cartesiano intra-grant.
+     - *Desvantagens:* Para missões complexas que demandam múltiplas capabilities, exige a emissão de múltiplos grants (múltiplas requisições RPC ou endpoint de emissão em lote).
+
+2. **Alternativa B — Grant como Coleção de Bindings Correlacionados:**
+   - *Estrutura:* Cada grant preserva um `grantId` agregador, porém substitui as três listas planas por uma **coleção de bindings explicitamente correlacionados**:
+     $$\text{Grant} = \langle \text{grantId}, \text{missionId}, \text{grantorClientId}, \dots, \mathbf{bindings}: [ \langle \text{capabilityId}_i, \text{allowedEffectClasses}_i, \text{allowedRefPrefixes}_i \rangle ] \rangle$$
+   - *Comportamento:* O operador emite um único grant contendo múltiplos bindings. Cada binding associa uma capability específica apenas aos efeitos e prefixos permitidos para ela.
+   - *Trade-offs:*
+     - *Vantagens:* Conveniência operacional e atomicidade: emissão e revogação de um pacote coeso de autorizações sob um único identificador (`grantId`). Elimina o produto cartesiano intra-grant, pois a avaliação de cada passo exige correspondência dentro de um mesmo binding.
+     - *Desvantagens:* Maior complexidade de schema (requer serialização e validação de array de objetos JSON no SQLite: `bindings TEXT NOT NULL`); validação iterativa no motor; revogação em bloco (revogar o `grantId` extingue todos os bindings contidos no grant).
+
+3. **Alternativa C — Listas Planas com Autorização Explícita de Produto Cartesiano:**
+   - *Estrutura:* Mantêm-se as três listas planas (`capabilityIds[]`, `allowedEffectClasses[]`, `allowedRefPrefixes[]`), admitindo formalmente que a autorização concedida abrange todo o produto cartesiano $C \times E \times R$.
+   - *Requisito Estrito:* Exige que a política do emissor e a concessão declarem expressamente `allowCartesianProduct: true`, e que o envelope de limites do emissor autorize o produto cartesiano completo.
+   - *Trade-offs:*
+     - *Vantagens:* Nenhuma do ponto de vista de segurança; payload ligeiramente menor em transmissões simplórias.
+     - *Desvantagens:* **Rejeitada do ponto de vista de segurança.** Viola diretamente o princípio de *least privilege*; introduz sobre-autorização silenciosa e amplia indevidamente a superfície de ataque caso um operador combine ferramentas utilitárias com dados sensíveis.
+
+**Recomendação Técnica Existente:** Recomenda-se a **Alternativa A** por oferecer a **menor complexidade técnica e relacional** (schema direto em SQL, sem objetos JSON aninhados) preservando rigorosamente *least privilege*. Caso a ergonomia de empacotamento em um único `grantId` seja considerada mandatória pela governança, a **Alternativa B** é a opção correlacionada válida. A Alternativa C é expressamente desaconselhada.
+
+> [!IMPORTANT]
+> **Decisão Normativa Pendente (DECISÃO PENDENTE para Pedro — §14 Decisão 15):**
+> A escolha formal entre o modelo de Grant Unitário (Alternativa A) e Grant com Bindings Agregados (Alternativa B) define o schema relacional e o contrato tipado da API. Essa decisão não é tomada unilateralmente nesta proposta e aguarda deliberação de Pedro.
+
+#### 5.2.2 Predicado Formal de Autorização Correlacionada
+
+Sob o modelo correlacionado (válido tanto para a Alternativa A quanto para a Alternativa B):
+
+Um passo de plano $P$ com requisito de capability $C$, classe de efeito $E$ e conjunto de referências de entrada $R = \{r_1, r_2, \dots, r_k\}$ só é autorizado se existir **um mesmo binding correlacionado ativo** $b$ em um grant ativo $G$ (onde sob a Alternativa A o próprio grant $G$ atua como o binding $b$) tal que:
+1. $b.\text{capabilityId} == C$
+2. $E \in b.\text{allowedEffectClasses}$
+3. $\forall r \in R, \exists p \in b.\text{allowedRefPrefixes} \text{ tal que } r \text{ inicia com } p$
 4. $G$ não está expirado nem revogado no momento da verificação.
-5. O emissor $G.\text{grantorId}$ permanece com autoridade válida e seu epoch atual coincide com $G.\text{authorityEpoch}$.
+5. O emissor $G.\text{grantorClientId}$ permanece ativo no AuthStore e sua época de autoridade corrente coincide com $G.\text{grantorAuthorityEpoch}$.
 
-### 5.3 Exemplo adversarial: Produto Cartesiano A × B
+### 5.3 Cenários adversariais comprovados
+
+#### 5.3.1 Cenário Adversarial Cross-Grant (Produto Cartesiano A × B entre Grants Distintos)
 
 1. **Grant A emitido pelo Operador de Suporte:**
    - `capabilityId`: `fs.read_file`
@@ -250,7 +291,7 @@ Um passo de plano `P` com requisito de capability `C`, classe de efeito `E` e co
    - `allowedEffectClasses`: `[WRITE, EXECUTION]`
    - `allowedRefPrefixes`: `["db://financial/production/"]`
 
-**Cenário vulnerável sob listas globais unificadas (REJEITADO):**
+**Cenário vulnerável sob listas globais unificadas na Mission (REJEITADO):**
 Se o sistema unisse as listas na Mission:
 - `capabilityIds` = `["fs.read_file", "db.execute_ledger_transaction"]`
 - `allowedEffectClasses` = `[READ, WRITE, EXECUTION]`
@@ -258,27 +299,54 @@ Se o sistema unisse as listas na Mission:
 
 Um passo proposto com `capabilityRequirement: fs.read_file`, `effectClass: READ` e `inputRefs: ["db://financial/production/credentials.key"]` passaria sob listas desacopladas porque cada atributo encontra correspondência em alguma lista.
 
-**Resultado no modelo corrigido (PROPOSTA):**
+**Resultado no modelo correlacionado (PROPOSTA):**
 O validador checa contra cada grant isolado:
 - No Grant A: a ref `db://...` falha no prefixo `storage://...`.
 - No Grant B: a capability `fs.read_file` não pertence ao grant.
 - Nenhum grant cobre a tupla conjuntamente $\rightarrow$ **Bloqueado deterministicamente com `CAPABILITY_REF_OUT_OF_GRANT_BOUNDS`**.
 
-### 5.4 Fonte confiável e independente de limites máximos do grantor
+#### 5.3.2 Cenário Adversarial Intra-Grant (Produto Cartesiano dentro do mesmo Grant — Reprodução P1)
+
+1. **Configuração de Limites do Emissor:**
+   - O operador possui permissão para ler logs públicos: `(fs.read_file, [READ], storage://public/logs/)`.
+   - O operador também possui permissão para registrar transações no banco financeiro: `(db.execute_ledger, [WRITE], db://financial/production/)`.
+2. **Vulnerabilidade sob Listas Planas Desacopladas (REJEITADO):**
+   - Se o operador emitir um único grant com três listas planas:
+     - `capabilityIds = ["fs.read_file", "db.execute_ledger"]`
+     - `allowedEffectClasses = ["READ", "WRITE"]`
+     - `allowedRefPrefixes = ["storage://public/logs/", "db://financial/production/"]`
+   - Um passo de plano solicita:
+     - `capabilityRequirement: "fs.read_file"`
+     - `effectClass: "READ"`
+     - `inputRefs: ["db://financial/production/credentials.key"]`
+   - *Resultado vulnerável comprovado:* O validador anterior aceitava o passo porque `fs.read_file` estava na lista de capabilities, `READ` na de efeitos, e `db://...` casava com o prefixo. A capability utilitária de leitura obtinha acesso indevido a dados confidenciais do banco financeiro!
+3. **Resolução sob o Modelo Correlacionado (PROPOSTA):**
+   - Sob a Alternativa A (grants unitários) ou Alternativa B (bindings correlacionados), o passo é avaliado contra cada tupla associada:
+     - Binding 1 (`fs.read_file`): falha porque a referência `db://financial/production/...` não inicia com o prefixo autorizado `storage://public/logs/`.
+     - Binding 2 (`db.execute_ledger`): falha porque a capability requerida (`fs.read_file`) não corresponde a `db.execute_ledger`.
+   - Nenhum binding correlacionado satisfaz a conjunção $\implies$ **Rejeitado deterministicamente com `CAPABILITY_REF_OUT_OF_GRANT_BOUNDS`**.
+
+### 5.4 Fonte confiável e independente de limites máximos do grantor (Entitlement Envelope Correlacionado)
 
 **PROPOSTA + DECISÃO PENDENTE:** Um cliente autenticado não pode conceder autorizações que excedam seus próprios privilégios máximos provisionados.
 
-Regra mandatória na admissão do grant (`CapabilityGrantService`):
-$$G.\text{capabilityIds} \subseteq \text{Limit}.\text{maxCapabilities}$$
-$$G.\text{allowedEffectClasses} \subseteq \text{Limit}.\text{maxEffectClasses}$$
-$$G.\text{allowedRefPrefixes} \subseteq \text{Limit}.\text{maxRefPrefixes}$$
-Qualquer discrepância resulta em rejeição imediata com `CAPABILITY_EXCEEDS_GRANTOR_LIMITS`.
+Para evitar que o produto cartesiano seja explorado na admissão de grants (ampliação de entitlement), **o envelope de limites do emissor também deve ser estruturado de forma correlacionada**:
+
+- **Envelope do Emissor Correlacionado:**
+  $$\text{Limit}.\text{allowedBindings} = [ \langle \text{capabilityId}_j, \text{maxEffectClasses}_j, \text{maxRefPrefixes}_j \rangle ]$$
+
+- **Regra Mandatória de Admissão no `CapabilityGrantService`:**
+  Cada binding $b_g$ presente no grant submetido deve ser estritamente coberto por pelo menos um binding autorizado $b_l$ no envelope do emissor:
+  $$\forall b_g \in G, \exists b_l \in \text{Limit}.\text{allowedBindings} \text{ tal que:}$$
+  $$b_g.\text{capabilityId} == b_l.\text{capabilityId} \land b_g.\text{allowedEffectClasses} \subseteq b_l.\text{maxEffectClasses} \land b_g.\text{allowedRefPrefixes} \subseteq b_l.\text{maxRefPrefixes}$$
+
+Qualquer tentativa de um operador emitir um grant associando uma capability $C_A$ a prefixos autorizados apenas para $C_B$ é sumariamente rejeitada na admissão com **`CAPABILITY_EXCEEDS_GRANTOR_LIMITS`**, impedindo a ampliação combinatória de autoridade.
 
 **Comportamento dinâmico e delimitação factual da fronteira cross-DB (Encolhimento de Entitlement):**
 Caso a governança reduza os limites máximos de um operador (seja via alteração em `$OUROBOROS_DATA_DIR/security/operator-limits.json` ou via update no registro de `local_control_clients`), grants emitidos no passado sob limites mais amplos **não podem continuar autorizando ações que extrapolem os novos limites reduzidos**.
 
-Nos portões de avaliação e dispatch (Gate 3 e Gate 4), o motor revalida o grant contra os limites atualmente vigentes do grantor:
-- Se $G.\text{capabilityIds} \not\subseteq \text{CurrentLimit}.\text{maxCapabilities}$ ou qualquer prefixo/classe violar os limites atuais, a autorização falha de forma fail-closed com o código estruturado **`GRANTOR_ENTITLEMENT_SHRUNK`**.
+Nos portões de avaliação e dispatch (Gate 3 e Gate 4), o motor revalida cada binding do grant contra os bindings correlacionados atualmente vigentes do grantor:
+- Se qualquer binding de $G$ violar os limites atuais do emissor, a autorização falha de forma fail-closed com o código estruturado **`GRANTOR_ENTITLEMENT_SHRUNK`**.
 
 > [!WARNING]
 > **Fronteira Factual Cross-DB e Janela de Corrida Inter-Processos:**
@@ -379,18 +447,45 @@ Quando a operação administrativa for estritamente uma troca de credencial bear
    - **Janela de Corrida Cross-DB (Interleaving J):** Caso o Daemon valide os privilégios no AuthStore, a CLI externa comite a redução no AuthStore, e o Daemon comite a reserva no MissionStore antes de atualizar sua visão do AuthStore, a chamada externa já é despachada ao conector. No baseline (sem RPC unificado ou banco único), **não há garantia de zero chamadas externas** nessa interleaving. O runtime apenas sinaliza cancelamento assíncrono (best-effort) e bloqueia passos posteriores. A eliminação total dessa janela depende da escolha normativa de Pedro (§14 Decisão 12: Opção 1 via Daemon RPC ou Opção 2 via Stores Unificados).
 3. **Recuperação pós-restart:** Ao reiniciar o daemon ou o processo da CLI, o AuthStore reconstrói o estado autoritativo lendo as colunas `authority_epoch`, `scopes_json` e `revoked_at` diretamente das páginas do banco. Nenhum estado volátil em memória pode atuar como autoridade após o boot.
 
-### 6.2 Escopo de cada concessão (tupla associada autoritativa)
+### 6.2 Escopo de cada concessão (tupla associada autoritativa correlacionada)
+
+Conforme avaliado em §5.2, para eliminar categoricamente o produto cartesiano intra-grant, definem-se as representações tipadas correspondentes às alternativas correlacionadas submetidas à deliberação de Pedro (§14 Decisão 15):
 
 ```typescript
-export interface CapabilityGrantRecord {
+// --- Associação Correlacionada Indissociável (Binding) ---
+export interface CapabilityBindingRecord {
+  readonly capabilityId: string;
+  readonly allowedEffectClasses: readonly EffectClass[];
+  readonly allowedRefPrefixes: readonly string[];
+}
+
+// --- Variante Alternativa A: Grant Unitário Correlacionado (Recomendação Técnica de Menor Complexidade) ---
+// Cada grant vincula estritamente UMA capability às suas classes e prefixos autorizados.
+export interface UnitaryCapabilityGrantRecord {
   readonly grantId: string;
   readonly missionId: string;
   readonly grantorClientId: string;
   readonly grantorCredentialVersion: string;
-  readonly grantorAuthorityEpoch: number; // Contador monotônico durável da geração de autoridade no AuthStore
-  readonly capabilityIds: readonly string[];
+  readonly grantorAuthorityEpoch: number; // Contador monotônico durável no AuthStore
+  readonly capabilityId: string;
   readonly allowedEffectClasses: readonly EffectClass[];
   readonly allowedRefPrefixes: readonly string[];
+  readonly issuedAt: string;        // ISO 8601 UTC
+  readonly expiresAt?: string;       // ISO 8601 UTC ou undefined (sem expiração temporal)
+  readonly contractVersion: number;  // CAPABILITY_GRANT_CONTRACT_VERSION
+  readonly fingerprint: string;      // sha256 canônico
+  readonly createdAt: string;
+}
+
+// --- Variante Alternativa B: Grant Agregado de Bindings Correlacionados ---
+// Cada grant pode conter múltiplos bindings, mas cada binding preserva estrita correlação interna.
+export interface AggregatedCapabilityGrantRecord {
+  readonly grantId: string;
+  readonly missionId: string;
+  readonly grantorClientId: string;
+  readonly grantorCredentialVersion: string;
+  readonly grantorAuthorityEpoch: number; // Contador monotônico durável no AuthStore
+  readonly bindings: readonly CapabilityBindingRecord[];
   readonly issuedAt: string;        // ISO 8601 UTC
   readonly expiresAt?: string;       // ISO 8601 UTC ou undefined (sem expiração temporal)
   readonly contractVersion: number;  // CAPABILITY_GRANT_CONTRACT_VERSION
@@ -429,15 +524,30 @@ export const CAPABILITY_GRANT_OPERATIONS = {
 ### 7.2 Request/Response de Concessão (`mission.grant_capabilities`)
 
 ```typescript
-export interface CapabilityGrantRequest {
+// --- Variante Alternativa A (Grant Unitário Correlacionado - Menor Complexidade) ---
+export interface UnitaryCapabilityGrantRequest {
   readonly protocolVersion: typeof CAPABILITY_GRANT_PROTOCOL_VERSION;
   readonly operation: typeof CAPABILITY_GRANT_OPERATIONS.GRANT;
   readonly missionId: string; // UUID v4 gerado pelo runtime (com hífens)
   readonly grantId: string;   // Identificador de idempotência escopado ao emissor
-  readonly capabilityIds: string[];
-  readonly allowedEffectClasses: EffectClass[];
-  readonly allowedRefPrefixes: string[];
+  readonly capabilityId: string;
+  readonly allowedEffectClasses: readonly EffectClass[];
+  readonly allowedRefPrefixes: readonly string[];
   readonly expiresAt?: string; // ISO 8601 opcional
+}
+
+// --- Variante Alternativa B (Grant Agregado de Bindings Correlacionados) ---
+export interface AggregatedCapabilityGrantRequest {
+  readonly protocolVersion: typeof CAPABILITY_GRANT_PROTOCOL_VERSION;
+  readonly operation: typeof CAPABILITY_GRANT_OPERATIONS.GRANT;
+  readonly missionId: string;
+  readonly grantId: string;
+  readonly bindings: readonly {
+    readonly capabilityId: string;
+    readonly allowedEffectClasses: readonly EffectClass[];
+    readonly allowedRefPrefixes: readonly string[];
+  }[];
+  readonly expiresAt?: string;
 }
 
 export type CapabilityGrantResponse =
@@ -445,7 +555,7 @@ export type CapabilityGrantResponse =
       readonly ok: true;
       readonly protocolVersion: typeof CAPABILITY_GRANT_PROTOCOL_VERSION;
       readonly operation: typeof CAPABILITY_GRANT_OPERATIONS.GRANT;
-      readonly data: CapabilityGrantProjection;
+      readonly data: UnitaryCapabilityGrantProjection | AggregatedCapabilityGrantProjection;
     }
   | {
       readonly ok: false;
@@ -456,9 +566,7 @@ export type CapabilityGrantResponse =
     };
 ```
 
-### 7.3 Request/Response de Revogação (`mission.revoke_capability_grant`)
-
-```typescript
+### 7.3 Request/Response de Revogação (`mission.revoke_capability_grant`)\n\n```typescript
 export interface CapabilityGrantRevokeRequest {
   readonly protocolVersion: typeof CAPABILITY_GRANT_PROTOCOL_VERSION;
   readonly operation: typeof CAPABILITY_GRANT_OPERATIONS.REVOKE;
@@ -505,7 +613,7 @@ export interface CapabilityGrantListResponse {
   readonly operation: typeof CAPABILITY_GRANT_OPERATIONS.LIST;
   readonly data: {
     readonly missionId: string;
-    readonly grants: CapabilityGrantProjection[];
+    readonly grants: readonly (UnitaryCapabilityGrantProjection | AggregatedCapabilityGrantProjection)[];
   };
 }
 ```
@@ -513,12 +621,25 @@ export interface CapabilityGrantListResponse {
 ### 7.5 Projeções públicas e sanitizadas
 
 ```typescript
-export interface CapabilityGrantProjection {
+// Projeção para Alternativa A (Grant Unitário Correlacionado)
+export interface UnitaryCapabilityGrantProjection {
   readonly grantId: string;
   readonly missionId: string;
-  readonly capabilityIds: readonly string[];
+  readonly capabilityId: string;
   readonly allowedEffectClasses: readonly EffectClass[];
   readonly allowedRefPrefixes: readonly string[];
+  readonly issuedAt: string;
+  readonly expiresAt?: string;
+  readonly isRevoked: boolean;
+  readonly revokedAt?: string;
+  readonly revocationReason?: string;
+}
+
+// Projeção para Alternativa B (Grant Agregado de Bindings Correlacionados)
+export interface AggregatedCapabilityGrantProjection {
+  readonly grantId: string;
+  readonly missionId: string;
+  readonly bindings: readonly CapabilityBindingRecord[];
   readonly issuedAt: string;
   readonly expiresAt?: string;
   readonly isRevoked: boolean;
@@ -580,15 +701,16 @@ Para sanar esta lacuna factual de integridade sem quebrar o banco atual nem pres
 
 ```sql
 -- 1. Registro imutável de eventos de concessão (Grant Ledger)
+-- Variante Alternativa A (Grant Unitário Correlacionado — Recomendação Técnica de Menor Complexidade):
 CREATE TABLE IF NOT EXISTS mission_capability_grants (
   grant_id TEXT NOT NULL,
   mission_id TEXT NOT NULL,
   grantor_client_id TEXT NOT NULL,
   grantor_credential_version TEXT NOT NULL,
   grantor_authority_epoch INTEGER NOT NULL,  -- Contador sequencial monotônico de geração no AuthStore
-  capability_ids TEXT NOT NULL,              -- JSON array de strings
-  allowed_effect_classes TEXT NOT NULL,      -- JSON array de strings
-  allowed_ref_prefixes TEXT NOT NULL,        -- JSON array de strings
+  capability_id TEXT NOT NULL,               -- Identificador único e indivisível da capability autorizada
+  allowed_effect_classes TEXT NOT NULL,      -- JSON array de strings (classes vinculadas exclusivamente a esta capability)
+  allowed_ref_prefixes TEXT NOT NULL,        -- JSON array de strings (prefixos vinculados exclusivamente a esta capability)
   issued_at TEXT NOT NULL,
   expires_at TEXT,
   contract_version INTEGER NOT NULL,
@@ -596,6 +718,22 @@ CREATE TABLE IF NOT EXISTS mission_capability_grants (
   created_at TEXT NOT NULL,
   PRIMARY KEY (mission_id, grant_id)
 );
+
+-- Variante Alternativa B (Grant Agregado de Bindings Correlacionados — Opção de Empacotamento em Lote):
+-- CREATE TABLE IF NOT EXISTS mission_capability_grants (
+--   grant_id TEXT NOT NULL,
+--   mission_id TEXT NOT NULL,
+--   grantor_client_id TEXT NOT NULL,
+--   grantor_credential_version TEXT NOT NULL,
+--   grantor_authority_epoch INTEGER NOT NULL,
+--   bindings TEXT NOT NULL,                    -- JSON array de { capabilityId, allowedEffectClasses, allowedRefPrefixes }
+--   issued_at TEXT NOT NULL,
+--   expires_at TEXT,
+--   contract_version INTEGER NOT NULL,
+--   fingerprint TEXT NOT NULL,
+--   created_at TEXT NOT NULL,
+--   PRIMARY KEY (mission_id, grant_id)
+-- );
 
 -- 2. Registro imutável de eventos de revogação (Revocation Ledger)
 CREATE TABLE IF NOT EXISTS mission_capability_revocations (
@@ -1174,7 +1312,7 @@ Para ordenar as mutações administrativas e o despacho de efeitos sem recorrer 
 
 1. **Opção 1 — Boundary Administrativa Única via Daemon RPC (Recomendada para arquitetura cliente/servidor):**
    - A CLI administrativa (`admin-cli.ts`) deixa de instanciar `LocalControlCredentialStore` diretamente quando o daemon estiver em execução.
-   - Mutações administrativas (`auth provision`, `auth rotate`, `auth revoke`) são roteadas obrigatoriamente através do socket IPC local do daemon (Unix Domain Socket via RPC autenticado).
+   - Mutações administrativas (`auth provision`, `auth rotate`, `auth revoke`) são roteadas obrigatoriamente através da API RPC local autenticada do daemon (utilizando o transporte de controle local aprovado em loopback HTTP/JSON-RPC, mantendo Unix Domain Socket puramente como proposta de otimização futura sujeita a decisão independente).
    - O daemon centraliza todas as escritas no AuthStore e, sob a mesma seção crítica do processo, sincroniza imediatamente o estado de despacho, abortando qualquer reserva em curso para o cliente revogado.
    - O acesso direto a arquivo pela CLI fica restrito estritamente a modo de emergência/bootstrap offline (quando o daemon estiver comprovadamente inativo).
 2. **Opção 2 — Unificação Relacional dos Stores no Mesmo Banco SQLite:**
@@ -1479,7 +1617,7 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 | `test_grant_unknown_or_malformed_capability_id` | Tentativa de conceder `capabilityId` sintaticamente inválido ou não registrado no CapabilityRegistry. | Rejeitado na admissão com HTTP 400 Bad Request e código estruturado `CAPABILITY_UNKNOWN`. |
 | `test_grant_malformed_ref_prefix_rejected` | Concessão contendo prefixos de referências com wildcards (`*`), regex, sequências de escape (`../`), null-bytes ou esquemas malformados em `allowedRefPrefixes`. | Rejeitado com HTTP 400 Bad Request e código `REF_PREFIX_NOT_ALLOWED`. |
 | `test_grant_payload_size_limits_exceeded` | Payload JSON $> 64\text{ KB}$ ($65.536\text{ bytes}$), array `capabilityIds` $> 64$ itens, ou `allowedRefPrefixes` $> 64$ itens. | Rejeitado sumariamente com HTTP 413 Payload Too Large / HTTP 400 Bad Request (`INVALID_PAYLOAD`). |
-| `test_grant_exceeds_grantor_provisioned_limits` | Emissor tenta conceder capabilities, classes de efeito ou prefixos fora de seus limites máximos provisionados. | Bloqueado na validação de limites com `CAPABILITY_EXCEEDS_GRANTOR_LIMITS`; zero alterações no ledger. |
+| `test_grant_exceeds_grantor_correlated_entitlement` | Emissor tenta conceder tupla/binding `(capabilityId, allowedEffectClasses, allowedRefPrefixes)` que não é correlacionada em nenhuma entrada de seu envelope `allowedBindings` (mesmo que os atributos individuais existam separadamente em bindings distintos de seu entitlement). | Bloqueado na admissão com `CAPABILITY_EXCEEDS_GRANTOR_LIMITS`; zero alterações no ledger. |
 | `test_sanitized_projections_no_token_leakage` | Consulta de projeções de grants (`mission.list_capability_grants`) e invocações por clientes e observadores. | Projeções omitem rigorosamente segredos criptográficos, hashes de tokens e credenciais internas do host. |
 | `test_real_uuid_mission_id_lifecycle` | Emissão de grant, revoke e list utilizando UUIDs RFC 4122 v4 com hífens gerados por `crypto.randomUUID()`. | Validação sintática aceita os UUIDs reais produzidos pelo `MissionEngine` e rejeita formatos malformados. |
 
@@ -1493,6 +1631,7 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 | `test_grant_conflict_divergent_payload` | Submissão de `(missionId, grantId)` pelo mesmo emissor, porém com divergência em capabilities, classes ou prefixos. | Rejeitado deterministicamente com HTTP 409 Conflict e código `GRANT_CONFLICT`. |
 | `test_cross_grantor_replay_isolation` | Cliente B tenta submeter grant utilizando um `grantId` já registrado pelo Cliente A. | Rejeitado sumariamente com `GRANT_IDENTITY_CONFLICT` sem vazar atributos ou fingerprints do grant de A. |
 | `test_grant_cartesian_product_adversarial` | Validação de passo de plano contra dois grants disjuntos (Grant A: Read em logs; Grant B: Write em financial). | Tentativa de executar Read em financial falha com `CAPABILITY_REF_OUT_OF_GRANT_BOUNDS`. |
+| `test_grant_intra_grant_cartesian_product_rejected` | Submissão de grant único tentando autorizar simultaneamente `fs.read_file` em logs e `db.write` em financial via listas planas independentes, ou tentativa de despacho combinatório (`fs.read_file` sobre `db://financial/credentials.key`). | Rejeitado na validação de formato estrutural (sob Alt A/B) ou o despacho combinatório falha com `CAPABILITY_REF_OUT_OF_GRANT_BOUNDS`; autorização combinatória não demonstrada é impossível. |
 
 ### 12.4 Ciclo de Vida de Revogação, Idempotência e Autorização Cross-Grantor (Critérios Normativos da Issue #166)
 
@@ -1578,7 +1717,7 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 | `test_grant_immutability_triggers` | Executa `UPDATE` ou `DELETE` diretamente nas tabelas `mission_capability_grants` e `mission_capability_revocations`. | Triggers disparam `RAISE(ABORT)` e a operação é abortada no SQLite (tabelas estritamente append-only). |
 | `test_authority_epochs_delete_forbidden_by_trigger` (Cenário L1) | Executa `DELETE FROM local_control_authority_epochs WHERE client_id = ?`. | Trigger `prevent_authority_epochs_delete` dispara `RAISE(ABORT)`; exclusão do high-water mark é abortada. |
 | `test_authority_epochs_decrement_forbidden_by_trigger` (Cenário L2) | Executa `UPDATE local_control_authority_epochs SET max_epoch = max_epoch - 1`. | Trigger `prevent_authority_epochs_update_decrement` dispara `RAISE(ABORT)`; decremento de época é abortado. |
-| `test_e2e_daemon_sqlite_grant_lifecycle` | Ciclo de vida completo executado contra daemon real em Unix Domain Socket e SQLite físico em disco. | Valida provisionamento, emissão de grant, validação atômica de tupla, reserva `submitting`, crash simulado com recovery durável em disco para `uncertain` + `reconciliation.pending`, e bloqueio após revogação. |
+| `test_e2e_daemon_sqlite_grant_lifecycle` | Ciclo de vida completo executado contra daemon real sob o transporte de controle local aprovado (loopback HTTP JSON-RPC / WebSocket) e SQLite físico em disco (sem exigir migração de transporte para UDS, mantido exclusivamente como proposta futura sujeita a deliberação independente). | Valida daemon real, boundary autenticada com bearer token, operações tipadas (`mission.grant_capabilities`), tupla correlacionada eliminando produto cartesiano indevido, persistência em SQLite, reserva `submitting`, restart e recovery durável em disco para `uncertain` + `reconciliation.pending`, revogação fail-closed e ausência comprovada de replay indevido. |
 
 ---
 
@@ -1590,7 +1729,7 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 - **Critério de parada:** Se a validação por tupla quebrar a compatibilidade de interfaces sem migração segura, pausar.
 
 ### Slice B — Operações administrativas de Concessão e Revogação no Local Control Plane
-- **Objetivo:** Implementar os endpoints JSON-RPC/UDS `mission.grant_capabilities`, `mission.revoke_capability_grant` e `mission.list_capability_grants` no daemon, protegidos pelo escopo `mission.grant_capabilities`, isolamento cross-grantor, configuração de conexão com `PRAGMA recursive_triggers = ON;`, allowlist estrita de queries na store administrativa proibindo terminantemente `INSERT OR REPLACE` / `REPLACE INTO` e exigindo `INSERT ... ON CONFLICT DO UPDATE`, migração do schema do AuthStore com triggers invariantes universais `prevent_client_delete`, `enforce_client_authority_epoch_insert_monotonicity` (impedindo reutilização de épocas pretéritas de clientes existentes mesmo sob exclusões implícitas de `REPLACE`, com verificação fail-closed `json_valid`), `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement`, tabela de high-water mark permanente `local_control_authority_epochs`, trigger de atualização conforme a opção ratificada por Pedro (Opção A com proibição de mutação de `scopes_json` sem avanço de época, Opção B permitindo mutação de escopos preservando a época, ou Opção C com avanço restrito à remoção estrutural de `mission.grant_capabilities` via `json_each` e validação fail-closed via `json_valid`), diferenciação operacional de rotação de segredo pura vs. alteração de escopos, expressão atômica de provisionamento consultando a época máxima, e guardas de overflow (`AUTHORITY_EPOCH_OVERFLOW`).
+- **Objetivo:** Implementar os endpoints tipados `mission.grant_capabilities`, `mission.revoke_capability_grant` e `mission.list_capability_grants` no daemon sob o transporte de controle local aprovado (loopback HTTP JSON-RPC / WebSocket, mantendo qualquer transição para UDS como proposta futura sujeita a decisão independente), protegidos pelo escopo `mission.grant_capabilities`, isolamento cross-grantor, configuração de conexão com `PRAGMA recursive_triggers = ON;`, allowlist estrita de queries na store administrativa proibindo terminantemente `INSERT OR REPLACE` / `REPLACE INTO` e exigindo `INSERT ... ON CONFLICT DO UPDATE`, migração do schema do AuthStore com triggers invariantes universais `prevent_client_delete`, `enforce_client_authority_epoch_insert_monotonicity` (impedindo reutilização de épocas pretéritas de clientes existentes mesmo sob exclusões implícitas de `REPLACE`, com verificação fail-closed `json_valid`), `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement`, tabela de high-water mark permanente `local_control_authority_epochs`, trigger de atualização conforme a opção ratificada por Pedro (Opção A com proibição de mutação de `scopes_json` sem avanço de época, Opção B permitindo mutação de escopos preservando a época, ou Opção C com avanço restrito à remoção estrutural de `mission.grant_capabilities` via `json_each` e validação fail-closed via `json_valid`), diferenciação operacional de rotação de segredo pura vs. alteração de escopos, expressão atômica de provisionamento consultando a época máxima, e guardas de overflow (`AUTHORITY_EPOCH_OVERFLOW`).
 - **Superfície pública:** Rotas internas versionadas no controle local.
 - **Critério de parada:** Rejeitar qualquer concessão se o emissor não possuir limites explicitamente configurados ou tentar usurpar `grantId` alheio.
 
@@ -1610,7 +1749,7 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 
 > [!IMPORTANT]
 > **Classificação de status:** `NEEDS_APPROVAL`
-> Todas as 14 decisões abaixo permanecem pendentes de deliberação normativa de Pedro. Nenhuma recomendação técnica constitui contrato público aprovado ou autorização de implementação.
+> Todas as 15 decisões abaixo permanecem pendentes de deliberação normativa de Pedro. Nenhuma recomendação técnica constitui contrato público aprovado ou autorização de implementação.
 
 ### 14.1 Matriz de Decisões Normativas Pendentes
 
@@ -1627,9 +1766,10 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 | **D09** | **High-water mark no AuthStore e Trust Boundary** | **(1)** Triggers universais + tabela `local_control_authority_epochs` + allowlist no Store (`recursive_triggers = ON`) + `chmod 0600`;<br>**(2)** Sem triggers no SQLite;<br>**(3)** Triggers sem tabela permanente. | **Alternativa 1** (Defense-in-depth com limites explícitos do host). | Triggers do SQLite não interceptam `REPLACE` sob `recursive_triggers = OFF` nem protegem contra escrita direta em arquivo. | **Slice B** | `NEEDS_APPROVAL` |
 | **D10** | **Versionamento de delivery e reserva `submitting`** | **(1)** Elevação para v2 de `CapabilityInvocationDelivery` com `submitting` e recovery durável em disco;<br>**(2)** Manter v1 sem estado pré-handoff. | **Alternativa 1** (Evolução contratual formal versionada com recovery durável). | Estado `submitting` exige recovery para não reter itens em limbo; omitir o estado mantém o seam vulnerável a crash/duplicação. | **Slice D** | `NEEDS_APPROVAL` |
 | **D11** | **Validação em runtime para dados de entrega** | **(1)** Validador estruturado de schema em runtime;<br>**(2)** Cast estático TypeScript (`JSON.parse`). | **Alternativa 1** (Validador estruturado normalizando para `uncertain`). | Types em TS são apagados em compilação; payloads imprevistos causam crashes não capturados em vez de reconciliação. | **Slice D** | `NEEDS_APPROVAL` |
-| **D12** | **Fronteira cross-database e processos (AuthStore vs. MissionStore)** | **(1)** Daemon RPC (CLI delega mutations via UDS);<br>**(2)** Stores Unificados no mesmo banco SQLite (`ouroboros.db`);<br>**(3)** Consistência Eventual sem SLA garantido e cancelamento best-effort. | **Opção 1** (Daemon RPC) ou **Opção 3** (Baseline pragmático com limites factuais). | Opção 3 tolera janelas onde chamadas cruzam o seam após revoke na CLI; Opção 2 requer migração de banco; Opção 1 requer daemon ativo. | **Slice B**, **Slice D** | `NEEDS_APPROVAL` |
+| **D12** | **Fronteira cross-database e processos (AuthStore vs. MissionStore)** | **(1)** Daemon RPC (CLI delega mutations ao daemon via loopback HTTP JSON-RPC aprovado, mantendo UDS como proposta futura);<br>**(2)** Stores Unificados no mesmo banco SQLite (`ouroboros.db`);<br>**(3)** Consistência Eventual sem SLA garantido e cancelamento best-effort. | **Opção 1** (Daemon RPC) ou **Opção 3** (Baseline pragmático com limites factuais). | Opção 3 tolera janelas onde chamadas cruzam o seam após revoke na CLI; Opção 2 requer migração de banco; Opção 1 requer daemon ativo. | **Slice B**, **Slice D** | `NEEDS_APPROVAL` |
 | **D13** | **Governança de downgrade, snapshot multi-store WAL e evidências** | **(1)** Cenário A vs B formalizados, `READ_ONLY_LOCKOUT`, isolamento `missions.v2.db`, `wal_checkpoint(TRUNCATE)` com quiescência;<br>**(2)** Restauração de backup genérica. | **Alternativa 1** (Preservação irrevogável de evidências do mundo real). | Restaurar backup antigo após efeitos externos confirmados causa replay/duplicação destrutiva de ações externas. | **Slice D** | `NEEDS_APPROVAL` |
 | **D14** | **Modelo arquitetural para redução de privilégios (`authority_epoch`)** | **Opção A:** Extinção permanente no AuthStore a cada mudança de escopo ($E \to E+1$);<br>**Opção B:** Suspensão dinâmica em runtime nos gates (época mantida);<br>**Opção C:** Modelo híbrido (avanço para escopo-raiz via `json_each`/`json_valid`; limites dinâmicos). | **Opção C** (Híbrido) ou **Opção A** (Máximo rigor determinístico). | Opção B permite reativação sem reemissão se escopos forem devolvidos; Opção A invalida grants em adições inócuas; Opção C exige triggers JSON. | **Slice B**, **Slice D** | `NEEDS_APPROVAL` |
+| **D15** | **Modelo de correlação de grant e eliminação do produto cartesiano** | **(Alt A)** Grant Unitário Correlacionado (`(capabilityId, allowedEffectClasses, allowedRefPrefixes)`);<br>**(Alt B)** Grant com Coleção de Bindings Correlacionados;<br>**(Alt C)** Listas planas com autorização explícita de produto cartesiano na política do emissor. | **Alternativa A** (Menor complexidade, menor superfície de erro relacional, preserva least privilege estrito). | Alt C amplia a superfície de autorização por produto cartesiano; Alt B aumenta a complexidade de validação e modelagem por item; Alt A exige emissão de múltiplos grants para cobrir múltiplos bindings disjuntos. | **Slice A**, **Slice B** | `NEEDS_APPROVAL` |
 
 ### 14.2 Sequenciamento Crítico e Deliberação por Slice
 
@@ -1637,13 +1777,14 @@ Para otimizar o esforço de deliberação normativa de Pedro, as decisões estã
 
 #### 14.2.1 Decisões que bloqueiam o Slice A (Ordem Imediata)
 
-As três decisões a seguir definem a estrutura relacional do ledger e os tipos fundamentais, sendo pré-requisitos estritos para a execução do **Slice A**:
+As quatro decisões a seguir definem a estrutura relacional do ledger e os tipos fundamentais, sendo pré-requisitos estritos para a execução do **Slice A**:
 
 1. **D03 (Política de expiração default):** Define se a coluna `expires_at` em `mission_capability_grants` é opcional (`TEXT NULL`) ou obrigatória (`TEXT NOT NULL`) e o predicado de validade temporal.
 2. **D06 (Migração de Missions legadas):** Ratifica o comportamento fail-closed sem grants sintéticos para missões anteriores ao ledger.
 3. **D08 (Remoção de limites de recursos no v1):** Confirma a exclusão de `resourceLimits` das tabelas e interfaces do v1, evitando schemas transitórios e retrabalho.
+4. **D15 (Modelo de correlação de grant e eliminação do produto cartesiano):** Define se a tabela `mission_capability_grants` armazena tuplas unitárias correlacionadas (`capability_id`, `allowed_effect_classes_json`, `allowed_ref_prefixes_json` — Alternativa A) ou se requer tabela de bindings dependente (Alternativa B), determinando a assinatura dos tipos em `contracts.ts` e a validação no `PlanPolicyValidator`.
 
-> **Justificativa da ordem:** O Slice A implementa exclusivamente o ledger durável no `SqliteMissionStore` e a validação atômica no `PlanPolicyValidator`, sem expor endpoints RPC. Deliberar D03, D06 e D08 permite estabilizar o DDL e os testes do Slice A sem antecipar escolhas de superfície de rede ou processos.
+> **Justificativa da ordem:** O Slice A implementa exclusivamente o ledger durável no `SqliteMissionStore` e a validação atômica no `PlanPolicyValidator`, sem expor endpoints RPC. Deliberar D03, D06, D08 e D15 permite estabilizar o DDL, as migrações e os testes do Slice A sem antecipar escolhas de superfície de rede ou processos.
 
 #### 14.2.2 Decisões que bloqueiam o Slice B (Superfície RPC e AuthStore)
 
@@ -1654,10 +1795,11 @@ Podem ser deliberadas após a conclusão do Slice A, mas são obrigatórias ante
 3. **D05 (Escopo de leitura de grants):** Define a autorização necessária para a rota `mission.list_capability_grants`.
 4. **D07 (Governança cross-grantor):** Define as regras de autorização no endpoint de revogação.
 5. **D09 (Modelo do AuthStore e Trust Boundary):** Define as migrations de schema e triggers da tabela `local_control_clients` e `local_control_authority_epochs`.
-6. **D12 (Fronteira cross-DB CLI/Daemon):** Determina se a CLI administrativa invoca o Daemon via RPC ou mantém escrita direta com consistência eventual.
+6. **D12 (Fronteira cross-DB CLI/Daemon):** Determina se a CLI administrativa invoca o Daemon via RPC (sob loopback aprovado) ou mantém escrita direta com consistência eventual.
 7. **D14 (Opções A, B ou C de `authority_epoch`):** Determina o DDL e trigger exato de atualização no AuthStore.
+8. **D15 (Repercussão RPC do Modelo de Correlação):** Define o schema das requisições e respostas do endpoint `mission.grant_capabilities` (payload unitário na Alternativa A vs. array `bindings` na Alternativa B).
 
-> **Justificativa da ordem:** O Slice B materializa as operações administrativas e o ciclo de vida de operadores. Nenhuma dessas escolhas afeta o armazenamento físico de grants do Slice A.
+> **Justificativa da ordem:** O Slice B materializa as operações administrativas e o ciclo de vida de operadores. Nenhuma dessas escolhas afeta o armazenamento físico de grants já consolidado no Slice A.
 
 #### 14.2.3 Decisões que bloqueiam o Slice C (Planejamento e Aceitação)
 
@@ -1686,11 +1828,11 @@ As seguintes questões arquiteturais e normativas permanecem em aberto e **depen
 6. **Formato final de migração de Missions legadas:** Confirmar o tratamento fail-closed estrito sem criação de grants sintéticos para dados históricos.
 7. **Governança concorrente:** Admitir revogação cruzada (Operador B revogar grant emitido pelo Operador A) se ambos possuírem autoridade de governança, ou restringir a revogação ao emissor original e `daemon.admin`?
 8. **Ratificação da remoção de limites de recursos no v1 (Alternativa A):** Confirmar o adiamento de quotas e orçamentos dinâmicos por grant para o contrato v2, mantendo a governança no v1 via `budget_policy` da Mission.
-9. **Modelo de armazenamento da geração monotônica de autoridade no AuthStore e delimitação de trust boundary:** Adoção dos triggers mandatários de motor universais `prevent_client_delete`, `enforce_client_authority_epoch_insert_monotonicity` (impedindo reutilização de épocas pretéritas de clientes existentes mesmo sob exclusões implícitas de `REPLACE`), `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement` (em `local_control_authority_epochs`), tabela permanente de high-water mark `local_control_authority_epochs`, guarda contra overflow (`AUTHORITY_EPOCH_OVERFLOW`) e comando de provisionamento atômico derivando a época inicial de `COALESCE((SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = :client_id), 1)`. Delimitação formal do Trust Boundary: triggers do SQLite não interceptam exclusão implícita de `INSERT OR REPLACE` sob o default `PRAGMA recursive_triggers = OFF`, nem constituem barreira de segurança contra atacantes com privilégios de escrita arbitrária direta no arquivo SQLite. A arquitetura estabelece que a segurança reside na barreira em camadas: (a) conexão configurada com `PRAGMA recursive_triggers = ON;`, (b) allowlist estrita na store de credenciais que proíbe comandos `REPLACE` / `INSERT OR REPLACE` e exige `INSERT ... ON CONFLICT DO UPDATE`, e (c) fronteira de host com isolamento de processo e permissões restritas de arquivo (`chmod 0600`) para o arquivo `local-control-auth.db`.
+9. **Modelo de armazenamento da geração monotônica de autoridade no AuthStore e delimitação de trust boundary:** Adoção dos triggers mandatórios de motor universais `prevent_client_delete`, `enforce_client_authority_epoch_insert_monotonicity` (impedindo reutilização de épocas pretéritas de clientes existentes mesmo sob exclusões implícitas de `REPLACE`), `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement` (em `local_control_authority_epochs`), tabela permanente de high-water mark `local_control_authority_epochs`, guarda contra overflow (`AUTHORITY_EPOCH_OVERFLOW`) e comando de provisionamento atômico derivando a época inicial de `COALESCE((SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = :client_id), 1)`. Delimitação formal do Trust Boundary: triggers do SQLite não interceptam exclusão implícita de `INSERT OR REPLACE` sob o default `PRAGMA recursive_triggers = OFF`, nem constituem barreira de segurança contra atacantes com privilégios de escrita arbitrária direta no arquivo SQLite. A arquitetura estabelece que a segurança reside na barreira em camadas: (a) conexão configurada com `PRAGMA recursive_triggers = ON;`, (b) allowlist estrita na store de credenciais que proíbe comandos `REPLACE` / `INSERT OR REPLACE` e exige `INSERT ... ON CONFLICT DO UPDATE`, e (c) fronteira de host com isolamento de processo e permissões restritas de arquivo (`chmod 0600`) para o arquivo `local-control-auth.db`.
 10. **Representação tipada e versionamento contratual da reserva de submissão:** Elevação formal de `CapabilityInvocationDelivery` para `CAPABILITY_INVOCATION_CONTRACT_VERSION = 2` / `MISSION_CONTRACT_VERSION = 2` contemplando o estado `"submitting"`, com query durável de recuperação em disco em `SqliteMissionStore.initialize()` convertendo para `uncertain` + `reconciliation.pending`.
 11. **Política de validação em runtime para dados de entrega:** Utilização de validador estruturado de schema em runtime em substituição ao cast estático via generic TypeScript em `rowToInvocation`.
 12. **Fronteira normativa de concorrência cross-database e entre processos (AuthStore vs. MissionStore):** Escolha entre:
-    - **Opção 1:** Boundary Administrativa Única via Daemon RPC (CLI delega mutations ao daemon por UDS; daemon serializa operações e impede submissões externas concorrentes com zero efeitos);
+    - **Opção 1:** Boundary Administrativa Única via Daemon RPC (CLI delega mutations ao daemon por loopback HTTP JSON-RPC aprovado, mantendo UDS como proposta de otimização futura; daemon serializa operações e impede submissões externas concorrentes com zero efeitos);
     - **Opção 2:** Unificação Relacional dos Stores no Mesmo Banco SQLite (`ouroboros.db`, onde uma única transação ACID local elimina fisicamente a interleaving);
     - **Opção 3:** Consistência Eventual sem SLA Temporal Garantido e Cancelamento Best-Effort (baseline atual segregado: diferencia a idade da autorização, o atraso arbitrário sem push IPC para observação pelo daemon, o tempo de emissão de cancelamento e a irreversibilidade física de efeitos externos já consumidos; sem prometer SLA fictício de 500 ms nem reversão garantida, assegura semântica fail-closed no próximo gate validado; zero efeitos externos transmitidos só existe sob a Opção 1 ou 2).
 13. **Governança estrita de downgrade e recuperação sem perda de evidência:** Confirmação da diferenciação formal entre Cenário A (Rollback Quiescente sem efeitos posteriores, onde restauração de backup consistente pré-upgrade é permitida) e Cenário B (Downgrade Pós-Execução com trabalho durável ou efeitos confirmados, onde a restauração destrutiva do banco antigo é TERMINANTEMENTE PROIBIDA, exigindo preservação do histórico forense e entrada em `READ_ONLY_LOCKOUT` para evitar duplicação de efeitos externos). Reconhecimento de que o binário legado v1 em `main` não lê `user_version` nem adquire `flock`, exigindo isolamento físico de arquivos (`missions.v2.db` ou `$OUROBOROS_DATA_DIR/v2/`) e fencing operacional no host para impedir sua execução inadvertida sobre o banco v2. Ratificação do procedimento de snapshot consistente sob SQLite WAL exigindo quiescência operacional prévia seguida de `PRAGMA wal_checkpoint(TRUNCATE)` em cada um dos bancos (`missions.db`, `local-control-auth.db`, `daemon.db`), sem presumir que backups individuais de arquivos distintos constituam transação conjunta.
@@ -1698,6 +1840,11 @@ As seguintes questões arquiteturais e normativas permanecem em aberto e **depen
     - **Opção A — Extinção Permanente por Avanço de `authority_epoch` no AuthStore:** Avanço atômico durável no banco ($E_{\text{new}} = E_{\text{old}} + 1$) toda vez que `scopes_json` for modificado. Invariante garantida pelo trigger `prevent_client_unauthorized_update_option_a` (que aborta mutações em `scopes_json` com `NEW.authority_epoch <= OLD.authority_epoch`) e pelo UPSERT Variante A. Grants emitidos em gerações pretéritas ($G_2$) tornam-se imediata e **permanentemente extintos** (`AUTHORITY_SUPERSEDED`). Caso os escopos sejam posteriormente restaurados pela governança, novo avanço de época é exigido ($E=3 \to E=4$), garantindo **anti-ressurreição definitiva**: $G_2$ jamais volta a autorizar passos, exigindo reemissão explícita sob a nova autoridade ($G_4$).
     - **Opção B — Suspensão Dinâmica em Runtime nos Portões de Dispatch (Gate 3 e Gate 4):** A época de autoridade é preservada durante mutações puras de escopo, conforme DDL com trigger `prevent_client_unauthorized_update_option_b` (que permite alterações em `scopes_json` mantendo a época) e UPSERT Variante B. A autorização é reavaliada dinamicamente nos gates contra o registro ativo do cliente emissor: remoção de `mission.grant_capabilities` resulta em `GRANTOR_SCOPE_REVOKED` e encolhimento de limites resulta em `GRANTOR_ENTITLEMENT_SHRUNK`. **Diferenciação essencial de garantias:** A Opção B constitui **suspensão dinâmica (bloqueio transitório) e NÃO confere extinção permanente aos grants no ledger**. Se os privilégios forem posteriormente devolvidos ao operador na mesma época de autoridade, os grants históricos emitidos ($G_2$) **voltam a satisfazer `isGrantActive` e voltam a autorizar efeitos**.
     - **Opção C — Modelo Híbrido:** Avanço mandatório de época por trigger (`prevent_client_unauthorized_update_option_c`) e UPSERT Variante C exclusivamente na remoção do escopo-raiz de governança `mission.grant_capabilities` através de verificação estrutural via `json_each` (imune a variações textuais, espaços e escapes Unicode como `\u0063`) com validação fail-closed para JSON malformado via `json_valid` (extinguindo permanentemente os grants emitidos), combinado com preservação de época e validação dinâmica contínua nos gates (Gate 3/4) para alterações granulares de escopos subsidiários ou encolhimento de envelopes de limites (`operator-limits.json`).
+15. **Modelo de correlação de grant e eliminação do produto cartesiano (P1):** Escolha normativa entre as três alternativas formalmente avaliadas no documento (§5.2):
+    - **Alternativa A — Grant Unitário Correlacionado (Recomendada):** Cada grant representa exatamente uma tupla correlacionada `(capabilityId, allowedEffectClasses, allowedRefPrefixes)`. O DDL físico armazena diretamente `capability_id TEXT NOT NULL` na tabela `mission_capability_grants`. O produto cartesiano intra-grant é fisicamente impossível no schema. Apresenta a menor complexidade operacional, menor superfície de erro e adere estritamente ao princípio do least privilege.
+    - **Alternativa B — Coleção de Bindings Correlacionados:** O grant mantém um identificador único de operação, mas encapsula uma lista de bindings `bindings: Array<{ capabilityId, allowedEffectClasses, allowedRefPrefixes }>`. No SQLite, requer modelagem relacional 1:N (tabela-mãe de grants e tabela-filha de bindings correlacionados) ou serialização normalizada em coluna JSON com validação estrita. Permite concessão agrupada em uma única transação lógica, porém aumenta a complexidade de validação por item e o custo de indexação/redução.
+    - **Alternativa C — Listas Independentes com Autorização Explícita de Produto Cartesiano:** Mantém listas independentes dentro do grant (`capabilityIds`, `allowedEffectClasses`, `allowedRefPrefixes`) **apenas se** o emissor possuir autorização expressa em sua política (`allowCartesianExpansion: true`) e o grant declarar consentimento explícito. Rejeitada como padrão por ampliar a superfície de ataque e contrariar o modelo de privilégio mínimo.
+    - **Recomendação técnica:** Alternativa A pela simplicidade, transparência forense e impossibilidade estrutural de autorização combinatória não demonstrada. A decisão formal entre A, B ou C permanece pendente de aprovação de Pedro.
 
 ---
 
