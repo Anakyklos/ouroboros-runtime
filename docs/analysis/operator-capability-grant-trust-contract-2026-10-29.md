@@ -3,9 +3,9 @@
 > **Estado:** PROPOSAL ONLY — nenhuma implementação de produção, nenhum contrato público ratificado, nenhuma autorização concedida.
 > **Repositório:** `Anakyklos/ouroboros-runtime`
 > **Issue:** #166 (P1), epic principal #70 (M1 Local Control Plane)
-> **PR:** https://github.com/Anakyklos/ouroboros-runtime/pull/167 (revisão de review 5725513117)
+> **PR:** https://github.com/Anakyklos/ouroboros-runtime/pull/167 (revisão de review 5726098318 — REQUEST_CHANGES)
 > **Base SHA auditado:** `4a0d6d52075bc665568e126124eb24ec8b8b2ed0` (`main`)
-> **HEAD auditado anterior:** `21a8d29be5c447ab5111175b43d13780e744e249` (PR #167, CI `41262096104` SUCCESS, review 5725952603 REQUEST_CHANGES)
+> **HEAD auditado anterior:** `6163b59623762d1376e02b1e383ad1e96efe87e9` (PR #167, CI `41263958922` SUCCESS, review 5726098318 REQUEST_CHANGES)
 > **Bun (local):** `1.4.2` (CI pin: `1.3.9`)
 > **Data:** 2026-10-31
 > **Branch:** `docs/166-capability-grant-trust-contract`
@@ -60,6 +60,14 @@ Toda afirmação neste documento carrega uma das seguintes classificações estr
 6. **Matriz de aceite completa e reconciliada com a Issue #166:** Reconciliação integral da seção 12 com todos os requisitos normativos da issue #166 (401/403, entitlement de escopo, capability inválida, wildcards/prefixos malformados, expiração, conflitos de idempotência, isolamento cross-grantor, rollback de observers, limites de 64KB/64 itens, redaction de segredos, concorrência CLI/daemon sem promessas impossíveis, persistência sob deleção adversária e teste E2E com daemon real sobre transporte aprovado em loopback e SQLite), todos rigorosamente classificados como testes futuros projetados.
 7. **Eliminação de autorização combinatória não demonstrada (Produto Cartesiano Intra-Grant) e Entitlement Correlacionado (P1):** Constata-se que o uso de três listas planas (`capabilityIds[]`, `allowedEffectClasses[]`, `allowedRefPrefixes[]`) dentro de um mesmo grant permitia inadvertidamente um produto cartesiano intra-grant, onde uma capability de leitura podia ser combinada indevidamente com prefixos confidenciais autorizados apenas para outra capability. A proposta avalia formalmente três alternativas mínimas: (A) Grant Unitário Correlacionado (1 capability por grant com efeitos e prefixos vinculados); (B) Grant como Coleção de Bindings Correlacionados; (C) Produto Cartesiano Explícito sob Autorização do Emissor. Apresentam-se os trade-offs e recomenda-se a Alternativa A (menor complexidade, schema relacional direto no SQLite, least privilege estrito) ou Alternativa B (agrupamento por `grantId`), submetendo a escolha formal à deliberação de Pedro (§14 Decisão 15).
 8. **Uniformização da operação RPC e remoção de dependência mandatória de UDS (P2):** O diagrama de fluxo autoritativo foi alinhado à nomenclatura normativa proposta `mission.grant_capabilities` (eliminando a divergência com `local_control.grant_capabilities`). Removeu-se qualquer dependência mandatória de transporte UDS do contrato #166, reiterando que o controle local opera sob o transporte aprovado em `docs/decisions/2026-10-08-local-control-authz.md` (HTTP JSON-RPC / WebSocket em loopback); UDS permanece puramente como proposta de otimização futura sob decisão e slice independentes.
+9. **Isolamento estrito de material de autenticação e versionamento não secreto de credenciais (P1-A):**
+   - *Fato factual:* Na base de código atual de `main` (`shared/local-control-auth-contract.ts` e `cli/src/daemon/local-control-auth.ts:29,48`), `LocalControlAuthenticatedClient.credentialVersion` retorna diretamente o hash SHA-256 do token bearer (`row.token_hash`).
+   - *Eliminação de vazamento de segredos para o MissionStore:* O novo ledger de grants e revogações no MissionStore (`missions.db`) **não pode persistir esse hash** nem qualquer outro derivado de segredo. A proposta institui uma representação estritamente server-side e não secreta para o versionamento de credenciais: a coluna `credential_version INTEGER NOT NULL DEFAULT 1` no AuthStore (`local_control_clients`), gerenciada como contador sequencial incrementado a cada rotação de token.
+   - *Garantia comprovada:* Os registros do ledger persistem exclusivamente esse versionamento inteiro não secreto (`grantor_credential_version INTEGER NOT NULL` e `revoked_by_credential_version INTEGER NOT NULL`), comprovando que `token_hash` permanece confidencial e restrito ao AuthStore.
+10. **Segurança de referências e prefixos, superação de `startsWith()` e respeito a Ownership (P1-B):**
+    - *Falácia de `startsWith()`:* Demonstra-se deterministicamente a insuficiência e vulnerabilidade de `r.startsWith(p)`: permite travessia de diretório via `../` e `%2e%2e`, confusão de prefixo irmão (ex.: `/project` autorizando `/project-secret`), e confusão de scheme/authority.
+    - *Princípio de Ownership:* Não existe um parser universal de caminhos e URIs seguro para todos os domínios de capability (filesystem, SQL, HTTP, object storage, git). Cada *capability owner* no `CapabilityCatalog` é soberano sobre a sintaxe, semântica e canonicalização de suas referências.
+    - *Contrato verificável em camadas:* O control plane aplica pré-validação sintática fail-closed (rejeição de traversals `../`, `%2e%2e`, bytes nulos e exigência de delimitadores de fronteira de segmento), combinada com exigência de referências estritamente canônicas e tipadas conforme o contrato da capability (`REF_CANONICALIZATION_FAILED` se ambígua), e verificação física contra symlinks/aliases pelo conector da capability no momento do dispatch.
 
 **Direção de implementação futura em slices isolados (PROPOSTA):**
 - **Slice A** — Persistência do ledger append-only (triggers de proteção, isolamento de exclusão sob `foreign_keys = OFF`) e validação de grants por tupla atômica.
@@ -115,8 +123,8 @@ Adicionalmente, não existe na API pública do daemon (JSON-RPC em loopback ou t
 | `cli/src/mission/contracts.ts` | 126-136 | `AllowedCapabilityScope` define três listas planas: `capabilityIds`, `allowedEffectClasses`, `allowedRefPrefixes`. |
 | `cli/src/mission/contracts.ts` | 140-165 | `ApprovalRequirement` vincula `approvalId` a um `scopeDescriptor` imutável com `effectFingerprint`. |
 | `cli/src/mission/contracts.ts` | 400-425 | `CapabilityInvocationDelivery` define estados duráveis atuais: `"not_submitted" \| "submitted" \| "acknowledged" \| "running" \| "failed" \| "uncertain"`. Não contempla `"submitting"`. |
-| `shared/local-control-auth-contract.ts` | 18-24 | `LocalControlAuthenticatedClient` expõe `{ clientId, credentialVersion, scopes, expiresAt? }`. Não expõe `created_at` nem geração de autoridade. |
-| `cli/src/mission/policy.ts` | 100-220, 275-310 | `PlanPolicyValidator` avalia capability, classes de efeito e prefixos de refs como filtros desacoplados. |
+| `shared/local-control-auth-contract.ts` | 18-24 | `LocalControlAuthenticatedClient` expõe `{ clientId, credentialVersion, scopes, expiresAt? }`. Em `main` (`cli/src/daemon/local-control-auth.ts:29,48`), `credentialVersion` retorna literalmente o hash SHA-256 do token (`row.token_hash`), o que causaria vazamento de segredos caso persistido no ledger do MissionStore. Não expõe `created_at` nem geração de autoridade. |
+| `cli/src/mission/policy.ts` | 100-220, 275-310 | `PlanPolicyValidator` avalia capability, classes de efeito e prefixos de refs como filtros desacoplados. Em `validateInputRefs` (linhas 286, 290), utiliza `inputRef.startsWith(p)` sem verificação de delimitadores de fronteira nem validação de traversals (`../`, `%2e%2e`). |
 | `cli/src/mission/mission-engine.ts` | 85-86 | `MissionEngine.ids` gera identidades usando `crypto.randomUUID()` (UUID RFC 4122 v4 com hífens). |
 | `cli/src/mission/mission-engine.ts` | 489-530 | `proposePlan()` valida policy **fora e antes** de `store.withTransaction`. |
 | `cli/src/mission/mission-engine.ts` | 562-630 | `acceptPlan()` move revisão para `accepted` **sem revalidar policy** contra o escopo atual da Mission. |
@@ -274,7 +282,7 @@ Sob o modelo correlacionado (válido tanto para a Alternativa A quanto para a Al
 Um passo de plano $P$ com requisito de capability $C$, classe de efeito $E$ e conjunto de referências de entrada $R = \{r_1, r_2, \dots, r_k\}$ só é autorizado se existir **um mesmo binding correlacionado ativo** $b$ em um grant ativo $G$ (onde sob a Alternativa A o próprio grant $G$ atua como o binding $b$) tal que:
 1. $b.\text{capabilityId} == C$
 2. $E \in b.\text{allowedEffectClasses}$
-3. $\forall r \in R, \exists p \in b.\text{allowedRefPrefixes} \text{ tal que } r \text{ inicia com } p$
+3. $\forall r \in R, \exists p \in b.\text{allowedRefPrefixes} \text{ tal que } \operatorname{refMatchesPrefix}(r, p) \text{ é verdadeiro sob o contrato de canonicalização e contenção de recurso (§5.5)}$
 4. $G$ não está expirado nem revogado no momento da verificação.
 5. O emissor $G.\text{grantorClientId}$ permanece ativo no AuthStore e sua época de autoridade corrente coincide com $G.\text{grantorAuthorityEpoch}$.
 
@@ -366,6 +374,78 @@ Nos portões de avaliação e dispatch (Gate 3 e Gate 4), o motor revalida cada 
 
 ---
 
+### 5.5 Segurança de referências e prefixos: superação de `startsWith()`, canonicalização e ownership (P1-B)
+
+Na base auditada de `main` (`cli/src/mission/policy.ts:286,290`), a validação de referências apoia-se em `inputRef.startsWith(p)`. Esta abordagem puramente sintática é inadequada e gera vulnerabilidades críticas de sobre-autorização e escape de recursos.
+
+#### 5.5.1 Falácia de `startsWith()` e Cenários Adversariais Reproduzidos Deterministicamente
+
+A inspeção detalhada e a reprodução determinística isolada comprovam cinco cenários fundamentais:
+
+| Cenário Reproduzido | Exemplo de Referência ($R$) | Prefixo Permitido ($P$) | Resultado sob `startsWith()` | Comportamento Normativo Corrigido |
+|---|---|---|:---:|:---:|
+| **1. Path Traversal sintático (`../`)** | `fs:///workspace/project/../../etc/shadow` | `fs:///workspace/project/` | **ACEITO (Vulnerável)** | **REJEITADO fail-closed** com `REF_TRAVERSAL_DETECTED`. |
+| **2. Traversal codificado (`%2e%2e`)** | `fs:///workspace/project/%2e%2e/%2e%2e/etc/shadow` | `fs:///workspace/project/` | **ACEITO (Vulnerável)** | **REJEITADO fail-closed** com `REF_TRAVERSAL_DETECTED`. |
+| **3. Prefixo irmão com nome similar** | `fs:///workspace/project-secret/keys.env` | `fs:///workspace/project` | **ACEITO (Vulnerável)** | **REJEITADO** com `REF_OUT_OF_BOUNDS` (falta delimitador `/`). |
+| **4. Incompatibilidade de Scheme/Authority** | `http://api.domain.com/v1/data`<br>`https://net.attacker.com/v1/` | `https://api.domain.com/v1/`<br>`https://net/` | **REJEITADO / ACEITO (Depende da string)** | **REJEITADO** com `REF_SCHEME_MISMATCH` ou `REF_AUTHORITY_MISMATCH`. |
+| **5. Referência Legítima Hierárquica** | `fs:///workspace/project/src/main.ts` | `fs:///workspace/project/` | **ACEITO** | **ACEITO** com verificação de contenção e fronteira estrita. |
+
+#### 5.5.2 Inexistência de Canonicalizador Universal e Respeito a Ownership
+
+A proposta reconhece explicitamente que **não existe um parser universal de caminhos e URIs seguro para todos os domínios de capability**.
+- Capabilities heterogêneas operam sobre modelos de recursos distintos: caminhos POSIX (`fs:///`), caminhos Windows UNC (`fs://server/share`), namespaces SQL relacionais (`db://cluster/db/schema/table`), URIs RFC 3986 de rede (`https://api/`), buckets de objetos (`storage://bucket/key`), tópicos de eventos (`kafka://cluster/topic`) ou referências de versionamento (`git://repo#ref`).
+- Tentar implementar um "normalizador universal de caminhos" centralizado no control plane introduz gravíssimos riscos de **parser differentials**: discrepâncias entre a interpretação do control plane e a interpretação do conector downstream da capability abrem brechas de contorno de acesso.
+- **Princípio de Ownership:** Cada *capability owner* (o módulo que registra a capability no `CapabilityCatalog` e implementa seu conector físico) é soberano e exclusivamente responsável por definir a sintaxe, a tipagem, a semântica e a canonicalização de suas referências.
+
+#### 5.5.3 Contrato Verificável de Correspondência em Três Fases
+
+Para garantir contenção estrita sem violar o ownership de cada capability, o modelo adota validação em três fases:
+
+```mermaid
+flowchart TD
+    subgraph Fase 1: Control Plane Invariants
+        A[Input Reference R + Prefixo P] --> B{Possui ../, ..\\, %2e%2e,<br>null-bytes ou userinfo?}
+        B -- Sim --> C[Rejeita Fail-Closed<br>REF_TRAVERSAL_DETECTED]
+        B -- Não --> D{Mesmo Scheme e Authority?<br>R.scheme == P.scheme & R.auth == P.auth}
+        D -- Não --> E[Rejeita Fail-Closed<br>REF_SCHEME_MISMATCH]
+        D -- Sim --> F{Respeita Fronteira de Delimitador?<br>R.path == P.path ou R.path inicia com P.path + '/'}
+        F -- Não --> G[Rejeita Fail-Closed<br>REF_OUT_OF_BOUNDS]
+    end
+
+    subgraph Fase 2: Capability Owner Canonicalization
+        F -- Sim --> H[Consulta Capability Contract<br>contract.referenceSchema]
+        H --> I{Referência é Tipada e Estritamente Canônica?}
+        I -- Não --> J[Rejeita Fail-Closed<br>REF_CANONICALIZATION_FAILED]
+        I -- Sim --> K[Aprovada no Planejamento / Portão de Admissão]
+    end
+
+    subgraph Fase 3: Connector Runtime Verification
+        K --> L[Dispatch Seam: connector.invoke]
+        L --> M{Resolução física do recurso<br>escapa por symlinks/aliases?}
+        M -- Sim --> N[Aborto Imediato Fail-Closed<br>REF_PHYSICAL_ESCAPE_DETECTED]
+        M -- Não --> O[Execução Concedida Conforme Least Privilege]
+    end
+```
+
+1. **Fase 1 — Invariantes Sintáticas Universais Fail-Closed no Control Plane:**
+   O control plane aplica filtros defensivos prévios antes de qualquer avaliação de grant:
+   - Rejeição absoluta de sequências de traversal: `../`, `..\`, `%2e%2e`, `%2E%2E`, `%252e%252e` (double-encoding), ou sequências codificadas de separadores (`%2f`, `%2F`, `%5c`, `%5C`).
+   - Rejeição de caracteres nulos (`\0`, `%00`) e caracteres de controle (`\r`, `\n`).
+   - Rejeição de credenciais embutidas (`user:pass@host`).
+   - Rejeição de referências que não conformem com a sintaxe de URI RFC 3986.
+   - **Garantia de Fronteira de Recurso (Boundary Delimiter):** O prefixo $P$ só contém a referência $R$ se compartilharem esquema idêntico, autoridade idêntica, e o caminho satisfizer:
+     $$R.\text{path} = P.\text{path} \quad\lor\quad R.\text{path} \text{ inicia com } \operatorname{withTrailingSlash}(P.\text{path})$$
+     impedindo categoricamente que `/project` conceda acesso a `/project-secret`.
+
+2. **Fase 2 — Tipagem e Canonicalização Autoritativa pelo Capability Owner:**
+   - Referências submetidas em passos de planos e em grants devem ser **estritamente tipadas e canônicas** conforme o contrato da respectiva capability (`TypedReference`).
+   - O control plane não tenta "adivinhar" ou "consertar" caminhos relativos ou não canônicos. Qualquer referência que contenha redundâncias, aliases não resolvidos ou sintaxe não homologada pelo contrato da capability é sumariamente rejeitada fail-closed com `REF_CANONICALIZATION_FAILED`.
+
+3. **Fase 3 — Verificação Física no Dispatch pelo Conector:**
+   - No momento da execução física do efeito externo no `dispatchStep` (Gate 4 / Connector Seam), o conector da capability dereferencia o recurso físico (ex.: resolução de links simbólicos no filesystem via `realpath`, canonicalização de tabelas em conexões SQL) e verifica que o alvo resolvido permanece dentro do envelope físico autorizado. Caso detecte escape por symlink ou alias, a execução é cancelada de forma fail-closed (`REF_PHYSICAL_ESCAPE_DETECTED`).
+
+---
+
 ## 6. Modelo de autoridade e composição determinística
 
 ### 6.1 Identidade, autoridade e ciclo de vida do emissor (grantor)
@@ -373,7 +453,7 @@ Nos portões de avaliação e dispatch (Gate 3 e Gate 4), o motor revalida cada 
 A proposta estabelece a separação estrita e inequívoca entre as dimensões do emissor no Local Control Plane:
 
 1. **Identidade do Operador (`grantorClientId`):** Identificador estável do cliente administrativo (ex.: `operator-admin-1`, validado sintaticamente por `validateClientId`).
-2. **Versão da Credencial (`grantorCredentialVersion`):** Contador e hash do token bearer físico ativo (derivado de `hashTokenSecret(secret)` e incrementado a cada rotação de token).
+2. **Versão da Credencial (`grantorCredentialVersion`):** Contador inteiro monotônico não secreto gerenciado no servidor (`credential_version INTEGER NOT NULL DEFAULT 1` na tabela `local_control_clients` do AuthStore). Representa a geração da credencial bearer física do operador. É estritamente desvinculado do hash do segredo de autenticação (`token_hash`), que é material criptográfico privado do AuthStore e NUNCA cruza a fronteira para o MissionStore.
 3. **Escopos Provisionados do Operador (`scopes_json` / `grantorScopes`):** Conjunto normativo de escopos atribuídos ao cliente no AuthStore (ex.: `["mission.create", "mission.grant_capabilities", "mission.read"]`).
 4. **Envelope de Entitlement do Operador (`grantorLimits`):** Limites máximos de capabilities, classes de efeito e prefixos que o operador está autorizado a delegar (§5.4).
 5. **Geração / Época de Autoridade (`grantorAuthorityEpoch`):** Identificador inteiro estritamente monotônico mantido no AuthStore (`authority_epoch INTEGER NOT NULL DEFAULT 1`). Este valor **NÃO é timestamp de relógio de parede** (`Date.now()`); é um contador sequencial persistido que governa o ciclo de autoridade de delegação do operador.
@@ -389,6 +469,30 @@ No código atual de `main` (`cli/src/daemon/local-control-auth.ts:94-115`), `pro
 | **(3) Redução de Entitlement Envelope (`limits_shrink`)** | Atualização dos limites máximos do operador | Limites máximos de capabilities/prefixos encolhidos | Avaliado dinamicamente nos gates | **Restritos.** Grants prévios que excedam os novos limites falham com `GRANTOR_ENTITLEMENT_SHRUNK`. |
 | **(4) Revogação Explícita de Operador (`revoke`)** | `revoked_at = :timestamp` | Operador desativado | Geração extinta | **Invalidados.** Todos os grants do emissor falham com `AUTHORITY_REVOKED`. |
 | **(5) Reprovisionamento Pós-Revogação** | Novo token, `revoked_at = NULL` | Novos escopos provisionados | **Incrementado obrigatoriamente** ($E_{new} = E_{old} + 1$) | **Extinção Definitiva.** Grants de $E_{old}$ falham perpetuamente com `AUTHORITY_SUPERSEDED`. |
+
+#### 6.1.4 Isolamento Criptográfico: AuthStore vs. MissionStore e Proveniência sem Segredos (P1-A)
+
+A auditoria da base de código em `main` revela que `LocalControlAuthenticatedClient.credentialVersion` (`shared/local-control-auth-contract.ts:20`) retorna literalmente o hash SHA-256 da credencial física (`cli/src/daemon/local-control-auth.ts:29,48`: `rowToClient()` mapeia `credentialVersion: row.token_hash`).
+
+Persistir esse valor no MissionStore (`missions.db`) violaria o princípio do privilégio mínimo e a separação de responsabilidades, propagando material de verificação de autenticação confidencial para ledgers operacionais e projeções públicas (`mission.list_capability_grants`).
+
+A proposta estabelece as seguintes garantias de isolamento criptográfico:
+
+1. **Confinamento Estrito de Segredos no AuthStore:**
+   - A coluna `token_hash TEXT NOT NULL` em `local_control_clients` é a única que armazena a representação hash do segredo bearer. Ela é estritamente privada do subsistema `LocalControlCredentialStore` no arquivo `local-control-auth.db`.
+   - `token_hash` jamais é serializado em RPC, jamais é retornado em projeções de missões e **jamais cruza para o banco `missions.db`**.
+
+2. **Representação Server-Side de Versionamento Não Secreto (`credential_version`):**
+   - O AuthStore mantém a coluna `credential_version INTEGER NOT NULL DEFAULT 1`.
+   - Ao executar uma rotação legítima de credencial (`rotate`), o AuthStore atualiza `token_hash` com o hash do novo segredo e incrementa monotonicamente `credential_version = credential_version + 1`.
+   - O objeto de sessão autenticada `LocalControlAuthenticatedClient` expõe essa versão inteira (ex.: `credentialVersion: number`), e **não** o hash do token.
+
+3. **Ledger do MissionStore Gravando Exclusivamente Inteiros Não Secretos:**
+   - As tabelas `mission_capability_grants` e `mission_capability_revocations` no MissionStore armazenam colunas inteiras:
+     - `grantor_credential_version INTEGER NOT NULL`
+     - `revoked_by_credential_version INTEGER NOT NULL`
+   - O ledger registra unicamente a *geração da credencial* (ex.: geração 1, 2, 3...) responsável pelo evento para fins de auditoria forense e rastreabilidade de proveniência.
+   - Mesmo que um atacante obtenha acesso total de leitura ao arquivo `missions.db` ou a backups do MissionStore, zero material hash de verificação de autenticação é exposto.
 
 #### 6.1.2 Comportamento de grants existentes sob redução de escopo ou perda de entitlement
 
@@ -465,8 +569,8 @@ export interface UnitaryCapabilityGrantRecord {
   readonly grantId: string;
   readonly missionId: string;
   readonly grantorClientId: string;
-  readonly grantorCredentialVersion: string;
-  readonly grantorAuthorityEpoch: number; // Contador monotônico durável no AuthStore
+  readonly grantorCredentialVersion: number; // Inteiro monotônico não secreto do AuthStore (nunca token_hash)
+  readonly grantorAuthorityEpoch: number;    // Contador monotônico durável no AuthStore
   readonly capabilityId: string;
   readonly allowedEffectClasses: readonly EffectClass[];
   readonly allowedRefPrefixes: readonly string[];
@@ -483,12 +587,25 @@ export interface AggregatedCapabilityGrantRecord {
   readonly grantId: string;
   readonly missionId: string;
   readonly grantorClientId: string;
-  readonly grantorCredentialVersion: string;
-  readonly grantorAuthorityEpoch: number; // Contador monotônico durável no AuthStore
+  readonly grantorCredentialVersion: number; // Inteiro monotônico não secreto do AuthStore (nunca token_hash)
+  readonly grantorAuthorityEpoch: number;    // Contador monotônico durável no AuthStore
   readonly bindings: readonly CapabilityBindingRecord[];
   readonly issuedAt: string;        // ISO 8601 UTC
   readonly expiresAt?: string;       // ISO 8601 UTC ou undefined (sem expiração temporal)
   readonly contractVersion: number;  // CAPABILITY_GRANT_CONTRACT_VERSION
+  readonly fingerprint: string;      // sha256 canônico
+  readonly createdAt: string;
+}
+
+// --- Registro Imutável de Revogação de Grant ---
+export interface CapabilityRevocationRecord {
+  readonly revocationId: string;
+  readonly missionId: string;
+  readonly targetGrantId: string;
+  readonly revokedByClientId: string;
+  readonly revokedByCredentialVersion: number; // Inteiro monotônico não secreto do AuthStore (nunca token_hash)
+  readonly reason: string;
+  readonly revokedAt: string;        // ISO 8601 UTC
   readonly fingerprint: string;      // sha256 canônico
   readonly createdAt: string;
 }
@@ -566,7 +683,9 @@ export type CapabilityGrantResponse =
     };
 ```
 
-### 7.3 Request/Response de Revogação (`mission.revoke_capability_grant`)\n\n```typescript
+### 7.3 Request/Response de Revogação (`mission.revoke_capability_grant`)
+
+```typescript
 export interface CapabilityGrantRevokeRequest {
   readonly protocolVersion: typeof CAPABILITY_GRANT_PROTOCOL_VERSION;
   readonly operation: typeof CAPABILITY_GRANT_OPERATIONS.REVOKE;
@@ -663,6 +782,12 @@ CAPABILITY_NOT_GRANTABLE
 CAPABILITY_EXCEEDS_GRANTOR_LIMITS
 EFFECT_CLASS_MISMATCH
 REF_PREFIX_NOT_ALLOWED
+REF_TRAVERSAL_DETECTED          // Referência contém ../, %2e%2e ou sequências de escape
+REF_OUT_OF_BOUNDS               // Referência fora da hierarquia delimitada do prefixo
+REF_SCHEME_MISMATCH             // Esquema da referência difere do prefixo
+REF_AUTHORITY_MISMATCH          // Autoridade/host da referência difere do prefixo
+REF_CANONICALIZATION_FAILED     // Referência ambígua ou rejeitada pelo capability owner
+REF_PHYSICAL_ESCAPE_DETECTED    // Symlink ou alias físico escapa do recurso concedido
 GRANT_CONFLICT                  // Mesmo grantId e mesmo emissor, mas payload divergente
 GRANT_IDENTITY_CONFLICT         // grantId já pertence a OUTRO emissor (cross-grantor violation)
 REVOCATION_CONFLICT             // Mesmo revocationId e mesmo emissor, mas motivo divergente
@@ -677,13 +802,16 @@ CAPABILITY_REF_OUT_OF_GRANT_BOUNDS
 REVOKED_BEFORE_SUBMISSION       // Revogação comitou antes da reserva de submissão
 ```
 
-### 7.7 Validação sintática de identidades e compatibilidade com UUIDs reais
+### 7.7 Validação sintática de identidades e limites de payload estruturado
 
 Para garantir total compatibilidade com os identificadores efetivamente produzidos pelo runtime via `crypto.randomUUID()` em `cli/src/mission/mission-engine.ts:85-86`:
 
 - **Validação de `missionId`:** Deve aceitar estritamente o formato de UUID RFC 4122 v4 com hífens gerado pelo runtime (padrão regex `/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/`) ou identificadores seguros delimitados compostos por `[0-9a-zA-Z_-]` com comprimento entre 1 e 128 caracteres. São expressamente rejeitados caracteres de controle, espaços, barras, null-bytes ou sequências de escape.
 - **Validação de `grantId` e `revocationId`:** Identificadores estáveis compostos por `[0-9a-zA-Z_-]` com comprimento entre 1 e 128 caracteres (compatíveis tanto com UUIDs quanto com slugs fornecidos por clientes).
-- **Limites de array e payload:** `capabilityIds` $\le 64$ itens (cada ID $\le 128$ chars); `allowedRefPrefixes` $\le 64$ itens (cada $\le 256$ chars); `reason` de revogação $\le 1024$ chars; tamanho total do payload JSON $\le 65.536$ bytes.
+- **Limites de payload estruturado (eliminando array obsoleto `capabilityIds[]`):**
+  - *Sob Alternativa A (Grant Unitário Correlacionado):* `capabilityId` escalar $\le 128$ caracteres; `allowedEffectClasses` $\le 16$ itens; `allowedRefPrefixes` $\le 64$ itens (cada prefixo $\le 256$ caracteres).
+  - *Sob Alternativa B (Grant Agregado de Bindings Correlacionados):* array `bindings` $\le 64$ itens, onde cada item contém `capabilityId` $\le 128$ caracteres, `allowedEffectClasses` $\le 16$ itens e `allowedRefPrefixes` $\le 64$ itens (cada prefixo $\le 256$ caracteres).
+  - *Limites gerais:* `reason` de revogação $\le 1024$ caracteres; tamanho total do payload JSON $\le 65.536$ bytes ($64\text{ KB}$). Rejeição sumária com HTTP 413 / `INVALID_PAYLOAD` se extrapolados.
 
 ---
 
@@ -706,7 +834,7 @@ CREATE TABLE IF NOT EXISTS mission_capability_grants (
   grant_id TEXT NOT NULL,
   mission_id TEXT NOT NULL,
   grantor_client_id TEXT NOT NULL,
-  grantor_credential_version TEXT NOT NULL,
+  grantor_credential_version INTEGER NOT NULL, -- Versão inteira monotônica não secreta da credencial (AuthStore.credential_version, nunca token_hash)
   grantor_authority_epoch INTEGER NOT NULL,  -- Contador sequencial monotônico de geração no AuthStore
   capability_id TEXT NOT NULL,               -- Identificador único e indivisível da capability autorizada
   allowed_effect_classes TEXT NOT NULL,      -- JSON array de strings (classes vinculadas exclusivamente a esta capability)
@@ -724,7 +852,7 @@ CREATE TABLE IF NOT EXISTS mission_capability_grants (
 --   grant_id TEXT NOT NULL,
 --   mission_id TEXT NOT NULL,
 --   grantor_client_id TEXT NOT NULL,
---   grantor_credential_version TEXT NOT NULL,
+--   grantor_credential_version INTEGER NOT NULL, -- Versão inteira monotônica não secreta da credencial (nunca token_hash)
 --   grantor_authority_epoch INTEGER NOT NULL,
 --   bindings TEXT NOT NULL,                    -- JSON array de { capabilityId, allowedEffectClasses, allowedRefPrefixes }
 --   issued_at TEXT NOT NULL,
@@ -741,7 +869,7 @@ CREATE TABLE IF NOT EXISTS mission_capability_revocations (
   mission_id TEXT NOT NULL,
   target_grant_id TEXT NOT NULL,
   revoked_by_client_id TEXT NOT NULL,
-  revoked_by_credential_version TEXT NOT NULL,
+  revoked_by_credential_version INTEGER NOT NULL, -- Versão inteira monotônica não secreta da credencial revogadora
   reason TEXT NOT NULL,
   revoked_at TEXT NOT NULL,
   fingerprint TEXT NOT NULL,                 -- sha256 canônico do evento de revogação
@@ -845,7 +973,7 @@ Para resolver integralmente essa inconsistência sem recorrer a timestamps de re
 
 1. **Separação tridimensional explícita:**
    - **Identidade do Operador (`clientId`):** Identificador estável do ator (imutável).
-   - **Versão da Credencial (`credential_version` / `token_hash`):** Representa o segredo físico ativo. Atualizado a cada rotação legítima sem afetar o ciclo de autoridade.
+   - **Versão da Credencial (`credential_version`):** Contador inteiro monotônico não secreto gerenciado no servidor (`credential_version INTEGER NOT NULL DEFAULT 1`). Incrementado a cada rotação legítima sem afetar o ciclo de autoridade. O segredo físico bearer é verificado internamente via `token_hash TEXT NOT NULL`, que permanece estritamente privado no AuthStore e jamais é exposto ao MissionStore ou a projeções públicas.
    - **Geração de Autoridade (`authority_epoch`):** Contador sequencial inteiro estritamente monotônico persistido no schema da tabela `local_control_clients` do AuthStore, governado por transações locais e salvaguarda permanente.
 2. **Esquema relacional, trigger de motor e expressão SQL atômica:**
    A persistência no AuthStore (`local-control-auth.db`) institui um mecanismo integrado composto por DDL de colunas, trigger de proibição de deleção física, tabela durável de high-water mark e comando transacional de inserção/atualização:
@@ -1609,6 +1737,8 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 | `test_auth_401_missing_or_invalid_bearer_token` | Requisição aos endpoints de grants (`grant`, `revoke`, `list`) sem cabeçalho Authorization ou com token Bearer malformado/inválido. | Retorna HTTP 401 Unauthenticated antes de qualquer leitura ou escrita no SQLite; nenhum dado exposto. |
 | `test_authz_403_client_lacks_grant_scope` | Cliente autenticado com token válido, porém sem o escopo obrigatório `mission.grant_capabilities`. | Retorna HTTP 403 Forbidden com erro estruturado; nenhuma operação autorizada. |
 | `test_grant_rejected_when_grantor_client_revoked` | Cliente autenticado cujo registro em `local_control_clients` possui `revoked_at IS NOT NULL`. | Retorna `AUTHORITY_REVOKED`; nenhuma concessão ou revogação é aceita. |
+| `test_auth_store_token_hash_isolated_from_mission_store` (P1-A) | Auditoria de persistência no MissionStore (`mission_capability_grants`, `mission_capability_revocations`) e projeções públicas (`mission.list_capability_grants`). | Garante que `token_hash` permanece restrito exclusivamente ao AuthStore (`local_control_clients`); nenhum hash criptográfico ou derivado de segredo cruza para o MissionStore ou é exposto a clientes. |
+| `test_grant_records_use_non_secret_integer_credential_version` (P1-A) | Emissão de grant e revogação sob o ledger append-only do MissionStore. | Registros gravam colunas inteiras `grantor_credential_version INTEGER` e `revoked_by_credential_version INTEGER` representando estritamente a versão monotônica não secreta do servidor (`credential_version`), preservando proveniência e auditabilidade forense. |
 
 ### 12.2 Validação Sintática, Limites de Payload e Redaction (Critérios Normativos da Issue #166)
 
@@ -1616,7 +1746,13 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 |---|---|---|
 | `test_grant_unknown_or_malformed_capability_id` | Tentativa de conceder `capabilityId` sintaticamente inválido ou não registrado no CapabilityRegistry. | Rejeitado na admissão com HTTP 400 Bad Request e código estruturado `CAPABILITY_UNKNOWN`. |
 | `test_grant_malformed_ref_prefix_rejected` | Concessão contendo prefixos de referências com wildcards (`*`), regex, sequências de escape (`../`), null-bytes ou esquemas malformados em `allowedRefPrefixes`. | Rejeitado com HTTP 400 Bad Request e código `REF_PREFIX_NOT_ALLOWED`. |
-| `test_grant_payload_size_limits_exceeded` | Payload JSON $> 64\text{ KB}$ ($65.536\text{ bytes}$), array `capabilityIds` $> 64$ itens, ou `allowedRefPrefixes` $> 64$ itens. | Rejeitado sumariamente com HTTP 413 Payload Too Large / HTTP 400 Bad Request (`INVALID_PAYLOAD`). |
+| `test_grant_ref_traversal_dotdot_rejected` (P1-B — Cenário 1) | Referência contendo travessia de diretório sintática `../` ou `..\` (ex.: `fs:///workspace/project/../../etc/shadow`). | Rejeitado fail-closed no Gate 1 com HTTP 400 Bad Request e código `REF_TRAVERSAL_DETECTED`. |
+| `test_grant_ref_traversal_encoded_rejected` (P1-B — Cenário 2) | Referência contendo travessia codificada em URL (`%2e%2e`, `%2E%2E`, `%252e%252e`) ou separadores codificados (`%2f`, `%5c`). | Rejeitado fail-closed com HTTP 400 Bad Request e código `REF_TRAVERSAL_DETECTED`. |
+| `test_grant_ref_sibling_prefix_rejected` (P1-B — Cenário 3) | Tentativa de acessar prefixo irmão com início similar sem delimitador de fronteira (ex.: `fs:///workspace/project-secret/keys.env` sob prefixo `fs:///workspace/project`). | Rejeitado com HTTP 400 Bad Request e código `REF_OUT_OF_BOUNDS`. |
+| `test_grant_ref_scheme_authority_mismatch_rejected` (P1-B — Cenário 4) | Referência com divergência de esquema (`http://` vs `https://`) ou de autoridade/host (`https://domain.attacker.com/` vs `https://domain/`). | Rejeitado fail-closed com código estruturado `REF_SCHEME_MISMATCH` ou `REF_AUTHORITY_MISMATCH`. |
+| `test_grant_ref_legitimate_prefix_accepted` (P1-B — Cenário 5) | Referência legítima canônica estritamente contida na hierarquia autorizada do prefixo (ex.: `fs:///workspace/project/src/main.ts` sob `fs:///workspace/project/`). | Aceita e validada com sucesso; dispatch autorizado. |
+| `test_capability_owner_reference_canonicalization_fail_closed` (P1-B) | Referência não canônica, ambígua ou sintaticamente desconhecida pelo contrato da capability dona do recurso (`contract.referenceSchema`). | Rejeitado fail-closed na Fase 2 com código `REF_CANONICALIZATION_FAILED`. |
+| `test_grant_payload_size_limits_exceeded` (P2) | Payload JSON $> 64\text{ KB}$ ($65.536\text{ bytes}$), `allowedRefPrefixes` $> 64$ itens (sob Alt A), ou array `bindings` $> 64$ itens (sob Alt B). Rejeita sumariamente payload no formato obsoleto de listas planas desvinculadas (`capabilityIds[]`). | Rejeitado sumariamente com HTTP 413 Payload Too Large / HTTP 400 Bad Request (`INVALID_PAYLOAD`). |
 | `test_grant_exceeds_grantor_correlated_entitlement` | Emissor tenta conceder tupla/binding `(capabilityId, allowedEffectClasses, allowedRefPrefixes)` que não é correlacionada em nenhuma entrada de seu envelope `allowedBindings` (mesmo que os atributos individuais existam separadamente em bindings distintos de seu entitlement). | Bloqueado na admissão com `CAPABILITY_EXCEEDS_GRANTOR_LIMITS`; zero alterações no ledger. |
 | `test_sanitized_projections_no_token_leakage` | Consulta de projeções de grants (`mission.list_capability_grants`) e invocações por clientes e observadores. | Projeções omitem rigorosamente segredos criptográficos, hashes de tokens e credenciais internas do host. |
 | `test_real_uuid_mission_id_lifecycle` | Emissão de grant, revoke e list utilizando UUIDs RFC 4122 v4 com hífens gerados por `crypto.randomUUID()`. | Validação sintática aceita os UUIDs reais produzidos pelo `MissionEngine` e rejeita formatos malformados. |
