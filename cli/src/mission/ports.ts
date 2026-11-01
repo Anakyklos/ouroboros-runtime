@@ -13,6 +13,10 @@ import type {
     AllowedCapabilityScope,
     CriterionVerification,
     Mission,
+    MissionCapabilityGrant,
+    MissionCapabilityGrantInput,
+    MissionCapabilityRevocation,
+    MissionCapabilityRevocationInput,
     MissionState,
     OwnerVerification,
     PlanCandidate,
@@ -124,6 +128,18 @@ export interface MissionStore {
         missionId: string,
         effectFingerprint: string,
     ): Promise<CapabilityInvocation | null>;
+}
+
+/**
+ * Internal persistence port for inert, append-only Capability Grant facts.
+ * It deliberately remains separate from MissionStore authorization and RPC
+ * projections until a trusted issuer contract is ratified and implemented.
+ */
+export interface MissionCapabilityGrantLedger {
+    appendCapabilityGrant(grant: MissionCapabilityGrantInput): Promise<MissionCapabilityGrant>;
+    appendCapabilityRevocation(revocation: MissionCapabilityRevocationInput): Promise<MissionCapabilityRevocation>;
+    listCapabilityGrants(missionId: string): Promise<MissionCapabilityGrant[]>;
+    listCapabilityRevocations(missionId: string): Promise<MissionCapabilityRevocation[]>;
 }
 
 /** Stable keyset position for the Mission page order. */
