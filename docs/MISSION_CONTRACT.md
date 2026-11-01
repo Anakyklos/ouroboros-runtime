@@ -99,6 +99,50 @@ Mission (`schemaVersion`), so mixed versions can coexist during migration.
 **Never persisted:** API keys, Authorization headers, raw secrets, chain of
 thought, full prompts, raw provider responses.
 
+## Capability Grant ledger — Slice A (internal and inactive)
+
+Slice A adds an append-only SQLite ledger for unit Capability Grant and
+revocation facts. The additive migration preserves existing Mission history
+and creates no grants for legacy Missions. SQLite triggers protect grant and
+revocation rows from `UPDATE`/`DELETE`, protect a Mission with grant history
+from deletion, and reject missing Mission/grant references while the store
+continues to use `foreign_keys = OFF`.
+
+The stored unit has one `capabilityId`, with its effect and reference prefixes
+kept together. The internal coverage predicate requires one grant to cover the
+Mission, capability, singular `CapabilityContract.effectClass`, and every
+input reference. It rejects cross-grant combinations, expired grants,
+revocation, future-dated records, malformed timestamps, invalid fingerprints,
+and unvalidated issuer provenance. Namespaced
+`refs/*` references are preserved with segment-boundary matching; filesystem
+containment and symlink/alias checks remain with the capability owner.
+
+Reduction uses only its supplied evaluation time. Grant issuance must not be
+later than ledger creation; a valid revocation timeline is grant creation,
+revocation time, revocation ledger creation, then evaluation time. Future or
+inconsistent revocation facts invalidate coverage instead of being reported as
+already revoked or silently ignored. An effective revocation remains
+irreversible in the reduced state.
+
+This ledger is **not an operational permission source**. It does not change
+`Mission.allowedCapabilityScope`, `PlanPolicyValidator`, planning, acceptance,
+dispatch, or any RPC. Missions without ledger grants remain governed by their
+existing contract and policy. The pure predicate requires authority evidence
+from an authorized source for both grantors and revokers, and non-secret
+credential generations for both, but Slice A supplies no such source. Missing
+or unvalidated provenance denies coverage. Credential generation and
+authority epoch are nullable storage fields; the predicate does not interpret
+authority-epoch semantics or choose a cross-grantor revocation rule, which
+remain pending. The authentication contract's `credentialVersion` and any
+`token_hash` are not copied into Mission storage. A later ratified slice must
+provide the trusted provenance source before this predicate can authorize.
+
+The only ratified grant choices implemented here are D03 (optional expiry),
+D06 (legacy fail-closed), D08 (no decorative grant resource limits; Mission
+`budgetPolicy` remains), and D15 alternative A (unit grants with correlated
+effects and references). D01, D02, D04, D05, D07, D09–D14 remain
+`NEEDS_APPROVAL`; this ledger does not settle them or expose grant issuance.
+
 ## Mission state
 
 States are semantic, and `waiting_*` states are waiting — never collapsed

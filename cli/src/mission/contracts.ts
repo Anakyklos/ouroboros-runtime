@@ -147,6 +147,58 @@ export enum EffectClass {
     COMMUNICATION = "communication",
 }
 
+/** Internal, single-capability ledger write. This is not an issuance API. */
+export interface MissionCapabilityGrantInput {
+    grantId: string;
+    missionId: string;
+    /** D15 unit grant: exactly one capability identity. */
+    capabilityId: string;
+    /** Effect classes remain associated with this capability only. */
+    allowedEffectClasses: EffectClass[];
+    /** Namespaced references and owner-defined URI references are both retained. */
+    allowedRefPrefixes: string[];
+    /** Non-secret issuer identity; no bearer token or token hash. */
+    grantorClientId: string;
+    /** Future trusted source only; absent in the current authentication contract. */
+    grantorCredentialGeneration?: number | null;
+    /** Future trusted source only; no authority-epoch rules are defined here. */
+    grantorAuthorityEpoch?: number | null;
+    issuedAt: string;
+    /** Optional by ratified decision D03. */
+    expiresAt?: string | null;
+    /** Ledger append timestamp supplied by the caller; no hidden wall clock. */
+    createdAt: string;
+}
+
+/** Canonical persisted grant event. */
+export interface MissionCapabilityGrant extends Omit<MissionCapabilityGrantInput,
+    "grantorCredentialGeneration" | "grantorAuthorityEpoch" | "expiresAt"> {
+    grantorCredentialGeneration: number | null;
+    grantorAuthorityEpoch: number | null;
+    expiresAt: string | null;
+    fingerprint: string;
+}
+
+/** Internal, append-only revocation event input. */
+export interface MissionCapabilityRevocationInput {
+    revocationId: string;
+    missionId: string;
+    grantId: string;
+    revokerClientId: string;
+    revokerCredentialGeneration?: number | null;
+    revokerAuthorityEpoch?: number | null;
+    revokedAt: string;
+    createdAt: string;
+}
+
+/** Canonical persisted revocation event. */
+export interface MissionCapabilityRevocation extends Omit<MissionCapabilityRevocationInput,
+    "revokerCredentialGeneration" | "revokerAuthorityEpoch"> {
+    revokerCredentialGeneration: number | null;
+    revokerAuthorityEpoch: number | null;
+    fingerprint: string;
+}
+
 /**
  * Deterministic, unambiguous fingerprint of the AUTHORIZED EFFECT, computed
  * by policy/code (never provided by the planner): a sha256 of the canonical

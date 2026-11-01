@@ -12,6 +12,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { MissionState } from "./contracts.js";
 import type {
@@ -21,6 +22,10 @@ import type {
     CapabilityInvocation,
     CapabilityInvocationRef,
     MissionContextAccounting,
+    MissionCapabilityGrant,
+    MissionCapabilityGrantInput,
+    MissionCapabilityRevocation,
+    MissionCapabilityRevocationInput,
 } from "./contracts.js";
 import {
     assertValidInvocationIdentity,
@@ -50,8 +55,13 @@ import type {
     MissionProjectionRead,
     MissionStore,
     MissionAdmissionStore,
+    MissionCapabilityGrantLedger,
 } from "./ports.js";
 import { assertNoRawSecrets } from "./sanitize.js";
+import {
+    normalizeCapabilityGrant,
+    normalizeCapabilityRevocation,
+} from "./capability-grants.js";
 
 interface MissionRow {
     mission_id: string;
@@ -132,6 +142,33 @@ interface InvocationRefRow {
     result_refs: string;
     owner_verification: string | null;
     error: string | null;
+}
+
+interface MissionCapabilityGrantRow {
+    grant_id: string;
+    mission_id: string;
+    capability_id: string;
+    allowed_effect_classes: string;
+    allowed_ref_prefixes: string;
+    grantor_client_id: string;
+    grantor_credential_generation: number | null;
+    grantor_authority_epoch: number | null;
+    issued_at: string;
+    expires_at: string | null;
+    created_at: string;
+    fingerprint: string;
+}
+
+interface MissionCapabilityRevocationRow {
+    revocation_id: string;
+    mission_id: string;
+    grant_id: string;
+    revoker_client_id: string;
+    revoker_credential_generation: number | null;
+    revoker_authority_epoch: number | null;
+    revoked_at: string;
+    created_at: string;
+    fingerprint: string;
 }
 
 /** Safe JSON parse that never throws. */
@@ -257,11 +294,12 @@ function assertImmutableInvocationIdentity(
     }
 }
 
-export class SqliteMissionStore implements MissionStore, MissionAdmissionStore {
+export class SqliteMissionStore implements MissionStore, MissionAdmissionStore, MissionCapabilityGrantLedger {
     private db: Database | null = null;
     private readonly dbPath: string;
     private readonly statements: Record<string, ReturnType<Database["prepare"]>> = {};
     private transactionQueue: Promise<void> = Promise.resolve();
+    private readonly transactionContext = new AsyncLocalStorage<{ active: boolean }>();
     private readonly mutationListeners = new Set<MissionMutationListener>();
     private pendingMutations: MissionMutation[] | null = null;
 
@@ -284,12 +322,60 @@ export class SqliteMissionStore implements MissionStore, MissionAdmissionStore {
         return this.statements[key];
     }
 
+    /** Serialize work on this connection behind any active Mission transaction. */
+    private async withTransactionQueue<T>(operation: () => T | Promise<T>): Promise<T> {
+        const previous = this.transactionQueue;
+        let release!: () => void;
+        this.transactionQueue = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        await previous;
+        try {
+            return await operation();
+        } finally {
+            release();
+        }
+    }
+
+    /**
+     * Run a ledger append in its caller's transaction when present; otherwise
+     * serialize the autocommit write behind transactions using this connection.
+     */
+    private withLedgerAppend<T>(operation: () => T): Promise<T> {
+        if (this.transactionContext.getStore()?.active) {
+            try {
+                return Promise.resolve(operation());
+            } catch (error) {
+                return Promise.reject(error);
+            }
+        }
+        return this.withTransactionQueue(operation);
+    }
+
     async initialize(): Promise<void> {
         if (this.db) return;
         this.db = new Database(this.dbPath);
-        this.db.exec("PRAGMA journal_mode = WAL");
-        this.db.exec("PRAGMA foreign_keys = OFF");
-        this.db.exec(`
+        try {
+            this.initializeSchema();
+        } catch (error) {
+            const failedDb = this.db;
+            this.db = null;
+            this.pendingMutations = null;
+            for (const key of Object.keys(this.statements)) delete this.statements[key];
+            try {
+                failedDb?.close();
+            } catch {
+                // Preserve the initialization/migration error as the cause surfaced to the caller.
+            }
+            throw error;
+        }
+    }
+
+    private initializeSchema(): void {
+        const db = this.ensureDb();
+        db.exec("PRAGMA journal_mode = WAL");
+        db.exec("PRAGMA foreign_keys = OFF");
+        db.exec(`
             CREATE TABLE IF NOT EXISTS missions (
                 mission_id TEXT PRIMARY KEY,
                 schema_version INTEGER NOT NULL,
@@ -305,7 +391,7 @@ export class SqliteMissionStore implements MissionStore, MissionAdmissionStore {
                 context_refs TEXT NOT NULL DEFAULT '[]',
                 state TEXT NOT NULL,
                 current_plan_revision_id TEXT,
-                            evidence_refs TEXT NOT NULL DEFAULT '[]',
+                evidence_refs TEXT NOT NULL DEFAULT '[]',
                 criterion_verifications TEXT NOT NULL DEFAULT '[]',
                 unresolved_questions TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
@@ -365,9 +451,9 @@ export class SqliteMissionStore implements MissionStore, MissionAdmissionStore {
             CREATE INDEX IF NOT EXISTS idx_missions_enumeration ON missions(created_at DESC, mission_id ASC);
             CREATE INDEX IF NOT EXISTS idx_invocations_mission ON mission_invocations(mission_id);
         `);
-        const missionColumns = this.db.query("PRAGMA table_info(missions)").all() as Array<{ name: string }>;
+        const missionColumns = db.query("PRAGMA table_info(missions)").all() as Array<{ name: string }>;
         if (!missionColumns.some((column) => column.name === "context_accounting")) {
-            this.db.exec("ALTER TABLE missions ADD COLUMN context_accounting TEXT NOT NULL DEFAULT '{}'");
+            db.exec("ALTER TABLE missions ADD COLUMN context_accounting TEXT NOT NULL DEFAULT '{}'");
         }
         this.migrateSchema();
     }
@@ -669,6 +755,356 @@ export class SqliteMissionStore implements MissionStore, MissionAdmissionStore {
             )
         `);
         db.exec("CREATE INDEX IF NOT EXISTS idx_mission_admissions_mission ON mission_admissions(mission_id)");
+
+        // Slice A adds an inert, unit-grant event ledger. Existing Missions
+        // receive no synthetic rows and no Mission/Invocation data is rewritten.
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS mission_capability_grants (
+                grant_id TEXT NOT NULL CHECK(length(grant_id) > 0),
+                mission_id TEXT NOT NULL CHECK(length(mission_id) > 0),
+                capability_id TEXT NOT NULL CHECK(length(capability_id) > 0),
+                allowed_effect_classes TEXT NOT NULL CHECK(json_valid(allowed_effect_classes) AND json_type(allowed_effect_classes) = 'array'),
+                allowed_ref_prefixes TEXT NOT NULL CHECK(json_valid(allowed_ref_prefixes) AND json_type(allowed_ref_prefixes) = 'array'),
+                grantor_client_id TEXT NOT NULL CHECK(length(grantor_client_id) > 0),
+                grantor_credential_generation INTEGER CHECK(grantor_credential_generation IS NULL OR grantor_credential_generation > 0),
+                grantor_authority_epoch INTEGER CHECK(grantor_authority_epoch IS NULL OR grantor_authority_epoch >= 0),
+                issued_at TEXT NOT NULL,
+                expires_at TEXT,
+                created_at TEXT NOT NULL,
+                fingerprint TEXT NOT NULL CHECK(length(fingerprint) = 64 AND fingerprint NOT GLOB '*[^0-9a-f]*'),
+                PRIMARY KEY (mission_id, grant_id),
+                FOREIGN KEY (mission_id) REFERENCES missions(mission_id) ON DELETE RESTRICT
+            );
+
+            CREATE TABLE IF NOT EXISTS mission_capability_revocations (
+                revocation_id TEXT NOT NULL CHECK(length(revocation_id) > 0),
+                mission_id TEXT NOT NULL CHECK(length(mission_id) > 0),
+                grant_id TEXT NOT NULL CHECK(length(grant_id) > 0),
+                revoker_client_id TEXT NOT NULL CHECK(length(revoker_client_id) > 0),
+                revoker_credential_generation INTEGER CHECK(revoker_credential_generation IS NULL OR revoker_credential_generation > 0),
+                revoker_authority_epoch INTEGER CHECK(revoker_authority_epoch IS NULL OR revoker_authority_epoch >= 0),
+                revoked_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                fingerprint TEXT NOT NULL CHECK(length(fingerprint) = 64 AND fingerprint NOT GLOB '*[^0-9a-f]*'),
+                PRIMARY KEY (mission_id, revocation_id),
+                FOREIGN KEY (mission_id, grant_id)
+                    REFERENCES mission_capability_grants(mission_id, grant_id) ON DELETE RESTRICT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mission_capability_grants_reduction
+                ON mission_capability_grants(mission_id, created_at, grant_id);
+            CREATE INDEX IF NOT EXISTS idx_mission_capability_grants_lookup
+                ON mission_capability_grants(mission_id, capability_id, created_at, grant_id);
+            CREATE INDEX IF NOT EXISTS idx_mission_capability_revocations_target
+                ON mission_capability_revocations(mission_id, grant_id, created_at, revocation_id);
+
+            CREATE TRIGGER IF NOT EXISTS prevent_mission_delete_with_grants
+            BEFORE DELETE ON missions
+            WHEN EXISTS (SELECT 1 FROM mission_capability_grants WHERE mission_id = OLD.mission_id)
+            BEGIN
+                SELECT RAISE(ABORT, 'Mission has immutable Capability Grant history');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS prevent_mission_replace_with_grants
+            BEFORE INSERT ON missions
+            WHEN EXISTS (SELECT 1 FROM mission_capability_grants WHERE mission_id = NEW.mission_id)
+            BEGIN
+                SELECT RAISE(ABORT, 'Mission identity has immutable Capability Grant history');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS prevent_mission_identity_update_with_grants
+            BEFORE UPDATE OF mission_id ON missions
+            WHEN NEW.mission_id != OLD.mission_id
+              AND EXISTS (SELECT 1 FROM mission_capability_grants WHERE mission_id = OLD.mission_id)
+            BEGIN
+                SELECT RAISE(ABORT, 'Mission identity is referenced by immutable Capability Grant history');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS prevent_mission_capability_grant_orphan_insert
+            BEFORE INSERT ON mission_capability_grants
+            WHEN NOT EXISTS (SELECT 1 FROM missions WHERE mission_id = NEW.mission_id)
+            BEGIN
+                SELECT RAISE(ABORT, 'Capability Grant Mission does not exist');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS prevent_mission_capability_grant_replacement
+            BEFORE INSERT ON mission_capability_grants
+            WHEN EXISTS (
+                SELECT 1 FROM mission_capability_grants
+                WHERE mission_id = NEW.mission_id AND grant_id = NEW.grant_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'Capability Grant identity is immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS prevent_mission_capability_grant_update
+            BEFORE UPDATE ON mission_capability_grants
+            BEGIN
+                SELECT RAISE(ABORT, 'Capability Grant events are append-only');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS prevent_mission_capability_grant_delete
+            BEFORE DELETE ON mission_capability_grants
+            BEGIN
+                SELECT RAISE(ABORT, 'Capability Grant events are append-only');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS prevent_mission_capability_revocation_orphan_insert
+            BEFORE INSERT ON mission_capability_revocations
+            WHEN NOT EXISTS (SELECT 1 FROM missions WHERE mission_id = NEW.mission_id)
+              OR NOT EXISTS (
+                SELECT 1 FROM mission_capability_grants
+                WHERE mission_id = NEW.mission_id AND grant_id = NEW.grant_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'Capability Grant revocation target does not exist');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS prevent_mission_capability_revocation_replacement
+            BEFORE INSERT ON mission_capability_revocations
+            WHEN EXISTS (
+                SELECT 1 FROM mission_capability_revocations
+                WHERE mission_id = NEW.mission_id AND revocation_id = NEW.revocation_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'Capability Grant revocation identity is immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS prevent_mission_capability_revocation_update
+            BEFORE UPDATE ON mission_capability_revocations
+            BEGIN
+                SELECT RAISE(ABORT, 'Capability Grant revocations are append-only');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS prevent_mission_capability_revocation_delete
+            BEFORE DELETE ON mission_capability_revocations
+            BEGIN
+                SELECT RAISE(ABORT, 'Capability Grant revocations are append-only');
+            END;
+        `);
+        const orphanGrants = db.query(`
+            SELECT COUNT(*) AS count FROM mission_capability_grants AS grant_row
+            LEFT JOIN missions ON missions.mission_id = grant_row.mission_id
+            WHERE missions.mission_id IS NULL
+        `).get() as { count: number };
+        const orphanRevocations = db.query(`
+            SELECT COUNT(*) AS count FROM mission_capability_revocations AS revocation
+            LEFT JOIN missions ON missions.mission_id = revocation.mission_id
+            LEFT JOIN mission_capability_grants AS grant_row
+              ON grant_row.mission_id = revocation.mission_id AND grant_row.grant_id = revocation.grant_id
+            WHERE missions.mission_id IS NULL OR grant_row.grant_id IS NULL
+        `).get() as { count: number };
+        if (orphanGrants.count > 0 || orphanRevocations.count > 0) {
+            throw new Error("Mission Capability Grant ledger contains orphaned rows; initialization fails closed");
+        }
+    }
+
+    private capabilityGrantFromRow(row: MissionCapabilityGrantRow): MissionCapabilityGrant {
+        let allowedEffectClasses: unknown;
+        let allowedRefPrefixes: unknown;
+        try {
+            allowedEffectClasses = JSON.parse(row.allowed_effect_classes) as unknown;
+            allowedRefPrefixes = JSON.parse(row.allowed_ref_prefixes) as unknown;
+        } catch {
+            throw new Error(`Corrupt Capability Grant JSON for grant "${row.grant_id}"`);
+        }
+        if (!Array.isArray(allowedEffectClasses) || !Array.isArray(allowedRefPrefixes)) {
+            throw new Error(`Corrupt Capability Grant arrays for grant "${row.grant_id}"`);
+        }
+        const grant = normalizeCapabilityGrant({
+            grantId: row.grant_id,
+            missionId: row.mission_id,
+            capabilityId: row.capability_id,
+            allowedEffectClasses,
+            allowedRefPrefixes,
+            grantorClientId: row.grantor_client_id,
+            grantorCredentialGeneration: row.grantor_credential_generation,
+            grantorAuthorityEpoch: row.grantor_authority_epoch,
+            issuedAt: row.issued_at,
+            expiresAt: row.expires_at,
+            createdAt: row.created_at,
+        });
+        if (grant.fingerprint !== row.fingerprint) {
+            throw new Error(`Corrupt Capability Grant fingerprint for grant "${row.grant_id}"`);
+        }
+        return grant;
+    }
+
+    private capabilityRevocationFromRow(row: MissionCapabilityRevocationRow): MissionCapabilityRevocation {
+        const revocation = normalizeCapabilityRevocation({
+            revocationId: row.revocation_id,
+            missionId: row.mission_id,
+            grantId: row.grant_id,
+            revokerClientId: row.revoker_client_id,
+            revokerCredentialGeneration: row.revoker_credential_generation,
+            revokerAuthorityEpoch: row.revoker_authority_epoch,
+            revokedAt: row.revoked_at,
+            createdAt: row.created_at,
+        });
+        if (revocation.fingerprint !== row.fingerprint) {
+            throw new Error(`Corrupt Capability Grant revocation fingerprint for event "${row.revocation_id}"`);
+        }
+        return revocation;
+    }
+
+    /** Append one unit grant fact; identical replays are idempotent. */
+    async appendCapabilityGrant(input: MissionCapabilityGrantInput): Promise<MissionCapabilityGrant> {
+        const grant = normalizeCapabilityGrant(input);
+        return this.withLedgerAppend(() => this.appendCapabilityGrantFact(grant));
+    }
+
+    private appendCapabilityGrantFact(grant: MissionCapabilityGrant): MissionCapabilityGrant {
+        let insertionError: unknown = null;
+        try {
+            this.stmt(
+                "append_capability_grant",
+                `INSERT INTO mission_capability_grants (
+                    grant_id, mission_id, capability_id, allowed_effect_classes, allowed_ref_prefixes,
+                    grantor_client_id, grantor_credential_generation, grantor_authority_epoch,
+                    issued_at, expires_at, created_at, fingerprint
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ).run(
+                grant.grantId,
+                grant.missionId,
+                grant.capabilityId,
+                JSON.stringify(grant.allowedEffectClasses),
+                JSON.stringify(grant.allowedRefPrefixes),
+                grant.grantorClientId,
+                grant.grantorCredentialGeneration,
+                grant.grantorAuthorityEpoch,
+                grant.issuedAt,
+                grant.expiresAt,
+                grant.createdAt,
+                grant.fingerprint,
+            );
+        } catch (error) {
+            insertionError = error;
+        }
+        const mission = this.stmt(
+            "exists_mission_for_capability_grant",
+            "SELECT mission_id FROM missions WHERE mission_id = ?",
+        ).get(grant.missionId) as { mission_id: string } | null;
+        if (!mission) throw new Error(`Cannot append Capability Grant for missing Mission "${grant.missionId}"`);
+        const row = this.stmt(
+            "get_capability_grant_by_id",
+            `SELECT grant_id, mission_id, capability_id, allowed_effect_classes, allowed_ref_prefixes,
+                    grantor_client_id, grantor_credential_generation, grantor_authority_epoch,
+                    issued_at, expires_at, created_at, fingerprint
+             FROM mission_capability_grants WHERE mission_id = ? AND grant_id = ?`,
+        ).get(grant.missionId, grant.grantId) as MissionCapabilityGrantRow | null;
+        if (!row) {
+            if (insertionError !== null) throw insertionError;
+            throw new Error(`Capability Grant "${grant.grantId}" was not durably appended`);
+        }
+        const persisted = this.capabilityGrantFromRow(row);
+        if (persisted.fingerprint !== grant.fingerprint) {
+            throw new Error(`Capability Grant identity/content conflict for "${grant.grantId}"`);
+        }
+        return persisted;
+    }
+
+    /** Append one immutable revocation fact targeting a grant in the same Mission. */
+    async appendCapabilityRevocation(
+        input: MissionCapabilityRevocationInput,
+    ): Promise<MissionCapabilityRevocation> {
+        const revocation = normalizeCapabilityRevocation(input);
+        return this.withLedgerAppend(() => this.appendCapabilityRevocationFact(revocation));
+    }
+
+    private appendCapabilityRevocationFact(
+        revocation: MissionCapabilityRevocation,
+    ): MissionCapabilityRevocation {
+        let insertionError: unknown = null;
+        try {
+            this.stmt(
+                "append_capability_revocation",
+                `INSERT INTO mission_capability_revocations (
+                    revocation_id, mission_id, grant_id, revoker_client_id,
+                    revoker_credential_generation, revoker_authority_epoch,
+                    revoked_at, created_at, fingerprint
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ).run(
+                revocation.revocationId,
+                revocation.missionId,
+                revocation.grantId,
+                revocation.revokerClientId,
+                revocation.revokerCredentialGeneration,
+                revocation.revokerAuthorityEpoch,
+                revocation.revokedAt,
+                revocation.createdAt,
+                revocation.fingerprint,
+            );
+        } catch (error) {
+            insertionError = error;
+        }
+        const mission = this.stmt(
+            "exists_mission_for_capability_revocation",
+            "SELECT mission_id FROM missions WHERE mission_id = ?",
+        ).get(revocation.missionId) as { mission_id: string } | null;
+        if (!mission) throw new Error(`Cannot append Capability Grant revocation for missing Mission "${revocation.missionId}"`);
+        const grant = this.stmt(
+            "exists_grant_for_capability_revocation",
+            "SELECT grant_id FROM mission_capability_grants WHERE mission_id = ? AND grant_id = ?",
+        ).get(revocation.missionId, revocation.grantId) as { grant_id: string } | null;
+        if (!grant) {
+            throw new Error(`Cannot append Capability Grant revocation for missing grant "${revocation.grantId}"`);
+        }
+        const row = this.stmt(
+            "get_capability_revocation_by_id",
+            `SELECT revocation_id, mission_id, grant_id, revoker_client_id,
+                    revoker_credential_generation, revoker_authority_epoch,
+                    revoked_at, created_at, fingerprint
+             FROM mission_capability_revocations WHERE mission_id = ? AND revocation_id = ?`,
+        ).get(revocation.missionId, revocation.revocationId) as MissionCapabilityRevocationRow | null;
+        if (!row) {
+            if (insertionError !== null) throw insertionError;
+            throw new Error(`Capability Grant revocation "${revocation.revocationId}" was not durably appended`);
+        }
+        const persisted = this.capabilityRevocationFromRow(row);
+        if (persisted.fingerprint !== revocation.fingerprint) {
+            throw new Error(`Capability Grant revocation identity/content conflict for "${revocation.revocationId}"`);
+        }
+        return persisted;
+    }
+
+    /** Read immutable grant facts in stable append order, validating every row. */
+    async listCapabilityGrants(missionId: string): Promise<MissionCapabilityGrant[]> {
+        const orphan = this.stmt(
+            "has_orphan_capability_grants_for_mission",
+            `SELECT grant_row.grant_id
+             FROM mission_capability_grants AS grant_row
+             LEFT JOIN missions ON missions.mission_id = grant_row.mission_id
+             WHERE grant_row.mission_id = ? AND missions.mission_id IS NULL
+             LIMIT 1`,
+        ).get(missionId) as { grant_id: string } | null;
+        if (orphan) throw new Error(`Corrupt orphan Capability Grant "${orphan.grant_id}"`);
+        const rows = this.stmt(
+            "list_capability_grants",
+            `SELECT grant_id, mission_id, capability_id, allowed_effect_classes, allowed_ref_prefixes,
+                    grantor_client_id, grantor_credential_generation, grantor_authority_epoch,
+                    issued_at, expires_at, created_at, fingerprint
+             FROM mission_capability_grants WHERE mission_id = ?
+             ORDER BY created_at ASC, grant_id ASC`,
+        ).all(missionId) as MissionCapabilityGrantRow[];
+        return rows.map((row) => this.capabilityGrantFromRow(row));
+    }
+
+    /** Read immutable revocation facts and fail closed on an orphan/corrupt link. */
+    async listCapabilityRevocations(missionId: string): Promise<MissionCapabilityRevocation[]> {
+        const rows = this.stmt(
+            "list_capability_revocations",
+            `SELECT revocation_id, mission_id, grant_id, revoker_client_id,
+                    revoker_credential_generation, revoker_authority_epoch,
+                    revoked_at, created_at, fingerprint
+             FROM mission_capability_revocations WHERE mission_id = ?
+             ORDER BY created_at ASC, revocation_id ASC`,
+        ).all(missionId) as MissionCapabilityRevocationRow[];
+        const grants = await this.listCapabilityGrants(missionId);
+        const grantIds = new Set(grants.map(({ grantId }) => grantId));
+        const revocations = rows.map((row) => this.capabilityRevocationFromRow(row));
+        const orphan = revocations.find((event) => !grantIds.has(event.grantId));
+        if (orphan) throw new Error(`Corrupt orphan Capability Grant revocation "${orphan.revocationId}"`);
+        return revocations;
     }
 
     async close(): Promise<void> {
@@ -1917,29 +2353,26 @@ export class SqliteMissionStore implements MissionStore, MissionAdmissionStore {
     /** Execute a function inside a BEGIN/COMMIT transaction. */
     async withTransaction<T>(fn: () => Promise<T>): Promise<T> {
         const db = this.ensureDb();
-        const previous = this.transactionQueue;
-        let release!: () => void;
-        this.transactionQueue = new Promise<void>((resolve) => {
-            release = resolve;
+        return this.withTransactionQueue(async () => {
+            db.exec("BEGIN");
+            const transactionScope = { active: true };
+            const previousMutations = this.pendingMutations;
+            const mutations: MissionMutation[] = [];
+            this.pendingMutations = mutations;
+            try {
+                const result = await this.transactionContext.run(transactionScope, fn);
+                db.exec("COMMIT");
+                this.pendingMutations = previousMutations;
+                this.dispatchMutations(mutations);
+                return result;
+            } catch (e) {
+                db.exec("ROLLBACK");
+                this.pendingMutations = previousMutations;
+                throw e;
+            } finally {
+                transactionScope.active = false;
+            }
         });
-        await previous;
-        db.exec("BEGIN");
-        const previousMutations = this.pendingMutations;
-        const mutations: MissionMutation[] = [];
-        this.pendingMutations = mutations;
-        try {
-            const result = await fn();
-            db.exec("COMMIT");
-            this.pendingMutations = previousMutations;
-            this.dispatchMutations(mutations);
-            return result;
-        } catch (e) {
-            db.exec("ROLLBACK");
-            this.pendingMutations = previousMutations;
-            throw e;
-        } finally {
-            release();
-        }
     }
 
     /** Close and (for tests) reopen to simulate restart. */
