@@ -1,15 +1,15 @@
 # Contrato de Concessão Explícita de Capabilities a Missions (Operator Capability Grant Trust Contract)
 
-> **Estado:** PROPOSAL ONLY — nenhuma implementação de produção, nenhum contrato público ratificado, nenhuma autorização concedida.
+> **Estado:** PROPOSTA PARCIALMENTE RATIFICADA — somente D03, D06, D08 e D15 aprovadas por Pedro em 2026-11-01. As outras 11 decisões e o contrato público completo permanecem `NEEDS_APPROVAL`. Não há implementação ou concessão de capabilities.
 > **Repositório:** `Anakyklos/ouroboros-runtime`
 > **Issue:** #166 (P1), epic principal #70 (M1 Local Control Plane)
-> **PR:** https://github.com/Anakyklos/ouroboros-runtime/pull/167 (revisão de review 5726098318 — REQUEST_CHANGES)
+> **PR:** https://github.com/Anakyklos/ouroboros-runtime/pull/167 (revisão técnica aprovada em `df19ece67496ad96e829cbe9ae83aa13cd998f9f`; ratificação parcial posterior)
 > **Base SHA auditado:** `4a0d6d52075bc665568e126124eb24ec8b8b2ed0` (`main`)
 > **HEAD auditado anterior:** `6163b59623762d1376e02b1e383ad1e96efe87e9` (PR #167, CI `41263958922` SUCCESS, review 5726098318 REQUEST_CHANGES)
 > **Bun (local):** `1.4.2` (CI pin: `1.3.9`)
-> **Data:** 2026-10-31
+> **Data:** 2026-11-01
 > **Branch:** `docs/166-capability-grant-trust-contract`
-> **Classificação de status:** `NEEDS_APPROVAL — proposta corrigida e pronta para nova revisão`
+> **Classificação de status:** `RATIFICAÇÃO PARCIAL — D03/D06/D08/D15 aprovadas; 11 decisões NEEDS_APPROVAL`
 
 ---
 
@@ -86,7 +86,7 @@ Toda afirmação neste documento carrega uma das seguintes classificações estr
 4. `daemon.admin` e `mission.create` **não** concedem capabilities nem ampliam limites implicitamente.
 5. `Capability Grant != Step Approval != Plan Acceptance != Dispatch Authorization`.
 
-**Decisões que exigem aprovação explícita de Pedro (DECISÃO PENDENTE):** ver §14.
+**Decisões:** D03/D06/D08/D15 ratificadas por Pedro em 2026-11-01; as demais continuam pendentes conforme §14.
 **Estado final:** `NEEDS_APPROVAL`. Nenhuma implementação de código realizada.
 
 ---
@@ -273,11 +273,11 @@ Para assegurar que nenhuma capability exerça autoridade sobre referências ou c
      - *Vantagens:* Nenhuma do ponto de vista de segurança; payload ligeiramente menor em transmissões simplórias.
      - *Desvantagens:* **Rejeitada do ponto de vista de segurança.** Viola diretamente o princípio de *least privilege*; introduz sobre-autorização silenciosa e amplia indevidamente a superfície de ataque caso um operador combine ferramentas utilitárias com dados sensíveis.
 
-**Recomendação Técnica Existente:** Recomenda-se a **Alternativa A** por oferecer a **menor complexidade técnica e relacional** (schema direto em SQL, sem objetos JSON aninhados) preservando rigorosamente *least privilege*. Caso a ergonomia de empacotamento em um único `grantId` seja considerada mandatória pela governança, a **Alternativa B** é a opção correlacionada válida. A Alternativa C é expressamente desaconselhada.
+**D15 ratificada em 2026-11-01:** Pedro selecionou a **Alternativa A** por oferecer a **menor complexidade técnica e relacional** (schema direto em SQL, sem objetos JSON aninhados) preservando rigorosamente *least privilege*. Caso a ergonomia de empacotamento em um único `grantId` seja considerada mandatória pela governança, a **Alternativa B** é a opção correlacionada válida. A Alternativa C é expressamente desaconselhada.
 
 > [!IMPORTANT]
 > **Decisão Normativa Pendente (DECISÃO PENDENTE para Pedro — §14 Decisão 15):**
-> A escolha formal entre o modelo de Grant Unitário (Alternativa A) e Grant com Bindings Agregados (Alternativa B) define o schema relacional e o contrato tipado da API. Essa decisão não é tomada unilateralmente nesta proposta e aguarda deliberação de Pedro.
+> **D15 ratificada em 2026-11-01:** Pedro escolheu o Grant Unitário Correlacionado (Alternativa A) para o v1. As Alternativas B e C permanecem documentadas apenas como opções avaliadas, não aprovadas. A definição e implementação do schema RPC seguem condicionadas às decisões de autoridade pendentes.
 
 #### 5.2.2 Predicado Formal de Autorização Correlacionada
 
@@ -585,7 +585,7 @@ Quando a operação administrativa for estritamente uma troca de credencial bear
 
 ### 6.2 Escopo de cada concessão (tupla associada autoritativa correlacionada)
 
-Conforme avaliado em §5.2, para eliminar categoricamente o produto cartesiano intra-grant, definem-se as representações tipadas correspondentes às alternativas correlacionadas submetidas à deliberação de Pedro (§14 Decisão 15):
+Conforme avaliado em §5.2, a representação unitária (Alternativa A) foi ratificada por Pedro em 2026-11-01 (D15). A representação agregada (Alternativa B) abaixo é preservada apenas para documentar a alternativa **não adotada**; não implementá-la sem nova decisão normativa:
 
 ```typescript
 // --- Associação Correlacionada Indissociável (Binding) ---
@@ -1920,9 +1920,11 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 
 ## 14. Resumo para Ratificação Normativa (Decisões que exigem aprovação de Pedro)
 
+> **Registro de autoridade:** Ratificação parcial concedida por Pedro em 2026-11-01 à proposta técnica da review GitHub `5726240917`, limitada a D03 (expiração opcional), D06 (legacy fail-closed), D08 (exclusão dos `resourceLimits` decorativos no v1) e D15 (grant unitário correlacionado — Alternativa A). As outras decisões seguem pendentes. Registro canônico: `docs/decisions/2026-11-01-capability-grants-slice-a-partial-ratification.md`.
+
 > [!IMPORTANT]
-> **Classificação de status:** `NEEDS_APPROVAL`
-> Todas as 15 decisões abaixo permanecem pendentes de deliberação normativa de Pedro. Nenhuma recomendação técnica constitui contrato público aprovado ou autorização de implementação.
+> **Classificação de status:** `RATIFICAÇÃO PARCIAL / NEEDS_APPROVAL`
+> Pedro ratificou explicitamente D03, D06, D08 e D15 em 2026-11-01, concordando com as recomendações do mantenedor para o Slice A. As outras 11 decisões continuam pendentes. Essa ratificação **não** aprova a API pública de grants, a autoridade do emissor, execução, RPC, dispatch, migrations de AuthStore ou alterações de trust model fora dessas quatro escolhas.
 
 ### 14.1 Matriz de Decisões Normativas Pendentes
 
@@ -1930,19 +1932,19 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 |---|---|---|---|---|---|:---:|
 | **D01** | **Nomenclatura do escopo de concessão** | **(1)** `mission.grant_capabilities` (dedicado);<br>**(2)** `capability.grant`;<br>**(3)** Escopo amplo (`daemon.admin`). | **Alternativa 1** (`mission.grant_capabilities` dedicado). | Escopo amplo viola least-privilege e auditabilidade; renomeações quebram tokens provisionados. | **Slice B** | `NEEDS_APPROVAL` |
 | **D02** | **Fonte de limites máximos (entitlement envelope) do grantor** | **(1)** Arquivo local de governança (`operator-limits.json`);<br>**(2)** Coluna no AuthStore (`limits_json`). | **Alternativa 1** (Arquivo local no host para M1). | Arquivo exige sincronização no host; coluna em banco acopla schema de credenciais à taxonomia de capabilities. | **Slice B**, **Slice D** | `NEEDS_APPROVAL` |
-| **D03** | **Política de expiração default para grants** | **(1)** `expiresAt` opcional (revogável a qualquer tempo);<br>**(2)** `expiresAt` mandatório com teto máximo (ex.: lease de 24h). | **Alternativa 1** (`expiresAt` opcional; governança orientada a revogação). | Grants sem expiração aumentam janela de risco se esquecidos; expiração mandatória aborta missões residentes longas. | **Slice A** | `NEEDS_APPROVAL` |
+| **D03** | **Política de expiração default para grants** | **(1)** `expiresAt` opcional (revogável a qualquer tempo);<br>**(2)** `expiresAt` mandatório com teto máximo (ex.: lease de 24h). | **Alternativa 1** (`expiresAt` opcional; governança orientada a revogação). | Grants sem expiração aumentam janela de risco se esquecidos; expiração mandatória aborta missões residentes longas. | **Slice A** | `RATIFICADA — 2026-11-01` |
 | **D04** | **Política diante de revogação de credencial do operador** | **(1)** Desativação fail-closed para novos passos (`AUTHORITY_REVOKED`);<br>**(2)** Cancelamento em cascata de missões e planos. | **Alternativa 1** (Fail-closed para novos passos sem cascata destrutiva). | Desativação sem cascata deixa missões pausadas aguardando grants; cancelamento em cascata encerra fluxos resilientes. | **Slice B**, **Slice D** | `NEEDS_APPROVAL` |
 | **D05** | **Escopo para leitura de grants (`list_capability_grants`)** | **(1)** Escopo existente `mission.read`;<br>**(2)** Escopo dedicado (ex.: `mission.grants.read`). | **Alternativa 1** (`mission.read` com sanitização estrita de projeções). | `mission.read` permite que observadores enumerem capabilities autorizadas; escopo dedicado exige mais tokens. | **Slice B** | `NEEDS_APPROVAL` |
-| **D06** | **Formato de migração para Missions legadas** | **(1)** Fail-closed estrito sem grants sintéticos;<br>**(2)** Injeção de grants sintéticos ou bypass retroativo. | **Alternativa 1** (Fail-closed estrito; histórico 100% imutável). | Grants sintéticos violam proveniência e concessão explícita; fail-closed requer novos grants se retomadas. | **Slice A** | `NEEDS_APPROVAL` |
+| **D06** | **Formato de migração para Missions legadas** | **(1)** Fail-closed estrito sem grants sintéticos;<br>**(2)** Injeção de grants sintéticos ou bypass retroativo. | **Alternativa 1** (Fail-closed estrito; histórico 100% imutável). | Grants sintéticos violam proveniência e concessão explícita; fail-closed requer novos grants se retomadas. | **Slice A** | `RATIFICADA — 2026-11-01` |
 | **D07** | **Governança de revogação cross-grantor** | **(1)** Somente emissor original ou `daemon.admin`;<br>**(2)** Qualquer cliente com `mission.grant_capabilities`. | **Alternativa 1** (Somente emissor original ou `daemon.admin`). | Revogação irrestrita entre operadores permite interferência cruzada em missões alheias sem custódia central. | **Slice B** | `NEEDS_APPROVAL` |
-| **D08** | **Remoção de limites de recursos no v1 (Alternativa A)** | **(1)** Remoção expressa do v1 (delegação a `budget_policy`);<br>**(2)** Campos decorativos no schema sem enforcement. | **Alternativa 1** (Remover de v1 para evitar *security theater*; projetar para v2). | Manter campos decorativos cria falsa sensação de segurança a operadores sem suporte durável de motor. | **Slice A** | `NEEDS_APPROVAL` |
+| **D08** | **Remoção de limites de recursos no v1 (Alternativa A)** | **(1)** Remoção expressa do v1 (delegação a `budget_policy`);<br>**(2)** Campos decorativos no schema sem enforcement. | **Alternativa 1** (Remover de v1 para evitar *security theater*; projetar para v2). | Manter campos decorativos cria falsa sensação de segurança a operadores sem suporte durável de motor. | **Slice A** | `RATIFICADA — 2026-11-01` |
 | **D09** | **High-water mark no AuthStore e Trust Boundary** | **(1)** Triggers universais + tabela `local_control_authority_epochs` + allowlist no Store (`recursive_triggers = ON`) + `chmod 0600`;<br>**(2)** Sem triggers no SQLite;<br>**(3)** Triggers sem tabela permanente. | **Alternativa 1** (Defense-in-depth com limites explícitos do host). | Triggers do SQLite não interceptam `REPLACE` sob `recursive_triggers = OFF` nem protegem contra escrita direta em arquivo. | **Slice B** | `NEEDS_APPROVAL` |
 | **D10** | **Versionamento de delivery e reserva `submitting`** | **(1)** Elevação para v2 de `CapabilityInvocationDelivery` com `submitting` e recovery durável em disco;<br>**(2)** Manter v1 sem estado pré-handoff. | **Alternativa 1** (Evolução contratual formal versionada com recovery durável). | Estado `submitting` exige recovery para não reter itens em limbo; omitir o estado mantém o seam vulnerável a crash/duplicação. | **Slice D** | `NEEDS_APPROVAL` |
 | **D11** | **Validação em runtime para dados de entrega** | **(1)** Validador estruturado de schema em runtime;<br>**(2)** Cast estático TypeScript (`JSON.parse`). | **Alternativa 1** (Validador estruturado normalizando para `uncertain`). | Types em TS são apagados em compilação; payloads imprevistos causam crashes não capturados em vez de reconciliação. | **Slice D** | `NEEDS_APPROVAL` |
 | **D12** | **Fronteira cross-database e processos (AuthStore vs. MissionStore)** | **(1)** Daemon RPC (CLI delega mutations ao daemon via loopback HTTP JSON-RPC aprovado, mantendo UDS como proposta futura);<br>**(2)** Stores Unificados no mesmo banco SQLite (`ouroboros.db`);<br>**(3)** Consistência Eventual sem SLA garantido e cancelamento best-effort. | **Opção 1** (Daemon RPC) ou **Opção 3** (Baseline pragmático com limites factuais). | Opção 3 tolera janelas onde chamadas cruzam o seam após revoke na CLI; Opção 2 requer migração de banco; Opção 1 requer daemon ativo. | **Slice B**, **Slice D** | `NEEDS_APPROVAL` |
 | **D13** | **Governança de downgrade, snapshot multi-store WAL e evidências** | **(1)** Cenário A vs B formalizados, `READ_ONLY_LOCKOUT`, isolamento `missions.v2.db`, `wal_checkpoint(TRUNCATE)` com quiescência;<br>**(2)** Restauração de backup genérica. | **Alternativa 1** (Preservação irrevogável de evidências do mundo real). | Restaurar backup antigo após efeitos externos confirmados causa replay/duplicação destrutiva de ações externas. | **Slice D** | `NEEDS_APPROVAL` |
 | **D14** | **Modelo arquitetural para redução de privilégios (`authority_epoch`)** | **Opção A:** Extinção permanente no AuthStore a cada mudança de escopo ($E \to E+1$);<br>**Opção B:** Suspensão dinâmica em runtime nos gates (época mantida);<br>**Opção C:** Modelo híbrido (avanço para escopo-raiz via `json_each`/`json_valid`; limites dinâmicos). | **Opção C** (Híbrido) ou **Opção A** (Máximo rigor determinístico). | Opção B permite reativação sem reemissão se escopos forem devolvidos; Opção A invalida grants em adições inócuas; Opção C exige triggers JSON. | **Slice B**, **Slice D** | `NEEDS_APPROVAL` |
-| **D15** | **Modelo de correlação de grant e eliminação do produto cartesiano** | **(Alt A)** Grant Unitário Correlacionado (`(capabilityId, allowedEffectClasses, allowedRefPrefixes)`);<br>**(Alt B)** Grant com Coleção de Bindings Correlacionados;<br>**(Alt C)** Listas planas com autorização explícita de produto cartesiano na política do emissor. | **Alternativa A** (Menor complexidade, menor superfície de erro relacional, preserva least privilege estrito). | Alt C amplia a superfície de autorização por produto cartesiano; Alt B aumenta a complexidade de validação e modelagem por item; Alt A exige emissão de múltiplos grants para cobrir múltiplos bindings disjuntos. | **Slice A**, **Slice B** | `NEEDS_APPROVAL` |
+| **D15** | **Modelo de correlação de grant e eliminação do produto cartesiano** | **(Alt A)** Grant Unitário Correlacionado (`(capabilityId, allowedEffectClasses, allowedRefPrefixes)`);<br>**(Alt B)** Grant com Coleção de Bindings Correlacionados;<br>**(Alt C)** Listas planas com autorização explícita de produto cartesiano na política do emissor. | **Alternativa A** (Menor complexidade, menor superfície de erro relacional, preserva least privilege estrito). | Alt C amplia a superfície de autorização por produto cartesiano; Alt B aumenta a complexidade de validação e modelagem por item; Alt A exige emissão de múltiplos grants para cobrir múltiplos bindings disjuntos. | **Slice A**, **Slice B** | `RATIFICADA — 2026-11-01` |
 
 ### 14.2 Sequenciamento Crítico e Deliberação por Slice
 
@@ -1950,14 +1952,14 @@ Para otimizar o esforço de deliberação normativa de Pedro, as decisões estã
 
 #### 14.2.1 Decisões que bloqueiam o Slice A (Ordem Imediata)
 
-As quatro decisões a seguir definem a estrutura relacional do ledger e os tipos fundamentais, sendo pré-requisitos estritos para a execução do **Slice A**:
+As quatro decisões a seguir, **ratificadas por Pedro em 2026-11-01**, delimitam o desenho do Slice A. Elas não representam autorização para iniciar automaticamente a implementação:
 
 1. **D03 (Política de expiração default):** Define se a coluna `expires_at` em `mission_capability_grants` é opcional (`TEXT NULL`) ou obrigatória (`TEXT NOT NULL`) e o predicado de validade temporal.
 2. **D06 (Migração de Missions legadas):** Ratifica o comportamento fail-closed sem grants sintéticos para missões anteriores ao ledger.
 3. **D08 (Remoção de limites de recursos no v1):** Confirma a exclusão de `resourceLimits` das tabelas e interfaces do v1, evitando schemas transitórios e retrabalho.
 4. **D15 (Modelo de correlação de grant e eliminação do produto cartesiano):** Define se a tabela `mission_capability_grants` armazena tuplas unitárias correlacionadas (`capability_id`, `allowed_effect_classes_json`, `allowed_ref_prefixes_json` — Alternativa A) ou se requer tabela de bindings dependente (Alternativa B), determinando a assinatura dos tipos em `contracts.ts` e a validação no `PlanPolicyValidator`.
 
-> **Justificativa da ordem:** O Slice A implementa exclusivamente o ledger durável no `SqliteMissionStore` e a validação atômica no `PlanPolicyValidator`, sem expor endpoints RPC. Deliberar D03, D06, D08 e D15 permite estabilizar o DDL, as migrações e os testes do Slice A sem antecipar escolhas de superfície de rede ou processos.
+> **Efeito da ratificação:** D03, D06, D08 e D15 deixam de bloquear o desenho do ledger unitário do Slice A. Qualquer implementação exige tarefa delimitada, testes e respeito aos contratos existentes; não autoriza RPC, grantor ou dispatch.
 
 #### 14.2.2 Decisões que bloqueiam o Slice B (Superfície RPC e AuthStore)
 
@@ -1991,16 +1993,16 @@ Devem ser deliberadas antes do início do **Slice D**:
 
 ### 14.3 Detalhamento Narrativo das Decisões Pendentes
 
-As seguintes questões arquiteturais e normativas permanecem em aberto e **dependem de aprovação explícita de Pedro**:
+A lista abaixo preserva a trilha das 15 decisões. **D03, D06, D08 e D15 foram ratificadas em 2026-11-01**; as outras 11 permanecem em aberto e dependem de aprovação explícita de Pedro:
 
 1. **Nomenclatura do escopo de autorização para concessão:** Adotar `mission.grant_capabilities`, `capability.grant` ou integrar em um escopo administrativo mais amplo? (Recomendação: `mission.grant_capabilities` dedicado).
 2. **Localização da fonte de limites máximos do grantor:** Optar por arquivo de configuração estático (`$OUROBOROS_DATA_DIR/security/operator-limits.json`) ou coluna adicional provisionada na tabela `local_control_clients`? (Recomendação para M1: arquivo local de governança).
-3. **Política de expiração default:** Permitir grants sem data de expiração (`expiresAt` opcional, revogável a qualquer tempo) ou exigir prazo de validade máximo mandatório (ex.: leases de 24 horas)?
+3. **D03 — RATIFICADA (2026-11-01):** `expiresAt` opcional, com revogação preservada; não se exige lease de 24 horas por padrão.
 4. **Política diante de revogação de credencial de operador:** Desativar grants emitidos para novos efeitos futuros e extinguir a época de autoridade (fail-closed, recomendado) vs. cancelamento em cascata de planos aceitos.
 5. **Escopo para leitura de grants (`mission.list_capability_grants`):** Permitir leitura com o escopo existente `mission.read` ou criar escopo específico para evitar enumeração de capabilities por clientes de telemetria básica?
-6. **Formato final de migração de Missions legadas:** Confirmar o tratamento fail-closed estrito sem criação de grants sintéticos para dados históricos.
+6. **D06 — RATIFICADA (2026-11-01):** Migração de Missions legadas estritamente fail-closed, sem grants sintéticos e sem reescrever histórico ou evidências.
 7. **Governança concorrente:** Admitir revogação cruzada (Operador B revogar grant emitido pelo Operador A) se ambos possuírem autoridade de governança, ou restringir a revogação ao emissor original e `daemon.admin`?
-8. **Ratificação da remoção de limites de recursos no v1 (Alternativa A):** Confirmar o adiamento de quotas e orçamentos dinâmicos por grant para o contrato v2, mantendo a governança no v1 via `budget_policy` da Mission.
+8. **D08 — RATIFICADA (2026-11-01):** Remover campos de `resourceLimits` sem enforcement no contrato v1; manter governança da Mission via `budget_policy`.
 9. **Modelo de armazenamento da geração monotônica de autoridade no AuthStore e delimitação de trust boundary:** Adoção dos triggers mandatórios de motor universais `prevent_client_delete`, `enforce_client_authority_epoch_insert_monotonicity` (impedindo reutilização de épocas pretéritas de clientes existentes mesmo sob exclusões implícitas de `REPLACE`), `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement` (em `local_control_authority_epochs`), tabela permanente de high-water mark `local_control_authority_epochs`, guarda contra overflow (`AUTHORITY_EPOCH_OVERFLOW`) e comando de provisionamento atômico derivando a época inicial de `COALESCE((SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = :client_id), 1)`. Delimitação formal do Trust Boundary: triggers do SQLite não interceptam exclusão implícita de `INSERT OR REPLACE` sob o default `PRAGMA recursive_triggers = OFF`, nem constituem barreira de segurança contra atacantes com privilégios de escrita arbitrária direta no arquivo SQLite. A arquitetura estabelece que a segurança reside na barreira em camadas: (a) conexão configurada com `PRAGMA recursive_triggers = ON;`, (b) allowlist estrita na store de credenciais que proíbe comandos `REPLACE` / `INSERT OR REPLACE` e exige `INSERT ... ON CONFLICT DO UPDATE`, e (c) fronteira de host com isolamento de processo e permissões restritas de arquivo (`chmod 0600`) para o arquivo `local-control-auth.db`.
 10. **Representação tipada e versionamento contratual da reserva de submissão:** Elevação formal de `CapabilityInvocationDelivery` para `CAPABILITY_INVOCATION_CONTRACT_VERSION = 2` / `MISSION_CONTRACT_VERSION = 2` contemplando o estado `"submitting"`, com query durável de recuperação em disco em `SqliteMissionStore.initialize()` convertendo para `uncertain` + `reconciliation.pending`.
 11. **Política de validação em runtime para dados de entrega:** Utilização de validador estruturado de schema em runtime em substituição ao cast estático via generic TypeScript em `rowToInvocation`.
@@ -2013,11 +2015,11 @@ As seguintes questões arquiteturais e normativas permanecem em aberto e **depen
     - **Opção A — Extinção Permanente por Avanço de `authority_epoch` no AuthStore:** Avanço atômico durável no banco ($E_{\text{new}} = E_{\text{old}} + 1$) toda vez que `scopes_json` for modificado. Invariante garantida pelo trigger `prevent_client_unauthorized_update_option_a` (que aborta mutações em `scopes_json` com `NEW.authority_epoch <= OLD.authority_epoch`) e pelo UPSERT Variante A. Grants emitidos em gerações pretéritas ($G_2$) tornam-se imediata e **permanentemente extintos** (`AUTHORITY_SUPERSEDED`). Caso os escopos sejam posteriormente restaurados pela governança, novo avanço de época é exigido ($E=3 \to E=4$), garantindo **anti-ressurreição definitiva**: $G_2$ jamais volta a autorizar passos, exigindo reemissão explícita sob a nova autoridade ($G_4$).
     - **Opção B — Suspensão Dinâmica em Runtime nos Portões de Dispatch (Gate 3 e Gate 4):** A época de autoridade é preservada durante mutações puras de escopo, conforme DDL com trigger `prevent_client_unauthorized_update_option_b` (que permite alterações em `scopes_json` mantendo a época) e UPSERT Variante B. A autorização é reavaliada dinamicamente nos gates contra o registro ativo do cliente emissor: remoção de `mission.grant_capabilities` resulta em `GRANTOR_SCOPE_REVOKED` e encolhimento de limites resulta em `GRANTOR_ENTITLEMENT_SHRUNK`. **Diferenciação essencial de garantias:** A Opção B constitui **suspensão dinâmica (bloqueio transitório) e NÃO confere extinção permanente aos grants no ledger**. Se os privilégios forem posteriormente devolvidos ao operador na mesma época de autoridade, os grants históricos emitidos ($G_2$) **voltam a satisfazer `isGrantActive` e voltam a autorizar efeitos**.
     - **Opção C — Modelo Híbrido:** Avanço mandatório de época por trigger (`prevent_client_unauthorized_update_option_c`) e UPSERT Variante C exclusivamente na remoção do escopo-raiz de governança `mission.grant_capabilities` através de verificação estrutural via `json_each` (imune a variações textuais, espaços e escapes Unicode como `\u0063`) com validação fail-closed para JSON malformado via `json_valid` (extinguindo permanentemente os grants emitidos), combinado com preservação de época e validação dinâmica contínua nos gates (Gate 3/4) para alterações granulares de escopos subsidiários ou encolhimento de envelopes de limites (`operator-limits.json`).
-15. **Modelo de correlação de grant e eliminação do produto cartesiano (P1):** Escolha normativa entre as três alternativas formalmente avaliadas no documento (§5.2):
+15. **D15 — RATIFICADA (2026-11-01):** Escolhida a Alternativa A (Grant Unitário Correlacionado) entre as três alternativas avaliadas em §5.2:
     - **Alternativa A — Grant Unitário Correlacionado (Recomendada):** Cada grant representa exatamente uma tupla correlacionada `(capabilityId, allowedEffectClasses, allowedRefPrefixes)`. O DDL físico armazena diretamente `capability_id TEXT NOT NULL` na tabela `mission_capability_grants`. O produto cartesiano intra-grant é fisicamente impossível no schema. Apresenta a menor complexidade operacional, menor superfície de erro e adere estritamente ao princípio do least privilege.
     - **Alternativa B — Coleção de Bindings Correlacionados:** O grant mantém um identificador único de operação, mas encapsula uma lista de bindings `bindings: Array<{ capabilityId, allowedEffectClasses, allowedRefPrefixes }>`. No SQLite, requer modelagem relacional 1:N (tabela-mãe de grants e tabela-filha de bindings correlacionados) ou serialização normalizada em coluna JSON com validação estrita. Permite concessão agrupada em uma única transação lógica, porém aumenta a complexidade de validação por item e o custo de indexação/redução.
     - **Alternativa C — Listas Independentes com Autorização Explícita de Produto Cartesiano:** Mantém listas independentes dentro do grant (`capabilityIds`, `allowedEffectClasses`, `allowedRefPrefixes`) **apenas se** o emissor possuir autorização expressa em sua política (`allowCartesianExpansion: true`) e o grant declarar consentimento explícito. Rejeitada como padrão por ampliar a superfície de ataque e contrariar o modelo de privilégio mínimo.
-    - **Recomendação técnica:** Alternativa A pela simplicidade, transparência forense e impossibilidade estrutural de autorização combinatória não demonstrada. A decisão formal entre A, B ou C permanece pendente de aprovação de Pedro.
+    - **Decisão normativa D15 (2026-11-01):** Alternativa A ratificada por Pedro pela simplicidade e transparência forense. B e C não foram ratificadas; não introduzir modo combinado sem nova decisão.
 
 ---
 
@@ -2063,4 +2065,4 @@ Este documento constitui exclusivamente uma **proposta de contrato de confiança
 
 Toda implementação futura permanece estritamente condicionada à aprovação formal de Pedro para as decisões da §14 e à execução faseada através dos slices propostos na §13.
 
-**Estado da tarefa: NEEDS_APPROVAL — proposta corrigida e fundamentada, aguardando revisão do mantenedor e ratificação normativa de Pedro.**
+**Estado da tarefa: RATIFICAÇÃO PARCIAL — D03/D06/D08/D15 aprovadas por Pedro em 2026-11-01; demais decisões NEEDS_APPROVAL. Nenhum grant implementado. Issue #166 permanece aberta para deliberação restante.**
