@@ -215,10 +215,24 @@ export class LocalControlCredentialStore {
 
       const columns = this.db.query("PRAGMA table_info(local_control_clients)").all() as Array<{ name: string }>;
       const names = new Set(columns.map(({ name }) => name));
-      if (!names.has("authority_epoch")) {
+      const hasAuthorityEpoch = names.has("authority_epoch");
+      const hasCredentialGeneration = names.has("credential_generation");
+      const hasAuthorityHistoryTable = Boolean(this.db.query(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'local_control_authority_epochs'
+      `).get());
+      const isLegacySchema = !hasAuthorityEpoch && !hasCredentialGeneration && !hasAuthorityHistoryTable;
+      // The additive migration is transactional; one new ordinal column without history is its recognizable partial state.
+      const isPartialMigration = hasAuthorityEpoch !== hasCredentialGeneration && !hasAuthorityHistoryTable;
+      const isFullyMigrated = hasAuthorityEpoch && hasCredentialGeneration && hasAuthorityHistoryTable;
+      const canBootstrapAuthorityHistory = isLegacySchema || isPartialMigration;
+      if (!canBootstrapAuthorityHistory && !isFullyMigrated) {
+        throw new Error("Local-control authority schema is inconsistent");
+      }
+
+      if (!hasAuthorityEpoch) {
         this.db.exec("ALTER TABLE local_control_clients ADD COLUMN authority_epoch INTEGER NOT NULL DEFAULT 1");
       }
-      if (!names.has("credential_generation")) {
+      if (!hasCredentialGeneration) {
         this.db.exec("ALTER TABLE local_control_clients ADD COLUMN credential_generation INTEGER NOT NULL DEFAULT 1");
       }
 
@@ -232,31 +246,40 @@ export class LocalControlCredentialStore {
       `);
 
       this.assertValidStoredAuthorityState();
-      this.db.exec(`
-        INSERT INTO local_control_authority_epochs (client_id, max_epoch)
-        SELECT client_id, authority_epoch FROM local_control_clients AS clients
-        WHERE NOT EXISTS (
-          SELECT 1 FROM local_control_authority_epochs AS epochs WHERE epochs.client_id = clients.client_id
-        )
-      `);
-      this.db.exec(`
-        UPDATE local_control_authority_epochs
-        SET max_epoch = (
-          SELECT authority_epoch FROM local_control_clients
-          WHERE local_control_clients.client_id = local_control_authority_epochs.client_id
-        )
-        WHERE EXISTS (
-          SELECT 1 FROM local_control_clients
-          WHERE local_control_clients.client_id = local_control_authority_epochs.client_id
-            AND local_control_authority_epochs.max_epoch < local_control_clients.authority_epoch
-        )
-      `);
+
+      const nonInitialBootstrapState = canBootstrapAuthorityHistory ? this.db.query(`
+        SELECT client_id FROM local_control_clients
+        WHERE authority_epoch != 1 OR credential_generation != 1 LIMIT 1
+      `).get() as { client_id: string } | null : null;
+      if (nonInitialBootstrapState) {
+        throw new Error("Local-control authority bootstrap has non-initial ordinals");
+      }
+
       const inconsistentHistory = this.db.query(`
         SELECT clients.client_id FROM local_control_clients AS clients
         JOIN local_control_authority_epochs AS epochs ON epochs.client_id = clients.client_id
-        WHERE epochs.max_epoch > clients.authority_epoch LIMIT 1
+        WHERE epochs.max_epoch != clients.authority_epoch LIMIT 1
       `).get() as { client_id: string } | null;
       if (inconsistentHistory) throw new Error("Local-control authority history is inconsistent");
+
+      const missingHistory = this.db.query(`
+        SELECT clients.client_id FROM local_control_clients AS clients
+        LEFT JOIN local_control_authority_epochs AS epochs ON epochs.client_id = clients.client_id
+        WHERE epochs.client_id IS NULL LIMIT 1
+      `).get() as { client_id: string } | null;
+      if (isFullyMigrated && missingHistory) {
+        throw new Error("Local-control authority history is missing a high-water mark");
+      }
+      if (canBootstrapAuthorityHistory) {
+        // Bootstrap only absent legacy history; existing high-water values are never reconstructed from client rows.
+        this.db.exec(`
+          INSERT INTO local_control_authority_epochs (client_id, max_epoch)
+          SELECT client_id, authority_epoch FROM local_control_clients AS clients
+          WHERE NOT EXISTS (
+            SELECT 1 FROM local_control_authority_epochs AS epochs WHERE epochs.client_id = clients.client_id
+          )
+        `);
+      }
 
       this.installIntegrityTriggers();
       this.db.exec("COMMIT");

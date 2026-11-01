@@ -65,6 +65,22 @@ function highWaterMark(database: Database, clientId: string): number | null {
   return row?.max_epoch ?? null;
 }
 
+function authStoreSnapshot(database: Database): {
+  clients: unknown[];
+  epochs: unknown[];
+  schema: unknown[];
+} {
+  return {
+    clients: database.query("SELECT * FROM local_control_clients ORDER BY client_id").all(),
+    epochs: database.query("SELECT * FROM local_control_authority_epochs ORDER BY client_id").all(),
+    schema: database.query(`
+      SELECT type, name, tbl_name, sql FROM sqlite_master
+      WHERE type IN ('table', 'trigger') AND name NOT LIKE 'sqlite_%'
+      ORDER BY type, name
+    `).all(),
+  };
+}
+
 function tokenHash(token: string): string {
   const secret = token.split(".")[2];
   if (!secret) throw new Error("Fixture token has no secret");
@@ -175,6 +191,77 @@ describe("LocalControlCredentialStore authority facts (real SQLite)", () => {
     });
     expect(highWaterMark(databaseFor(recovered), "partial-migration")).toBe(1);
     recovered.close();
+  });
+
+  it("rejects an existing high-water mark below its client epoch without rewriting database state", async () => {
+    const directory = await newDirectory();
+    const databasePath = join(directory, "private", "auth.db");
+    const store = new LocalControlCredentialStore(databasePath);
+    store.provision("inconsistent-history", ["mission.read"], Date.now() + 60_000);
+    store.provision("inconsistent-history", ["mission.control"], Date.now() + 60_000);
+    store.close();
+
+    const tampered = new Database(databasePath);
+    tampered.exec("DROP TRIGGER prevent_authority_epochs_update_decrement");
+    tampered.query("UPDATE local_control_authority_epochs SET max_epoch = 1 WHERE client_id = ?").run("inconsistent-history");
+    const beforeRejectedOpen = authStoreSnapshot(tampered);
+    tampered.close();
+
+    let opened: LocalControlCredentialStore | undefined;
+    let openError: unknown;
+    try {
+      opened = new LocalControlCredentialStore(databasePath);
+    } catch (error) {
+      openError = error;
+    }
+    opened?.close();
+
+    const afterRejectedOpen = new Database(databasePath);
+    const stateAfterRejectedOpen = authStoreSnapshot(afterRejectedOpen);
+    afterRejectedOpen.close();
+
+    expect({
+      rejection: openError instanceof Error ? openError.message : null,
+      stateAfterRejectedOpen,
+    }).toEqual({
+      rejection: "Local-control authority history is inconsistent",
+      stateAfterRejectedOpen: beforeRejectedOpen,
+    });
+  });
+
+  it("does not recreate a missing high-water record in an already-migrated database", async () => {
+    const directory = await newDirectory();
+    const databasePath = join(directory, "private", "auth.db");
+    const store = new LocalControlCredentialStore(databasePath);
+    store.provision("missing-history", ["mission.read"], Date.now() + 60_000);
+    store.close();
+
+    const tampered = new Database(databasePath);
+    tampered.exec("DROP TRIGGER prevent_authority_epochs_delete");
+    tampered.query("DELETE FROM local_control_authority_epochs WHERE client_id = ?").run("missing-history");
+    const beforeRejectedOpen = authStoreSnapshot(tampered);
+    tampered.close();
+
+    let opened: LocalControlCredentialStore | undefined;
+    let openError: unknown;
+    try {
+      opened = new LocalControlCredentialStore(databasePath);
+    } catch (error) {
+      openError = error;
+    }
+    opened?.close();
+
+    const afterRejectedOpen = new Database(databasePath);
+    const stateAfterRejectedOpen = authStoreSnapshot(afterRejectedOpen);
+    afterRejectedOpen.close();
+
+    expect({
+      rejection: openError instanceof Error ? openError.message : null,
+      stateAfterRejectedOpen,
+    }).toEqual({
+      rejection: "Local-control authority history is missing a high-water mark",
+      stateAfterRejectedOpen: beforeRejectedOpen,
+    });
   });
 
   it("fails closed and rolls the migration back when legacy scope JSON is corrupt", async () => {
