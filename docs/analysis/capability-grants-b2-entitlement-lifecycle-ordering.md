@@ -12,7 +12,7 @@
 | Classe | Fato auditado |
 |---|---|
 | CURRENT | origin/main estava em a4564d4cf650d9b1b11ed062500966150ffbecae. O CI pós-merge desse SHA é [run 41340145287](https://github.com/Anakyklos/ouroboros-runtime/actions/runs/41340145287), success. O worktree B2-1 foi criado desse SHA; o checkout compartilhado não foi alterado. |
-| CURRENT | O ledger inerte do Slice A está em ab2be0e45192390c7f925e7b366cfe519565ec94 (PR #168). B1 está em 17b94f1c2a0076b41b6965c40f42c4bca09847a8 (PR [#172](https://github.com/Anakyklos/ouroboros-runtime/pull/172)). |
+| CURRENT | O ledger inerte do Slice A está em ab2be0e45192390c7f925e7b366cfe519565ec94 (issue #168 / PR #169). B1 está em 17b94f1c2a0076b41b6965c40f42c4bca09847a8 (PR [#172](https://github.com/Anakyklos/ouroboros-runtime/pull/172)). |
 | RATIFIED | O ADR do Slice A aprova D03, D06, D08 e D15; o ADR B1 aprova D09 opção 1 e D14 opção A, apenas para gerações/épocas internas e mudança de scopes. Ver [ADR Slice A](../decisions/2026-11-01-capability-grants-slice-a-partial-ratification.md) e [ADR B1](../decisions/2026-11-01-authstore-authority-generations-b1-ratification.md). |
 | NEEDS_APPROVAL | D01, D02, D04, D05, D07, D10, D11, D12 e D13 continuam pendentes. A recomendação de mission.grant_capabilities e limits_json na PR #173 não é ratificação. |
 | CURRENT | Não existe emissão operacional de grants, entitlement source, RPC de grant, validação de grant no MissionEngine ou enforcement na policy/dispatch. A matriz de scopes contém apenas mission.read, mission.control, mission.create e daemon.admin ([contrato](../../shared/local-control-auth-contract.ts#L1-L9)). |
