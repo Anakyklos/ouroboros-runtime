@@ -5,7 +5,7 @@
 > **Issue:** #166 (P1), epic principal #70 (M1 Local Control Plane)
 > **PR:** https://github.com/Anakyklos/ouroboros-runtime/pull/167 (revisão de review 5725513117)
 > **Base SHA auditado:** `4a0d6d52075bc665568e126124eb24ec8b8b2ed0` (`main`)
-> **HEAD auditado anterior:** `7042790c572f81990f8a6ed7dc2d9b58eedf922b`
+> **HEAD auditado anterior:** `e9043e2929d84e265c5f203c3b0aacee4d4c53f5` (PR #167, CI `41259991432` SUCCESS)
 > **Bun (local):** `1.4.2` (CI pin: `1.3.9`)
 > **Data:** 2026-10-31
 > **Branch:** `docs/166-capability-grant-trust-contract`
@@ -83,7 +83,7 @@ Toda afirmação neste documento carrega uma das seguintes classificações estr
 ### 2.1 Referência Git e auditoria de HEAD
 
 - **Base SHA auditado:** `4a0d6d52075bc665568e126124eb24ec8b8b2ed0` (`main`).
-- **HEAD auditado anterior:** `0a06672c3827f97b0ed72365ccd0be13df5775c4` (PR #167, review `5725099179`).
+- **HEAD auditado anterior:** `e9043e2929d84e265c5f203c3b0aacee4d4c53f5` (PR #167, CI `41259991432` SUCCESS, review técnico APPROVED com observação P2).
 - **Branch de trabalho:** `docs/166-capability-grant-trust-contract`.
 - **Arquivos modificados:** Exclusivamente `docs/analysis/operator-capability-grant-trust-contract-2026-10-29.md`.
 
@@ -718,10 +718,10 @@ Para resolver integralmente essa inconsistência sem recorrer a timestamps de re
    ALTER TABLE local_control_clients ADD COLUMN credential_version INTEGER NOT NULL DEFAULT 1;
 
    -- Tabela durável de salvaguarda e high-water mark permanente (retenção perpétua)
-   CREATE TABLE IF NOT EXISTS local_control_authority_epochs (\
-     client_id TEXT PRIMARY KEY,\
-     max_epoch INTEGER NOT NULL\
-   );\
+   CREATE TABLE IF NOT EXISTS local_control_authority_epochs (
+     client_id TEXT PRIMARY KEY,
+     max_epoch INTEGER NOT NULL
+   );
 
    -- Triggers mandatários universais no SQLite (comuns a todas as opções)
    CREATE TRIGGER IF NOT EXISTS prevent_client_delete
@@ -1606,7 +1606,75 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 
 ---
 
-## 14. Decisões que exigem aprovação de Pedro (DECISÃO PENDENTE)
+## 14. Resumo para Ratificação Normativa (Decisões que exigem aprovação de Pedro)
+
+> [!IMPORTANT]
+> **Classificação de status:** `NEEDS_APPROVAL`
+> Todas as 14 decisões abaixo permanecem pendentes de deliberação normativa de Pedro. Nenhuma recomendação técnica constitui contrato público aprovado ou autorização de implementação.
+
+### 14.1 Matriz de Decisões Normativas Pendentes
+
+| ID | Decisão Pendente | Alternativas Disponíveis | Recomendação Técnica Existente | Risco Principal | Slice Dependente | Status |
+|---|---|---|---|---|---|:---:|
+| **D01** | **Nomenclatura do escopo de concessão** | **(1)** `mission.grant_capabilities` (dedicado);<br>**(2)** `capability.grant`;<br>**(3)** Escopo amplo (`daemon.admin`). | **Alternativa 1** (`mission.grant_capabilities` dedicado). | Escopo amplo viola least-privilege e auditabilidade; renomeações quebram tokens provisionados. | **Slice B** | `NEEDS_APPROVAL` |
+| **D02** | **Fonte de limites máximos (entitlement envelope) do grantor** | **(1)** Arquivo local de governança (`operator-limits.json`);<br>**(2)** Coluna no AuthStore (`limits_json`). | **Alternativa 1** (Arquivo local no host para M1). | Arquivo exige sincronização no host; coluna em banco acopla schema de credenciais à taxonomia de capabilities. | **Slice B**, **Slice D** | `NEEDS_APPROVAL` |
+| **D03** | **Política de expiração default para grants** | **(1)** `expiresAt` opcional (revogável a qualquer tempo);<br>**(2)** `expiresAt` mandatório com teto máximo (ex.: lease de 24h). | **Alternativa 1** (`expiresAt` opcional; governança orientada a revogação). | Grants sem expiração aumentam janela de risco se esquecidos; expiração mandatória aborta missões residentes longas. | **Slice A** | `NEEDS_APPROVAL` |
+| **D04** | **Política diante de revogação de credencial do operador** | **(1)** Desativação fail-closed para novos passos (`AUTHORITY_REVOKED`);<br>**(2)** Cancelamento em cascata de missões e planos. | **Alternativa 1** (Fail-closed para novos passos sem cascata destrutiva). | Desativação sem cascata deixa missões pausadas aguardando grants; cancelamento em cascata encerra fluxos resilientes. | **Slice B**, **Slice D** | `NEEDS_APPROVAL` |
+| **D05** | **Escopo para leitura de grants (`list_capability_grants`)** | **(1)** Escopo existente `mission.read`;<br>**(2)** Escopo dedicado (ex.: `mission.grants.read`). | **Alternativa 1** (`mission.read` com sanitização estrita de projeções). | `mission.read` permite que observadores enumerem capabilities autorizadas; escopo dedicado exige mais tokens. | **Slice B** | `NEEDS_APPROVAL` |
+| **D06** | **Formato de migração para Missions legadas** | **(1)** Fail-closed estrito sem grants sintéticos;<br>**(2)** Injeção de grants sintéticos ou bypass retroativo. | **Alternativa 1** (Fail-closed estrito; histórico 100% imutável). | Grants sintéticos violam proveniência e concessão explícita; fail-closed requer novos grants se retomadas. | **Slice A** | `NEEDS_APPROVAL` |
+| **D07** | **Governança de revogação cross-grantor** | **(1)** Somente emissor original ou `daemon.admin`;<br>**(2)** Qualquer cliente com `mission.grant_capabilities`. | **Alternativa 1** (Somente emissor original ou `daemon.admin`). | Revogação irrestrita entre operadores permite interferência cruzada em missões alheias sem custódia central. | **Slice B** | `NEEDS_APPROVAL` |
+| **D08** | **Remoção de limites de recursos no v1 (Alternativa A)** | **(1)** Remoção expressa do v1 (delegação a `budget_policy`);<br>**(2)** Campos decorativos no schema sem enforcement. | **Alternativa 1** (Remover de v1 para evitar *security theater*; projetar para v2). | Manter campos decorativos cria falsa sensação de segurança a operadores sem suporte durável de motor. | **Slice A** | `NEEDS_APPROVAL` |
+| **D09** | **High-water mark no AuthStore e Trust Boundary** | **(1)** Triggers universais + tabela `local_control_authority_epochs` + allowlist no Store (`recursive_triggers = ON`) + `chmod 0600`;<br>**(2)** Sem triggers no SQLite;<br>**(3)** Triggers sem tabela permanente. | **Alternativa 1** (Defense-in-depth com limites explícitos do host). | Triggers do SQLite não interceptam `REPLACE` sob `recursive_triggers = OFF` nem protegem contra escrita direta em arquivo. | **Slice B** | `NEEDS_APPROVAL` |
+| **D10** | **Versionamento de delivery e reserva `submitting`** | **(1)** Elevação para v2 de `CapabilityInvocationDelivery` com `submitting` e recovery durável em disco;<br>**(2)** Manter v1 sem estado pré-handoff. | **Alternativa 1** (Evolução contratual formal versionada com recovery durável). | Estado `submitting` exige recovery para não reter itens em limbo; omitir o estado mantém o seam vulnerável a crash/duplicação. | **Slice D** | `NEEDS_APPROVAL` |
+| **D11** | **Validação em runtime para dados de entrega** | **(1)** Validador estruturado de schema em runtime;<br>**(2)** Cast estático TypeScript (`JSON.parse`). | **Alternativa 1** (Validador estruturado normalizando para `uncertain`). | Types em TS são apagados em compilação; payloads imprevistos causam crashes não capturados em vez de reconciliação. | **Slice D** | `NEEDS_APPROVAL` |
+| **D12** | **Fronteira cross-database e processos (AuthStore vs. MissionStore)** | **(1)** Daemon RPC (CLI delega mutations via UDS);<br>**(2)** Stores Unificados no mesmo banco SQLite (`ouroboros.db`);<br>**(3)** Consistência Eventual sem SLA garantido e cancelamento best-effort. | **Opção 1** (Daemon RPC) ou **Opção 3** (Baseline pragmático com limites factuais). | Opção 3 tolera janelas onde chamadas cruzam o seam após revoke na CLI; Opção 2 requer migração de banco; Opção 1 requer daemon ativo. | **Slice B**, **Slice D** | `NEEDS_APPROVAL` |
+| **D13** | **Governança de downgrade, snapshot multi-store WAL e evidências** | **(1)** Cenário A vs B formalizados, `READ_ONLY_LOCKOUT`, isolamento `missions.v2.db`, `wal_checkpoint(TRUNCATE)` com quiescência;<br>**(2)** Restauração de backup genérica. | **Alternativa 1** (Preservação irrevogável de evidências do mundo real). | Restaurar backup antigo após efeitos externos confirmados causa replay/duplicação destrutiva de ações externas. | **Slice D** | `NEEDS_APPROVAL` |
+| **D14** | **Modelo arquitetural para redução de privilégios (`authority_epoch`)** | **Opção A:** Extinção permanente no AuthStore a cada mudança de escopo ($E \to E+1$);<br>**Opção B:** Suspensão dinâmica em runtime nos gates (época mantida);<br>**Opção C:** Modelo híbrido (avanço para escopo-raiz via `json_each`/`json_valid`; limites dinâmicos). | **Opção C** (Híbrido) ou **Opção A** (Máximo rigor determinístico). | Opção B permite reativação sem reemissão se escopos forem devolvidos; Opção A invalida grants em adições inócuas; Opção C exige triggers JSON. | **Slice B**, **Slice D** | `NEEDS_APPROVAL` |
+
+### 14.2 Sequenciamento Crítico e Deliberação por Slice
+
+Para otimizar o esforço de deliberação normativa de Pedro, as decisões estão particionadas conforme o cronograma de implementação:
+
+#### 14.2.1 Decisões que bloqueiam o Slice A (Ordem Imediata)
+
+As três decisões a seguir definem a estrutura relacional do ledger e os tipos fundamentais, sendo pré-requisitos estritos para a execução do **Slice A**:
+
+1. **D03 (Política de expiração default):** Define se a coluna `expires_at` em `mission_capability_grants` é opcional (`TEXT NULL`) ou obrigatória (`TEXT NOT NULL`) e o predicado de validade temporal.
+2. **D06 (Migração de Missions legadas):** Ratifica o comportamento fail-closed sem grants sintéticos para missões anteriores ao ledger.
+3. **D08 (Remoção de limites de recursos no v1):** Confirma a exclusão de `resourceLimits` das tabelas e interfaces do v1, evitando schemas transitórios e retrabalho.
+
+> **Justificativa da ordem:** O Slice A implementa exclusivamente o ledger durável no `SqliteMissionStore` e a validação atômica no `PlanPolicyValidator`, sem expor endpoints RPC. Deliberar D03, D06 e D08 permite estabilizar o DDL e os testes do Slice A sem antecipar escolhas de superfície de rede ou processos.
+
+#### 14.2.2 Decisões que bloqueiam o Slice B (Superfície RPC e AuthStore)
+
+Podem ser deliberadas após a conclusão do Slice A, mas são obrigatórias antes de iniciar o **Slice B**:
+
+1. **D01 (Nomenclatura do escopo de concessão):** Define o identificador do escopo registrado no Daemon.
+2. **D02 (Fonte de limites do grantor):** Define se a admissão de grants consulta arquivo de configuração ou coluna de banco.
+3. **D05 (Escopo de leitura de grants):** Define a autorização necessária para a rota `mission.list_capability_grants`.
+4. **D07 (Governança cross-grantor):** Define as regras de autorização no endpoint de revogação.
+5. **D09 (Modelo do AuthStore e Trust Boundary):** Define as migrations de schema e triggers da tabela `local_control_clients` e `local_control_authority_epochs`.
+6. **D12 (Fronteira cross-DB CLI/Daemon):** Determina se a CLI administrativa invoca o Daemon via RPC ou mantém escrita direta com consistência eventual.
+7. **D14 (Opções A, B ou C de `authority_epoch`):** Determina o DDL e trigger exato de atualização no AuthStore.
+
+> **Justificativa da ordem:** O Slice B materializa as operações administrativas e o ciclo de vida de operadores. Nenhuma dessas escolhas afeta o armazenamento físico de grants do Slice A.
+
+#### 14.2.3 Decisões que bloqueiam o Slice C (Planejamento e Aceitação)
+
+- O Slice C não introduz novas decisões normativas exclusivas; ele consome a validação por tupla estabelecida no Slice A e fecha as janelas de corrida 1 e 2 em `proposePlan()` e `acceptPlan()`.
+
+#### 14.2.4 Decisões que bloqueiam o Slice D (Dispatch, Handoff e Resiliência)
+
+Devem ser deliberadas antes do início do **Slice D**:
+
+1. **D04 (Política diante de revogação de operador):** Define o comportamento do Gate 4 ao despachar passos de operadores revogados.
+2. **D10 (Versionamento e estado `submitting`):** Eleva formalmente o contrato de delivery e implementa a query de recovery durável pós-crash em `SqliteMissionStore.initialize()`.
+3. **D11 (Validador de runtime para delivery):** Implementa a barreira contra tipos corrompidos ou desconhecidos no leitor de invocações.
+4. **D13 (Governança de downgrade e snapshot WAL):** Institui as salvaguardas operacionais de isolamento físico de arquivos (`missions.v2.db`), procedimento de checkpoint multi-store e `READ_ONLY_LOCKOUT`.
+
+> **Justificativa da ordem:** O Slice D lida com o mundo real e a transmissão física de efeitos externos. O isolamento dessas decisões garante que a execução externa só seja implementada após os ledgers e endpoints estarem consolidados.
+
+### 14.3 Detalhamento Narrativo das Decisões Pendentes
 
 As seguintes questões arquiteturais e normativas permanecem em aberto e **dependem de aprovação explícita de Pedro**:
 
