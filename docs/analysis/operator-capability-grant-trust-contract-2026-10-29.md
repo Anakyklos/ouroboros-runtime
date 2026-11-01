@@ -1,6 +1,6 @@
 # Contrato de Concessão Explícita de Capabilities a Missions (Operator Capability Grant Trust Contract)
 
-> **Estado:** PROPOSTA PARCIALMENTE RATIFICADA — D03/D06/D08/D15 aprovadas para Slice A e D09 (opção 1)/D14 (opção A) aprovadas para o desenho interno B1 em 2026-11-01. As outras nove decisões e o contrato público permanecem `NEEDS_APPROVAL`. Slice A está implementado na `main` via PR #169; B1 e a concessão operacional de capabilities não estão implementados. Fonte normativa B1: `docs/decisions/2026-11-01-authstore-authority-generations-b1-ratification.md`.
+> **Estado:** PROPOSTA PARCIALMENTE RATIFICADA — D03/D06/D08/D15 aprovadas para Slice A e D09 (opção 1)/D14 (opção A) aprovadas para o desenho interno B1 em 2026-11-01. As outras nove decisões e o contrato público permanecem `NEEDS_APPROVAL`. Slice A está implementado na `main` via PR #169; B1 foi implementado posteriormente pela PR #172; concessão operacional de capabilities não está implementada. Fonte normativa B1: `docs/decisions/2026-11-01-authstore-authority-generations-b1-ratification.md`.
 > **Repositório:** `Anakyklos/ouroboros-runtime`
 > **Issue:** #166 (P1), epic principal #70 (M1 Local Control Plane)
 > **PR:** https://github.com/Anakyklos/ouroboros-runtime/pull/167 (revisão técnica aprovada em `df19ece67496ad96e829cbe9ae83aa13cd998f9f`; ratificação parcial posterior)
@@ -10,6 +10,8 @@
 > **Data:** 2026-11-01
 > **Branch:** `docs/166-capability-grant-trust-contract`
 > **Classificação de status:** `RATIFICAÇÃO PARCIAL — D03/D06/D08/D15 + D09/D14 aprovadas em escopos distintos; nove decisões NEEDS_APPROVAL`
+
+> **Nota de supersessão factual (baseline `a4564d4cf650d9b1b11ed062500966150ffbecae`):** referências neste documento a B1 como não implementado descrevem o estado anterior à PR #172 (`17b94f1c2a0076b41b6965c40f42c4bca09847a8`). A implementação interna B1 está na `main`; isso não ratifica D02, não cria entitlement e não autoriza RPC ou emissão operacional. As seções de alternativas continuam subordinadas aos ADRs ratificados posteriores.
 
 ---
 
@@ -2061,8 +2063,8 @@ A lista abaixo preserva a trilha das 15 decisões. **D03, D06, D08 e D15 (Slice 
 
 ## Nota final
 
-Este documento contém **análise arquitetural parcialmente ratificada**: D03/D06/D08/D15 para Slice A e D09 opção 1 / D14 opção A para B1 interno. Nove decisões continuam `NEEDS_APPROVAL`. Este arquivo é documental; o Slice A foi implementado na PR #169, enquanto o B1 e a emissão operacional de grants continuam não implementados.
+Este documento contém **análise arquitetural parcialmente ratificada**: D03/D06/D08/D15 para Slice A e D09 opção 1 / D14 opção A para B1 interno. Nove decisões continuam `NEEDS_APPROVAL`. Este arquivo é documental; o Slice A foi implementado na PR #169 e o B1 interno foi integrado na PR #172. A emissão operacional de grants continua não implementada.
 
 A implementação futura exige autorização operacional delimitada, testes e gates próprios. As decisões ainda pendentes na §14 exigem ratificação de Pedro antes das superfícies afetadas, respeitando a decomposição de slices da §13.
 
-**Estado da tarefa: RATIFICAÇÃO PARCIAL — D03/D06/D08/D15 + D09/D14 aprovadas em escopos distintos em 2026-11-01; nove decisões NEEDS_APPROVAL. Ledger inerte do Slice A implementado; nenhuma concessão operacional implementada. Issue #166 permanece aberta.**
+**Estado da tarefa: RATIFICAÇÃO PARCIAL — D03/D06/D08/D15 + D09/D14 aprovadas em escopos distintos em 2026-11-01; nove decisões NEEDS_APPROVAL. Ledger inerte do Slice A e primitivas internas B1 estão implementados; nenhuma concessão operacional foi implementada. Issue #166 permanece aberta.**

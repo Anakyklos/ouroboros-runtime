@@ -1,7 +1,7 @@
 # ADR — Ratificação D09/D14: gerações e épocas de autoridade no AuthStore (B1)
 
 - **Data:** 2026-11-01
-- **Estado:** RATIFICADA — D09 opção 1 e D14 opção A; implementação ainda pendente
+- **Estado na ratificação:** RATIFICADA — D09 opção 1 e D14 opção A; implementação ainda pendente naquele momento
 - **Autoridade normativa:** Pedro, aprovação explícita na conversa do projeto em 2026-11-01 da recomendação do mantenedor para estas duas decisões e somente para o Slice B1.
 - **Rastreamento:** issue #166; epic #70; Slice A issue #168 / PR #169 já integrado à `main`.
 - **Fonte das alternativas:** `docs/analysis/operator-capability-grant-trust-contract-2026-10-29.md`, §§6.1, 8.4, 12, 13 e 14.
@@ -51,3 +51,7 @@ B1 pode introduzir migrações **aditivas, idempotentes e recuperáveis** do Aut
 - Nenhuma integração operacional de grants, ampliação de scopes, execução externa ou segredo exposto.
 
 **Critério de conclusão:** somente após revisão independente, gates comprovados, merge em `main`, confirmação pós-merge e issue B1 atualizada; a ratificação documental não é implementação.
+
+## Nota de supersessão factual pós-merge (2026-11-01)
+
+O status de implementação pendente acima registrava o estado no momento da ratificação. B1 foi posteriormente integrado pela PR [#172](https://github.com/Anakyklos/ouroboros-runtime/pull/172), commit `17b94f1c2a0076b41b6965c40f42c4bca09847a8`, presente no baseline `a4564d4cf650d9b1b11ed062500966150ffbecae`. Esta nota atualiza apenas o status factual de implementação; D09/D14 conservam exatamente o alcance ratificado neste ADR. Entitlement, RPC e emissão operacional continuam não autorizados.

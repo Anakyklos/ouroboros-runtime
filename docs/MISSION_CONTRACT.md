@@ -137,11 +137,14 @@ remain pending. The authentication contract's `credentialVersion` and any
 `token_hash` are not copied into Mission storage. A later ratified slice must
 provide the trusted provenance source before this predicate can authorize.
 
-The only ratified grant choices implemented here are D03 (optional expiry),
-D06 (legacy fail-closed), D08 (no decorative grant resource limits; Mission
+The ratified Slice A choices implemented here are D03 (optional expiry), D06
+(legacy fail-closed), D08 (no decorative grant resource limits; Mission
 `budgetPolicy` remains), and D15 alternative A (unit grants with correlated
-effects and references). D01, D02, D04, D05, D07, D09–D14 remain
-`NEEDS_APPROVAL`; this ledger does not settle them or expose grant issuance.
+effects and references). D09 option 1 and D14 option A were subsequently
+ratified for the internal AuthStore generations/scopes in the B1 ADR; that
+ratification does not add an entitlement source or activate this ledger.
+D01, D02, D04, D05, D07, D10, D11, D12 and D13 remain `NEEDS_APPROVAL`.
+This ledger does not expose grant issuance.
 
 ## Mission state
 
