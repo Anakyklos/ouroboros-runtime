@@ -276,7 +276,7 @@ Para assegurar que nenhuma capability exerça autoridade sobre referências ou c
 **D15 ratificada em 2026-11-01:** Pedro selecionou a **Alternativa A** por oferecer a **menor complexidade técnica e relacional** (schema direto em SQL, sem objetos JSON aninhados) preservando rigorosamente *least privilege*. Caso a ergonomia de empacotamento em um único `grantId` seja considerada mandatória pela governança, a **Alternativa B** é a opção correlacionada válida. A Alternativa C é expressamente desaconselhada.
 
 > [!IMPORTANT]
-> **Decisão Normativa Pendente (DECISÃO PENDENTE para Pedro — §14 Decisão 15):**
+> **Decisão D15 RATIFICADA por Pedro em 2026-11-01 (Alternativa A — §14):**
 > **D15 ratificada em 2026-11-01:** Pedro escolheu o Grant Unitário Correlacionado (Alternativa A) para o v1. As Alternativas B e C permanecem documentadas apenas como opções avaliadas, não aprovadas. A definição e implementação do schema RPC seguem condicionadas às decisões de autoridade pendentes.
 
 #### 5.2.2 Predicado Formal de Autorização Correlacionada
@@ -1950,7 +1950,7 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 
 Para otimizar o esforço de deliberação normativa de Pedro, as decisões estão particionadas conforme o cronograma de implementação:
 
-#### 14.2.1 Decisões que bloqueiam o Slice A (Ordem Imediata)
+#### 14.2.1 Decisões de desenho já ratificadas para o Slice A (2026-11-01)
 
 As quatro decisões a seguir, **ratificadas por Pedro em 2026-11-01**, delimitam o desenho do Slice A. Elas não representam autorização para iniciar automaticamente a implementação:
 
@@ -1972,7 +1972,7 @@ Podem ser deliberadas após a conclusão do Slice A, mas são obrigatórias ante
 5. **D09 (Modelo do AuthStore e Trust Boundary):** Define as migrations de schema e triggers da tabela `local_control_clients` e `local_control_authority_epochs`.
 6. **D12 (Fronteira cross-DB CLI/Daemon):** Determina se a CLI administrativa invoca o Daemon via RPC (sob loopback aprovado) ou mantém escrita direta com consistência eventual.
 7. **D14 (Opções A, B ou C de `authority_epoch`):** Determina o DDL e trigger exato de atualização no AuthStore.
-8. **D15 (Repercussão RPC do Modelo de Correlação):** Define o schema das requisições e respostas do endpoint `mission.grant_capabilities` (payload unitário na Alternativa A vs. array `bindings` na Alternativa B).
+8. **D15 (Repercussão RPC do Modelo de Correlação):** A Alternativa A (payload unitário) já foi ratificada. A implementação do endpoint `mission.grant_capabilities` permanece bloqueada por decisões ainda pendentes sobre autoridade do emissor, superfície de RPC e ciclo de vida.
 
 > **Justificativa da ordem:** O Slice B materializa as operações administrativas e o ciclo de vida de operadores. Nenhuma dessas escolhas afeta o armazenamento físico de grants já consolidado no Slice A.
 
@@ -2061,8 +2061,8 @@ A lista abaixo preserva a trilha das 15 decisões. **D03, D06, D08 e D15 foram r
 
 ## Nota final
 
-Este documento constitui exclusivamente uma **proposta de contrato de confiança e análise arquitetural (PROPOSAL ONLY)**. Não implementa código de produção, não altera contratos públicos existentes, não adiciona tabelas ao banco de dados e não concede permissões reais.
+Este documento contém **análise arquitetural parcialmente ratificada**: apenas D03, D06, D08 e D15 foram aprovadas normativamente, enquanto as outras 11 decisões e suas propostas continuam `NEEDS_APPROVAL`. Não implementa código, não altera contratos públicos de runtime, não cria tabelas nem concede capabilities reais.
 
-Toda implementação futura permanece estritamente condicionada à aprovação formal de Pedro para as decisões da §14 e à execução faseada através dos slices propostos na §13.
+A implementação futura exige autorização operacional delimitada, testes e gates próprios. As decisões ainda pendentes na §14 exigem ratificação de Pedro antes das superfícies afetadas, respeitando a decomposição de slices da §13.
 
 **Estado da tarefa: RATIFICAÇÃO PARCIAL — D03/D06/D08/D15 aprovadas por Pedro em 2026-11-01; demais decisões NEEDS_APPROVAL. Nenhum grant implementado. Issue #166 permanece aberta para deliberação restante.**
