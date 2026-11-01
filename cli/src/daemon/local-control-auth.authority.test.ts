@@ -152,6 +152,54 @@ describe("LocalControlCredentialStore authority facts (real SQLite)", () => {
     store.close();
   });
 
+  it("recovers a legacy database with only part of the additive migration already applied", async () => {
+    const directory = await newDirectory();
+    const databasePath = join(directory, "private", "auth.db");
+    mkdirSync(join(directory, "private"), { mode: 0o700 });
+    const legacy = new Database(databasePath);
+    legacy.exec(legacySchema);
+    legacy.exec("ALTER TABLE local_control_clients ADD COLUMN credential_generation INTEGER NOT NULL DEFAULT 1");
+    const token = makeToken("partial-migration", "C".repeat(43));
+    legacy.query(`
+      INSERT INTO local_control_clients
+        (client_id, token_hash, scopes_json, expires_at, revoked_at, created_at)
+      VALUES (?, ?, ?, ?, NULL, ?)
+    `).run("partial-migration", tokenHash(token), '["mission.read"]', Date.now() + 60_000, Date.now());
+    legacy.close();
+
+    const recovered = new LocalControlCredentialStore(databasePath);
+    expect(recovered.authorizeToken(token, "mission.read")?.clientId).toBe("partial-migration");
+    expect(authorityRow(databaseFor(recovered), "partial-migration")).toMatchObject({
+      credential_generation: 1,
+      authority_epoch: 1,
+    });
+    expect(highWaterMark(databaseFor(recovered), "partial-migration")).toBe(1);
+    recovered.close();
+  });
+
+  it("fails closed and rolls the migration back when legacy scope JSON is corrupt", async () => {
+    const directory = await newDirectory();
+    mkdirSync(join(directory, "private"), { mode: 0o700 });
+    const databasePath = join(directory, "private", "auth.db");
+    const legacy = new Database(databasePath);
+    legacy.exec(legacySchema);
+    legacy.query(`
+      INSERT INTO local_control_clients
+        (client_id, token_hash, scopes_json, expires_at, revoked_at, created_at)
+      VALUES ('corrupt-scopes', ?, 'not-json', ?, NULL, ?)
+    `).run("d".repeat(64), Date.now() + 60_000, Date.now());
+    legacy.close();
+
+    expect(() => new LocalControlCredentialStore(databasePath)).toThrow("credential scopes are corrupt");
+    const afterFailure = new Database(databasePath);
+    const columns = afterFailure.query("PRAGMA table_info(local_control_clients)").all() as Array<{ name: string }>;
+    expect(columns.some(({ name }) => name === "authority_epoch")).toBe(false);
+    expect(columns.some(({ name }) => name === "credential_generation")).toBe(false);
+    expect(afterFailure.query("SELECT name FROM sqlite_master WHERE name = 'local_control_authority_epochs'").get()).toBeNull();
+    expect(afterFailure.query("SELECT scopes_json FROM local_control_clients WHERE client_id = 'corrupt-scopes'").get()).toEqual({ scopes_json: "not-json" });
+    afterFailure.close();
+  });
+
   it("increments credential generation on rotation, advances epochs only for scope-set changes or reprovisioning, and survives restart", async () => {
     const directory = await newDirectory();
     const databasePath = join(directory, "private", "auth.db");
@@ -196,9 +244,13 @@ describe("LocalControlCredentialStore authority facts (real SQLite)", () => {
     const database = databaseFor(store);
 
     expect(() => database.query("UPDATE local_control_clients SET client_id = 'other' WHERE client_id = 'guarded'").run()).toThrow();
-    expect(() => database.query("UPDATE local_control_clients SET authority_epoch = 0 WHERE client_id = 'guarded'").run()).toThrow();
     expect(() => database.query("UPDATE local_control_clients SET scopes_json = '[\"mission.control\"]' WHERE client_id = 'guarded'").run()).toThrow();
     expect(() => database.query("UPDATE local_control_clients SET scopes_json = 'not-json' WHERE client_id = 'guarded'").run()).toThrow();
+    store.provision("guarded", ["mission.read", "mission.control"], Date.now() + 60_000);
+    expect(authorityRow(database, "guarded")).toMatchObject({ credential_generation: 2, authority_epoch: 2 });
+    expect(() => database.query("UPDATE local_control_clients SET credential_generation = 1 WHERE client_id = 'guarded'").run()).toThrow();
+    expect(() => database.query("UPDATE local_control_clients SET token_hash = ? WHERE client_id = 'guarded'").run("a".repeat(64))).toThrow();
+    expect(() => database.query("UPDATE local_control_clients SET authority_epoch = 1 WHERE client_id = 'guarded'").run()).toThrow();
     expect(() => database.query("DELETE FROM local_control_clients WHERE client_id = 'guarded'").run()).toThrow();
     expect(() => database.query("DELETE FROM local_control_authority_epochs WHERE client_id = 'guarded'").run()).toThrow();
     expect(() => database.query("UPDATE local_control_authority_epochs SET max_epoch = max_epoch - 1 WHERE client_id = 'guarded'").run()).toThrow();
@@ -212,7 +264,12 @@ describe("LocalControlCredentialStore authority facts (real SQLite)", () => {
       INSERT OR REPLACE INTO local_control_clients
         (client_id, token_hash, scopes_json, expires_at, revoked_at, created_at, credential_generation, authority_epoch)
       VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
-    `).run("guarded", "f".repeat(64), '["mission.read"]', Date.now() + 60_000, Date.now(), 2, 1)).toThrow("physical deletion");
+    `).run("guarded", "f".repeat(64), '["mission.read","mission.control"]', Date.now() + 60_000, Date.now(), 3, 2)).toThrow("physical deletion");
+    expect(() => database.query(`
+      REPLACE INTO local_control_clients
+        (client_id, token_hash, scopes_json, expires_at, revoked_at, created_at, credential_generation, authority_epoch)
+      VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
+    `).run("guarded", "f".repeat(64), '["mission.read","mission.control"]', Date.now() + 60_000, Date.now(), 3, 2)).toThrow("physical deletion");
     expect(database.query("SELECT client_id FROM local_control_clients WHERE client_id = 'guarded'").get()).toEqual({ client_id: "guarded" });
     expect(stored).toBeTruthy();
     store.close();
@@ -243,12 +300,40 @@ describe("LocalControlCredentialStore authority facts (real SQLite)", () => {
         (client_id, token_hash, scopes_json, expires_at, revoked_at, created_at, credential_generation, authority_epoch)
       VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
     `).run("replace-target", "e".repeat(64), '["mission.read"]', Date.now() + 60_000, Date.now(), 2, 1)).toThrow("historical max_epoch");
+    expect(() => hostile.query(`
+      REPLACE INTO local_control_clients
+        (client_id, token_hash, scopes_json, expires_at, revoked_at, created_at, credential_generation, authority_epoch)
+      VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
+    `).run("replace-target", "e".repeat(64), '["mission.read"]', Date.now() + 60_000, Date.now(), 2, 1)).toThrow("historical max_epoch");
     expect(hostile.query("SELECT revoked_at FROM local_control_clients WHERE client_id = 'replace-target'").get()).toMatchObject({ revoked_at: expect.any(Number) });
     hostile.close();
 
     const reopened = new LocalControlCredentialStore(databasePath);
     expect(reopened.authorizeToken(credential.token)).toBeNull();
     reopened.close();
+  });
+
+  it("uses the permanent high-water mark after a client row is removed outside the managed trust boundary", async () => {
+    const directory = await newDirectory();
+    const databasePath = join(directory, "private", "auth.db");
+    let store = new LocalControlCredentialStore(databasePath);
+    const first = store.provision("tombstoned-client", ["mission.read"], Date.now() + 60_000);
+    const database = databaseFor(store);
+    database.exec("DROP TRIGGER prevent_client_delete");
+    database.query("DELETE FROM local_control_clients WHERE client_id = ?").run("tombstoned-client");
+    expect(highWaterMark(database, "tombstoned-client")).toBe(1);
+    store.close();
+
+    store = new LocalControlCredentialStore(databasePath);
+    const reissued = store.provision("tombstoned-client", ["mission.read"], Date.now() + 60_000);
+    expect(authorityRow(databaseFor(store), "tombstoned-client")).toMatchObject({
+      credential_generation: 1,
+      authority_epoch: 2,
+    });
+    expect(highWaterMark(databaseFor(store), "tombstoned-client")).toBe(2);
+    expect(store.authorizeToken(first.token)).toBeNull();
+    expect(store.authorizeToken(reissued.token)?.clientId).toBe("tombstoned-client");
+    store.close();
   });
 
   it("rolls back generation, epoch, token hash, and high-water changes when a SQL trigger aborts the write", async () => {
@@ -304,19 +389,43 @@ describe("LocalControlCredentialStore authority facts (real SQLite)", () => {
     store = new LocalControlCredentialStore(epochOverflowPath);
     const epochCredential = store.provision("epoch-overflow", ["mission.read"], Date.now() + 60_000);
     database = databaseFor(store);
-    database.exec("DROP TRIGGER prevent_client_unauthorized_update");
+    database.exec(`
+      DROP TRIGGER prevent_client_unauthorized_update;
+      DROP TRIGGER sync_authority_epoch_to_max_on_update;
+      DROP TRIGGER prevent_authority_epochs_update_decrement;
+    `);
     database.query("UPDATE local_control_clients SET authority_epoch = ? WHERE client_id = ?").run(Number.MAX_SAFE_INTEGER, "epoch-overflow");
+    database.query("UPDATE local_control_authority_epochs SET max_epoch = ? WHERE client_id = ?").run(Number.MAX_SAFE_INTEGER, "epoch-overflow");
     store.close();
 
     store = new LocalControlCredentialStore(epochOverflowPath);
+    const pureRotation = store.provision("epoch-overflow", ["mission.read"], Date.now() + 60_000);
+    expect(authorityRow(databaseFor(store), "epoch-overflow")).toMatchObject({
+      credential_generation: 2,
+      authority_epoch: Number.MAX_SAFE_INTEGER,
+    });
     expect(() => store.provision("epoch-overflow", ["mission.control"], Date.now() + 60_000)).toThrow("AUTHORITY_EPOCH_OVERFLOW");
     expect(authorityRow(databaseFor(store), "epoch-overflow")).toMatchObject({
-      credential_generation: 1,
+      credential_generation: 2,
       authority_epoch: Number.MAX_SAFE_INTEGER,
     });
     expect(highWaterMark(databaseFor(store), "epoch-overflow")).toBe(Number.MAX_SAFE_INTEGER);
-    expect(store.authorizeToken(epochCredential.token, "mission.read")?.clientId).toBe("epoch-overflow");
+    expect(store.authorizeToken(epochCredential.token)).toBeNull();
+    expect(store.authorizeToken(pureRotation.token, "mission.read")?.clientId).toBe("epoch-overflow");
     store.close();
+  });
+
+  it("refuses to reopen an AuthStore whose persisted authority ordinals are corrupt", async () => {
+    const directory = await newDirectory();
+    const databasePath = join(directory, "private", "auth.db");
+    const store = new LocalControlCredentialStore(databasePath);
+    store.provision("corrupt-ordinal", ["mission.read"], Date.now() + 60_000);
+    const database = databaseFor(store);
+    database.exec("DROP TRIGGER prevent_client_unauthorized_update");
+    database.query("UPDATE local_control_clients SET credential_generation = 0 WHERE client_id = ?").run("corrupt-ordinal");
+    store.close();
+
+    expect(() => new LocalControlCredentialStore(databasePath)).toThrow("authority ordinals are invalid");
   });
 
   it("serializes concurrent process rotations without losing credential generations", async () => {
@@ -345,7 +454,7 @@ describe("LocalControlCredentialStore authority facts (real SQLite)", () => {
       ]);
       return { exitCode, stdout, stderr };
     }));
-    expect(results.filter(({ exitCode }) => exitCode === 0)).toHaveLength(writers);
+    expect(results.filter(({ exitCode }) => exitCode !== 0)).toEqual([]);
     expect(results.map(({ stdout }) => stdout.trim()).every((value) => value === "rotated")).toBe(true);
 
     const reopened = new LocalControlCredentialStore(databasePath);
@@ -367,11 +476,21 @@ describe("LocalControlCredentialStore authority facts (real SQLite)", () => {
   it("does not add authority facts to the authenticated client or provisioned credential contract", async () => {
     const directory = await newDirectory();
     const store = new LocalControlCredentialStore(join(directory, "private", "auth.db"));
-    const credential = store.provision("contract-client", ["mission.read"], Date.now() + 60_000);
+    const expiresAt = Date.now() + 60_000;
+    const credential = store.provision("contract-client", ["mission.read"], expiresAt);
     const authenticated = store.authorizeToken(credential.token)!;
     expect(typeof authenticated.credentialVersion).toBe("string");
     expect(Object.keys(authenticated).sort()).toEqual(["clientId", "credentialVersion", "scopes"]);
-    expect(new LocalControlAuthorizer(store).authenticateBearer(`Bearer ${credential.token}`)?.credentialVersion).toBe(authenticated.credentialVersion);
+    const authorizer = new LocalControlAuthorizer(store, ["http://localhost:5173"]);
+    expect(authorizer.authenticateBearer(`Bearer ${credential.token}`)?.credentialVersion).toBe(authenticated.credentialVersion);
+    const browserSession = authorizer.createBrowserSession(`Bearer ${credential.token}`, "http://localhost:5173");
+    expect(browserSession).not.toBeNull();
+    const cookie = `ouroboros_control_session=${browserSession!.cookie}`;
+    expect(authorizer.authorizeBrowserSession(cookie, "http://localhost:5173")?.clientId).toBe("contract-client");
+    const rotated = store.provision("contract-client", ["mission.read"], expiresAt);
+    expect(store.authorizeToken(credential.token)).toBeNull();
+    expect(store.authorizeToken(rotated.token)?.credentialVersion).not.toBe(authenticated.credentialVersion);
+    expect(authorizer.authorizeBrowserSession(cookie, "http://localhost:5173")).toBeNull();
     store.close();
   });
 });
