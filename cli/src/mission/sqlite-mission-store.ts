@@ -12,6 +12,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { MissionState } from "./contracts.js";
 import type {
@@ -298,6 +299,7 @@ export class SqliteMissionStore implements MissionStore, MissionAdmissionStore, 
     private readonly dbPath: string;
     private readonly statements: Record<string, ReturnType<Database["prepare"]>> = {};
     private transactionQueue: Promise<void> = Promise.resolve();
+    private readonly transactionContext = new AsyncLocalStorage<{ active: boolean }>();
     private readonly mutationListeners = new Set<MissionMutationListener>();
     private pendingMutations: MissionMutation[] | null = null;
 
@@ -318,6 +320,36 @@ export class SqliteMissionStore implements MissionStore, MissionAdmissionStore, 
             this.statements[key] = db.prepare(sql);
         }
         return this.statements[key];
+    }
+
+    /** Serialize work on this connection behind any active Mission transaction. */
+    private async withTransactionQueue<T>(operation: () => T | Promise<T>): Promise<T> {
+        const previous = this.transactionQueue;
+        let release!: () => void;
+        this.transactionQueue = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        await previous;
+        try {
+            return await operation();
+        } finally {
+            release();
+        }
+    }
+
+    /**
+     * Run a ledger append in its caller's transaction when present; otherwise
+     * serialize the autocommit write behind transactions using this connection.
+     */
+    private withLedgerAppend<T>(operation: () => T): Promise<T> {
+        if (this.transactionContext.getStore()?.active) {
+            try {
+                return Promise.resolve(operation());
+            } catch (error) {
+                return Promise.reject(error);
+            }
+        }
+        return this.withTransactionQueue(operation);
     }
 
     async initialize(): Promise<void> {
@@ -918,6 +950,10 @@ export class SqliteMissionStore implements MissionStore, MissionAdmissionStore, 
     /** Append one unit grant fact; identical replays are idempotent. */
     async appendCapabilityGrant(input: MissionCapabilityGrantInput): Promise<MissionCapabilityGrant> {
         const grant = normalizeCapabilityGrant(input);
+        return this.withLedgerAppend(() => this.appendCapabilityGrantFact(grant));
+    }
+
+    private appendCapabilityGrantFact(grant: MissionCapabilityGrant): MissionCapabilityGrant {
         let insertionError: unknown = null;
         try {
             this.stmt(
@@ -972,6 +1008,12 @@ export class SqliteMissionStore implements MissionStore, MissionAdmissionStore, 
         input: MissionCapabilityRevocationInput,
     ): Promise<MissionCapabilityRevocation> {
         const revocation = normalizeCapabilityRevocation(input);
+        return this.withLedgerAppend(() => this.appendCapabilityRevocationFact(revocation));
+    }
+
+    private appendCapabilityRevocationFact(
+        revocation: MissionCapabilityRevocation,
+    ): MissionCapabilityRevocation {
         let insertionError: unknown = null;
         try {
             this.stmt(
@@ -2311,29 +2353,26 @@ export class SqliteMissionStore implements MissionStore, MissionAdmissionStore, 
     /** Execute a function inside a BEGIN/COMMIT transaction. */
     async withTransaction<T>(fn: () => Promise<T>): Promise<T> {
         const db = this.ensureDb();
-        const previous = this.transactionQueue;
-        let release!: () => void;
-        this.transactionQueue = new Promise<void>((resolve) => {
-            release = resolve;
+        return this.withTransactionQueue(async () => {
+            db.exec("BEGIN");
+            const transactionScope = { active: true };
+            const previousMutations = this.pendingMutations;
+            const mutations: MissionMutation[] = [];
+            this.pendingMutations = mutations;
+            try {
+                const result = await this.transactionContext.run(transactionScope, fn);
+                db.exec("COMMIT");
+                this.pendingMutations = previousMutations;
+                this.dispatchMutations(mutations);
+                return result;
+            } catch (e) {
+                db.exec("ROLLBACK");
+                this.pendingMutations = previousMutations;
+                throw e;
+            } finally {
+                transactionScope.active = false;
+            }
         });
-        await previous;
-        db.exec("BEGIN");
-        const previousMutations = this.pendingMutations;
-        const mutations: MissionMutation[] = [];
-        this.pendingMutations = mutations;
-        try {
-            const result = await fn();
-            db.exec("COMMIT");
-            this.pendingMutations = previousMutations;
-            this.dispatchMutations(mutations);
-            return result;
-        } catch (e) {
-            db.exec("ROLLBACK");
-            this.pendingMutations = previousMutations;
-            throw e;
-        } finally {
-            release();
-        }
     }
 
     /** Close and (for tests) reopen to simulate restart. */

@@ -77,6 +77,14 @@ function makeRevocation(
     };
 }
 
+function createDeferred(): { promise: Promise<void>; resolve: () => void } {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve: () => resolve() };
+}
+
 afterEach(() => {
     for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
     tempDirs.length = 0;
@@ -253,6 +261,82 @@ describe("SQLite Capability Grant ledger", () => {
         await secondStore.close();
     });
 
+    it("does not report an independent grant append committed inside another transaction", async () => {
+        const dbPath = makeDatabasePath();
+        const store = new SqliteMissionStore(dbPath);
+        await store.initialize();
+        insertMission(dbPath, "mission-a");
+        const observed: unknown[] = [];
+        store.onMutation((event) => observed.push(event));
+        const started = createDeferred();
+        const release = createDeferred();
+        const transaction = store.withTransaction(async () => {
+            await store.appendCapabilityGrant(makeGrant("grant-rolled-back"));
+            started.resolve();
+            await release.promise;
+            throw new Error("rollback outer grant transaction");
+        });
+        await started.promise;
+
+        let appendReportedSuccess = false;
+        const independentAppend = store.appendCapabilityGrant(makeGrant("grant-independent"))
+            .then((grant) => {
+                appendReportedSuccess = true;
+                return grant;
+            });
+        await Promise.resolve();
+        expect(appendReportedSuccess).toBe(false);
+
+        release.resolve();
+        await expect(transaction).rejects.toThrow("rollback outer grant transaction");
+        const returnedGrant = await independentAppend;
+        expect(returnedGrant.grantId).toBe("grant-independent");
+        expect((await store.listCapabilityGrants("mission-a")).map(({ grantId }) => grantId)).toEqual([
+            "grant-independent",
+        ]);
+        expect(observed).toEqual([]);
+        await store.close();
+    });
+
+    it("does not report an independent revocation append committed inside another transaction", async () => {
+        const dbPath = makeDatabasePath();
+        const store = new SqliteMissionStore(dbPath);
+        await store.initialize();
+        insertMission(dbPath, "mission-a");
+        await store.appendCapabilityGrant(makeGrant("grant-revocation-target"));
+        const observed: unknown[] = [];
+        store.onMutation((event) => observed.push(event));
+        const started = createDeferred();
+        const release = createDeferred();
+        const transaction = store.withTransaction(async () => {
+            await store.appendCapabilityRevocation(makeRevocation("revoke-rolled-back", "grant-revocation-target"));
+            started.resolve();
+            await release.promise;
+            throw new Error("rollback outer revocation transaction");
+        });
+        await started.promise;
+
+        let appendReportedSuccess = false;
+        const independentAppend = store.appendCapabilityRevocation(
+            makeRevocation("revoke-independent", "grant-revocation-target"),
+        ).then((revocation) => {
+            appendReportedSuccess = true;
+            return revocation;
+        });
+        await Promise.resolve();
+        expect(appendReportedSuccess).toBe(false);
+
+        release.resolve();
+        await expect(transaction).rejects.toThrow("rollback outer revocation transaction");
+        const returnedRevocation = await independentAppend;
+        expect(returnedRevocation.revocationId).toBe("revoke-independent");
+        expect((await store.listCapabilityRevocations("mission-a")).map(({ revocationId }) => revocationId)).toEqual([
+            "revoke-independent",
+        ]);
+        expect(observed).toEqual([]);
+        await store.close();
+    });
+
     it("rolls back ledger writes and never publishes a pre-commit mutation", async () => {
         const dbPath = makeDatabasePath();
         const store = new SqliteMissionStore(dbPath);
@@ -262,9 +346,11 @@ describe("SQLite Capability Grant ledger", () => {
         store.onMutation((event) => observed.push(event));
         await expect(store.withTransaction(async () => {
             await store.appendCapabilityGrant(makeGrant("grant-rollback"));
+            await store.appendCapabilityRevocation(makeRevocation("revoke-rollback", "grant-rollback"));
             throw new Error("force rollback");
         })).rejects.toThrow("force rollback");
         expect(await store.listCapabilityGrants("mission-a")).toEqual([]);
+        expect(await store.listCapabilityRevocations("mission-a")).toEqual([]);
         expect(observed).toEqual([]);
         await store.appendCapabilityGrant(makeGrant("grant-committed"));
         expect(observed).toEqual([]);

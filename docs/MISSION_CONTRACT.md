@@ -117,6 +117,13 @@ and unvalidated issuer provenance. Namespaced
 `refs/*` references are preserved with segment-boundary matching; filesystem
 containment and symlink/alias checks remain with the capability owner.
 
+Reduction uses only its supplied evaluation time. Grant issuance must not be
+later than ledger creation; a valid revocation timeline is grant creation,
+revocation time, revocation ledger creation, then evaluation time. Future or
+inconsistent revocation facts invalidate coverage instead of being reported as
+already revoked or silently ignored. An effective revocation remains
+irreversible in the reduced state.
+
 This ledger is **not an operational permission source**. It does not change
 `Mission.allowedCapabilityScope`, `PlanPolicyValidator`, planning, acceptance,
 dispatch, or any RPC. Missions without ledger grants remain governed by their

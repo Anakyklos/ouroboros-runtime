@@ -3,6 +3,7 @@ import { EffectClass } from "./contracts.js";
 import type { CapabilityContract, MissionCapabilityGrant, MissionCapabilityRevocation } from "./contracts.js";
 import {
     capabilityGrantAuthorityKey,
+    capabilityGrantReferenceMatchesPrefix,
     capabilityRevocationAuthorityKey,
     computeCapabilityGrantFingerprint,
     computeCapabilityRevocationFingerprint,
@@ -157,6 +158,28 @@ describe("internal unit capability grant coverage", () => {
         }).valid).toBe(false);
     });
 
+    it("accepts local file URIs and rejects traversal, sibling paths, and remote authorities", () => {
+        expect(capabilityGrantReferenceMatchesPrefix(
+            "file:///workspace/project/main.ts",
+            "file:///workspace/project/",
+        )).toBe(true);
+        for (const reference of [
+            "file:///workspace/project-private/main.ts",
+            "file:///workspace/project/../secret.ts",
+            "file:///workspace/project/%2e%2e/secret.ts",
+            "file://remote/workspace/project/main.ts",
+            "file:////workspace/project/main.ts",
+            "storage://workspace/project/main.ts",
+            "file:///workspace/project/%2",
+        ]) {
+            expect(capabilityGrantReferenceMatchesPrefix(reference, "file:///workspace/project/")).toBe(false);
+        }
+        expect(capabilityGrantReferenceMatchesPrefix(
+            "storage://other/workspace/project/main.ts",
+            "storage://workspace/workspace/project/",
+        )).toBe(false);
+    });
+
     it("fails closed for expired, revoked, or unvalidated issuer provenance", () => {
         expect(evaluate({
             grants: [makeGrant({ expiresAt: "2026-11-01T11:59:59.999Z" })],
@@ -217,5 +240,65 @@ describe("internal unit capability grant coverage", () => {
             ["grant-invalid", "invalid"],
             ["grant-revoked", "revoked"],
         ]);
+    });
+
+    it("quarantines future and inconsistent revocations without reactivating a revoked grant", () => {
+        const grant = makeGrant({
+            issuedAt: "2026-11-01T11:00:00.000Z",
+            createdAt: "2026-11-01T11:01:00.000Z",
+        });
+        const authorityValidatedRevocationKeys = new Set([
+            capabilityRevocationAuthorityKey("mission-a", "revoke-future"),
+            capabilityRevocationAuthorityKey("mission-a", "revoke-future-record"),
+            capabilityRevocationAuthorityKey("mission-a", "revoke-inconsistent"),
+            capabilityRevocationAuthorityKey("mission-a", "revoke-before-grant"),
+            capabilityRevocationAuthorityKey("mission-a", "revoke-valid"),
+            capabilityRevocationAuthorityKey("mission-a", "revoke-later"),
+        ]);
+        const evaluateState = (
+            revocations: MissionCapabilityRevocation[],
+            evaluatedAt = "2026-11-01T12:30:00.000Z",
+        ) => reduceCapabilityGrantLedger({
+            grants: [grant],
+            revocations,
+            evaluatedAt,
+            authorityValidatedRevocationKeys,
+        })[0]?.state;
+
+        expect(evaluateState([makeRevocation({
+            revocationId: "revoke-future",
+            revokedAt: "2026-11-01T13:00:00.000Z",
+            createdAt: "2026-11-01T13:00:00.000Z",
+        })])).toBe("invalid");
+        expect(evaluateState([makeRevocation({
+            revocationId: "revoke-future-record",
+            revokedAt: "2026-11-01T12:15:00.000Z",
+            createdAt: "2026-11-01T13:00:00.000Z",
+        })])).toBe("invalid");
+        expect(evaluateState([makeRevocation({
+            revocationId: "revoke-inconsistent",
+            revokedAt: "2026-11-01T12:15:00.000Z",
+            createdAt: "2026-11-01T12:14:00.000Z",
+        })])).toBe("invalid");
+        expect(evaluateState([makeRevocation({
+            revocationId: "revoke-before-grant",
+            revokedAt: "2026-11-01T10:59:00.000Z",
+            createdAt: "2026-11-01T11:02:00.000Z",
+        })])).toBe("invalid");
+
+        const validEarlier = makeRevocation({
+            revocationId: "revoke-valid",
+            revokedAt: "2026-11-01T12:15:00.000Z",
+            createdAt: "2026-11-01T12:16:00.000Z",
+        });
+        const futureLater = makeRevocation({
+            revocationId: "revoke-later",
+            revokedAt: "2026-11-01T13:00:00.000Z",
+            createdAt: "2026-11-01T13:01:00.000Z",
+        });
+        expect(evaluateState([validEarlier])).toBe("revoked");
+        expect(evaluateState([futureLater, validEarlier])).toBe("revoked");
+        expect(evaluateState([validEarlier, futureLater])).toBe("revoked");
+        expect(evaluateState([validEarlier], "2026-11-01T12:10:00.000Z")).toBe("invalid");
     });
 });

@@ -133,11 +133,19 @@ function parseReference(value: string, isPrefix: boolean): ParsedReference | nul
         const rest = value.slice(uriMarker + 3);
         if (!/^[a-z][a-z0-9+.-]*$/iu.test(rawScheme) || rawScheme.toLowerCase() === "refs") return null;
         const slash = rest.indexOf("/");
-        if (slash <= 0) return null;
-        authority = rest.slice(0, slash);
-        if (!/^[a-z0-9._~-]+(?::[0-9]{1,5})?$/iu.test(authority) || authority.includes("@")) return null;
         scheme = rawScheme.toLowerCase();
-        path = rest.slice(slash + 1);
+        if (scheme === "file") {
+            // Accept only the local empty-authority form (file:///path).
+            // Remote file authorities are left to the owning connector.
+            if (slash !== 0) return null;
+            authority = "";
+            path = rest.slice(1);
+        } else {
+            if (slash <= 0) return null;
+            authority = rest.slice(0, slash);
+            if (!/^[a-z0-9._~-]+(?::[0-9]{1,5})?$/iu.test(authority) || authority.includes("@")) return null;
+            path = rest.slice(slash + 1);
+        }
         kind = "uri";
     } else {
         if (value.includes(":")) return null;
@@ -336,6 +344,41 @@ export function capabilityRevocationAuthorityKey(missionId: string, revocationId
     return JSON.stringify([missionId, revocationId]);
 }
 
+function compareInstants(left: string, right: string): number {
+    const parts = (value: string): { epochSecond: number; fraction: string } => {
+        const fraction = /\.(\d+)(?=Z|[+-]\d{2}:\d{2})/u.exec(value)?.[1] ?? "";
+        const wholeSecond = value.replace(/\.\d+(?=Z|[+-]\d{2}:\d{2})/u, "");
+        return {
+            epochSecond: Date.parse(wholeSecond) / 1000,
+            fraction: fraction.replace(/0+$/u, ""),
+        };
+    };
+    const leftParts = parts(left);
+    const rightParts = parts(right);
+    if (leftParts.epochSecond !== rightParts.epochSecond) {
+        return leftParts.epochSecond < rightParts.epochSecond ? -1 : 1;
+    }
+    const precision = Math.max(leftParts.fraction.length, rightParts.fraction.length);
+    const leftFraction = leftParts.fraction.padEnd(precision, "0");
+    const rightFraction = rightParts.fraction.padEnd(precision, "0");
+    return leftFraction === rightFraction ? 0 : leftFraction < rightFraction ? -1 : 1;
+}
+
+function hasConsistentRevocationTimeline(
+    revocation: MissionCapabilityRevocation,
+    grant: MissionCapabilityGrant,
+    evaluatedAt: string,
+): boolean {
+    return isInstant(grant.issuedAt)
+        && isInstant(grant.createdAt)
+        && isInstant(revocation.revokedAt)
+        && isInstant(revocation.createdAt)
+        && compareInstants(grant.issuedAt, grant.createdAt) <= 0
+        && compareInstants(grant.createdAt, revocation.revokedAt) <= 0
+        && compareInstants(revocation.revokedAt, revocation.createdAt) <= 0
+        && compareInstants(revocation.createdAt, evaluatedAt) <= 0;
+}
+
 /** Reduce immutable grant and revocation facts at an explicitly supplied time. */
 export function reduceCapabilityGrantLedger(input: ReduceCapabilityGrantLedgerInput): ReducedCapabilityGrant[] {
     const sortStates = (states: ReducedCapabilityGrant[]): ReducedCapabilityGrant[] => states.sort((a, b) =>
@@ -350,39 +393,53 @@ export function reduceCapabilityGrantLedger(input: ReduceCapabilityGrantLedgerIn
             state: "invalid",
         })));
     }
-    const validRevocations = inputRevocations.filter((event) =>
-        hasValidatedRevocationAuthority(event, input.authorityValidatedRevocationKeys),
-    );
-    const invalidRevocations = inputRevocations.filter((event) =>
-        !hasValidatedRevocationAuthority(event, input.authorityValidatedRevocationKeys),
-    );
-    const unscopedInvalidRevocation = invalidRevocations.some((event) =>
-        typeof event?.missionId !== "string" || event.missionId.length === 0,
-    );
     const grantCounts = new Map<string, number>();
+    const grantsByKey = new Map<string, MissionCapabilityGrant[]>();
     for (const grant of inputGrants) {
         if (typeof grant?.missionId !== "string" || typeof grant?.grantId !== "string") continue;
         const key = capabilityGrantAuthorityKey(grant.missionId, grant.grantId);
         grantCounts.set(key, (grantCounts.get(key) ?? 0) + 1);
+        const matching = grantsByKey.get(key) ?? [];
+        matching.push(grant);
+        grantsByKey.set(key, matching);
     }
+    const validRevocations: MissionCapabilityRevocation[] = [];
+    const invalidRevocations: MissionCapabilityRevocation[] = [];
+    for (const event of inputRevocations) {
+        if (!hasValidatedRevocationAuthority(event, input.authorityValidatedRevocationKeys)) {
+            invalidRevocations.push(event);
+            continue;
+        }
+        const targets = grantsByKey.get(capabilityGrantAuthorityKey(event.missionId, event.grantId));
+        if (targets?.length !== 1 || !hasConsistentRevocationTimeline(event, targets[0]!, input.evaluatedAt)) {
+            invalidRevocations.push(event);
+            continue;
+        }
+        validRevocations.push(event);
+    }
+    const unscopedInvalidRevocation = invalidRevocations.some((event) =>
+        typeof event?.missionId !== "string" || event.missionId.length === 0,
+    );
     const grantsWithValidIdentity = inputGrants.filter((grant) =>
         typeof grant?.missionId === "string" && typeof grant?.grantId === "string",
     );
     const states = grantsWithValidIdentity.map((grant): ReducedCapabilityGrant => {
         const key = capabilityGrantAuthorityKey(grant.missionId, grant.grantId);
-        const evaluationTime = Date.parse(input.evaluatedAt);
         if (
             !hasValidGrantFingerprint(grant)
             || grantCounts.get(key) !== 1
-            || unscopedInvalidRevocation
-            || invalidRevocations.some((event) => event?.missionId === grant.missionId)
-            || Date.parse(grant.issuedAt) > evaluationTime
-            || Date.parse(grant.createdAt) > evaluationTime
+            || !isInstant(grant.issuedAt)
+            || !isInstant(grant.createdAt)
+            || compareInstants(grant.issuedAt, grant.createdAt) > 0
+            || compareInstants(grant.createdAt, input.evaluatedAt) > 0
         ) return { missionId: grant.missionId, grantId: grant.grantId, state: "invalid" };
         if (validRevocations.some((event) => event.missionId === grant.missionId && event.grantId === grant.grantId)) {
             return { missionId: grant.missionId, grantId: grant.grantId, state: "revoked" };
         }
-        if (grant.expiresAt !== null && Date.parse(grant.expiresAt) <= Date.parse(input.evaluatedAt)) {
+        if (unscopedInvalidRevocation || invalidRevocations.some((event) => event?.missionId === grant.missionId)) {
+            return { missionId: grant.missionId, grantId: grant.grantId, state: "invalid" };
+        }
+        if (grant.expiresAt !== null && compareInstants(grant.expiresAt, input.evaluatedAt) <= 0) {
             return { missionId: grant.missionId, grantId: grant.grantId, state: "expired" };
         }
         return { missionId: grant.missionId, grantId: grant.grantId, state: "active" };
