@@ -32,16 +32,20 @@ Toda afirmação neste documento carrega uma das seguintes classificações estr
 **Correções centrais incorporadas nesta revisão (PROPOSTA):**
 
 1. **Integridade referencial sob `PRAGMA foreign_keys = OFF` (PROPRIEDADE PROPOSTA A COMPROVAR):** Constata-se que `cli/src/mission/sqlite-mission-store.ts:291` desativa explicitamente as foreign keys do SQLite (`foreign_keys = OFF`). Portanto, confiar isoladamente em cláusulas `FOREIGN KEY ... ON DELETE RESTRICT` não impede a exclusão acidental de uma Mission com grants. A proposta institui um **trigger de proteção diretamente na tabela `missions`** (`prevent_mission_delete_with_grants`) que aborta fisicamente o comando `DELETE FROM missions` via `RAISE(ABORT, ...)`. Esta garantia estrutural é um requisito a comprovar na suíte de testes do Slice A.
-2. **Extinção definitiva de autoridade revogada, imutabilidade de `client_id`, proteção contra mutações diretas de escopos e delimitação exata do Trust Boundary:**
-   - *Fato factual:* A salvaguarda anterior focava na proteção de `revoked_at` e monotonicidade numérica de `authority_epoch`, mas o avanço por alteração de privilégios (`scopes_json`) estava restrito à cláusula `ON CONFLICT` de `provision()`. Um comando DML direto `UPDATE local_control_clients SET scopes_json = '["mission.read"]' WHERE client_id = 'alice'` não era interceptado pelo trigger, permitindo alterar escopos sem avançar a época, deixando grants pretéritos válidos no predicado proposto.
+2. **Extinção definitiva de autoridade revogada, imutabilidade de `client_id`, proteção contra mutações diretas de escopos, semântica de `INSERT OR REPLACE` e delimitação exata do Trust Boundary:**
+   - *Fato factual:* A salvaguarda anterior focava na proteção de `revoked_at` e monotonicidade numérica de `authority_epoch`, mas apresentava duas lacunas: (1) O SQL integral proposto sob `PRAGMA recursive_triggers = OFF` (padrão SQLite) permitia que um comando `INSERT OR REPLACE` excluísse a linha do cliente sem disparar o trigger `BEFORE DELETE`, inserindo o registro na mesma época com `revoked_at = NULL` e ressuscitando grants; (2) O DDL publicado continha a regra restritiva da Opção A dentro de um trigger único, tornando a Opção B inexequível sem deltas explícitos.
    - *Solução relacional mínima e completa:* Unifica-se a proteção da tabela `local_control_clients`:
-     1. `prevent_client_unauthorized_update`: aborta qualquer `UPDATE` que (a) tente mutar `client_id` (identidade estritamente imutável); (b) decremente `authority_epoch` ou o rebaixe abaixo de `max_epoch`; (c) reative um cliente revogado (`OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NULL`) sem avanço estrito e obrigatório de época ($NEW.authority\_epoch > OLD.authority\_epoch$); **ou (d) sob o modelo de invalidação por época (Opção A), altere `scopes_json` (`NEW.scopes_json != OLD.scopes_json`) sem avanço estrito de `authority_epoch` ($NEW.authority\_epoch > OLD.authority\_epoch$)**, eliminando completamente a dependência da disciplina do chamador de `provision()`.
-     2. `enforce_client_authority_epoch_insert_monotonicity`: aborta qualquer `INSERT` onde `NEW.authority_epoch < max_epoch`.
+     1. `prevent_client_unauthorized_update`: aborta qualquer `UPDATE` que (a) tente mutar `client_id` (identidade estritamente imutável); (b) decremente `authority_epoch` ou o rebaixe abaixo de `max_epoch`; (c) reative um cliente revogado (`OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NULL`) sem avanço estrito e obrigatório de época ($NEW.authority\_epoch > OLD.authority\_epoch$); ou (d) sob a Opção A, altere `scopes_json` (`NEW.scopes_json != OLD.scopes_json`) sem avanço estrito de `authority_epoch` ($NEW.authority\_epoch > OLD.authority\_epoch$).
+     2. `enforce_client_authority_epoch_insert_monotonicity`: aborta qualquer `INSERT` onde `NEW.authority_epoch <= max_epoch` para cliente com histórico prévio em `local_control_authority_epochs`, impedindo ressurreição por colisão ou inserção direta.
      3. `prevent_client_delete`: veda deleção física de clientes (desativação exclusivamente lógica).
      4. `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement`: protegem a imutabilidade do high-water mark permanente.
      5. Preservação estrita de rotação de segredo pura em cliente ativo (`revoked_at IS NULL`, mesmo `scopes_json`, `authority_epoch` inalterado).
-   - *Distinção rigorosa do Trust Boundary:* Esclarece-se que os triggers do SQLite operam como **guardas de integridade relacional dos invariantes de dados**, e NÃO como mecanismo de autorização ou autenticação de atores. A autorização para escrever no banco reside na segurança do host/OS (permissões POSIX/DAC/MAC restritas ao usuário de serviço) e na API autenticada com escopos administrativos (`daemon.admin`).
-   - *Diferenciação normativa entre Opção A e Opção B:* Sob a Opção A, a perda de escopo extingue de forma permanente os grants no ledger via avanço forçado de época no banco (inclusive impedindo que a posterior restauração de escopos ressuscite grants da época anterior). Sob a Opção B, a perda de escopo atua como suspensão dinâmica fail-closed nos portões de dispatch em runtime, sem conferir garantia de extinção permanente caso o escopo seja restaurado na mesma época. A escolha normativa permanece reservada a Pedro (§14 Decisão 14).
+   - *Distinção rigorosa do Trust Boundary e Semântica de `REPLACE`:* Esclarece-se que os triggers do SQLite operam como **guardas de integridade relacional de invariantes**, e NÃO como mecanismo autônomo de autorização contra qualquer DML arbitrário. Sob `PRAGMA recursive_triggers = OFF`, exclusões implícitas de `REPLACE` não disparam `BEFORE DELETE`. Portanto, a proteção arquitetural conjuga: (a) **Allowlist de Escritores no Store**: proibição categórica de `INSERT OR REPLACE`, exigindo mutações unicamente via `INSERT ... ON CONFLICT(client_id) DO UPDATE`; (b) **Configuração de Conexão**: inicialização mandatória de conexões de escrita com `PRAGMA recursive_triggers = ON;` (ativando o trigger de delete caso um REPLACE ocorra); e (c) **Trust Boundary do Host**: isolamento do arquivo via permissões POSIX (`chmod 0600`) e usuário de serviço dedicado.
+   - *Diferenciação normativa entre as alternativas (Opções A, B e C):* O contrato não impõe um DDL único e incompatível:
+     - **Opção A:** Alteração de escopos avança forçadamente a época ($E \to E + 1$) via trigger e UPSERT; extinção definitiva e permanente no ledger anti-ressurreição;
+     - **Opção B:** Alteração de escopos preserva a época; o trigger de update não condiciona `scopes_json`; suspensão dinâmica fail-closed nos portões de dispatch em runtime (`GRANTOR_SCOPE_REVOKED`); grants anteriores podem voltar a ser válidos se privilégios forem restaurados na mesma época;
+     - **Opção C:** Modelo híbrido; avanço forçado de época ativado estritamente pela remoção do escopo-raiz de governança `mission.grant_capabilities`, combinado com validação dinâmica contínua nos gates para encolhimento de envelope de limites (`operator-limits.json`).
+     A escolha normativa entre A, B e C permanece estritamente reservada a Pedro (§14 Decisão 14).
 3. **Consistência eventual cross-DB sem garantias temporais inventadas (AuthStore vs. MissionStore):**
    - *Fato factual:* A CLI administrativa (`cli/src/commands/admin-cli.ts:73-99`) executa como processo efêmero direto sobre `local-control-auth.db`. O daemon opera em outro processo gerenciando `missions.db` (`cli/src/daemon/main.ts`). Não há mecanismo de invalidação ativa (watcher, push IPC) entre os processos.
    - *Semântica corrigida e eliminação de cifras decorativas:* Remove-se terminantemente qualquer alegação de que a janela seja "estritamente limitada a 500 ms" ou qualquer promessa de SLA temporal não comprovável. Diferenciam-se com rigor: (1) idade da autorização no despacho; (2) atraso arbitrário até a próxima leitura do AuthStore pelo daemon; (3) tempo de emissão de cancelamento; e (4) irreversibilidade física de efeitos externos já transmitidos ao conector.
@@ -324,7 +328,7 @@ No código atual de `main` (`cli/src/daemon/local-control-auth.ts:94-115`), `pro
 > **Invariante de Não-Sobrevivência de Autoridade:**
 > Nenhuma autorização pode continuar válida apenas porque o identificador de época (`authority_epoch`) permaneceu igual. Uma redução nos privilégios do operador emissor não pode permitir que terceiros continuem exercendo autoridade que o próprio emissor já não possui.
 
-Para garantir essa propriedade sem ambiguidades, submetem-se à decisão normativa de Pedro (§14 Decisão 14) dois modelos arquiteturais com garantias e ciclos de vida precisamente diferenciados:
+Para garantir essa propriedade sem ambiguidades, submetem-se à decisão normativa de Pedro (§14 Decisão 14) três modelos arquiteturais com garantias e ciclos de vida precisamente diferenciados:
 
 - **Modelo Opção A — Extinção Permanente por Avanço de `authority_epoch` no AuthStore:**
   - *Garantia Estrutural Independente da Disciplina do Chamador:* O avanço de época **NÃO depende exclusivamente da boa vontade ou disciplina do chamador de `provision()`**. Além da cláusula `ON CONFLICT` de `provision()`, o modelo institui no nível do motor do SQLite, dentro do trigger `prevent_client_unauthorized_update`, a regra mandatória:
@@ -336,16 +340,24 @@ Para garantir essa propriedade sem ambiguidades, submetem-se à decisão normati
     3. *Restauração posterior de escopo ($E=3 \to E=4$):* Caso a governança reatribua posteriormente `mission.grant_capabilities` ao mesmo operador, essa nova mutação em `scopes_json` exige novo avanço para `authority_epoch = 4`.
     4. *Garantia anti-ressurreição:* Tentativas de reaproveitar o grant antigo $G_2$ continuam falhando categoricamente com `AUTHORITY_SUPERSEDED` ($2 < 4$). **$G_2$ JAMAIS ressuscita, mesmo após a restauração integral dos escopos.** Para autorizar novas missões, o operador deve emitir um grant novo $G_4$ sob a geração corrente 4.
 - **Modelo Opção B — Suspensão Dinâmica em Runtime nos Portões de Dispatch (Gate 3 e Gate 4):**
-  - *Mecanismo:* O trigger relacional não condiciona `scopes_json` ao avanço de época. A autoridade de delegação é verificada continuamente em runtime nos portões de planejamento e despacho:
+  - *Mecanismo:* O trigger relacional de motor não condiciona `scopes_json` ao avanço de época, permitindo que mutações de escopo mantenham a mesma época de autoridade. A autoridade de delegação é verificada continuamente em runtime nos portões de planejamento e despacho:
     $$\text{isGrantActive}(G) \iff (G.\text{grantorAuthorityEpoch} == \text{client}.\text{authority\_epoch}) \land (\text{client}.\text{revoked\_at} == \text{null}) \land (\text{"mission.grant\_capabilities"} \in \text{client}.\text{scopes}) \land (G \subseteq \text{currentLimits}(\text{client}))$$
     Se o operador emissor perdeu o escopo `mission.grant_capabilities`, a autorização falha de forma fail-closed no Gate 3 e Gate 4 com o erro estruturado **`GRANTOR_SCOPE_REVOKED`**. Se os limites provisionados foram reduzidos, dispatches excedentes falham com **`GRANTOR_ENTITLEMENT_SHRUNK`**.
   - *Limitação Arquitetural Essencial (Ausência de Extinção Permanente):* **A Opção B NÃO confere extinção permanente aos grants no ledger.** Trata-se de uma **suspensão dinâmica (bloqueio transitório)**. Se o escopo `mission.grant_capabilities` for posteriormente devolvido ao operador e a sua época de autoridade não tiver sido avançada, os grants emitidos na mesma época ($G_2$) **voltam a satisfazer a conjunção de `isGrantActive` e voltam a autorizar efeitos**. Se a política de governança exigir que a perda de privilégio extinga definitivamente qualquer autorização pretérita, a Opção A (ou revogação explícita do cliente via `revoke()`) é mandatória.
+- **Modelo Opção C — Modelo Híbrido com Condições Explicitamente Definidas:**
+  - *Mecanismo:* Combina mecanismos de persistência e runtime com critérios estritos:
+    1. *Extinção definitiva para o escopo-raiz de governança:* A remoção de `mission.grant_capabilities` é tratada como perda estrutural de autoridade delegatória, exigindo avanço mandatório de época ($E_{\text{new}} = E_{\text{old}} + 1$) via trigger de update específico e cláusula UPSERT, extinguindo permanentemente todos os grants passados com `AUTHORITY_SUPERSEDED`.
+    2. *Suspensão dinâmica para envelopes granulares de capabilities e limites:* Mutações secundárias de escopos e encolhimentos no envelope de limites (`operator-limits.json`, §5.4) preservam a época de autoridade e são validados continuamente em runtime nos portões (Gate 3 e Gate 4), falhando com `GRANTOR_ENTITLEMENT_SHRUNK`.
 
 > [!NOTE]
-> **Delimitação Exata do Trust Boundary das Mutações Administrativas:**
-> É imperativo distinguir com precisão conceitual:
-> 1. **Integridade Relacional de Invariantes de Dados (O que os triggers garantem):** Os triggers de motor (`prevent_client_unauthorized_update`, etc.) atuam exclusivamente para garantir a consistência das regras estruturais do banco de dados (imutabilidade de `client_id`, não-decremento de época, bloqueio de reativação sem incremento de época e, sob Opção A, bloqueio de alteração de escopos sem avanço de época) contra comandos DML malformados, dependências, scripts ou bugs de aplicação.
-> 2. **Autorização para Escrever no Banco de Dados (O que os triggers NÃO fazem):** Triggers executam *em processo* dentro da biblioteca do SQLite e não possuem controle de acesso baseado em papéis (RBAC) para autenticar atores. Um agente de host que possua privilégios de sistema operacional para abrir o arquivo `.db` em modo de escrita poderia executar DDL arbitrária (`DROP TRIGGER`) ou construir DML que incremente artificialmente a época. A proteção contra essa classe de ameaça pertence ao **Trust Boundary do Host**: permissões estritas de sistema de arquivos POSIX (DAC/MAC) isolando os bancos ao usuário de serviço do daemon, e exigência de que mutações passem exclusivamente pela API autenticada com tokens portadores de escopos administrativos (`daemon.admin`).
+> **Delimitação Exata do Trust Boundary, Semântica de `REPLACE` e Escritores do Banco:**
+> É imperativo distinguir com precisão conceitual e técnica:
+> 1. **Limitação Inerente de Triggers SQLite diante de `INSERT OR REPLACE`:** No SQLite, a cláusula de resolução de conflitos `REPLACE` resolve colisões de chave primária através de uma exclusão implícita da linha pré-existente seguida de uma inserção. Quando `PRAGMA recursive_triggers = OFF` (padrão histórico do SQLite), **o SQLite NÃO executa triggers `BEFORE DELETE` na exclusão implícita do REPLACE**. Assim, um trigger `BEFORE DELETE` isolado não intercepta `INSERT OR REPLACE` sob conexões desconfiguradas. Promover gatilhos a uma barreira de autorização absoluta contra comandos DML arbitrários de scripts externos é falso no SQLite.
+> 2. **Controle Arquitetural de Escritores (Writer Statement Allowlist):** Para assegurar a integridade sem depender de pressupostos inviáveis do SQLite, a arquitetura delimita:
+>    - **Allowlist Estrita no Store:** O `LocalControlCredentialStore` proíbe expressamente instruções `INSERT OR REPLACE` ou cláusulas `ON CONFLICT REPLACE`. Mutações utilizam exclusivamente a construção atômica parametrizada `INSERT ... ON CONFLICT(client_id) DO UPDATE` (que opera como UPDATE puro sobre o registro existente, disparando os triggers de validação de UPDATE).
+>    - **Configuração Mandatória de Conexão:** Todas as conexões de escrita instanciadas pelo `LocalControlCredentialStore` ou CLI executam explicitamente `PRAGMA recursive_triggers = ON;` no handshake de abertura. Sob essa configuração, qualquer eventual tentativa de `REPLACE` dispara `prevent_client_delete` e é abortada.
+>    - **Salvaguarda no Trigger de Inserção:** O trigger `enforce_client_authority_epoch_insert_monotonicity` rejeita inserções com $NEW.authority\_epoch \le max\_epoch$ caso o cliente já possua histórico registrado em `local_control_authority_epochs`.
+> 3. **Trust Boundary do Host vs. Integridade Relacional:** Triggers executam *em processo* dentro da biblioteca do SQLite e não realizam autenticação ou RBAC de atores do sistema operacional. O controle contra atores que possam abrir o arquivo `.db` fora da API do daemon ou executar DDL arbitrária (`DROP TRIGGER`) reside no **Trust Boundary do Host**: permissões POSIX (`chmod 0600`), usuário de serviço dedicado, e canalização exclusiva de mutações administrativas via API autenticada (`daemon.admin`).
 
 **Preservação de grants legítimos em rotação de segredo pura:**
 Quando a operação administrativa for estritamente uma troca de credencial bearer (`token_rotation_only`), onde `scopes_json` permanece estritamente idêntico e os limites do emissor não foram alterados:
@@ -706,40 +718,25 @@ Para resolver integralmente essa inconsistência sem recorrer a timestamps de re
    ALTER TABLE local_control_clients ADD COLUMN credential_version INTEGER NOT NULL DEFAULT 1;
 
    -- Tabela durável de salvaguarda e high-water mark permanente (retenção perpétua)
-   CREATE TABLE IF NOT EXISTS local_control_authority_epochs (
-     client_id TEXT PRIMARY KEY,
-     max_epoch INTEGER NOT NULL
-   );
+   CREATE TABLE IF NOT EXISTS local_control_authority_epochs (\
+     client_id TEXT PRIMARY KEY,\
+     max_epoch INTEGER NOT NULL\
+   );\
 
-   -- Triggers mandatários no SQLite que protegem local_control_clients contra mutações destrutivas
+   -- Triggers mandatários universais no SQLite (comuns a todas as opções)
    CREATE TRIGGER IF NOT EXISTS prevent_client_delete
    BEFORE DELETE ON local_control_clients
    BEGIN
      SELECT RAISE(ABORT, 'physical deletion of local_control_clients is forbidden: clients must be deactivated via revoke()');
    END;
 
-   CREATE TRIGGER IF NOT EXISTS prevent_client_unauthorized_update
-   BEFORE UPDATE ON local_control_clients
-   BEGIN
-     SELECT CASE
-       WHEN NEW.client_id != OLD.client_id THEN
-         RAISE(ABORT, 'updating client_id is forbidden: identity is strictly immutable')
-       WHEN NEW.authority_epoch < OLD.authority_epoch THEN
-         RAISE(ABORT, 'decrementing authority_epoch on local_control_clients is strictly forbidden')
-       WHEN NEW.authority_epoch < COALESCE((SELECT max_epoch FROM local_control_authority_epochs WHERE client_id = OLD.client_id), 0) THEN
-         RAISE(ABORT, 'authority_epoch cannot be updated below historical max_epoch recorded in local_control_authority_epochs')
-       WHEN OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NULL AND NEW.authority_epoch <= OLD.authority_epoch THEN
-         RAISE(ABORT, 'reactivating a revoked client requires strictly incrementing authority_epoch to extinguish past grants')
-       -- Sob Opção A (§14 Decisão 14): alteração de escopos exige estrito avanço de época no banco
-       WHEN NEW.scopes_json != OLD.scopes_json AND NEW.authority_epoch <= OLD.authority_epoch THEN
-         RAISE(ABORT, 'modifying client scopes requires strictly incrementing authority_epoch to invalidate previous generation grants (Option A)')
-     END;
-   END;
-
    CREATE TRIGGER IF NOT EXISTS enforce_client_authority_epoch_insert_monotonicity
    BEFORE INSERT ON local_control_clients
    BEGIN
      SELECT CASE
+       WHEN EXISTS (SELECT 1 FROM local_control_authority_epochs WHERE client_id = NEW.client_id)
+            AND NEW.authority_epoch <= (SELECT max_epoch FROM local_control_authority_epochs WHERE client_id = NEW.client_id) THEN
+         RAISE(ABORT, 'inserting or replacing client requires strictly incrementing authority_epoch above historical max_epoch')
        WHEN NEW.authority_epoch < COALESCE((SELECT max_epoch FROM local_control_authority_epochs WHERE client_id = NEW.client_id), 0) THEN
          RAISE(ABORT, 'authority_epoch cannot be inserted below historical max_epoch recorded in local_control_authority_epochs')
      END;
@@ -779,37 +776,160 @@ Para resolver integralmente essa inconsistência sem recorrer a timestamps de re
      ON CONFLICT(client_id) DO UPDATE SET
        max_epoch = MAX(local_control_authority_epochs.max_epoch, excluded.max_epoch);
    END;
-
-   -- Provisionamento Inicial, Rotação e Reprovisionamento Atômico (Transação única)
-   INSERT INTO local_control_clients (
-     client_id, token_hash, scopes_json, expires_at, revoked_at, created_at, credential_version, authority_epoch
-   )
-   VALUES (
-     :client_id, :token_hash, :scopes_json, :expires_at, NULL, :created_at, 1,
-     COALESCE((SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = :client_id), 1)
-   )
-   ON CONFLICT(client_id) DO UPDATE SET
-     token_hash = excluded.token_hash,
-     scopes_json = excluded.scopes_json,
-     expires_at = excluded.expires_at,
-     authority_epoch = CASE
-       -- (1) Reprovisionamento pós-revogação: incremento atômico obrigatório
-       WHEN local_control_clients.revoked_at IS NOT NULL THEN local_control_clients.authority_epoch + 1
-       -- (2) Sob Modelo Opção A (§14): avanço se houver alteração/redução de escopos
-       WHEN local_control_clients.scopes_json != excluded.scopes_json THEN local_control_clients.authority_epoch + 1
-       -- (3) Rotação de segredo pura (mesmo scopes_json e limites inalterados): preserva época
-       ELSE local_control_clients.authority_epoch
-     END,
-     credential_version = local_control_clients.credential_version + 1,
-     revoked_at = NULL,
-     created_at = excluded.created_at;
-
-   -- Sincronização durável da época máxima atingida na mesma transação (redundância declarativa)
-   INSERT INTO local_control_authority_epochs (client_id, max_epoch)
-   VALUES (:client_id, (SELECT authority_epoch FROM local_control_clients WHERE client_id = :client_id))
-   ON CONFLICT(client_id) DO UPDATE SET
-     max_epoch = MAX(local_control_authority_epochs.max_epoch, excluded.max_epoch);
    ```
+
+3. **Semântica de `INSERT OR REPLACE`, `PRAGMA recursive_triggers` e Delimitação da Fronteira de Confiança (Trust Boundary):**
+   - *Análise Técnica e Reprodução no SQLite:*
+     No SQLite, uma instrução `INSERT OR REPLACE` (ou `INSERT ... ON CONFLICT REPLACE`) trata uma colisão de chave primária executando primeiro uma exclusão física implícita do registro conflitante e, em seguida, inserindo o novo registro fornecido.
+     1. **Sob `PRAGMA recursive_triggers = OFF` (padrão histórico do SQLite):** A exclusão física implícita realizada pelo algoritmo `REPLACE` **NÃO dispara** triggers `BEFORE DELETE` ou `AFTER DELETE`. Portanto, sob conexões não configuradas, o trigger `prevent_client_delete` é ignorado pelo motor. Se o trigger de inserção verificasse apenas `NEW.authority_epoch < max_epoch` (desigualdade estrita), uma substituição contendo a mesma época ($E=7$) e `revoked_at = NULL` passaria com sucesso ($7 < 7$ é falso), reativando o cliente na época 7 e ressuscitando os grants da geração 7.
+     2. **Sob `PRAGMA recursive_triggers = ON`:** A exclusão implícita do `REPLACE` executa triggers recursivamente e é imediatamente interceptada por `prevent_client_delete`, abortando a operação com `physical deletion of local_control_clients is forbidden`.
+     3. **Salvaguarda no Trigger de Inserção:** O trigger `enforce_client_authority_epoch_insert_monotonicity` refinado valida `NEW.authority_epoch <= max_epoch` para qualquer cliente existente em `local_control_authority_epochs`. Portanto, mesmo sob `PRAGMA recursive_triggers = OFF`, a tentativa de inserção/substituição na mesma época ou inferior é abortada antes do commit.
+   - *Limitação Reconhecida do SQLite e Redução de Alegações:*
+     Gatilhos do SQLite executam *in-process* na biblioteca de cada conexão e sua ativação diante de conflitos depende de pragmas da sessão (`recursive_triggers`). Portanto, **o contrato não promove gatilhos SQL a uma barreira de autorização absoluta contra comandos DML arbitrários** caso processos não autorizados possam abrir conexões diretas com pragmas arbitrários.
+   - *Proteção Arquitetural Coordenada (Trust Boundary):*
+     A segurança contra ressurreição e corrupção de autoridade baseia-se na coordenação estrita de quatro camadas:
+     1. **Allowlist de Escritores no Store (Writer Statement Allowlist):** O subsistema `LocalControlCredentialStore` proíbe expressamente instruções `INSERT OR REPLACE` e cláusulas `ON CONFLICT REPLACE`. Mutações de provisionamento e rotação utilizam unicamente a construção atômica parametrizada `INSERT ... ON CONFLICT(client_id) DO UPDATE`. No SQLite, a cláusula `DO UPDATE` opera como uma atualização in-place sem exclusão implícita, disparando consistentemente os triggers de `BEFORE UPDATE` em qualquer configuração.
+     2. **Configuração Mandatória de Conexões de Escrita:** Qualquer conexão de banco instanciada pelo runtime ou CLI administrativa executa explicitamente `PRAGMA recursive_triggers = ON;` no handshake de abertura.
+     3. **Triggers Relacionais como Defense-in-Depth:** Os triggers relacionais atuam como guardas de consistência estrutural para impedir bugs de aplicação e mutações malformadas dentro das conexões gerenciadas.
+     4. **Trust Boundary do Host:** A contenção contra adulteração do arquivo `.db`, execução de DDL (`DROP TRIGGER`) ou DML arbitrário via shells externos pertence ao isolamento do sistema operacional: permissões POSIX restritas (`chmod 0600`), usuário dedicado do daemon e canalização exclusiva de operações pela API autenticada (`daemon.admin`).
+
+4. **Diferenciação Normativa das Alternativas: Opção A, Opção B e Opção C:**
+   Para garantir que o documento não apresente um DDL único incompatível com parte das alternativas, definem-se abaixo as variantes específicas de triggers, operações de provisionamento (UPSERT) e predicados de validação:
+
+   #### Variante Opção A — Extinção Permanente por Avanço de Época no AuthStore
+   - *Trigger `prevent_client_unauthorized_update` (Opção A):*
+     ```sql
+     CREATE TRIGGER IF NOT EXISTS prevent_client_unauthorized_update
+     BEFORE UPDATE ON local_control_clients
+     BEGIN
+       SELECT CASE
+         WHEN NEW.client_id != OLD.client_id THEN
+           RAISE(ABORT, 'updating client_id is forbidden: identity is strictly immutable')
+         WHEN NEW.authority_epoch < OLD.authority_epoch THEN
+           RAISE(ABORT, 'decrementing authority_epoch on local_control_clients is strictly forbidden')
+         WHEN NEW.authority_epoch < COALESCE((SELECT max_epoch FROM local_control_authority_epochs WHERE client_id = OLD.client_id), 0) THEN
+           RAISE(ABORT, 'authority_epoch cannot be updated below historical max_epoch recorded in local_control_authority_epochs')
+         WHEN OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NULL AND NEW.authority_epoch <= OLD.authority_epoch THEN
+           RAISE(ABORT, 'reactivating a revoked client requires strictly incrementing authority_epoch to extinguish past grants')
+         -- Cláusula exclusiva da Opção A: mutação de escopos exige estrito incremento de autoridade
+         WHEN NEW.scopes_json != OLD.scopes_json AND NEW.authority_epoch <= OLD.authority_epoch THEN
+           RAISE(ABORT, 'modifying client scopes requires strictly incrementing authority_epoch to invalidate previous generation grants (Option A)')
+       END;
+     END;
+     ```
+   - *Comando Atômico de Provisionamento / UPSERT (Opção A):*
+     ```sql
+     INSERT INTO local_control_clients (
+       client_id, token_hash, scopes_json, expires_at, revoked_at, created_at, credential_version, authority_epoch
+     )
+     VALUES (
+       :client_id, :token_hash, :scopes_json, :expires_at, NULL, :created_at, 1,
+       COALESCE((SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = :client_id), 1)
+     )
+     ON CONFLICT(client_id) DO UPDATE SET
+       token_hash = excluded.token_hash,
+       scopes_json = excluded.scopes_json,
+       expires_at = excluded.expires_at,
+       authority_epoch = CASE
+         -- (1) Reprovisionamento pós-revogação: incremento atômico obrigatório
+         WHEN local_control_clients.revoked_at IS NOT NULL THEN local_control_clients.authority_epoch + 1
+         -- (2) Opção A: alteração/redução de escopos avança atomicamente a época
+         WHEN local_control_clients.scopes_json != excluded.scopes_json THEN local_control_clients.authority_epoch + 1
+         -- (3) Rotação de segredo pura (mesmo scopes_json): preserva época
+         ELSE local_control_clients.authority_epoch
+       END,
+       credential_version = local_control_clients.credential_version + 1,
+       revoked_at = NULL,
+       created_at = excluded.created_at;
+
+     INSERT INTO local_control_authority_epochs (client_id, max_epoch)
+     VALUES (:client_id, (SELECT authority_epoch FROM local_control_clients WHERE client_id = :client_id))
+     ON CONFLICT(client_id) DO UPDATE SET
+       max_epoch = MAX(local_control_authority_epochs.max_epoch, excluded.max_epoch);
+     ```
+   - *Predicado de Runtime e Ciclo de Vida (Opção A):*
+     $$\text{isGrantActive}(G) \iff (G.\text{grantorAuthorityEpoch} == \text{client}.\text{authority\_epoch}) \land (\text{client}.\text{revoked\_at} == \text{null})$$
+     Mutações em `scopes_json` avançam duravelmente $E_{\text{new}} = E_{\text{old}} + 1$. Todos os grants emitidos em $E_{\text{old}}$ tornam-se imediata e permanentemente extintos com `AUTHORITY_SUPERSEDED`. Mesmo se a governança reatribuir posteriormente os escopos ao mesmo cliente, um novo incremento ($E+2$) é exigido, garantindo anti-ressurreição definitiva.
+
+   #### Variante Opção B — Suspensão Dinâmica em Runtime com Época Preservada
+   - *Trigger `prevent_client_unauthorized_update` (Opção B):*
+     ```sql
+     CREATE TRIGGER IF NOT EXISTS prevent_client_unauthorized_update
+     BEFORE UPDATE ON local_control_clients
+     BEGIN
+       SELECT CASE
+         WHEN NEW.client_id != OLD.client_id THEN
+           RAISE(ABORT, 'updating client_id is forbidden: identity is strictly immutable')
+         WHEN NEW.authority_epoch < OLD.authority_epoch THEN
+           RAISE(ABORT, 'decrementing authority_epoch on local_control_clients is strictly forbidden')
+         WHEN NEW.authority_epoch < COALESCE((SELECT max_epoch FROM local_control_authority_epochs WHERE client_id = OLD.client_id), 0) THEN
+           RAISE(ABORT, 'authority_epoch cannot be updated below historical max_epoch recorded in local_control_authority_epochs')
+         WHEN OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NULL AND NEW.authority_epoch <= OLD.authority_epoch THEN
+           RAISE(ABORT, 'reactivating a revoked client requires strictly incrementing authority_epoch to extinguish past grants')
+         -- Opção B: NÃO condiciona mutações de scopes_json ao avanço de época.
+         -- Atualizações diretas ou via UPSERT em scopes_json preservando authority_epoch são permitidas pelo SQLite.
+       END;
+     END;
+     ```
+   - *Comando Atômico de Provisionamento / UPSERT (Opção B):*
+     ```sql
+     INSERT INTO local_control_clients (
+       client_id, token_hash, scopes_json, expires_at, revoked_at, created_at, credential_version, authority_epoch
+     )
+     VALUES (
+       :client_id, :token_hash, :scopes_json, :expires_at, NULL, :created_at, 1,
+       COALESCE((SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = :client_id), 1)
+     )
+     ON CONFLICT(client_id) DO UPDATE SET
+       token_hash = excluded.token_hash,
+       scopes_json = excluded.scopes_json,
+       expires_at = excluded.expires_at,
+       authority_epoch = CASE
+         -- (1) Reprovisionamento pós-revogação: incremento atômico obrigatório
+         WHEN local_control_clients.revoked_at IS NOT NULL THEN local_control_clients.authority_epoch + 1
+         -- (2) Opção B: alteração de escopos preserva a época de autoridade vigente
+         ELSE local_control_clients.authority_epoch
+       END,
+       credential_version = local_control_clients.credential_version + 1,
+       revoked_at = NULL,
+       created_at = excluded.created_at;
+
+     INSERT INTO local_control_authority_epochs (client_id, max_epoch)
+     VALUES (:client_id, (SELECT authority_epoch FROM local_control_clients WHERE client_id = :client_id))
+     ON CONFLICT(client_id) DO UPDATE SET
+       max_epoch = MAX(local_control_authority_epochs.max_epoch, excluded.max_epoch);
+     ```
+   - *Predicado de Runtime e Ciclo de Vida (Opção B):*
+     $$\text{isGrantActive}(G) \iff (G.\text{grantorAuthorityEpoch} == \text{client}.\text{authority\_epoch}) \land (\text{client}.\text{revoked\_at} == \text{null}) \land (\text{"mission.grant\_capabilities"} \in \text{client}.\text{scopes}) \land (G \subseteq \text{currentLimits}(\text{client}))$$
+     A época de autoridade não é alterada na mutação de escopos. Se o emissor perder `mission.grant_capabilities`, a autorização falha dinamicamente no Gate 3 e Gate 4 com `GRANTOR_SCOPE_REVOKED`. **Ausência de extinção definitiva:** caso a governança posteriormente devolva `mission.grant_capabilities` ao cliente e a sua época não tenha sido avançada, os grants emitidos na mesma época voltam a satisfazer a conjunção de `isGrantActive` e **voltam a autorizar efeitos**.
+
+   #### Variante Opção C — Modelo Híbrido com Condições Explicitamente Definidas
+   - *Trigger `prevent_client_unauthorized_update` (Opção C):*
+     ```sql
+     CREATE TRIGGER IF NOT EXISTS prevent_client_unauthorized_update
+     BEFORE UPDATE ON local_control_clients
+     BEGIN
+       SELECT CASE
+         WHEN NEW.client_id != OLD.client_id THEN
+           RAISE(ABORT, 'updating client_id is forbidden: identity is strictly immutable')
+         WHEN NEW.authority_epoch < OLD.authority_epoch THEN
+           RAISE(ABORT, 'decrementing authority_epoch on local_control_clients is strictly forbidden')
+         WHEN NEW.authority_epoch < COALESCE((SELECT max_epoch FROM local_control_authority_epochs WHERE client_id = OLD.client_id), 0) THEN
+           RAISE(ABORT, 'authority_epoch cannot be updated below historical max_epoch recorded in local_control_authority_epochs')
+         WHEN OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NULL AND NEW.authority_epoch <= OLD.authority_epoch THEN
+           RAISE(ABORT, 'reactivating a revoked client requires strictly incrementing authority_epoch to extinguish past grants')
+         -- Cláusula exclusiva da Opção C: remoção explícita do escopo-raiz exige avanço de época
+         WHEN OLD.scopes_json LIKE '%"mission.grant_capabilities"%'
+              AND NOT (NEW.scopes_json LIKE '%"mission.grant_capabilities"%')
+              AND NEW.authority_epoch <= OLD.authority_epoch THEN
+           RAISE(ABORT, 'removing mission.grant_capabilities requires strictly incrementing authority_epoch (Option C)')
+       END;
+     END;
+     ```
+   - *Comando Atômico de Provisionamento / UPSERT (Opção C):*
+     Avança a época de autoridade se o cliente estiver revogado OU se o escopo `mission.grant_capabilities` tiver sido removido (`OLD.scopes_json LIKE '%"mission.grant_capabilities"%' AND NOT excluded.scopes_json LIKE '%"mission.grant_capabilities"%'`); preserva a época para modificações em outros escopos secundários.
+   - *Predicado de Runtime e Ciclo de Vida (Opção C):*
+     A perda do escopo-raiz extingue permanentemente os grants emitidos com `AUTHORITY_SUPERSEDED`. Encolhimentos granulares de envelopes de limites (`operator-limits.json`) e modificações de escopos operacionais não delegatórios são validados dinamicamente em runtime com `GRANTOR_ENTITLEMENT_SHRUNK`.
 
    **Diferenciação operacional das transições fundamentais:**
    - **Provisionamento inicial (novo cliente nunca antes visto):**
@@ -817,7 +937,7 @@ Para resolver integralmente essa inconsistência sem recorrer a timestamps de re
    - **Rotação de segredo pura (`token_rotation_only` — `revoked_at IS NULL`, mesmo `scopes_json`):**
      O operador está ativo e rotaciona exclusivamente a credencial bearer física. Na cláusula `ON CONFLICT`, `revoked_at IS NOT NULL` é falso e `scopes_json` não foi modificado. Logo, **`authority_epoch` permanece estritamente inalterado** (`local_control_clients.authority_epoch`). O contador `credential_version` avança para sinalizar a troca da chave física. A tabela de época máxima permanece inalterada. **Todos os grants emitidos na geração corrente continuam perfeitamente válidos e operantes.**
    - **Redução ou modificação de escopos (`privilege_modification` — ex.: perda de `mission.grant_capabilities`):**
-     O operador sofre alteração nos escopos atribuídos. Sob o Modelo Opção A (§14), a expressão SQL detecta `scopes_json != excluded.scopes_json` e incrementa atomicamente $E_{new} = E_{old} + 1$, extinguindo todos os grants anteriores com `AUTHORITY_SUPERSEDED`. Sob o Modelo Opção B (§14), os gates de dispatch validam dinamicamente a posse contínua de `mission.grant_capabilities` e rejeitam execuções com `GRANTOR_SCOPE_REVOKED`. Em ambos os casos, a autorização anterior não subsiste.
+     O operador sofre alteração nos escopos atribuídos. Sob o Modelo Opção A (§14), a expressão SQL incrementa atomicamente $E_{new} = E_{old} + 1$, extinguindo todos os grants anteriores com `AUTHORITY_SUPERSEDED`. Sob o Modelo Opção B (§14), os gates de dispatch validam dinamicamente a posse contínua de `mission.grant_capabilities` e rejeitam execuções com `GRANTOR_SCOPE_REVOKED`. Sob o Modelo Opção C (§14), a remoção de `mission.grant_capabilities` incrementa atomicamente a época, enquanto alterações secundárias preservam a época.
    - **Redução de limites de entitlement (`limits_shrink`):**
      Caso a governança reduza a lista de capabilities ou classes de efeito permitidas ao operador em `operator-limits.json` (§5.4), os portões de avaliação e dispatch bloqueiam fail-closed qualquer passo cujo grant exceda os novos limites com `GRANTOR_ENTITLEMENT_SHRUNK`.
    - **Revogação explícita do operador:**
@@ -828,38 +948,39 @@ Para resolver integralmente essa inconsistência sem recorrer a timestamps de re
      O operador foi revogado no passado. Na cláusula `ON CONFLICT`, o predicado `revoked_at IS NOT NULL` é verdadeiro. A expressão executa o incremento atômico durável:
      $$\text{authority\_epoch}_{\text{new}} = \text{local\_control\_clients}.\text{authority\_epoch} + 1$$
      O registro é reativado com `revoked_at = NULL`. A sincronização de `local_control_authority_epochs` atualiza `max_epoch` para o novo valor ($E_{\text{new}} = E_{\text{old}} + 1$).
-3. **Prevenção matemática de reversão e delimitação da fronteira de confiança (Trust Boundary):**
-   - **Barreira 1A (Proteção Relacional contra Mutações Não Autorizadas em `local_control_clients`):** O trigger `prevent_client_unauthorized_update` impede no nível de motor do SQLite:
+5. **Barreiras arquiteturais de integridade e Trust Boundary:**
+   - **Barreira 1A (Proteção Relacional contra Mutações Não Autorizadas em `local_control_clients`):** O trigger `prevent_client_unauthorized_update` (nas variantes de Opção A, B ou C descritas no item 4) impede no nível de motor do SQLite:
      1. Qualquer alteração de identidade (`NEW.client_id != OLD.client_id`), garantindo a imutabilidade estrita do identificador do operador;
      2. Qualquer comando `UPDATE` que reduza `authority_epoch` (`NEW.authority_epoch < OLD.authority_epoch` ou `NEW.authority_epoch < max_epoch`);
      3. **Extinção obrigatória de autoridade na reativação:** Qualquer transição de cliente revogado para ativo (`OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NULL`) que não incremente estritamente a geração de autoridade (`NEW.authority_epoch <= OLD.authority_epoch`). Uma tentativa adversária direta de executar `UPDATE local_control_clients SET revoked_at = NULL WHERE client_id = 'alice'` falha imediatamente por trigger relacional, impedindo terminantemente que grants emitidos na geração anterior voltem a satisfazer o predicado de autorização;
      4. Ao mesmo tempo, preserva de forma limpa e não redundante a rotação legítima de credencial em cliente ativo (`OLD.revoked_at IS NULL`, onde `authority_epoch` permanece inalterado e a trava de reativação não é disparada);
-     5. **Proteção de integridade contra mutações de escopo sem avanço de autoridade (Sob Opção A — §14 Decisão 14):** Qualquer alteração direta na coluna `scopes_json` (`NEW.scopes_json != OLD.scopes_json`) que não incremente estritamente a geração de autoridade (`NEW.authority_epoch <= OLD.authority_epoch`) é sumariamente abortada com `RAISE(ABORT)`. Isso garante que a Opção A não dependa exclusivamente da disciplina do chamador de `provision()`: mesmo se uma mutação DML direta tentar desautorizar ou alterar escopos de um cliente, o motor SQLite exige o avanço de época ($E_{\text{new}} = E_{\text{old}} + 1$) ou rejeita a escrita.
-   - **Barreira 1B (Proteção contra Inserção Abaixo do High-Water Mark):** O trigger `enforce_client_authority_epoch_insert_monotonicity` aborta qualquer comando `INSERT` direto que tente registrar um cliente com `authority_epoch` inferior à marca máxima histórica já comitada em `local_control_authority_epochs`.
-   - **Barreira 1C (Trigger de Vedação a Exclusão Física):** O trigger `prevent_client_delete` veda qualquer `DELETE FROM local_control_clients`, garantindo que desativações sejam sempre lógicas (`revoked_at`).
+     5. **Proteção de integridade contra mutações de escopo sem avanço de autoridade:** Sob a Opção A, qualquer alteração direta em `scopes_json` (`NEW.scopes_json != OLD.scopes_json`) que não incremente estritamente a geração de autoridade é abortada; sob a Opção C, a exigência restringe-se à remoção de `mission.grant_capabilities`; sob a Opção B, a alteração é permitida pelo trigger e a contenção opera dinamicamente nos gates em runtime.
+   - **Barreira 1B (Proteção contra Inserção e Substituição com Época Inferior ou Igual ao High-Water Mark):** O trigger `enforce_client_authority_epoch_insert_monotonicity` aborta qualquer comando `INSERT` direto ou tentativa de `INSERT OR REPLACE` que tente registrar um cliente com `authority_epoch <= max_epoch` para clientes com histórico prévio em `local_control_authority_epochs`.
+   - **Barreira 1C (Trigger de Vedação a Exclusão Física):** O trigger `prevent_client_delete` veda qualquer `DELETE FROM local_control_clients`, garantindo que desativações sejam sempre lógicas (`revoked_at`). Sob `PRAGMA recursive_triggers = ON;`, o trigger intercepta também a exclusão implícita do algoritmo `REPLACE`.
    - **Barreira 2 (Triggers de Imutabilidade em `local_control_authority_epochs`):** Os triggers `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement` abortam qualquer exclusão física ou regressão numérica em `max_epoch`.
    - **Barreira 3 (High-Water Mark Monotônico no `INSERT`):** Se em um cenário extremo de desastre operacional a linha de um cliente for fisicamente apagada de `local_control_clients`, a recriação subsequente do cliente via `INSERT` executa:
      `COALESCE((SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = 'alice'), 1)`
      Como a tabela de salvaguarda preserva $7$, a consulta retorna $7 + 1 = 8$. O registro é recriado diretamente na época 8. **Fica categoricamente eliminado o cenário `epoch 7 → DELETE → INSERT → epoch 1`.**
-   - **Delimitações estritas do Trust Boundary do SQLite:**
+   - **Delimitações estritas do Trust Boundary do SQLite e Allowlist de Escritores:**
      - *Distinção fundamental entre Integridade Relacional e Autorização de Escrita:* É imperativo separar conceitualmente:
-       1. **Integridade Estrutural de Invariantes (O que os triggers garantem):** Os triggers relacionais no SQLite garantem invariantes de dados contra comandos DML malformados, scripts administrativos que ignorem convenções, dependências defeituosas ou comandos diretos. Sob a Opção A, o trigger impede que `scopes_json` seja atualizado sem avanço de época, garantindo a integridade dos dados sem depender da disciplina de quem emite a instrução SQL.
+       1. **Integridade Estrutural de Invariantes (O que os triggers garantem):** Os triggers relacionais no SQLite garantem invariantes de dados contra comandos DML malformados, scripts administrativos que ignorem convenções, dependências defeituosas ou comandos diretos dentro da conexão gerenciada. Sob a Opção A, o trigger impede que `scopes_json` seja atualizado sem avanço de época, garantindo a integridade dos dados sem depender da disciplina de quem emite a instrução SQL.
        2. **Autorização para Escrever no Banco de Dados (O que os triggers NÃO fazem):** Triggers executam *em processo* dentro da biblioteca do SQLite e são cegos a identidades de usuários do sistema operacional ou roles de rede. O SQLite não provê RBAC nativo nem autenticação de atores para comandos DDL. Um invasor com acesso local ao sistema operacional que possa executar DDL arbitrária (`DROP TRIGGER`) ou manipular o arquivo binário do banco via filesystem não é contido por código SQL embutido.
      - *O que a arquitetura garante dentro do motor:* Os triggers e restrições relacionais impedem eficazmente qualquer regressão ou mutação destrutiva acidental ou abusiva via instruções DML padrão (`INSERT`, `UPDATE`, `DELETE`) executadas pelo runtime, pela CLI, por dependências ou por scripts conectados à sessão de banco de dados. Qualquer tentativa direta de rebaixar a época de um cliente via `UPDATE local_control_clients SET authority_epoch = 1`, de reativar um cliente revogado sem avançar a época via `UPDATE local_control_clients SET revoked_at = NULL` ou de modificar escopos sem avançar a época sob a Opção A falha imediatamente por trigger relacional.
+     - *Controle de Escritores e Pragmas de Conexão:* A proteção contra bypass de deleção implícita por `INSERT OR REPLACE` sob `PRAGMA recursive_triggers = OFF` é assegurada pela **allowlist estrita do store** (que proíbe sintaxe `REPLACE`, exigindo `INSERT ... ON CONFLICT(client_id) DO UPDATE`), pela configuração mandatória de conexão (`PRAGMA recursive_triggers = ON;`) e pela salvaguarda `enforce_client_authority_epoch_insert_monotonicity`.
      - *O que exige governança administrativa e proteção de host:* A contenção contra adulteração do arquivo de banco ou execução de DDL reside fora do SQLite: permissões estritas de sistema de arquivos do Linux (DAC com `chmod 0600` / MAC via AppArmor/SELinux), isolamento do banco sob usuário de serviço dedicado, backups duráveis imutáveis (WORM) e auditoria forense no nível do host. Adicionalmente, mutações administrativas de autoridade devem ser canalizadas exclusivamente através da API do daemon autenticada com tokens portadores de escopos de controle administrativo (`daemon.admin`).
-4. **Prevenção de overflow de inteiros:**
+6. **Prevenção de overflow de inteiros:**
    Tanto no runtime TypeScript quanto no SQLite, inteiros seguros são delimitados por `Number.MAX_SAFE_INTEGER` ($9.007.199.254.740.991$, $2^{53} - 1$).
    Antes de autorizar um avanço de época, o AuthStore valida:
    `if (currentEpoch >= Number.MAX_SAFE_INTEGER) throw new Error("AUTHORITY_EPOCH_OVERFLOW");`
    Se atingido o limite máximo seguro, a operação de reprovisionamento é abortada de forma fail-closed com erro estruturado **`AUTHORITY_EPOCH_OVERFLOW`**, impedindo qualquer wrap-around ou perda de monotonicidade.
-5. **Comportamento após restart e migração:**
+7. **Comportamento após restart e migração:**
    - **Migração:** Ao migrar bancos existentes sem as novas colunas, o SQLite preenche `authority_epoch = 1` e `credential_version = 1` para todos os clientes legados, e uma migração idempotente popula `local_control_authority_epochs` com `max_epoch = 1`.
    - **Restart:** As tabelas do `LocalControlCredentialStore` residem no SQLite WAL com política de durabilidade configurável (`NORMAL` ou `FULL`). Ao reiniciar o daemon ou o sistema operacional, as épocas de autoridade, escopos e estados de revogação permanecem exatamente como comitados no disco. Nenhum estado volátil de autoridade reside exclusivamente em memória RAM.
-6. **Regra de Invalidação Permanente (`AUTHORITY_SUPERSEDED`):**
+8. **Regra de Invalidação Permanente (`AUTHORITY_SUPERSEDED`):**
    Na redução determinística de grants para autorizar um passo ou handoff, o runtime verifica:
    $$\text{isGrantActive} \iff (G.\text{grantorAuthorityEpoch} == \text{client}.\text{authority\_epoch}) \land (\text{client}.\text{revoked\_at} == \text{null})$$
    Grants emitidos sob $E_{\text{old}}$ falham na igualdade ($E_{\text{old}} < E_{\text{new}}$) e tornam-se permanentemente extintos com código **`AUTHORITY_SUPERSEDED`**. Eles **NUNCA mais voltam a autorizar efeitos**.
-7. **Matriz de cenários adversariais com múltiplas gerações:**
+9. **Matriz de cenários adversariais com múltiplas gerações:**
    - **Cenário A — Rotação de segredo pura:** Emitir grant no epoch 1; rotacionar token do operador (novo segredo gerado, mesmo `scopes_json`, `authority_epoch` mantido em 1, `revoked_at` permanece `null`); grant continua perfeitamente válido e autoriza dispatches legítimos.
    - **Cenário B — Revogação e reprovisionamento simples:** Emitir grant no epoch 1; revogar operador (`revoked_at` preenchido); reprovisionar o mesmo `clientId` (novo `authority_epoch = 2`). Tentativa de usar o grant do epoch 1 falha com `AUTHORITY_SUPERSEDED`; o grant histórico nunca mais ressuscita.
    - **Cenário C — Múltiplas gerações consecutivas ($E=7 \to \text{revoke} \to \text{reprovision} \to E=8$):**
@@ -893,13 +1014,14 @@ Para resolver integralmente essa inconsistência sem recorrer a timestamps de re
      A reativação legítima de `alice` exige obrigatoriamente reprovisionamento com incremento atômico ($E_{\text{new}} = 7 + 1 = 8$), momento em que todos os grants pretéritos da geração 7 são permanentemente extintos como `AUTHORITY_SUPERSEDED`.
    - **Cenário C2 (Adversarial) — Tentativa de mutação de identidade do operador (`client_id`):**
      Tentativa direta de executar `UPDATE local_control_clients SET client_id = 'bob' WHERE client_id = 'alice'` é sumariamente abortada pelo trigger `prevent_client_unauthorized_update` (`NEW.client_id != OLD.client_id`), preservando a imutabilidade estrita do ator.
-   - **Cenário C3 (Adversarial) — Tentativa de UPDATE direto de `scopes_json` sem avanço de época sob Opção A ($E=7 \to \text{UPDATE scopes\_json} \to \text{abortado}):**
+   - **Cenário C3 (Adversarial) — Tentativa de UPDATE direto de `scopes_json` sem avanço de época sob as Alternativas A, B e C ($E=7 \to \text{UPDATE scopes\_json}$):**
      Operador `alice` possui `authority_epoch = 7` com escopos `["mission.read", "mission.grant_capabilities"]`.
      Emite grant $G_7$ sob a época 7.
      Um script administrativo ou invasor tenta retirar `mission.grant_capabilities` executando um `UPDATE` direto sem avançar a época:
      `UPDATE local_control_clients SET scopes_json = '["mission.read"]' WHERE client_id = 'alice';`
-     Sob a Opção A, o trigger `prevent_client_unauthorized_update` dispara BEFORE UPDATE em `local_control_clients`, detecta `NEW.scopes_json != OLD.scopes_json` e `NEW.authority_epoch <= OLD.authority_epoch` ($7 \le 7$) e aborta sumariamente a transação com `RAISE(ABORT, 'modifying client scopes requires strictly incrementing authority_epoch to invalidate previous generation grants (Option A)')`.
-     O comando falha no SQLite; a escrita é rejeitada; o estado permanece intacto. A modificação legítima de escopos sob a Opção A exige obrigatoriamente fornecer `authority_epoch = authority_epoch + 1` (via `provision` ou update parametrizado), avançando duravelmente para a época 8 e extinguindo definitivamente todos os grants da época 7.
+     - *Sob a Opção A:* O trigger `prevent_client_unauthorized_update` dispara BEFORE UPDATE em `local_control_clients`, detecta `NEW.scopes_json != OLD.scopes_json` e `NEW.authority_epoch <= OLD.authority_epoch` ($7 \le 7$) e aborta sumariamente a transação com `RAISE(ABORT, 'modifying client scopes requires strictly incrementing authority_epoch to invalidate previous generation grants (Option A)')`. O comando falha no SQLite; a escrita é rejeitada; o estado permanece intacto. A modificação legítima de escopos sob a Opção A exige obrigatoriamente fornecer `authority_epoch = authority_epoch + 1` (via `provision` ou update parametrizado), avançando duravelmente para a época 8 e extinguindo definitivamente todos os grants da época 7.
+     - *Sob a Opção B:* O trigger relacional não impõe trava a `scopes_json`, e o comando `UPDATE` comita normalmente no SQLite mantendo `authority_epoch = 7`. Contudo, dispatches subsequentes que utilizem $G_7$ são avaliados dinamicamente em runtime no Gate 3 e Gate 4; ao constatar que `mission.grant_capabilities` não está mais presente em `client.scopes`, a autorização falha de forma fail-closed com o erro estruturado `GRANTOR_SCOPE_REVOKED`.
+     - *Sob a Opção C:* O trigger relacional detecta a retirada do escopo-raiz `mission.grant_capabilities` mantendo `authority_epoch <= OLD.authority_epoch` e aborta a instrução com `RAISE(ABORT, 'removing mission.grant_capabilities requires strictly incrementing authority_epoch (Option C)')`. Se a alteração fosse em outro escopo secundário (ex.: remoção de `mission.read`), o trigger comitaria e a validação seria delegada aos gates.
    - **Cenário C4 (Ciclo de Vida) — Redução de escopo, restauração posterior e tentativa de reuso de grant antigo (Opção A vs. Opção B):**
      1. *Estado Inicial ($E=2$):* Operador emite grant $G_2$ enquanto possui `["mission.read", "mission.grant_capabilities"]`. O grant autoriza passos no Gate 4.
      2. *Redução de Escopo:* O administrador retira `mission.grant_capabilities`, mantendo apenas `["mission.read"]`.
@@ -908,6 +1030,23 @@ Para resolver integralmente essa inconsistência sem recorrer a timestamps de re
      3. *Restauração Posterior de Escopo:* O administrador reatribui `mission.grant_capabilities` ao mesmo operador:
         - *Sob Opção A (Extinção Permanente Anti-Ressurreição):* A nova modificação de `scopes_json` exige novo avanço de época para $E=4$. Tentativas de reutilizar o grant histórico $G_2$ continuam falhando categoricamente com `AUTHORITY_SUPERSEDED` ($2 < 4$). **$G_2$ JAMAIS ressuscita, mesmo após a restauração integral dos privilégios.** Para autorizar novas missões, o operador deve emitir um novo grant $G_4$ sob a geração 4.
         - *Sob Opção B (Suspensão Dinâmica em Runtime):* Como a época de autoridade não avançou ($E=2$), ao restaurar o escopo no registro do cliente, a conjunção de `isGrantActive` volta a ser satisfeita no Gate 4 e o grant pretérito $G_2$ **volta a autorizar dispatches**. A Opção B atua como bloqueio transitório, não como extinção irrevogável.
+   - **Cenário C5 (Adversarial) — Reprodução de `INSERT OR REPLACE` e tentativa de ressurreição sob `PRAGMA recursive_triggers = OFF` e `ON`:**
+     Passo a passo adversarial comprovado no motor SQLite:
+     1. *Estado Inicial:* Operador `alice` ativo na época 7 (`authority_epoch = 7`, `max_epoch = 7`, `revoked_at = NULL`).
+     2. *Emissão de Grant:* Emissão do grant $G_7$ sob a época 7.
+     3. *Revogação:* Administração revoga `alice` executando `UPDATE local_control_clients SET revoked_at = 55 WHERE client_id = 'alice'`. O predicado `isGrantActive` passa a avaliar como `false` pois o emissor está revogado.
+     4. *Tentativa de Ressurreição via REPLACE:* Atacante ou script descalibrado emite:
+        ```sql
+        INSERT OR REPLACE INTO local_control_clients
+          (client_id, token_hash, scopes_json, expires_at, revoked_at, created_at, credential_version, authority_epoch)
+        VALUES
+          ('alice', 'newtoken', '["mission.grant_capabilities"]', 1000, NULL, 150, 2, 7);
+        ```
+     5. *Comportamento sob `PRAGMA recursive_triggers = OFF`:*
+        No SQLite padrão, o algoritmo REPLACE resolve a colisão de chave primária através de uma exclusão implícita sem disparar o trigger `BEFORE DELETE` (`prevent_client_delete` não é chamado). Contudo, o trigger `enforce_client_authority_epoch_insert_monotonicity` (BEFORE INSERT) consulta `local_control_authority_epochs` e constata que `alice` já existe com `max_epoch = 7`. Como $NEW.authority\_epoch (7) \le max\_epoch (7)$, o trigger aborta sumariamente a instrução com `RAISE(ABORT, 'inserting or replacing client requires strictly incrementing authority_epoch above historical max_epoch')`. A escrita é cancelada; `alice` permanece revogada. Além disso, a allowlist de escritores do `LocalControlCredentialStore` veda comandos com sintaxe `REPLACE`.
+     6. *Comportamento sob `PRAGMA recursive_triggers = ON`:*
+        Com triggers recursivos habilitados na conexão, a exclusão implícita do REPLACE aciona o trigger `prevent_client_delete`, abortando imediatamente a instrução com `physical deletion of local_control_clients is forbidden: clients must be deactivated via revoke()`.
+     7. *Verificação de Validade de $G_7$:* Em ambas as configurações, $G_7$ permanece inativo no predicado de autorização (`isGrantActive = false`), comprovando a robustez anti-ressurreição dentro do Trust Boundary definido.
    - **Cenário D — Mesmo milissegundo:** Executar revoke e reprovisionamento no mesmo milissegundo exato; o contador monotônico durável incrementa numericamente de forma determinística ($E_2 = 2 > E_1 = 1$), eliminando qualquer dependência ou colisão temporal de relógio de parede (`Date.now()`).
    - **Cenário E — Replay histórico:** Atacante tenta reenviar ou reutilizar o identificador `grantId` emitido no epoch 1 após o emissor ter sido reprovisionado no epoch 8; rejeitado com `AUTHORITY_SUPERSEDED`.
    - **Cenário F — Deleção física adversária ($E=7 \to \text{DELETE} \to \text{INSERT} \to E=8$):**
@@ -1214,13 +1353,14 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 | **Escalação por produto cartesiano A × B** | Execução de capabilities com referências de outros grants | Preservação estrita da tupla indissociável no grant; validação atômica correlacionada (§5.2) | `test_grant_cartesian_product_adversarial` |
 | **Operador concedendo além dos limites** | Elevação de privilégio do autorizador | Validação obrigatória contra fonte confiável de limites máximos (§5.4) | `test_grantor_limit_enforcement` |
 | **Redução de escopos do emissor sem revogação** | Grants anteriores continuam ativos após grantor perder `mission.grant_capabilities` | Avanço de época no AuthStore ou revalidação dinâmica nos gates; erro `GRANTOR_SCOPE_REVOKED` (§6.1) | `test_grantor_scope_drop_invalidates_grants` |
-| **Modificação direta de `scopes_json` via UPDATE sem avanço de época** | Bypass da invalidação de autoridade pretérita sob Opção A por mutação DML direta | Trigger `prevent_client_unauthorized_update` aborta se `NEW.scopes_json != OLD.scopes_json AND NEW.authority_epoch <= OLD.authority_epoch` (§8.4.2) | `test_scope_update_without_epoch_advance_forbidden_under_option_a` |
+| **Modificação direta de `scopes_json` via UPDATE sem avanço de época** | Bypass da invalidação de autoridade pretérita por mutação DML direta | Sob Opção A: Trigger `prevent_client_unauthorized_update` aborta se `NEW.scopes_json != OLD.scopes_json AND NEW.authority_epoch <= OLD.authority_epoch`; sob Opção B: UPDATE é permitido pelo trigger e a contenção opera dinamicamente nos gates em runtime com `GRANTOR_SCOPE_REVOKED` (§8.4.2) | `test_scope_update_without_epoch_advance_forbidden_under_option_a` / `test_scope_update_preserves_epoch_under_option_b` |
 | **Restauração de escopos previamente removidos** | Ressurreição inadvertida de grants pretéritos após reatribuição de privilégio | Sob Opção A: novo avanço de época extingue permanentemente grants prévios anti-ressurreição; sob Opção B: grants pretéritos voltam a autorizar dinamicamente (suspensão transitória) (§6.1.2, §8.4.2) | `test_grantor_scope_drop_and_restore_permanently_extinguishes_grants_option_a` / `test_grantor_scope_drop_and_restore_dynamic_suspension_option_b` |
 | **Redução de limites do emissor (entitlement shrink)** | Grants antigos continuam executando capabilities desautorizadas | Revalidação contínua de envelope no Gate 3 e Gate 4; erro `GRANTOR_ENTITLEMENT_SHRUNK`. Sem 2PC cross-DB, chamada em voo no baseline tratada via cancelamento assíncrono; zero efeitos garantido sob Opção 1 (RPC) ou 2 (banco único) (§5.4, §9.3) | `test_grantor_shrink_entitlement_envelope_fails_dispatch` |
 | **Rotação de token invalidando autoridade** | Grants legítimos tornam-se inoperantes após rotação regular de segredo | Separação entre segredo físico e autoridade; `authority_epoch` inalterado na rotação pura (§8.4) | `test_grantor_rotate_token_preserves_grants` |
 | **Ressurreição de grants pós-reprovisionamento** | Concessões antigas de emissor revogado voltam a autorizar ações | Incremento durável monotônico de `authority_epoch` no reprovisionamento; extinção definitiva (§8.4) | `test_grantor_revoke_and_reprovision_does_not_resurrect_grants` |
 | **Regressão direta de `authority_epoch` via UPDATE no cliente** | Atacante executa `UPDATE local_control_clients SET authority_epoch = 1` rebaixando cliente da época 7 para 1 | Trigger `prevent_client_unauthorized_update` aborta DML com `RAISE(ABORT)`; época mantida em 7 (§8.4.2) | `test_client_authority_epoch_decrement_forbidden_by_trigger` |
 | **Reativação de cliente revogado sem avanço de autoridade (`un-revoke`)** | Atacante executa `UPDATE local_control_clients SET revoked_at = NULL` reativando cliente na mesma época | Trigger `prevent_client_unauthorized_update` aborta se `OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NULL AND NEW.authority_epoch <= OLD.authority_epoch` (§8.4.2) | `test_revoked_client_reactivation_requires_epoch_advance_forbidden_by_trigger` |
+| **Ressurreição de autoridade via `INSERT OR REPLACE` sob `PRAGMA recursive_triggers = OFF/ON`** | Bypass de `prevent_client_delete` na colisão de PK sob `recursive_triggers = OFF` (padrão SQLite), permitindo reativação na mesma época histórica | Allowlist de escritores no store proíbe `INSERT OR REPLACE`, exigindo `INSERT ... ON CONFLICT DO UPDATE`; conexões inicializadas com `PRAGMA recursive_triggers = ON;`; trigger `enforce_client_authority_epoch_insert_monotonicity` rejeita inserção na mesma época histórica ou inferior; controles de host (POSIX `0600`) (§8.4.2) | `test_insert_or_replace_under_recursive_triggers_off_adversarial_reproduction` / `test_insert_or_replace_under_recursive_triggers_on_aborted_by_delete_trigger` / `test_writer_allowlist_enforces_on_conflict_do_update_and_pragma` |
 | **Mutação de identidade do operador (`client_id`)** | Modificação fraudulenta da chave primária do cliente em `local_control_clients` | Trigger `prevent_client_unauthorized_update` aborta se `NEW.client_id != OLD.client_id` (§8.4.2) | `test_client_id_immutability_forbidden_by_trigger` |
 | **Inserção direta de cliente abaixo do High-Water Mark** | Inserção direta via SQL com `authority_epoch` inferior à marca máxima histórica | Trigger `enforce_client_authority_epoch_insert_monotonicity` aborta DML consultando `local_control_authority_epochs` (§8.4.2) | `test_client_authority_epoch_insert_lower_than_max_epoch_forbidden_by_trigger` |
 | **Colisão de época no mesmo milissegundo** | Reuso acidental de identificador de época por operações em loop | Geração de autoridade baseada em contador sequencial monotônico no SQLite, não em `Date.now()` (§8.4) | `test_grantor_same_millisecond_reprovision_monotonic` |
@@ -1302,7 +1442,11 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 | `test_grantor_rotate_token_preserves_grants` (Cenário A) | Emissão de grant no epoch 1; rotação pura de credencial de operador no AuthStore (`revoked_at IS NULL`, mesmo `scopes_json`). | Rotação preserva `authority_epoch = 1` e incrementa `credential_version`; grants vigentes permanecem válidos. |
 | `test_grantor_secret_only_rotation_preserves_grants` | Rotação regular de segredo físico sem alteração de escopos nem de limites de entitlement. | `authority_epoch` inalterado; dispatches autorizados sem necessidade de reemissão de grants. |
 | `test_grantor_scope_drop_invalidates_grants` (Cenário J) | Emissão de grant no epoch 1; admin executa `provision` retirando `mission.grant_capabilities` do operador. | Sob Opção A avança para epoch 2 (`AUTHORITY_SUPERSEDED`); sob Opção B Gate 4 rejeita com `GRANTOR_SCOPE_REVOKED`; dispatches bloqueados. |
-| `test_scope_update_without_epoch_advance_forbidden_under_option_a` (Cenário C3) | Operador no epoch 7; tentativa de executar `UPDATE local_control_clients SET scopes_json = '["mission.read"]' WHERE client_id = 'alice'` mantendo a época 7. | Sob Opção A, o trigger `prevent_client_unauthorized_update` aborta com `RAISE(ABORT)`; alteração direta de escopos é rejeitada pelo SQLite sem avanço de `authority_epoch`. |
+| `test_scope_update_without_epoch_advance_forbidden_under_option_a` (Cenário C3 — Opção A) | Operador no epoch 7; tentativa de executar `UPDATE local_control_clients SET scopes_json = '["mission.read"]' WHERE client_id = 'alice'` mantendo a época 7. | Sob Opção A, o trigger `prevent_client_unauthorized_update` aborta com `RAISE(ABORT)`; alteração direta de escopos é rejeitada pelo SQLite sem avanço de `authority_epoch`. |
+| `test_scope_update_preserves_epoch_under_option_b` (Cenário C3 — Opção B) | Operador no epoch 7; executa `UPDATE local_control_clients SET scopes_json = '["mission.read"]' WHERE client_id = 'alice'` mantendo epoch 7. | Sob Opção B, o comando comita normalmente no SQLite; dispatches subsequentes com grant exigindo `mission.grant_capabilities` são dinamicamente bloqueados no Gate 4 com `GRANTOR_SCOPE_REVOKED`. |
+| `test_insert_or_replace_under_recursive_triggers_off_adversarial_reproduction` (Cenário C5 — P1) | Reprodução adversarial em 5 passos: (1) alice ativa no epoch 7; (2) emissão de G7; (3) revogação de alice (`revoked_at = 55`); (4) `INSERT OR REPLACE` de alice com epoch 7 e `revoked_at = NULL` sob `PRAGMA recursive_triggers = OFF`; (5) verificação de validade de G7. | Demonstra que sob `recursive_triggers = OFF` o SQLite não dispara `prevent_client_delete` na colisão de PK, mas o trigger `enforce_client_authority_epoch_insert_monotonicity` (BEFORE INSERT) intercepta e aborta com `RAISE(ABORT)` pela checagem `<= max_epoch` contra `local_control_authority_epochs`; G7 permanece inativo no predicado. |
+| `test_insert_or_replace_under_recursive_triggers_on_aborted_by_delete_trigger` (Cenário C5 — P1) | Executa o mesmo cenário de `INSERT OR REPLACE` sobre cliente existente sob conexão com `PRAGMA recursive_triggers = ON;`. | A exclusão física implícita do algoritmo REPLACE aciona o trigger `prevent_client_delete` e aborta imediatamente a instrução com `physical deletion of local_control_clients is forbidden`. |
+| `test_writer_allowlist_enforces_on_conflict_do_update_and_pragma` (P1) | Auditoria do subsistema `LocalControlCredentialStore`: validação de allowlist de queries e configuração de conexão. | Garante que o store rejeita comandos com sintaxe `REPLACE`, roteia mutações exclusivamente por `INSERT ... ON CONFLICT(client_id) DO UPDATE` e inicializa conexões com `PRAGMA recursive_triggers = ON;`. |
 | `test_grantor_scope_drop_and_restore_permanently_extinguishes_grants_option_a` (Cenário C4 — Opção A) | Ciclo de vida sob Opção A: emissão de grant $G_2$ no epoch 2; remoção de escopo `mission.grant_capabilities` com avanço para epoch 3; restauração posterior do escopo com avanço para epoch 4; tentativa de reuso de $G_2$. | O grant histórico $G_2$ permanece categoricamente extinto com `AUTHORITY_SUPERSEDED` ($2 < 4$); anti-ressurreição definitiva comprovada. |
 | `test_grantor_scope_drop_and_restore_dynamic_suspension_option_b` (Cenário C4 — Opção B) | Ciclo de vida sob Opção B: emissão de grant $G_2$ no epoch 2; remoção de escopo `mission.grant_capabilities` sem avanço de época; dispatch com $G_2$ é bloqueado com `GRANTOR_SCOPE_REVOKED`; restauração posterior do escopo no cliente mantendo epoch 2. | Dispatch subsequente com $G_2$ volta a autorizar no Gate 4; comprova que a Opção B atua como suspensão dinâmica em runtime e **NÃO** confere extinção permanente aos grants no ledger. |
 | `test_grantor_shrink_entitlement_envelope_fails_dispatch` (Cenário K) | Emissão de grant para `db.write`; admin reduz limites do emissor em `operator-limits.json` permitindo apenas `db.read`. | Revalidação dinâmica no Gate 3/Gate 4 detecta encolhimento de entitlement; dispatch abortado com `GRANTOR_ENTITLEMENT_SHRUNK`. |
@@ -1376,7 +1520,7 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 - **Critério de parada:** Se a validação por tupla quebrar a compatibilidade de interfaces sem migração segura, pausar.
 
 ### Slice B — Operações administrativas de Concessão e Revogação no Local Control Plane
-- **Objetivo:** Implementar os endpoints JSON-RPC/UDS `mission.grant_capabilities`, `mission.revoke_capability_grant` e `mission.list_capability_grants` no daemon, protegidos pelo escopo `mission.grant_capabilities`, isolamento cross-grantor, migração do schema do AuthStore com triggers `prevent_client_delete`, `prevent_client_unauthorized_update` (assegurando imutabilidade de `client_id`, monotonicidade estrita e extinção obrigatória de autoridade na reativação), `enforce_client_authority_epoch_insert_monotonicity`, `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement`, tabela de high-water mark permanente `local_control_authority_epochs`, diferenciação operacional de rotação de segredo pura vs. alteração de escopos, expressão atômica de `INSERT ... ON CONFLICT DO UPDATE` consultando a época máxima, e guardas de overflow (`AUTHORITY_EPOCH_OVERFLOW`).
+- **Objetivo:** Implementar os endpoints JSON-RPC/UDS `mission.grant_capabilities`, `mission.revoke_capability_grant` e `mission.list_capability_grants` no daemon, protegidos pelo escopo `mission.grant_capabilities`, isolamento cross-grantor, configuração de conexão com `PRAGMA recursive_triggers = ON;`, allowlist estrita de queries na store administrativa proibindo terminantemente `INSERT OR REPLACE` / `REPLACE INTO` e exigindo `INSERT ... ON CONFLICT DO UPDATE`, migração do schema do AuthStore com triggers invariantes universais `prevent_client_delete`, `enforce_client_authority_epoch_insert_monotonicity` (impedindo reutilização de épocas pretéritas de clientes existentes mesmo sob exclusões implícitas de `REPLACE`), `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement`, tabela de high-water mark permanente `local_control_authority_epochs`, trigger de atualização conforme a opção ratificada por Pedro (Opção A com proibição de mutação de `scopes_json` sem avanço de época, Opção B permitindo mutação de escopos preservando a época, ou Opção C com avanço restrito à remoção de `mission.grant_capabilities`), diferenciação operacional de rotação de segredo pura vs. alteração de escopos, expressão atômica de provisionamento consultando a época máxima, e guardas de overflow (`AUTHORITY_EPOCH_OVERFLOW`).
 - **Superfície pública:** Rotas internas versionadas no controle local.
 - **Critério de parada:** Rejeitar qualquer concessão se o emissor não possuir limites explicitamente configurados ou tentar usurpar `grantId` alheio.
 
@@ -1386,7 +1530,7 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 - **Critério de parada:** Qualquer plano sem cobertura ativa deve ser rejeitado sem alterar estado da Mission.
 
 ### Slice D — Portões de dispatch, linearização de reserva de submissão e incerteza
-- **Objetivo:** Implementar o Gate 3 (dentro de `claimInvocation`), a transação atômica de reserva de submissão (`submitting`) no Gate 4 com validação dinâmica contínua de escopos e limites do grantor, a evolução contratual versionada de `CapabilityInvocationDelivery`, a atualização do startup recovery em `SqliteMissionStore.initialize()` para converter duravelmente em disco `submitting` em `uncertain` + `reconciliation.pending`, validador de schema em runtime para delivery, barreira de incerteza sem replay automático, procedimento operacional de snapshot consistente unificado sob SQLite WAL exigindo quiescência prévia seguida de `PRAGMA wal_checkpoint(TRUNCATE)` coordenado entre `missions.db`, `local-control-auth.db` e `daemon.db`, diferenciação rigorosa de downgrade entre Cenário A (quiescente) e Cenário B (pós-execução durável com `READ_ONLY_LOCKOUT`, isolamento de arquivos `missions.v2.db` e fencing de host para impedir acesso inadvertido por binários legados v1).
+- **Objetivo:** Implementar o Gate 3 (dentro de `claimInvocation`), a transação atômica de reserva de submissão (`submitting`) no Gate 4 com validação dinâmica contínua de escopos e limites do grantor (conforme a Opção A, B ou C ratificada), a evolução contratual versionada de `CapabilityInvocationDelivery`, a atualização do startup recovery em `SqliteMissionStore.initialize()` para converter duravelmente em disco `submitting` em `uncertain` + `reconciliation.pending`, validador de schema em runtime para delivery, barreira de incerteza sem replay automático, procedimento operacional de snapshot consistente unificado sob SQLite WAL exigindo quiescência prévia seguida de `PRAGMA wal_checkpoint(TRUNCATE)` coordenado entre `missions.db`, `local-control-auth.db` e `daemon.db`, diferenciação rigorosa de downgrade entre Cenário A (quiescente) e Cenário B (pós-execução durável com `READ_ONLY_LOCKOUT`, isolamento de arquivos `missions.v2.db` e fencing de host para impedir acesso inadvertido por binários legados v1).
 - **Superfície pública:** Evolução versionada de `CapabilityInvocationDelivery` em `contracts.ts` (sujeita a ratificação).
 - **Critério de parada:** Garantir que nenhum efeito incerto sofra retry automático e nenhum efeito com revoke pré-reserva seja despachado.
 
@@ -1404,18 +1548,18 @@ As seguintes questões arquiteturais e normativas permanecem em aberto e **depen
 6. **Formato final de migração de Missions legadas:** Confirmar o tratamento fail-closed estrito sem criação de grants sintéticos para dados históricos.
 7. **Governança concorrente:** Admitir revogação cruzada (Operador B revogar grant emitido pelo Operador A) se ambos possuírem autoridade de governança, ou restringir a revogação ao emissor original e `daemon.admin`?
 8. **Ratificação da remoção de limites de recursos no v1 (Alternativa A):** Confirmar o adiamento de quotas e orçamentos dinâmicos por grant para o contrato v2, mantendo a governança no v1 via `budget_policy` da Mission.
-9. **Modelo de armazenamento da geração monotônica de autoridade no AuthStore e delimitação de trust boundary:** Adoção dos triggers mandatários de motor `prevent_client_delete`, `prevent_client_unauthorized_update` (assegurando imutabilidade de `client_id`, não-decremento de `authority_epoch`, extinção irreversível de autoridade que proíbe reativação sem incremento estrito de época e, sob a Opção A, impedindo mutação direta de `scopes_json` sem avanço de época) e `enforce_client_authority_epoch_insert_monotonicity` (em `local_control_clients`), `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement` (em `local_control_authority_epochs`), tabela permanente de high-water mark `local_control_authority_epochs`, e comando atômico de `INSERT ... ON CONFLICT DO UPDATE` derivando a época inicial de `COALESCE((SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = :client_id), 1)`, com guarda contra overflow (`AUTHORITY_EPOCH_OVERFLOW`). Delimitação formal do Trust Boundary: os triggers do SQLite asseguram a integridade relacional estrutural contra DML de aplicação, scripts e bypass acidental de chamadores, enquanto a autorização para escrever no arquivo de banco e executar DDL host (`DROP TRIGGER`) reside estritamente em permissões POSIX (`chmod 0600`), isolamento de usuário de serviço e API autenticada com escopos administrativos (`daemon.admin`).
-10. **Representação tipada e versionamento contratual da reserva de submissão:** Elevação formal de `CapabilityInvocationDelivery` para `CAPABILITY_INVOCATION_CONTRACT_VERSION = 2` / `MISSION_CONTRACT_VERSION = 2` contemplando o estado `\"submitting\"`, com query durável de recuperação em disco em `SqliteMissionStore.initialize()` convertendo para `uncertain` + `reconciliation.pending`.
+9. **Modelo de armazenamento da geração monotônica de autoridade no AuthStore e delimitação de trust boundary:** Adoção dos triggers mandatários de motor universais `prevent_client_delete`, `enforce_client_authority_epoch_insert_monotonicity` (impedindo reutilização de épocas pretéritas de clientes existentes mesmo sob exclusões implícitas de `REPLACE`), `prevent_authority_epochs_delete` e `prevent_authority_epochs_update_decrement` (em `local_control_authority_epochs`), tabela permanente de high-water mark `local_control_authority_epochs`, guarda contra overflow (`AUTHORITY_EPOCH_OVERFLOW`) e comando de provisionamento atômico derivando a época inicial de `COALESCE((SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = :client_id), 1)`. Delimitação formal do Trust Boundary: triggers do SQLite não interceptam exclusão implícita de `INSERT OR REPLACE` sob o default `PRAGMA recursive_triggers = OFF`, nem constituem barreira de segurança contra atacantes com privilégios de escrita arbitrária direta no arquivo SQLite. A arquitetura estabelece que a segurança reside na barreira em camadas: (a) conexão configurada com `PRAGMA recursive_triggers = ON;`, (b) allowlist estrita na store de credenciais que proíbe comandos `REPLACE` / `INSERT OR REPLACE` e exige `INSERT ... ON CONFLICT DO UPDATE`, e (c) fronteira de host com isolamento de processo e permissões restritas de arquivo (`chmod 0600`) para o arquivo `local-control-auth.db`.
+10. **Representação tipada e versionamento contratual da reserva de submissão:** Elevação formal de `CapabilityInvocationDelivery` para `CAPABILITY_INVOCATION_CONTRACT_VERSION = 2` / `MISSION_CONTRACT_VERSION = 2` contemplando o estado `"submitting"`, com query durável de recuperação em disco em `SqliteMissionStore.initialize()` convertendo para `uncertain` + `reconciliation.pending`.
 11. **Política de validação em runtime para dados de entrega:** Utilização de validador estruturado de schema em runtime em substituição ao cast estático via generic TypeScript em `rowToInvocation`.
 12. **Fronteira normativa de concorrência cross-database e entre processos (AuthStore vs. MissionStore):** Escolha entre:
     - **Opção 1:** Boundary Administrativa Única via Daemon RPC (CLI delega mutations ao daemon por UDS; daemon serializa operações e impede submissões externas concorrentes com zero efeitos);
     - **Opção 2:** Unificação Relacional dos Stores no Mesmo Banco SQLite (`ouroboros.db`, onde uma única transação ACID local elimina fisicamente a interleaving);
     - **Opção 3:** Consistência Eventual sem SLA Temporal Garantido e Cancelamento Best-Effort (baseline atual segregado: diferencia a idade da autorização, o atraso arbitrário sem push IPC para observação pelo daemon, o tempo de emissão de cancelamento e a irreversibilidade física de efeitos externos já consumidos; sem prometer SLA fictício de 500 ms nem reversão garantida, assegura semântica fail-closed no próximo gate validado; zero efeitos externos transmitidos só existe sob a Opção 1 ou 2).
 13. **Governança estrita de downgrade e recuperação sem perda de evidência:** Confirmação da diferenciação formal entre Cenário A (Rollback Quiescente sem efeitos posteriores, onde restauração de backup consistente pré-upgrade é permitida) e Cenário B (Downgrade Pós-Execução com trabalho durável ou efeitos confirmados, onde a restauração destrutiva do banco antigo é TERMINANTEMENTE PROIBIDA, exigindo preservação do histórico forense e entrada em `READ_ONLY_LOCKOUT` para evitar duplicação de efeitos externos). Reconhecimento de que o binário legado v1 em `main` não lê `user_version` nem adquire `flock`, exigindo isolamento físico de arquivos (`missions.v2.db` ou `$OUROBOROS_DATA_DIR/v2/`) e fencing operacional no host para impedir sua execução inadvertida sobre o banco v2. Ratificação do procedimento de snapshot consistente sob SQLite WAL exigindo quiescência operacional prévia seguida de `PRAGMA wal_checkpoint(TRUNCATE)` em cada um dos bancos (`missions.db`, `local-control-auth.db`, `daemon.db`), sem presumir que backups individuais de arquivos distintos constituam transação conjunta.
-14. **Modelo arquitetural para redução de autoridade e escopos do grantor:** Escolha normativa entre:
-    - **Opção A — Extinção Permanente por Avanço de `authority_epoch` no AuthStore:** Avanço atômico durável no banco ($E_{\text{new}} = E_{\text{old}} + 1$) toda vez que `scopes_json` for modificado. A invariante **NÃO depende da disciplina do chamador de `provision()`**: o trigger de motor `prevent_client_unauthorized_update` aborta qualquer comando DML (`UPDATE local_control_clients`) que tente modificar `scopes_json` sem avançar a época. Grants emitidos em gerações pretéritas ($G_2$) tornam-se imediata e **permanentemente extintos** (`AUTHORITY_SUPERSEDED`). Caso os escopos sejam posteriormente restaurados pela governança, novo avanço de época é exigido ($E=3 \to E=4$), garantindo **anti-ressurreição definitiva**: $G_2$ jamais volta a autorizar passos, exigindo reemissão explícita sob a nova autoridade ($G_4$).
-    - **Opção B — Suspensão Dinâmica em Runtime nos Portões de Dispatch (Gate 3 e Gate 4):** A época de autoridade não avança em mutações de escopo. A validade do grant é reavaliada dinamicamente nos gates contra o registro ativo do cliente emissor. Caso o emissor perca `mission.grant_capabilities`, a autorização falha com `GRANTOR_SCOPE_REVOKED`. Caso os limites sejam encolhidos, dispatches excedentes falham com `GRANTOR_ENTITLEMENT_SHRUNK`. **Diferenciação essencial de garantias:** A Opção B constitui **suspensão dinâmica (bloqueio transitório) e NÃO confere extinção permanente aos grants no ledger**. Se os escopos forem posteriormente devolvidos ao operador na mesma época de autoridade, os grants históricos emitidos ($G_2$) **voltam a satisfazer `isGrantActive` e voltam a autorizar efeitos**.
-    - **Opção C — Modelo Híbrido:** Avanço mandatório de época por trigger e UPSERT na remoção do escopo-raiz de governança `mission.grant_capabilities` (extinguindo permanentemente grants), combinado com validação dinâmica contínua nos gates para encolhimento granular de envelopes de limites (`operator-limits.json`).
+14. **Modelo arquitetural para redução de autoridade e escopos do grantor:** Escolha normativa entre as três alternativas formalmente delineadas no documento (§8.4.2, Subseção 4):
+    - **Opção A — Extinção Permanente por Avanço de `authority_epoch` no AuthStore:** Avanço atômico durável no banco ($E_{\text{new}} = E_{\text{old}} + 1$) toda vez que `scopes_json` for modificado. Invariante garantida pelo trigger `prevent_client_unauthorized_update_option_a` (que aborta mutações em `scopes_json` com `NEW.authority_epoch <= OLD.authority_epoch`) e pelo UPSERT Variante A. Grants emitidos em gerações pretéritas ($G_2$) tornam-se imediata e **permanentemente extintos** (`AUTHORITY_SUPERSEDED`). Caso os escopos sejam posteriormente restaurados pela governança, novo avanço de época é exigido ($E=3 \to E=4$), garantindo **anti-ressurreição definitiva**: $G_2$ jamais volta a autorizar passos, exigindo reemissão explícita sob a nova autoridade ($G_4$).
+    - **Opção B — Suspensão Dinâmica em Runtime nos Portões de Dispatch (Gate 3 e Gate 4):** A época de autoridade é preservada durante mutações puras de escopo, conforme DDL com trigger `prevent_client_unauthorized_update_option_b` (que permite alterações em `scopes_json` mantendo a época) e UPSERT Variante B. A autorização é reavaliada dinamicamente nos gates contra o registro ativo do cliente emissor: remoção de `mission.grant_capabilities` resulta em `GRANTOR_SCOPE_REVOKED` e encolhimento de limites resulta em `GRANTOR_ENTITLEMENT_SHRUNK`. **Diferenciação essencial de garantias:** A Opção B constitui **suspensão dinâmica (bloqueio transitório) e NÃO confere extinção permanente aos grants no ledger**. Se os privilégios forem posteriormente devolvidos ao operador na mesma época de autoridade, os grants históricos emitidos ($G_2$) **voltam a satisfazer `isGrantActive` e voltam a autorizar efeitos**.
+    - **Opção C — Modelo Híbrido:** Avanço mandatório de época por trigger (`prevent_client_unauthorized_update_option_c`) e UPSERT Variante C exclusivamente na remoção do escopo-raiz de governança `mission.grant_capabilities` (extinguindo permanentemente os grants emitidos), combinado com preservação de época e validação dinâmica contínua nos gates (Gate 3/4) para alterações granulares de escopos subsidiários ou encolhimento de envelopes de limites (`operator-limits.json`).
 
 ---
 
