@@ -45,7 +45,7 @@ Toda afirmação neste documento carrega uma das seguintes classificações estr
      - **Opção A:** Alteração de escopos avança forçadamente a época ($E \to E + 1$) via trigger e UPSERT; extinção definitiva e permanente no ledger anti-ressurreição;
      - **Opção B:** Alteração de escopos preserva a época; o trigger de update não condiciona `scopes_json`; suspensão dinâmica fail-closed nos portões de dispatch em runtime (`GRANTOR_SCOPE_REVOKED`); grants anteriores podem voltar a ser válidos se privilégios forem restaurados na mesma época;
      - **Opção C:** Modelo híbrido; avanço forçado de época ativado estritamente pela remoção do escopo-raiz de governança `mission.grant_capabilities`, com detecção estrutural via `json_each` (imune a serializações equivalentes e escapes Unicode) e comportamento fail-closed (`json_valid`), combinado com validação dinâmica contínua nos gates para encolhimento de envelope de limites (`operator-limits.json`).
-     A escolha normativa entre A, B e C permanece estritamente reservada a Pedro (§14 Decisão 14).
+     A escolha normativa entre A, B e C foi posteriormente ratificada por Pedro como **Opção A**, exclusivamente para B1 interno (ver ADR `2026-11-01-authstore-authority-generations-b1-ratification.md`).
 3. **Consistência eventual cross-DB sem garantias temporais inventadas (AuthStore vs. MissionStore):**
    - *Fato factual:* A CLI administrativa (`cli/src/commands/admin-cli.ts:73-99`) executa como processo efêmero direto sobre `local-control-auth.db`. O daemon opera em outro processo gerenciando `missions.db` (`cli/src/daemon/main.ts`). Não há mecanismo de invalidação ativa (watcher, push IPC) entre os processos.
    - *Semântica corrigida e eliminação de cifras decorativas:* Remove-se terminantemente qualquer alegação de que a janela seja "estritamente limitada a 500 ms" ou qualquer promessa de SLA temporal não comprovável. Diferenciam-se com rigor: (1) idade da autorização no despacho; (2) atraso arbitrário até a próxima leitura do AuthStore pelo daemon; (3) tempo de emissão de cancelamento; e (4) irreversibilidade física de efeitos externos já transmitidos ao conector.
@@ -2061,8 +2061,8 @@ A lista abaixo preserva a trilha das 15 decisões. **D03, D06, D08 e D15 (Slice 
 
 ## Nota final
 
-Este documento contém **análise arquitetural parcialmente ratificada**: apenas D03, D06, D08 e D15 foram aprovadas normativamente, enquanto as outras 11 decisões e suas propostas continuam `NEEDS_APPROVAL`. Não implementa código, não altera contratos públicos de runtime, não cria tabelas nem concede capabilities reais.
+Este documento contém **análise arquitetural parcialmente ratificada**: D03/D06/D08/D15 para Slice A e D09 opção 1 / D14 opção A para B1 interno. Nove decisões continuam `NEEDS_APPROVAL`. Este arquivo é documental; o Slice A foi implementado na PR #169, enquanto o B1 e a emissão operacional de grants continuam não implementados.
 
 A implementação futura exige autorização operacional delimitada, testes e gates próprios. As decisões ainda pendentes na §14 exigem ratificação de Pedro antes das superfícies afetadas, respeitando a decomposição de slices da §13.
 
-**Estado da tarefa: RATIFICAÇÃO PARCIAL — D03/D06/D08/D15 aprovadas por Pedro em 2026-11-01; demais decisões NEEDS_APPROVAL. Nenhum grant implementado. Issue #166 permanece aberta para deliberação restante.**
+**Estado da tarefa: RATIFICAÇÃO PARCIAL — D03/D06/D08/D15 + D09/D14 aprovadas em escopos distintos em 2026-11-01; nove decisões NEEDS_APPROVAL. Ledger inerte do Slice A implementado; nenhuma concessão operacional implementada. Issue #166 permanece aberta.**
