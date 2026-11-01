@@ -1,6 +1,6 @@
 # Contrato de Concessão Explícita de Capabilities a Missions (Operator Capability Grant Trust Contract)
 
-> **Estado:** PROPOSTA PARCIALMENTE RATIFICADA — somente D03, D06, D08 e D15 aprovadas por Pedro em 2026-11-01. As outras 11 decisões e o contrato público completo permanecem `NEEDS_APPROVAL`. Não há implementação ou concessão de capabilities.
+> **Estado:** PROPOSTA PARCIALMENTE RATIFICADA — D03/D06/D08/D15 aprovadas para Slice A e D09 (opção 1)/D14 (opção A) aprovadas para o desenho interno B1 em 2026-11-01. As outras nove decisões e o contrato público permanecem `NEEDS_APPROVAL`. Slice A está implementado na `main` via PR #169; B1 e a concessão operacional de capabilities não estão implementados. Fonte normativa B1: `docs/decisions/2026-11-01-authstore-authority-generations-b1-ratification.md`.
 > **Repositório:** `Anakyklos/ouroboros-runtime`
 > **Issue:** #166 (P1), epic principal #70 (M1 Local Control Plane)
 > **PR:** https://github.com/Anakyklos/ouroboros-runtime/pull/167 (revisão técnica aprovada em `df19ece67496ad96e829cbe9ae83aa13cd998f9f`; ratificação parcial posterior)
@@ -9,7 +9,7 @@
 > **Bun (local):** `1.4.2` (CI pin: `1.3.9`)
 > **Data:** 2026-11-01
 > **Branch:** `docs/166-capability-grant-trust-contract`
-> **Classificação de status:** `RATIFICAÇÃO PARCIAL — D03/D06/D08/D15 aprovadas; 11 decisões NEEDS_APPROVAL`
+> **Classificação de status:** `RATIFICAÇÃO PARCIAL — D03/D06/D08/D15 + D09/D14 aprovadas em escopos distintos; nove decisões NEEDS_APPROVAL`
 
 ---
 
@@ -1924,7 +1924,7 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 
 > [!IMPORTANT]
 > **Classificação de status:** `RATIFICAÇÃO PARCIAL / NEEDS_APPROVAL`
-> Pedro ratificou explicitamente D03, D06, D08 e D15 em 2026-11-01, concordando com as recomendações do mantenedor para o Slice A. As outras 11 decisões continuam pendentes. Essa ratificação **não** aprova a API pública de grants, a autoridade do emissor, execução, RPC, dispatch, migrations de AuthStore ou alterações de trust model fora dessas quatro escolhas.
+> Pedro ratificou D03, D06, D08 e D15 para o Slice A e, posteriormente em 2026-11-01, D09 opção 1 e D14 opção A para o B1 **interno e inerte**. Permanecem nove decisões pendentes. A ratificação B1 autoriza apenas a implementação interna delimitada por issue operacional, incluindo migração aditiva do AuthStore; não aprova API pública, emissão operacional de grants, entitlement, RPC ou dispatch. Fonte normativa específica: `docs/decisions/2026-11-01-authstore-authority-generations-b1-ratification.md`. O texto original de alternativas não prevalece sobre as ratificações posteriores.
 
 ### 14.1 Matriz de Decisões Normativas Pendentes
 
@@ -1938,12 +1938,12 @@ Caso o runtime v2 tenha processado trabalho (criação de missões, concessão d
 | **D06** | **Formato de migração para Missions legadas** | **(1)** Fail-closed estrito sem grants sintéticos;<br>**(2)** Injeção de grants sintéticos ou bypass retroativo. | **Alternativa 1** (Fail-closed estrito; histórico 100% imutável). | Grants sintéticos violam proveniência e concessão explícita; fail-closed requer novos grants se retomadas. | **Slice A** | `RATIFICADA — 2026-11-01` |
 | **D07** | **Governança de revogação cross-grantor** | **(1)** Somente emissor original ou `daemon.admin`;<br>**(2)** Qualquer cliente com `mission.grant_capabilities`. | **Alternativa 1** (Somente emissor original ou `daemon.admin`). | Revogação irrestrita entre operadores permite interferência cruzada em missões alheias sem custódia central. | **Slice B** | `NEEDS_APPROVAL` |
 | **D08** | **Remoção de limites de recursos no v1 (Alternativa A)** | **(1)** Remoção expressa do v1 (delegação a `budget_policy`);<br>**(2)** Campos decorativos no schema sem enforcement. | **Alternativa 1** (Remover de v1 para evitar *security theater*; projetar para v2). | Manter campos decorativos cria falsa sensação de segurança a operadores sem suporte durável de motor. | **Slice A** | `RATIFICADA — 2026-11-01` |
-| **D09** | **High-water mark no AuthStore e Trust Boundary** | **(1)** Triggers universais + tabela `local_control_authority_epochs` + allowlist no Store (`recursive_triggers = ON`) + `chmod 0600`;<br>**(2)** Sem triggers no SQLite;<br>**(3)** Triggers sem tabela permanente. | **Alternativa 1** (Defense-in-depth com limites explícitos do host). | Triggers do SQLite não interceptam `REPLACE` sob `recursive_triggers = OFF` nem protegem contra escrita direta em arquivo. | **Slice B** | `NEEDS_APPROVAL` |
+| **D09** | **High-water mark no AuthStore e Trust Boundary** | **(1)** Triggers universais + tabela `local_control_authority_epochs` + allowlist no Store (`recursive_triggers = ON`) + `chmod 0600`;<br>**(2)** Sem triggers no SQLite;<br>**(3)** Triggers sem tabela permanente. | **Alternativa 1** (Defense-in-depth com limites explícitos do host). | Triggers do SQLite não interceptam `REPLACE` sob `recursive_triggers = OFF` nem protegem contra escrita direta em arquivo. | **Slice B** | `RATIFICADA B1 — 2026-11-01` |
 | **D10** | **Versionamento de delivery e reserva `submitting`** | **(1)** Elevação para v2 de `CapabilityInvocationDelivery` com `submitting` e recovery durável em disco;<br>**(2)** Manter v1 sem estado pré-handoff. | **Alternativa 1** (Evolução contratual formal versionada com recovery durável). | Estado `submitting` exige recovery para não reter itens em limbo; omitir o estado mantém o seam vulnerável a crash/duplicação. | **Slice D** | `NEEDS_APPROVAL` |
 | **D11** | **Validação em runtime para dados de entrega** | **(1)** Validador estruturado de schema em runtime;<br>**(2)** Cast estático TypeScript (`JSON.parse`). | **Alternativa 1** (Validador estruturado normalizando para `uncertain`). | Types em TS são apagados em compilação; payloads imprevistos causam crashes não capturados em vez de reconciliação. | **Slice D** | `NEEDS_APPROVAL` |
 | **D12** | **Fronteira cross-database e processos (AuthStore vs. MissionStore)** | **(1)** Daemon RPC (CLI delega mutations ao daemon via loopback HTTP JSON-RPC aprovado, mantendo UDS como proposta futura);<br>**(2)** Stores Unificados no mesmo banco SQLite (`ouroboros.db`);<br>**(3)** Consistência Eventual sem SLA garantido e cancelamento best-effort. | **Opção 1** (Daemon RPC) ou **Opção 3** (Baseline pragmático com limites factuais). | Opção 3 tolera janelas onde chamadas cruzam o seam após revoke na CLI; Opção 2 requer migração de banco; Opção 1 requer daemon ativo. | **Slice B**, **Slice D** | `NEEDS_APPROVAL` |
 | **D13** | **Governança de downgrade, snapshot multi-store WAL e evidências** | **(1)** Cenário A vs B formalizados, `READ_ONLY_LOCKOUT`, isolamento `missions.v2.db`, `wal_checkpoint(TRUNCATE)` com quiescência;<br>**(2)** Restauração de backup genérica. | **Alternativa 1** (Preservação irrevogável de evidências do mundo real). | Restaurar backup antigo após efeitos externos confirmados causa replay/duplicação destrutiva de ações externas. | **Slice D** | `NEEDS_APPROVAL` |
-| **D14** | **Modelo arquitetural para redução de privilégios (`authority_epoch`)** | **Opção A:** Extinção permanente no AuthStore a cada mudança de escopo ($E \to E+1$);<br>**Opção B:** Suspensão dinâmica em runtime nos gates (época mantida);<br>**Opção C:** Modelo híbrido (avanço para escopo-raiz via `json_each`/`json_valid`; limites dinâmicos). | **Opção C** (Híbrido) ou **Opção A** (Máximo rigor determinístico). | Opção B permite reativação sem reemissão se escopos forem devolvidos; Opção A invalida grants em adições inócuas; Opção C exige triggers JSON. | **Slice B**, **Slice D** | `NEEDS_APPROVAL` |
+| **D14** | **Modelo arquitetural para redução de privilégios (`authority_epoch`)** | **Opção A:** Extinção permanente no AuthStore a cada mudança de escopo ($E \to E+1$);<br>**Opção B:** Suspensão dinâmica em runtime nos gates (época mantida);<br>**Opção C:** Modelo híbrido (avanço para escopo-raiz via `json_each`/`json_valid`; limites dinâmicos). | **Opção C** (Híbrido) ou **Opção A** (Máximo rigor determinístico). | Opção B permite reativação sem reemissão se escopos forem devolvidos; Opção A invalida grants em adições inócuas; Opção C exige triggers JSON. | **Slice B**, **Slice D** | `RATIFICADA B1 — 2026-11-01` |
 | **D15** | **Modelo de correlação de grant e eliminação do produto cartesiano** | **(Alt A)** Grant Unitário Correlacionado (`(capabilityId, allowedEffectClasses, allowedRefPrefixes)`);<br>**(Alt B)** Grant com Coleção de Bindings Correlacionados;<br>**(Alt C)** Listas planas com autorização explícita de produto cartesiano na política do emissor. | **Alternativa A** (Menor complexidade, menor superfície de erro relacional, preserva least privilege estrito). | Alt C amplia a superfície de autorização por produto cartesiano; Alt B aumenta a complexidade de validação e modelagem por item; Alt A exige emissão de múltiplos grants para cobrir múltiplos bindings disjuntos. | **Slice A**, **Slice B** | `RATIFICADA — 2026-11-01` |
 
 ### 14.2 Sequenciamento Crítico e Deliberação por Slice
@@ -1963,15 +1963,15 @@ As quatro decisões a seguir, **ratificadas por Pedro em 2026-11-01**, delimitam
 
 #### 14.2.2 Decisões que bloqueiam o Slice B (Superfície RPC e AuthStore)
 
-Podem ser deliberadas após a conclusão do Slice A, mas são obrigatórias antes de iniciar o **Slice B**:
+As decisões de B1 D09 e D14 estão **RATIFICADAS** e liberam apenas a implementação interna delimitada. As demais decisões listadas abaixo seguem como gates obrigatórios antes de expor **B2/RPC de grants**:
 
 1. **D01 (Nomenclatura do escopo de concessão):** Define o identificador do escopo registrado no Daemon.
 2. **D02 (Fonte de limites do grantor):** Define se a admissão de grants consulta arquivo de configuração ou coluna de banco.
 3. **D05 (Escopo de leitura de grants):** Define a autorização necessária para a rota `mission.list_capability_grants`.
 4. **D07 (Governança cross-grantor):** Define as regras de autorização no endpoint de revogação.
-5. **D09 (Modelo do AuthStore e Trust Boundary):** Define as migrations de schema e triggers da tabela `local_control_clients` e `local_control_authority_epochs`.
+5. **D09 (RATIFICADA, opção 1 — B1):** High-water mark, schema e triggers do AuthStore são parte do B1 interno; não liberam RPC.
 6. **D12 (Fronteira cross-DB CLI/Daemon):** Determina se a CLI administrativa invoca o Daemon via RPC (sob loopback aprovado) ou mantém escrita direta com consistência eventual.
-7. **D14 (Opções A, B ou C de `authority_epoch`):** Determina o DDL e trigger exato de atualização no AuthStore.
+7. **D14 (RATIFICADA, opção A — B1):** Qualquer mudança de escopos efetivos avança epoch e extingue grants antigos, preservada a rotação pura de segredo.
 8. **D15 (Repercussão RPC do Modelo de Correlação):** A Alternativa A (payload unitário) já foi ratificada. A implementação do endpoint `mission.grant_capabilities` permanece bloqueada por decisões ainda pendentes sobre autoridade do emissor, superfície de RPC e ciclo de vida.
 
 > **Justificativa da ordem:** O Slice B materializa as operações administrativas e o ciclo de vida de operadores. Nenhuma dessas escolhas afeta o armazenamento físico de grants já consolidado no Slice A.
@@ -1993,7 +1993,7 @@ Devem ser deliberadas antes do início do **Slice D**:
 
 ### 14.3 Detalhamento Narrativo das Decisões Pendentes
 
-A lista abaixo preserva a trilha das 15 decisões. **D03, D06, D08 e D15 foram ratificadas em 2026-11-01**; as outras 11 permanecem em aberto e dependem de aprovação explícita de Pedro:
+A lista abaixo preserva a trilha das 15 decisões. **D03, D06, D08 e D15 (Slice A), e D09 opção 1 / D14 opção A (B1 interno) foram ratificadas em 2026-11-01**; as nove restantes continuam pendentes. As alternativas históricas abaixo devem ser interpretadas à luz de ambos os ADRs:
 
 1. **Nomenclatura do escopo de autorização para concessão:** Adotar `mission.grant_capabilities`, `capability.grant` ou integrar em um escopo administrativo mais amplo? (Recomendação: `mission.grant_capabilities` dedicado).
 2. **Localização da fonte de limites máximos do grantor:** Optar por arquivo de configuração estático (`$OUROBOROS_DATA_DIR/security/operator-limits.json`) ou coluna adicional provisionada na tabela `local_control_clients`? (Recomendação para M1: arquivo local de governança).
