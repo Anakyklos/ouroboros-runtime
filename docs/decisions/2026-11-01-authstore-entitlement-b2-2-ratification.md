@@ -56,7 +56,7 @@ Esta decisão **não altera retroativamente D14**: o ADR B1 ratificou mudanças 
 
 D12 (coordenação AuthStore/MissionStore, CLI/daemon, concorrência, ordem de emissão e delivery) **permanece NEEDS_APPROVAL**. Atomicidade da atualização `limits_json` + epoch dentro do AuthStore não é atomicidade entre arquivos SQLite e não garante ausência de race entre leitura de autoridade e futuro commit em MissionStore. O high-water mark local não detecta restauração integral de backup antigo do próprio AuthStore; o administrador comprometido do host está fora da proteção garantida por triggers.
 
-Efeitos já submetidos ou incertos não são automaticamente cancelados, revertidos ou reexecutados quando entitlement muda. Isso depende dos contratos futuros de delivery, reconcilição, cancelamento e gates de execução. B2-2 não pode afirmar que grant persistido autoriza execução.
+Efeitos já submetidos ou incertos não são automaticamente cancelados, revertidos ou reexecutados quando entitlement muda. Isso depende dos contratos futuros de delivery, reconciliação, cancelamento e gates de execução. B2-2 não pode afirmar que grant persistido autoriza execução.
 
 **Continuam NEEDS_APPROVAL:** D01, D04, D05, D07, D10, D11, D12 e D13. Esta ratificação não escolhe scope de emissão, issuer operacional, leitura pública, revogação cross-grantor, submission, rollback externo, protocolo público ou integração planner/dispatch.
 
