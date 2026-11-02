@@ -65,6 +65,24 @@ function highWaterMark(database: Database, clientId: string): number | null {
   return row?.max_epoch ?? null;
 }
 
+interface InternalEntitlementStoreTestApi {
+  provision(clientId: string, scopes: readonly (typeof LOCAL_CONTROL_AUTH_SCOPES)[number][], expiresAt: number, limits?: unknown): { token: string };
+  getEntitlementLimits(clientId: string): unknown | null;
+  setEntitlementLimits(clientId: string, limits: unknown): boolean;
+}
+
+function entitlementApi(store: LocalControlCredentialStore): InternalEntitlementStoreTestApi {
+  return store as unknown as InternalEntitlementStoreTestApi;
+}
+
+function entitlementBinding(capabilityId: string, effectClass: string, allowedRefPrefixes: string[]) {
+  return { capabilityId, effectClass, allowedRefPrefixes };
+}
+
+function entitlementEnvelope(...bindings: ReturnType<typeof entitlementBinding>[]) {
+  return { schemaVersion: 1, bindings };
+}
+
 function authStoreSnapshot(database: Database): {
   clients: unknown[];
   epochs: unknown[];
@@ -148,6 +166,10 @@ describe("LocalControlCredentialStore authority facts (real SQLite)", () => {
       FROM local_control_clients ORDER BY client_id
     `).all() as LegacyClientRow[];
     expect(preservedRows).toEqual([...legacyRows].sort((left, right) => left.client_id.localeCompare(right.client_id)));
+    expect(storeDb.query("SELECT client_id, limits_json FROM local_control_clients ORDER BY client_id").all()).toEqual([
+      { client_id: "legacy-active", limits_json: null },
+      { client_id: "legacy-revoked", limits_json: null },
+    ]);
     expect((storeDb.query("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode.toLowerCase()).toBe("wal");
     expect((storeDb.query("PRAGMA recursive_triggers").get() as { recursive_triggers: number }).recursive_triggers).toBe(1);
     store.close();
@@ -189,6 +211,8 @@ describe("LocalControlCredentialStore authority facts (real SQLite)", () => {
       credential_generation: 1,
       authority_epoch: 1,
     });
+    expect(databaseFor(recovered).query("SELECT limits_json FROM local_control_clients WHERE client_id = ?")
+      .get("partial-migration")).toEqual({ limits_json: null });
     expect(highWaterMark(databaseFor(recovered), "partial-migration")).toBe(1);
     recovered.close();
   });
@@ -553,11 +577,304 @@ describe("LocalControlCredentialStore authority facts (real SQLite)", () => {
     reopened.close();
   });
 
+  it("serializes concurrent process entitlement assignments without losing epoch increments", async () => {
+    const directory = await newDirectory();
+    const databasePath = join(directory, "private", "auth.db");
+    const initial = new LocalControlCredentialStore(databasePath);
+    initial.provision("concurrent-entitlement", ["mission.read"], Date.now() + 120_000,
+      entitlementEnvelope(entitlementBinding("lifeos.read", "read", ["refs/lifeos/initial"])));
+    initial.close();
+
+    const writerPath = fileURLToPath(new URL("./local-control-auth.entitlement-writer.ts", import.meta.url));
+    const assignments = [
+      entitlementEnvelope(entitlementBinding("lifeos.read", "read", ["refs/lifeos/first"])),
+      entitlementEnvelope(entitlementBinding("lifeos.read", "read", ["refs/lifeos/second"])),
+    ];
+    const children = assignments.map((limits) => Bun.spawn([
+      process.execPath,
+      "run",
+      writerPath,
+      databasePath,
+      "concurrent-entitlement",
+      JSON.stringify(limits),
+    ], { stdout: "pipe", stderr: "pipe" }));
+    const results = await Promise.all(children.map(async (child) => {
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      return { exitCode, stdout, stderr };
+    }));
+    expect(results.filter(({ exitCode }) => exitCode !== 0)).toEqual([]);
+    expect(results.map(({ stdout }) => stdout.trim())).toEqual(["updated", "updated"]);
+
+    const reopened = new LocalControlCredentialStore(databasePath);
+    try {
+      const database = databaseFor(reopened);
+      expect(authorityRow(database, "concurrent-entitlement")).toMatchObject({ credential_generation: 1, authority_epoch: 3 });
+      expect(highWaterMark(database, "concurrent-entitlement")).toBe(3);
+      expect(assignments).toContainEqual(entitlementApi(reopened).getEntitlementLimits("concurrent-entitlement"));
+    } finally {
+      reopened.close();
+    }
+  });
+
   it("keeps the authentication scope and grant RPC surface unchanged", () => {
     expect(LOCAL_CONTROL_AUTH_SCOPES).toEqual(["mission.read", "mission.control", "mission.create", "daemon.admin"]);
     expect(requiredLocalControlScope("mission.grant_capabilities", {})).toBeNull();
     expect(requiredLocalControlScope("mission.revoke_capability_grant", {})).toBeNull();
     expect(requiredLocalControlScope("mission.list_capability_grants", {})).toBeNull();
+  });
+
+  it("adds a nullable entitlement slot without granting existing or new clients authority", async () => {
+    const directory = await newDirectory();
+    mkdirSync(join(directory, "private"), { mode: 0o700 });
+    const databasePath = join(directory, "private", "auth.db");
+    const legacy = new Database(databasePath);
+    legacy.exec(legacySchema);
+    const legacyToken = makeToken("legacy-entitlement", "E".repeat(43));
+    const legacyRow: LegacyClientRow = {
+      client_id: "legacy-entitlement",
+      token_hash: tokenHash(legacyToken),
+      scopes_json: '["mission.read"]',
+      expires_at: Date.now() + 60_000,
+      revoked_at: null,
+      created_at: Date.now(),
+    };
+    legacy.query(`
+      INSERT INTO local_control_clients
+        (client_id, token_hash, scopes_json, expires_at, revoked_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(legacyRow.client_id, legacyRow.token_hash, legacyRow.scopes_json, legacyRow.expires_at, legacyRow.revoked_at, legacyRow.created_at);
+    legacy.close();
+
+    const store = new LocalControlCredentialStore(databasePath);
+    try {
+      const database = databaseFor(store);
+      const limitsColumn = (database.query("PRAGMA table_info(local_control_clients)").all() as Array<{ name: string; notnull: number }>)
+        .find(({ name }) => name === "limits_json");
+      expect(limitsColumn).toMatchObject({ name: "limits_json", notnull: 0 });
+      expect(database.query("SELECT limits_json FROM local_control_clients WHERE client_id = ?").get(legacyRow.client_id))
+        .toEqual({ limits_json: null });
+      expect(store.authorizeToken(legacyToken, "mission.read")?.clientId).toBe(legacyRow.client_id);
+
+      const created = store.provision("new-entitlement", ["mission.read"], Date.now() + 60_000);
+      expect(database.query("SELECT limits_json FROM local_control_clients WHERE client_id = ?").get(created.clientId))
+        .toEqual({ limits_json: null });
+      const uriLimits = entitlementEnvelope(entitlementBinding(
+        "runstead.read",
+        "read",
+        ["https://EXAMPLE.test:00443/workspace/root/"],
+      ));
+      expect(entitlementApi(store).setEntitlementLimits(created.clientId, uriLimits)).toBe(true);
+      expect(entitlementApi(store).getEntitlementLimits(created.clientId)).toEqual(entitlementEnvelope(entitlementBinding(
+        "runstead.read",
+        "read",
+        ["https://example.test:00443/workspace/root"],
+      )));
+    } finally {
+      store.close();
+    }
+  });
+
+  it("exposes only internal AuthStore entitlement read and assignment methods", async () => {
+    const directory = await newDirectory();
+    const store = new LocalControlCredentialStore(join(directory, "private", "auth.db"));
+    try {
+      const internalStore = store as unknown as {
+        getEntitlementLimits?: (clientId: string) => unknown;
+        setEntitlementLimits?: (clientId: string, entitlement: unknown) => unknown;
+      };
+      expect(typeof internalStore.getEntitlementLimits).toBe("function");
+      expect(typeof internalStore.setEntitlementLimits).toBe("function");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("advances authority once for semantic entitlement changes and preserves it for no-ops and secret rotation", async () => {
+    const directory = await newDirectory();
+    const store = new LocalControlCredentialStore(join(directory, "private", "auth.db"));
+    const api = entitlementApi(store);
+    const expiresAt = Date.now() + 120_000;
+    const initialLimits = entitlementEnvelope(
+      entitlementBinding("lifeos.read", "read", ["refs/lifeos/z", "refs/lifeos/a"]),
+    );
+    const sameLimits = entitlementEnvelope(
+      entitlementBinding("lifeos.read", "read", ["refs/lifeos/a/", "refs/lifeos/z/"]),
+    );
+    const smallerLimits = entitlementEnvelope(
+      entitlementBinding("lifeos.read", "read", ["refs/lifeos/a"]),
+    );
+    const reassignedLimits = entitlementEnvelope(
+      entitlementBinding("runstead.write", "write", ["refs/runstead/workspace"]),
+    );
+    try {
+      const first = api.provision("entitlement-lifecycle", ["mission.read"], expiresAt, initialLimits);
+      const database = databaseFor(store);
+      expect(authorityRow(database, "entitlement-lifecycle")).toMatchObject({ credential_generation: 1, authority_epoch: 1 });
+      expect(highWaterMark(database, "entitlement-lifecycle")).toBe(1);
+      expect(api.getEntitlementLimits("entitlement-lifecycle")).toEqual(entitlementEnvelope(
+        entitlementBinding("lifeos.read", "read", ["refs/lifeos/a", "refs/lifeos/z"]),
+      ));
+
+      expect(api.setEntitlementLimits("entitlement-lifecycle", sameLimits)).toBe(false);
+      expect(authorityRow(database, "entitlement-lifecycle")).toMatchObject({ credential_generation: 1, authority_epoch: 1 });
+
+      expect(api.setEntitlementLimits("entitlement-lifecycle", smallerLimits)).toBe(true);
+      expect(authorityRow(database, "entitlement-lifecycle")).toMatchObject({ authority_epoch: 2 });
+      expect(highWaterMark(database, "entitlement-lifecycle")).toBe(2);
+
+      expect(api.setEntitlementLimits("entitlement-lifecycle", initialLimits)).toBe(true);
+      expect(authorityRow(database, "entitlement-lifecycle")).toMatchObject({ authority_epoch: 3 });
+      expect(highWaterMark(database, "entitlement-lifecycle")).toBe(3);
+
+      expect(api.setEntitlementLimits("entitlement-lifecycle", null)).toBe(true);
+      expect(api.getEntitlementLimits("entitlement-lifecycle")).toBeNull();
+      expect(api.setEntitlementLimits("entitlement-lifecycle", entitlementEnvelope())).toBe(false);
+      expect(authorityRow(database, "entitlement-lifecycle")).toMatchObject({ authority_epoch: 4 });
+      expect(highWaterMark(database, "entitlement-lifecycle")).toBe(4);
+
+      const combined = api.provision("entitlement-lifecycle", ["mission.control"], Date.now() + 120_000, reassignedLimits);
+      expect(authorityRow(database, "entitlement-lifecycle")).toMatchObject({ credential_generation: 2, authority_epoch: 5 });
+      expect(highWaterMark(database, "entitlement-lifecycle")).toBe(5);
+      expect(store.authorizeToken(first.token)).toBeNull();
+      expect(store.authorizeToken(combined.token, "mission.control")?.clientId).toBe("entitlement-lifecycle");
+      expect(api.getEntitlementLimits("entitlement-lifecycle")).toEqual(reassignedLimits);
+
+      const currentEpoch = authorityRow(database, "entitlement-lifecycle")!.authority_epoch;
+      api.provision("entitlement-lifecycle", ["mission.control"], Date.now() + 120_000);
+      expect(authorityRow(database, "entitlement-lifecycle")).toMatchObject({ credential_generation: 3, authority_epoch: currentEpoch });
+      expect(api.getEntitlementLimits("entitlement-lifecycle")).toEqual(reassignedLimits);
+
+      expect(store.revoke("entitlement-lifecycle")).toBe(true);
+      const reactivatedWithoutLimits = api.provision("entitlement-lifecycle", ["mission.control"], Date.now() + 120_000);
+      expect(authorityRow(database, "entitlement-lifecycle")).toMatchObject({ credential_generation: 4, authority_epoch: currentEpoch + 1 });
+      expect(highWaterMark(database, "entitlement-lifecycle")).toBe(currentEpoch + 1);
+      expect(api.getEntitlementLimits("entitlement-lifecycle")).toBeNull();
+      expect(store.authorizeToken(reactivatedWithoutLimits.token, "mission.control")?.clientId).toBe("entitlement-lifecycle");
+
+      expect(api.setEntitlementLimits("entitlement-lifecycle", reassignedLimits)).toBe(true);
+      expect(authorityRow(database, "entitlement-lifecycle")).toMatchObject({ authority_epoch: currentEpoch + 2 });
+      expect(highWaterMark(database, "entitlement-lifecycle")).toBe(currentEpoch + 2);
+      store.close();
+
+      const reopened = new LocalControlCredentialStore(join(directory, "private", "auth.db"));
+      expect(authorityRow(databaseFor(reopened), "entitlement-lifecycle")).toMatchObject({ authority_epoch: currentEpoch + 2 });
+      expect(highWaterMark(databaseFor(reopened), "entitlement-lifecycle")).toBe(currentEpoch + 2);
+      expect(entitlementApi(reopened).getEntitlementLimits("entitlement-lifecycle")).toEqual(reassignedLimits);
+      reopened.close();
+    } finally {
+      try { store.close(); } catch { /* The store may already be closed before restart assertions. */ }
+    }
+  });
+
+  it("rolls back entitlement, credential, epoch, and high-water updates together", async () => {
+    const directory = await newDirectory();
+    const store = new LocalControlCredentialStore(join(directory, "private", "auth.db"));
+    const api = entitlementApi(store);
+    const expiresAt = Date.now() + 60_000;
+    const initialLimits = entitlementEnvelope(entitlementBinding("lifeos.read", "read", ["refs/lifeos"]));
+    const changedLimits = entitlementEnvelope(entitlementBinding("lifeos.write", "write", ["refs/lifeos"]));
+    const first = api.provision("entitlement-rollback", ["mission.read"], expiresAt, initialLimits);
+    const database = databaseFor(store);
+    const before = database.query(`
+      SELECT token_hash, scopes_json, expires_at, revoked_at, created_at,
+             credential_generation, authority_epoch, limits_json
+      FROM local_control_clients WHERE client_id = 'entitlement-rollback'
+    `).get();
+    database.exec(`
+      CREATE TRIGGER abort_test_entitlement_update
+      AFTER UPDATE OF limits_json ON local_control_clients
+      WHEN NEW.client_id = 'entitlement-rollback'
+      BEGIN SELECT RAISE(ABORT, 'forced entitlement rollback'); END;
+    `);
+
+    try {
+      expect(() => api.setEntitlementLimits("entitlement-rollback", changedLimits)).toThrow("forced entitlement rollback");
+      expect(() => api.provision("entitlement-rollback", ["mission.control"], Date.now() + 60_000, changedLimits))
+        .toThrow("forced entitlement rollback");
+      expect(database.query(`
+        SELECT token_hash, scopes_json, expires_at, revoked_at, created_at,
+               credential_generation, authority_epoch, limits_json
+        FROM local_control_clients WHERE client_id = 'entitlement-rollback'
+      `).get()).toEqual(before);
+      expect(highWaterMark(database, "entitlement-rollback")).toBe(1);
+      expect(api.getEntitlementLimits("entitlement-rollback")).toEqual(initialLimits);
+      expect(store.authorizeToken(first.token, "mission.read")?.clientId).toBe("entitlement-rollback");
+      expect(store.authorizeToken(first.token, "mission.control")).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("rejects direct SQL changes with inconsistent epochs and fails closed on persisted corruption", async () => {
+    const directory = await newDirectory();
+    const databasePath = join(directory, "private", "auth.db");
+    let store = new LocalControlCredentialStore(databasePath);
+    const api = entitlementApi(store);
+    const credential = api.provision("entitlement-guard", ["mission.read"], Date.now() + 60_000,
+      entitlementEnvelope(entitlementBinding("lifeos.read", "read", ["refs/lifeos"])));
+    const database = databaseFor(store);
+    const before = database.query("SELECT authority_epoch, limits_json FROM local_control_clients WHERE client_id = ?")
+      .get("entitlement-guard");
+    expect(() => database.query("UPDATE local_control_clients SET limits_json = ? WHERE client_id = ?")
+      .run('{"schemaVersion":1,"bindings":[]}', "entitlement-guard")).toThrow();
+    expect(() => database.query("UPDATE local_control_clients SET authority_epoch = authority_epoch + 1 WHERE client_id = ?")
+      .run("entitlement-guard")).toThrow();
+    expect(() => database.query("UPDATE local_control_clients SET limits_json = ?, authority_epoch = authority_epoch + 1 WHERE client_id = ?")
+      .run("not-json", "entitlement-guard")).toThrow();
+    expect(() => database.query("UPDATE local_control_clients SET limits_json = ?, authority_epoch = authority_epoch + 1 WHERE client_id = ?")
+      .run(JSON.stringify(entitlementEnvelope(entitlementBinding("lifeos.read", "read", ["refs/lifeos/../private"]))),
+        "entitlement-guard")).toThrow("LIMITS_JSON_SCHEMA_INVALID");
+    expect(database.query("SELECT authority_epoch, limits_json FROM local_control_clients WHERE client_id = ?")
+      .get("entitlement-guard")).toEqual(before);
+    expect(highWaterMark(database, "entitlement-guard")).toBe(1);
+
+    database.exec("DROP TRIGGER prevent_client_unauthorized_update");
+    database.query("UPDATE local_control_clients SET limits_json = ? WHERE client_id = ?")
+      .run('{"schemaVersion":99,"bindings":[]}', "entitlement-guard");
+    expect(store.authorizeToken(credential.token, "mission.read")).toBeNull();
+    expect(() => api.getEntitlementLimits("entitlement-guard")).toThrow("entitlement limits are corrupt");
+    const corruptState = authStoreSnapshot(database);
+    store.close();
+    expect(() => new LocalControlCredentialStore(databasePath)).toThrow("entitlement limits are corrupt");
+    const afterFailedOpen = new Database(databasePath);
+    expect(authStoreSnapshot(afterFailedOpen)).toEqual(corruptState);
+    afterFailedOpen.close();
+  });
+
+  it("fails closed on authority epoch overflow during entitlement assignment", async () => {
+    const directory = await newDirectory();
+    const databasePath = join(directory, "private", "auth.db");
+    let store = new LocalControlCredentialStore(databasePath);
+    const api = entitlementApi(store);
+    const first = api.provision("entitlement-overflow", ["mission.read"], Date.now() + 60_000,
+      entitlementEnvelope(entitlementBinding("lifeos.read", "read", ["refs/lifeos"])));
+    const database = databaseFor(store);
+    database.exec(`
+      DROP TRIGGER prevent_client_unauthorized_update;
+      DROP TRIGGER prevent_authority_epochs_update_decrement;
+      DROP TRIGGER sync_authority_epoch_to_max_on_update;
+    `);
+    database.query("UPDATE local_control_clients SET authority_epoch = ? WHERE client_id = ?")
+      .run(Number.MAX_SAFE_INTEGER, "entitlement-overflow");
+    database.query("UPDATE local_control_authority_epochs SET max_epoch = ? WHERE client_id = ?")
+      .run(Number.MAX_SAFE_INTEGER, "entitlement-overflow");
+    store.close();
+
+    store = new LocalControlCredentialStore(databasePath);
+    try {
+      expect(() => entitlementApi(store).setEntitlementLimits("entitlement-overflow",
+        entitlementEnvelope(entitlementBinding("lifeos.write", "write", ["refs/lifeos"]))))
+        .toThrow("AUTHORITY_EPOCH_OVERFLOW");
+      expect(authorityRow(databaseFor(store), "entitlement-overflow")).toMatchObject({ authority_epoch: Number.MAX_SAFE_INTEGER });
+      expect(highWaterMark(databaseFor(store), "entitlement-overflow")).toBe(Number.MAX_SAFE_INTEGER);
+      expect(store.authorizeToken(first.token, "mission.read")?.clientId).toBe("entitlement-overflow");
+    } finally {
+      store.close();
+    }
   });
 
   it("does not add authority facts to the authenticated client or provisioned credential contract", async () => {

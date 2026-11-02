@@ -23,6 +23,11 @@ import {
   type LocalControlAuthenticatedClient,
   type LocalControlClientCredential,
 } from "../../../shared/local-control-auth-contract.js";
+import {
+  parseStoredLocalControlEntitlement,
+  serializeLocalControlEntitlement,
+  type LocalControlEntitlement,
+} from "./local-control-entitlement.js";
 
 const TOKEN_PREFIX = "oc1";
 const TOKEN_SECRET_BYTES = 32;
@@ -42,6 +47,7 @@ interface ClientRow {
   scopes_json: string;
   expires_at: number;
   revoked_at: number | null;
+  limits_json: string | null;
 }
 
 interface BrowserSession {
@@ -70,7 +76,7 @@ export interface ProvisionedLocalControlCredential {
   expiresAt: number;
 }
 
-/** Secure local credential registry. The database stores only token hashes. */
+/** Secure local credential registry. Raw bearer secrets are never stored. */
 export class LocalControlCredentialStore {
   private readonly db: Database;
 
@@ -90,56 +96,164 @@ export class LocalControlCredentialStore {
     }
   }
 
-  /** Provision or rotate one explicitly scoped client. */
-  provision(clientId: string, scopes: readonly LocalControlAuthScope[], expiresAt: number): ProvisionedLocalControlCredential {
+  /** Provision or rotate one explicitly scoped client, optionally assigning internal entitlement limits. */
+  provision(
+    clientId: string,
+    scopes: readonly LocalControlAuthScope[],
+    expiresAt: number,
+    limits?: unknown,
+  ): ProvisionedLocalControlCredential {
     validateClientId(clientId);
     const normalizedScopes = validateScopes(scopes);
     if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) throw new Error("Credential expiry must be in the future");
+    const hasExplicitLimits = limits !== undefined;
+    const explicitLimitsJson = hasExplicitLimits ? serializeLocalControlEntitlement(limits) : undefined;
     const secret = randomBytes(TOKEN_SECRET_BYTES).toString("base64url");
     const token = `${TOKEN_PREFIX}.${Buffer.from(clientId).toString("base64url")}.${secret}`;
     const tokenHash = hashTokenSecret(secret);
-    this.db.query(`
-      INSERT INTO local_control_clients (
-        client_id, token_hash, scopes_json, expires_at, revoked_at, created_at,
-        authority_epoch, credential_generation
-      )
-      VALUES (
-        ?, ?, ?, ?, NULL, ?,
-        COALESCE((
-          SELECT CASE
-            WHEN existing.revoked_at IS NOT NULL
-              OR ${canonicalScopeSetSql("existing.scopes_json")} IS NOT ${canonicalScopeSetSql("?")}
-            THEN existing.authority_epoch + 1
-            ELSE existing.authority_epoch
-          END
-          FROM local_control_clients AS existing WHERE existing.client_id = ?
-        ), COALESCE((
-          SELECT max_epoch + 1 FROM local_control_authority_epochs WHERE client_id = ?
-        ), 1)),
-        COALESCE((
-          SELECT credential_generation + 1 FROM local_control_clients WHERE client_id = ?
-        ), 1)
-      )
-      ON CONFLICT(client_id) DO UPDATE SET
-        token_hash = excluded.token_hash,
-        scopes_json = excluded.scopes_json,
-        expires_at = excluded.expires_at,
-        authority_epoch = excluded.authority_epoch,
-        credential_generation = excluded.credential_generation,
-        revoked_at = NULL,
-        created_at = excluded.created_at
-    `).run(
-      clientId,
-      tokenHash,
-      JSON.stringify(normalizedScopes),
-      expiresAt,
-      Date.now(),
-      JSON.stringify(normalizedScopes),
-      clientId,
-      clientId,
-      clientId,
-    );
+    const scopesJson = JSON.stringify(normalizedScopes);
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = this.db.query(`
+        SELECT client_id, token_hash, scopes_json, expires_at, revoked_at, limits_json,
+               authority_epoch, credential_generation
+        FROM local_control_clients WHERE client_id = ?
+      `).get(clientId) as (ClientRow & { authority_epoch: number; credential_generation: number }) | null;
+
+      let authorityEpoch: number;
+      let credentialGeneration: number;
+      let limitsJson: string | null;
+      if (existing) {
+        const previousScopes = parseStoredScopes(existing.scopes_json);
+        if (!previousScopes) throw new Error("Local-control credential scopes are corrupt");
+        let previousLimits: LocalControlEntitlement | null;
+        try {
+          previousLimits = parseStoredLocalControlEntitlement(existing.limits_json);
+        } catch {
+          throw new Error("Local-control entitlement limits are corrupt");
+        }
+        if (!Number.isSafeInteger(existing.authority_epoch) || existing.authority_epoch < 1
+            || !Number.isSafeInteger(existing.credential_generation) || existing.credential_generation < 1) {
+          throw new Error("Local-control credential authority ordinals are invalid");
+        }
+        if (existing.credential_generation >= MAX_AUTHORITY_ORDINAL) throw new Error("CREDENTIAL_GENERATION_OVERFLOW");
+
+        const reactivating = existing.revoked_at !== null;
+        const nextLimitsJson = hasExplicitLimits
+          ? explicitLimitsJson ?? null
+          : reactivating ? null : existing.limits_json;
+        const previousLimitsKey = serializeLocalControlEntitlement(previousLimits);
+        const nextLimits = parseStoredLocalControlEntitlement(nextLimitsJson);
+        const nextLimitsKey = serializeLocalControlEntitlement(nextLimits);
+        const limitsChanged = previousLimitsKey !== nextLimitsKey;
+        const scopesChanged = canonicalScopeSet(previousScopes) !== canonicalScopeSet(normalizedScopes);
+
+        // Preserve the original storage bytes for a semantic no-op. A revoked
+        // client without an explicit assignment always starts again at NULL.
+        limitsJson = limitsChanged ? nextLimitsJson : reactivating && !hasExplicitLimits ? null : existing.limits_json;
+        const authorityChanged = reactivating || scopesChanged || limitsChanged;
+        if (authorityChanged && existing.authority_epoch >= MAX_AUTHORITY_ORDINAL) {
+          throw new Error("AUTHORITY_EPOCH_OVERFLOW");
+        }
+        authorityEpoch = existing.authority_epoch + (authorityChanged ? 1 : 0);
+        credentialGeneration = existing.credential_generation + 1;
+      } else {
+        const history = this.db.query(`
+          SELECT max_epoch FROM local_control_authority_epochs WHERE client_id = ?
+        `).get(clientId) as { max_epoch: number } | null;
+        const previousMax = history?.max_epoch ?? 0;
+        if (!Number.isSafeInteger(previousMax) || previousMax < 0 || previousMax >= MAX_AUTHORITY_ORDINAL) {
+          throw new Error("AUTHORITY_EPOCH_OVERFLOW");
+        }
+        authorityEpoch = previousMax + 1;
+        credentialGeneration = 1;
+        limitsJson = explicitLimitsJson ?? null;
+      }
+
+      this.db.query(`
+        INSERT INTO local_control_clients (
+          client_id, token_hash, scopes_json, expires_at, revoked_at, created_at,
+          authority_epoch, credential_generation, limits_json
+        ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)
+        ON CONFLICT(client_id) DO UPDATE SET
+          token_hash = excluded.token_hash,
+          scopes_json = excluded.scopes_json,
+          expires_at = excluded.expires_at,
+          authority_epoch = excluded.authority_epoch,
+          credential_generation = excluded.credential_generation,
+          revoked_at = NULL,
+          created_at = excluded.created_at,
+          limits_json = excluded.limits_json
+      `).run(
+        clientId,
+        tokenHash,
+        scopesJson,
+        expiresAt,
+        Date.now(),
+        authorityEpoch,
+        credentialGeneration,
+        limitsJson,
+      );
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
     return { clientId, token, scopes: normalizedScopes, expiresAt };
+  }
+
+  /** Read the internal, client-bound entitlement envelope; it grants no effect by itself. */
+  getEntitlementLimits(clientId: string): LocalControlEntitlement | null {
+    validateClientId(clientId);
+    const row = this.db.query("SELECT limits_json FROM local_control_clients WHERE client_id = ?")
+      .get(clientId) as { limits_json: string | null } | null;
+    if (!row) return null;
+    try {
+      return parseStoredLocalControlEntitlement(row.limits_json);
+    } catch {
+      throw new Error("Local-control entitlement limits are corrupt");
+    }
+  }
+
+  /** Explicitly assign internal limits and advance the durable authority epoch exactly once. */
+  setEntitlementLimits(clientId: string, limits: unknown | null): boolean {
+    validateClientId(clientId);
+    const limitsJson = serializeLocalControlEntitlement(limits);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.query(`
+        SELECT revoked_at, limits_json, authority_epoch
+        FROM local_control_clients WHERE client_id = ?
+      `).get(clientId) as { revoked_at: number | null; limits_json: string | null; authority_epoch: number } | null;
+      if (!row) throw new Error("Local-control client does not exist");
+      if (row.revoked_at !== null) throw new Error("Cannot assign entitlement limits to a revoked client");
+
+      let currentLimits: LocalControlEntitlement | null;
+      try {
+        currentLimits = parseStoredLocalControlEntitlement(row.limits_json);
+      } catch {
+        throw new Error("Local-control entitlement limits are corrupt");
+      }
+      if (serializeLocalControlEntitlement(currentLimits) === limitsJson) {
+        this.db.exec("COMMIT");
+        return false;
+      }
+      if (!Number.isSafeInteger(row.authority_epoch) || row.authority_epoch < 1
+          || row.authority_epoch >= MAX_AUTHORITY_ORDINAL) {
+        throw new Error("AUTHORITY_EPOCH_OVERFLOW");
+      }
+      const result = this.db.query(`
+        UPDATE local_control_clients SET limits_json = ?, authority_epoch = authority_epoch + 1
+        WHERE client_id = ? AND revoked_at IS NULL
+      `).run(limitsJson, clientId);
+      if (result.changes < 1) throw new Error("Local-control client changed during entitlement assignment");
+      this.db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   /** Revoke a client without relying on its local credential file. */
@@ -213,7 +327,11 @@ export class LocalControlCredentialStore {
         )
       `);
 
-      const columns = this.db.query("PRAGMA table_info(local_control_clients)").all() as Array<{ name: string }>;
+      const columns = this.db.query("PRAGMA table_info(local_control_clients)").all() as Array<{
+        name: string;
+        type: string;
+        notnull: number;
+      }>;
       const names = new Set(columns.map(({ name }) => name));
       const hasAuthorityEpoch = names.has("authority_epoch");
       const hasCredentialGeneration = names.has("credential_generation");
@@ -235,6 +353,11 @@ export class LocalControlCredentialStore {
       if (!hasCredentialGeneration) {
         this.db.exec("ALTER TABLE local_control_clients ADD COLUMN credential_generation INTEGER NOT NULL DEFAULT 1");
       }
+      const limitsColumn = columns.find(({ name }) => name === "limits_json");
+      if (limitsColumn && (limitsColumn.type.toUpperCase() !== "TEXT" || limitsColumn.notnull !== 0)) {
+        throw new Error("Local-control entitlement schema is inconsistent");
+      }
+      if (!limitsColumn) this.db.exec("ALTER TABLE local_control_clients ADD COLUMN limits_json TEXT");
 
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS local_control_authority_epochs (
@@ -320,6 +443,17 @@ export class LocalControlCredentialStore {
       LIMIT 1
     `).get() as { client_id: string } | null;
     if (invalidHighWaterMark) throw new Error("Local-control authority high-water mark is corrupt");
+
+    const entitlementRows = this.db.query(`
+      SELECT client_id, limits_json FROM local_control_clients
+    `).all() as Array<{ client_id: string; limits_json: unknown }>;
+    for (const row of entitlementRows) {
+      try {
+        parseStoredLocalControlEntitlement(row.limits_json);
+      } catch {
+        throw new Error("Local-control entitlement limits are corrupt");
+      }
+    }
   }
 
   private installIntegrityTriggers(): void {
@@ -328,6 +462,7 @@ export class LocalControlCredentialStore {
     const newScopes = canonicalScopeSetSql("NEW.scopes_json");
     const insertedScopes = canonicalScopeSetSql("NEW.scopes_json");
     const existingScopes = canonicalScopeSetSql("existing.scopes_json");
+    const limitsChecks = entitlementIntegritySql("NEW.limits_json");
 
     this.db.exec(`
       DROP TRIGGER IF EXISTS prevent_client_delete;
@@ -348,6 +483,7 @@ export class LocalControlCredentialStore {
       CREATE TRIGGER enforce_client_authority_epoch_insert_monotonicity
       BEFORE INSERT ON local_control_clients
       BEGIN
+        ${limitsChecks}
         SELECT CASE
           WHEN json_valid(NEW.scopes_json) = 0 OR json_type(NEW.scopes_json) != 'array'
           THEN RAISE(ABORT, 'scopes_json must be a valid JSON array')
@@ -394,6 +530,7 @@ export class LocalControlCredentialStore {
               AND NEW.credential_generation = existing.credential_generation + 1
               AND NEW.token_hash IS NOT existing.token_hash
               AND ${insertedScopes} IS ${existingScopes}
+              AND NEW.limits_json IS existing.limits_json
           )
           THEN RAISE(ABORT, 'authority_epoch must exceed historical max_epoch')
         END;
@@ -402,6 +539,7 @@ export class LocalControlCredentialStore {
       CREATE TRIGGER prevent_client_unauthorized_update
       BEFORE UPDATE ON local_control_clients
       BEGIN
+        ${limitsChecks}
         SELECT CASE
           WHEN json_valid(NEW.scopes_json) = 0 OR json_type(NEW.scopes_json) != 'array'
           THEN RAISE(ABORT, 'scopes_json must be a valid JSON array')
@@ -441,6 +579,16 @@ export class LocalControlCredentialStore {
           THEN RAISE(ABORT, 'authority_epoch cannot be lower than historical max_epoch')
           WHEN ${newScopes} IS NOT ${oldScopes} AND NEW.authority_epoch <= OLD.authority_epoch
           THEN RAISE(ABORT, 'changing the effective scope set requires advancing authority_epoch')
+          WHEN NEW.limits_json IS NOT OLD.limits_json AND NEW.authority_epoch <= OLD.authority_epoch
+          THEN RAISE(ABORT, 'changing entitlement limits requires advancing authority_epoch')
+          WHEN NEW.authority_epoch > OLD.authority_epoch
+             AND ${newScopes} IS ${oldScopes}
+             AND NEW.limits_json IS OLD.limits_json
+             AND NOT (OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NULL)
+          THEN RAISE(ABORT, 'authority_epoch cannot advance without an authority change')
+          WHEN OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NOT NULL
+             AND NEW.limits_json IS NOT OLD.limits_json
+          THEN RAISE(ABORT, 'entitlement cannot change while the client remains revoked')
           WHEN OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NULL
              AND (NEW.authority_epoch <= OLD.authority_epoch OR NEW.token_hash IS OLD.token_hash)
           THEN RAISE(ABORT, 'reactivating a revoked client requires a new secret and authority_epoch')
@@ -519,10 +667,17 @@ export class LocalControlCredentialStore {
   }
 
   private clientRow(clientId: string): ClientRow | null {
-    return this.db.query(`
-      SELECT client_id, token_hash, scopes_json, expires_at, revoked_at
+    const row = this.db.query(`
+      SELECT client_id, token_hash, scopes_json, expires_at, revoked_at, limits_json
       FROM local_control_clients WHERE client_id = ?
     `).get(clientId) as ClientRow | null;
+    if (!row) return null;
+    try {
+      parseStoredLocalControlEntitlement(row.limits_json);
+      return row;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -739,6 +894,111 @@ function canonicalScopeSetSql(jsonExpression: string): string {
   return `(SELECT json_group_array(scope_value) FROM (
     SELECT DISTINCT value AS scope_value FROM json_each(${jsonExpression}) ORDER BY value
   ))`;
+}
+
+function canonicalScopeSet(scopes: readonly LocalControlAuthScope[]): string {
+  return JSON.stringify([...new Set(scopes)].sort());
+}
+
+function entitlementIntegritySql(expression: string): string {
+  const controlCharacterChecks = Array.from({ length: 32 }, (_, characterCode) =>
+    `instr(p.value, char(${characterCode})) > 0`).join(" OR ");
+  const identifierControlChecks = Array.from({ length: 32 }, (_, characterCode) =>
+    `instr(json_extract(b.value, '$.capabilityId'), char(${characterCode})) > 0`).join(" OR ");
+  return `
+    SELECT CASE
+      WHEN ${expression} IS NOT NULL AND (
+        typeof(${expression}) != 'text'
+        OR length(CAST(${expression} AS BLOB)) > 65536
+        OR json_valid(${expression}) = 0
+      ) THEN RAISE(ABORT, 'LIMITS_JSON_INVALID')
+    END;
+    SELECT CASE
+      WHEN ${expression} IS NOT NULL AND (
+        json_type(${expression}) != 'object'
+        OR (SELECT count(*) FROM json_each(${expression})) != 2
+        OR json_type(${expression}, '$.schemaVersion') != 'integer'
+        OR json_extract(${expression}, '$.schemaVersion') != 1
+        OR json_type(${expression}, '$.bindings') != 'array'
+        OR json_array_length(${expression}, '$.bindings') > 128
+      ) THEN RAISE(ABORT, 'LIMITS_JSON_SCHEMA_INVALID')
+    END;
+    SELECT CASE
+      WHEN ${expression} IS NOT NULL AND (
+        EXISTS (
+          SELECT 1 FROM json_each(${expression}, '$.bindings') AS b
+          WHERE b.type != 'object'
+             OR (SELECT count(*) FROM json_each(b.value)) != 3
+             OR json_type(b.value, '$.capabilityId') != 'text'
+             OR length(CAST(json_extract(b.value, '$.capabilityId') AS BLOB)) < 1
+             OR length(CAST(json_extract(b.value, '$.capabilityId') AS BLOB)) > 512
+             OR trim(json_extract(b.value, '$.capabilityId')) != json_extract(b.value, '$.capabilityId')
+             OR (${identifierControlChecks})
+             OR json_type(b.value, '$.effectClass') != 'text'
+             OR json_extract(b.value, '$.effectClass') NOT IN (
+               'read', 'write', 'execution', 'network', 'storage_access',
+               'module_owner_operation', 'approval', 'communication'
+             )
+             OR json_type(b.value, '$.allowedRefPrefixes') != 'array'
+             OR json_array_length(b.value, '$.allowedRefPrefixes') > 64
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM json_each(${expression}, '$.bindings') AS b
+          JOIN json_each(b.value, '$.allowedRefPrefixes') AS p
+          WHERE p.type != 'text'
+             OR length(CAST(p.value AS BLOB)) < 1
+             OR length(CAST(p.value AS BLOB)) > 512
+             OR trim(p.value) != p.value
+             OR instr(p.value, char(92)) > 0
+             OR instr(p.value, '?') > 0
+             OR instr(p.value, '#') > 0
+             OR instr(p.value, char(10)) > 0
+             OR instr(p.value, char(13)) > 0
+             OR instr(p.value, ' ') > 0
+             OR (${controlCharacterChecks})
+             OR instr(p.value, char(127)) > 0
+             OR (instr(p.value, '://') = 0 AND substr(p.value, 1, 5) != 'refs/')
+             OR (instr(p.value, '://') = 0 AND instr(p.value, '//') > 0)
+             OR (instr(p.value, '://') > 0
+                 AND instr(substr(p.value, instr(p.value, '://') + 3), '//') > 0)
+             OR (instr(p.value, '://') = 0 AND instr(p.value, ':') > 0)
+             OR (instr(p.value, '://') > 0 AND (
+               instr(p.value, '://') <= 1
+               OR substr(p.value, 1, instr(p.value, '://') - 1)
+                  != lower(substr(p.value, 1, instr(p.value, '://') - 1))
+               OR instr(substr(p.value, instr(p.value, '://') + 3), '/') = 0
+               OR (lower(substr(p.value, 1, instr(p.value, '://') - 1)) = 'file'
+                   AND substr(p.value, instr(p.value, '://') + 3, 1) != '/')
+               OR (lower(substr(p.value, 1, instr(p.value, '://') - 1)) != 'file'
+                   AND (substr(p.value, instr(p.value, '://') + 3,
+                         instr(substr(p.value, instr(p.value, '://') + 3), '/') - 1) = ''
+                        OR instr(substr(p.value, instr(p.value, '://') + 3,
+                             instr(substr(p.value, instr(p.value, '://') + 3), '/') - 1), '@') > 0))
+             ))
+             OR instr(lower(p.value), '%2f') > 0
+             OR instr(lower(p.value), '%5c') > 0
+             OR instr(lower(p.value), '%2e') > 0
+             OR instr('/' || lower(p.value) || '/', '/../') > 0
+        )
+        OR EXISTS (
+          SELECT 1 FROM json_each(${expression}, '$.bindings') AS b
+          JOIN json_each(${expression}, '$.bindings') AS other
+            ON CAST(other.key AS INTEGER) > CAST(b.key AS INTEGER)
+          WHERE json_extract(b.value, '$.capabilityId') IS json_extract(other.value, '$.capabilityId')
+            AND json_extract(b.value, '$.effectClass') IS json_extract(other.value, '$.effectClass')
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM json_each(${expression}, '$.bindings') AS b
+          JOIN json_each(b.value, '$.allowedRefPrefixes') AS p
+          JOIN json_each(b.value, '$.allowedRefPrefixes') AS other
+            ON CAST(other.key AS INTEGER) > CAST(p.key AS INTEGER)
+          WHERE p.value IS other.value
+        )
+      ) THEN RAISE(ABORT, 'LIMITS_JSON_SCHEMA_INVALID')
+    END;
+  `;
 }
 
 function constantTimeHexEqual(left: string, right: string): boolean {

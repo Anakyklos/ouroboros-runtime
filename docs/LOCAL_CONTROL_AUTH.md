@@ -56,6 +56,41 @@ the active token hash for constant-time bearer, browser-cookie, and WebSocket
 revalidation. B1 does not issue or revoke operational grants and does not
 change the scopes accepted by authentication or the authority of `mission.create`.
 
+## Inert entitlement envelope (B2-2)
+
+`local_control_clients.limits_json` is a nullable, internal AuthStore field
+bound to the authenticated `clientId`. Existing and new clients start with
+`NULL`; `NULL` and a v1 envelope with no bindings both mean zero entitlement.
+The closed v1 shape correlates each `capabilityId` and `effectClass` with only
+that binding's `allowedRefPrefixes`. The parser rejects unknown or extra
+fields, duplicate bindings/prefixes, malformed references and traversal, and
+envelopes beyond 64 KiB, 128 bindings, 64 prefixes per binding, or 512 UTF-8
+bytes per identifier/prefix. Stable ordering makes reordered equivalent
+envelopes a no-op.
+
+This envelope is stored data only. It does not issue a grant, add an
+authentication scope, authorize an RPC, or affect planning, policy, dispatch,
+or execution. There is no public read/write RPC or CLI operation. The internal
+AuthStore read/assignment methods validate the envelope; an entitlement change
+and its `authority_epoch` increment commit in the same SQLite transaction and
+advance the epoch once. Scope and entitlement changes in one provisioning
+mutation also advance it once. A semantic no-op and a pure token rotation keep
+the epoch. Reprovisioning a revoked client without an explicit entitlement
+assignment clears its old limits; a new client also starts at `NULL`.
+
+The B2-2 migration adds nullable `limits_json` transactionally and preserves
+legacy client rows and credentials. SQLite triggers enforce the JSON shape,
+write/epoch relationship and existing high-water protections. The strict
+TypeScript parser also validates stored rows at startup and on internal reads;
+corruption blocks startup or fails authentication closed. These controls do
+not protect against a host administrator with unrestricted database or DDL
+access.
+
+Atomicity covers the AuthStore row and its authority epoch only. It does not
+coordinate the AuthStore with MissionStore, make a stored envelope an
+execution grant, or prevent a future cross-store race. The D12 decision and
+operational grant issuance/consumption remain outside B2-2.
+
 SQLite triggers enforce relational invariants; they do not authenticate a host
 user or protect against unrestricted database-file/DDL access. With
 `recursive_triggers = OFF`, SQLite does not run a delete trigger for the

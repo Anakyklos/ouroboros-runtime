@@ -1517,6 +1517,49 @@ describe("local-control authentication over real Fastify and SQLite", () => {
     }
   }, 15_000);
 
+  it("keeps bearer, browser-session, and WebSocket authentication stable across internal entitlement changes", async () => {
+    const credential = credentialStore.provision("entitlement-auth-stability", ["mission.read"], Date.now() + 60_000);
+    const before = credentialStore.authorizeToken(credential.token, "mission.read")!;
+    const session = await fetch(`http://127.0.0.1:${port}/auth/browser-session`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${credential.token}`, origin: frontendOrigin },
+    });
+    expect(session.status).toBe(204);
+    const cookie = session.headers.get("set-cookie")!.split(";", 1)[0]!;
+    const stream = await RawWebSocketProbe.connect(port, { Origin: frontendOrigin, Cookie: cookie });
+    try {
+      expect((await stream.response).status).toBe(101);
+      expect(JSON.parse((await stream.nextFrame()).payload.toString("utf8")).event).toBe("snapshot");
+
+      const limits = {
+        schemaVersion: 1,
+        bindings: [{ capabilityId: "lifeos.read", effectClass: "read", allowedRefPrefixes: ["refs/lifeos/"] }],
+      };
+      const internalStore = credentialStore as unknown as {
+        setEntitlementLimits(clientId: string, entitlement: unknown): boolean;
+      };
+      expect(internalStore.setEntitlementLimits("entitlement-auth-stability", limits)).toBe(true);
+
+      const after = credentialStore.authorizeToken(credential.token, "mission.read");
+      expect(after).toMatchObject({
+        clientId: before.clientId,
+        credentialVersion: before.credentialVersion,
+        scopes: ["mission.read"],
+      });
+      expect(Object.keys(after!).sort()).toEqual(["clientId", "credentialVersion", "scopes"]);
+      expect(authorizer.authenticateBrowserSession(cookie, frontendOrigin)?.clientId).toBe("entitlement-auth-stability");
+      expect((await rpc("local_control.read", { operation: "mission.show", protocolVersion: 1, missionId }, credential.token)).status).toBe(200);
+      expect((await rpc("mission.grant_capabilities", { missionId, grants: [] }, credential.token)).status).toBe(403);
+
+      eventBus.emit("daemon", { type: "ready", port });
+      const event = await stream.nextFrame();
+      expect(event.opcode).toBe(1);
+      expect(event.payload.toString("utf8")).toContain('"event":"daemon"');
+    } finally {
+      stream.close();
+    }
+  });
+
   it("keeps public health metadata minimal and rejects Origin outside the explicit allowlist", async () => {
     const response = await fetch(`http://127.0.0.1:${port}/health`, { headers: { origin: "http://attacker.invalid" } });
     expect(response.status).toBe(403);
