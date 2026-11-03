@@ -14,6 +14,10 @@ import {
   LocalControlCredentialStore,
   defaultLocalControlClientCredentialPath,
   writeLocalControlClientCredential,
+  defaultAuthorityFencePath,
+  acquireOfflineAuthorityFence,
+  AuthorityFenceLockedError,
+  type AuthorityFenceHandle,
 } from "../daemon/local-control-auth.js";
 import { LOCAL_CONTROL_AUTH_SCOPES, type LocalControlAuthScope } from "../../../shared/local-control-auth-contract.js";
 
@@ -23,6 +27,7 @@ export interface AdminCliDependencies {
   admissionClient?: Pick<LocalControlAdmissionClient, "admit">;
   stdout?: (text: string) => void;
   stderr?: (text: string) => void;
+  acquireFence?: (path: string, options?: { timeoutMs?: number }) => AuthorityFenceHandle;
 }
 
 function writeJson(write: (text: string) => void, value: unknown): void {
@@ -71,29 +76,76 @@ export async function runAdminCli(args: readonly string[], dependencies: AdminCl
 
   try {
     if (args[0] === "auth") {
+      const action = args[1];
+      const clientId = args[2];
+      let scopes: LocalControlAuthScope[] = [];
+      let days = 90;
+      let path = "";
+
+      if (action === "provision" || action === "rotate") {
+        if (!clientId || args.length < 4 || args.length > 6) {
+          stderr(`${usage()}\n`);
+          return 2;
+        }
+        scopes = args[3].split(",") as LocalControlAuthScope[];
+        if (!scopes.length || scopes.some((scope) => !LOCAL_CONTROL_AUTH_SCOPES.includes(scope)) || new Set(scopes).size !== scopes.length) {
+          stderr("invalid scope list\n");
+          return 2;
+        }
+        days = args[4] === undefined ? 90 : Number(args[4]);
+        if (!Number.isSafeInteger(days) || days < 1 || days > 365) {
+          stderr("credential lifetime must be between 1 and 365 days\n");
+          return 2;
+        }
+        path = args[5] ?? process.env.OUROBOROS_CLIENT_CREDENTIAL_FILE ?? defaultLocalControlClientCredentialPath(clientId);
+      } else if (action === "revoke") {
+        if (!clientId || args.length !== 3) {
+          stderr(`${usage()}\n`);
+          return 2;
+        }
+      } else {
+        stderr(`${usage()}\n`);
+        return 2;
+      }
+
       const dataDir = process.env.OUROBOROS_DATA_DIR || ".ouroboros";
-      const registry = new LocalControlCredentialStore(join(dataDir, "local-control-auth.db"));
+      const authDbPath = join(dataDir, "local-control-auth.db");
+      const fencePath = defaultAuthorityFencePath(authDbPath);
+      const acquireFence = dependencies.acquireFence ?? acquireOfflineAuthorityFence;
+      let fence: AuthorityFenceHandle;
       try {
-        const action = args[1];
-        const clientId = args[2];
-        if ((action === "provision" || action === "rotate") && clientId && args.length >= 4 && args.length <= 6) {
-          const scopes = args[3].split(",") as LocalControlAuthScope[];
-          if (!scopes.length || scopes.some((scope) => !LOCAL_CONTROL_AUTH_SCOPES.includes(scope)) || new Set(scopes).size !== scopes.length) {
-            stderr("invalid scope list\n");
-            return 2;
+        fence = acquireFence(fencePath, { timeoutMs: 50 });
+      } catch (error) {
+        if (error instanceof AuthorityFenceLockedError) {
+          let daemonActive = error.holder === "daemon";
+          if (!daemonActive) {
+            try {
+              const port = process.env.OUROBOROS_PORT ? Number(process.env.OUROBOROS_PORT) : 7777;
+              const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(200) });
+              if (res.status === 200) daemonActive = true;
+            } catch {
+              // daemon unreachable or offline
+            }
           }
-          const days = args[4] === undefined ? 90 : Number(args[4]);
-          if (!Number.isSafeInteger(days) || days < 1 || days > 365) {
-            stderr("credential lifetime must be between 1 and 365 days\n");
-            return 2;
+          if (daemonActive) {
+            stderr("administrative mutation refused: daemon is active and holds authority ownership. Online administrative mutations are not supported without an authorized administrative RPC (fail-closed under D12).\n");
+          } else {
+            stderr("administrative mutation refused: authority store is locked by another offline writer (fail-closed under D12).\n");
           }
-          const path = args[5] ?? process.env.OUROBOROS_CLIENT_CREDENTIAL_FILE ?? defaultLocalControlClientCredentialPath(clientId);
+          return 1;
+        }
+        throw error;
+      }
+
+      const registry = new LocalControlCredentialStore(authDbPath, { fence });
+      try {
+        if (action === "provision" || action === "rotate") {
           const credential = registry.provision(clientId, scopes, Date.now() + days * 24 * 60 * 60_000);
           writeLocalControlClientCredential(path, { schemaVersion: 1, clientId, token: credential.token });
           writeJson(stdout, { result: action === "rotate" ? "rotated" : "provisioned", clientId, scopes: credential.scopes, expiresAt: new Date(credential.expiresAt).toISOString(), credentialFile: path });
           return 0;
         }
-        if (action === "revoke" && clientId && args.length === 3) {
+        if (action === "revoke") {
           const revoked = registry.revoke(clientId);
           writeJson(stdout, { result: revoked ? "revoked" : "already_inactive", clientId });
           return 0;
@@ -101,7 +153,11 @@ export async function runAdminCli(args: readonly string[], dependencies: AdminCl
         stderr(`${usage()}\n`);
         return 2;
       } finally {
-        registry.close();
+        try {
+          registry.close();
+        } finally {
+          fence.release();
+        }
       }
     }
     switch (args[0]) {

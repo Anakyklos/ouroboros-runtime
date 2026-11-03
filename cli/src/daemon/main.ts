@@ -27,7 +27,10 @@ import {
     LocalControlAuthorizer,
     LocalControlCredentialStore,
     securePrivateDirectory,
+    defaultAuthorityFencePath,
+    acquireDaemonAuthorityFence,
     type LocalControlAuthorizationPort,
+    type AuthorityFenceHandle,
 } from './local-control-auth.js';
 
 const DATA_DIR = process.env.OUROBOROS_DATA_DIR || '.ouroboros';
@@ -69,6 +72,8 @@ export interface HeadlessDaemonDependencies {
     onDiagnostic?: (diagnostic: ShutdownDiagnostic) => void;
     forceTerminate?: () => void;
     setExitCode?: (code: number) => void;
+    authorityFencePath?: string;
+    acquireAuthorityFence?: (path: string, options?: { timeoutMs?: number }) => AuthorityFenceHandle;
 }
 
 /** Compose and start the current headless daemon with one lifecycle owner. */
@@ -79,6 +84,7 @@ export async function startHeadlessDaemon(
     const port = dependencies.port ?? PORT;
     let storage: InitializableStorage | undefined;
     let missionStore: InitializableMissionStore | undefined;
+    let authorityFence: AuthorityFenceHandle | undefined;
     let localControlCredentialStore: LocalControlCredentialStore | undefined;
     let localControlAuthorization: LocalControlAuthorizer | undefined;
     let server: HeadlessServer | undefined;
@@ -103,6 +109,8 @@ export async function startHeadlessDaemon(
         closeLocalControlAuth: async () => {
             localControlAuthorization?.close();
             localControlCredentialStore?.close();
+            authorityFence?.release();
+            authorityFence = undefined;
         },
         onDiagnostic,
         forceTerminate: dependencies.forceTerminate ?? (() => process.exit(1)),
@@ -129,7 +137,12 @@ export async function startHeadlessDaemon(
             (join(dataDir, 'missions.db'));
         await missionStore.initialize();
 
-        localControlCredentialStore = new LocalControlCredentialStore(join(dataDir, 'local-control-auth.db'));
+        const authDbPath = join(dataDir, 'local-control-auth.db');
+        const fencePath = dependencies.authorityFencePath ?? defaultAuthorityFencePath(authDbPath);
+        const acquireFence = dependencies.acquireAuthorityFence ?? acquireDaemonAuthorityFence;
+        authorityFence = acquireFence(fencePath);
+
+        localControlCredentialStore = new LocalControlCredentialStore(authDbPath, { fence: authorityFence });
         localControlAuthorization = new LocalControlAuthorizer(
             localControlCredentialStore,
             (process.env.OUROBOROS_ALLOWED_ORIGINS ?? '').split(',').map((origin) => origin.trim()).filter(Boolean),
