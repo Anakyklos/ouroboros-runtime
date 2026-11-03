@@ -28,6 +28,24 @@ import {
   serializeLocalControlEntitlement,
   type LocalControlEntitlement,
 } from "./local-control-entitlement.js";
+import {
+  defaultAuthorityFencePath,
+  probeAuthorityFence,
+  AuthorityFenceError,
+  AuthorityFenceLockedError,
+  type AuthorityFenceHandle,
+} from "./local-control-authority-fence.js";
+
+export {
+  defaultAuthorityFencePath,
+  probeAuthorityFence,
+  AuthorityFenceError,
+  AuthorityFenceLockedError,
+  acquireDaemonAuthorityFence,
+  acquireOfflineAuthorityFence,
+  type AuthorityFenceHandle,
+  type AuthorityFenceHolderType,
+} from "./local-control-authority-fence.js";
 
 const TOKEN_PREFIX = "oc1";
 const TOKEN_SECRET_BYTES = 32;
@@ -76,11 +94,20 @@ export interface ProvisionedLocalControlCredential {
   expiresAt: number;
 }
 
+export interface LocalControlCredentialStoreOptions {
+  fence?: AuthorityFenceHandle;
+}
+
 /** Secure local credential registry. Raw bearer secrets are never stored. */
 export class LocalControlCredentialStore {
   private readonly db: Database;
+  private readonly fence?: AuthorityFenceHandle;
 
-  constructor(readonly databasePath: string) {
+  constructor(
+    readonly databasePath: string,
+    options?: LocalControlCredentialStoreOptions,
+  ) {
+    this.fence = options?.fence;
     securePrivateDirectory(dirname(databasePath));
     assertPrivateRegularFileOrMissing(databasePath);
     this.db = new Database(databasePath);
@@ -96,6 +123,19 @@ export class LocalControlCredentialStore {
     }
   }
 
+  private assertWritable(): void {
+    if (this.databasePath === ":memory:") return;
+    if (this.fence && this.fence.isHeld()) return;
+    const fencePath = defaultAuthorityFencePath(this.databasePath);
+    const probe = probeAuthorityFence(fencePath);
+    if (probe.locked) {
+      throw new AuthorityFenceLockedError(
+        `Cannot mutate LocalControlCredentialStore: authority fence is held by ${probe.holder ?? "active process"}`,
+        probe.holder,
+      );
+    }
+  }
+
   /** Provision or rotate one explicitly scoped client, optionally assigning internal entitlement limits. */
   provision(
     clientId: string,
@@ -103,6 +143,7 @@ export class LocalControlCredentialStore {
     expiresAt: number,
     limits?: unknown,
   ): ProvisionedLocalControlCredential {
+    this.assertWritable();
     validateClientId(clientId);
     const normalizedScopes = validateScopes(scopes);
     if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) throw new Error("Credential expiry must be in the future");
@@ -218,6 +259,7 @@ export class LocalControlCredentialStore {
 
   /** Explicitly assign internal limits and advance the durable authority epoch exactly once. */
   setEntitlementLimits(clientId: string, limits: unknown | null): boolean {
+    this.assertWritable();
     validateClientId(clientId);
     const limitsJson = serializeLocalControlEntitlement(limits);
     this.db.exec("BEGIN IMMEDIATE");
@@ -258,6 +300,7 @@ export class LocalControlCredentialStore {
 
   /** Revoke a client without relying on its local credential file. */
   revoke(clientId: string): boolean {
+    this.assertWritable();
     validateClientId(clientId);
     const result = this.db.query(`
       UPDATE local_control_clients SET revoked_at = ? WHERE client_id = ? AND revoked_at IS NULL
@@ -1063,7 +1106,7 @@ function isCurrentUser(uid: number): boolean {
   return typeof process.getuid !== "function" || uid === process.getuid();
 }
 
-function assertPrivateRegularFileOrMissing(filePath: string): void {
+export function assertPrivateRegularFileOrMissing(filePath: string): void {
   let stat;
   try { stat = lstatSync(filePath); } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createServer as createNetServer } from "node:net";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -195,7 +196,7 @@ afterEach(async () => {
 });
 
 describe("AuthStore and MissionStore cross-store boundary (real SQLite)", () => {
-  it("lets an already admitted daemon request finish after a separate CLI authority commit", async () => {
+  it("rejects uncoordinated CLI administrative mutations fail-closed while daemon holds authority ownership", async () => {
     const dataDir = await newDirectory("ouroboros-cross-store-rpc-");
     const authPath = join(dataDir, "local-control-auth.db");
     const missionPath = join(dataDir, "missions.db");
@@ -273,36 +274,28 @@ describe("AuthStore and MissionStore cross-store boundary (real SQLite)", () => 
       const admittedPrincipal = await admissionEntered.promise;
       expect(admittedPrincipal).toMatchObject({ clientId, scopes: ["mission.create"] });
 
+      // In B2-3 (before D12 ratification), this test demonstrated that an uncoordinated CLI rotate
+      // process raced directly against SQLite while an admission request was in flight.
+      // Under B2-4 (D12 Alternative 1), the daemon holds the authority fence during its runtime,
+      // and online administrative mutations without an authorized administrative RPC are rejected
+      // fail-closed with exit code 1.
       const cli = await runAdminCliProcess(dataDir, [
         "auth", "rotate", clientId, "mission.read", "1", newCredentialFile,
       ]);
-      expect(cli.exitCode).toBe(0);
-      expect(cli.stderr).toBe("");
-      expect(cli.stdout).toContain('"result": "rotated"');
-      expect(cli.stdout).not.toMatch(/oc1\.|token_hash|Bearer/iu);
+      expect(cli.exitCode).toBe(1);
+      expect(cli.stderr).toContain("administrative mutation refused: daemon is active and holds authority ownership");
+      expect(cli.stdout).toBe("");
+      expect(existsSync(newCredentialFile)).toBe(false);
+      // Authority state remains strictly unmutated under the active daemon
       expect(authFacts(authPath, clientId)).toMatchObject({
-        scopes_json: '["mission.read"]',
-        authority_epoch: 2,
-        credential_generation: 2,
+        scopes_json: '["mission.create"]',
+        authority_epoch: 1,
+        credential_generation: 1,
         revoked_at: null,
-        max_epoch: 2,
+        max_epoch: 1,
       });
 
-      const newCredential = readLocalControlClientCredential(newCredentialFile);
-      const currentTransport = new LoopbackJsonRpcTransport({
-        baseUrl: `http://127.0.0.1:${port}`,
-        authorization: `Bearer ${newCredential.token}`,
-      });
-      const deniedCurrentAdmission = new LocalControlAdmissionClient({
-        request: (params) => currentTransport.call("local_control.admit", params),
-      });
-      await expect(deniedCurrentAdmission.admit({
-        requestId: "cross-store-admission-after-rotation",
-        originalIntent: "This current principal no longer has mission.create",
-        constraints: [],
-        acceptanceCriteria: [],
-      })).rejects.toBeInstanceOf(RpcProtocolError);
-
+      // The in-flight admission request finishes safely and creates the unprivileged Mission
       releaseAdmission.resolve();
       const committed = await pendingAdmission;
       expect(committed).toMatchObject({ ok: true, operation: "mission.admit" });
